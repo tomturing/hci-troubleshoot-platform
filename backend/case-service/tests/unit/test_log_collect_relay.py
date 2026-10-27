@@ -301,3 +301,52 @@ async def test_run_rejects_non_ticket_case_id_before_upload(storage, monkeypatch
     assert "工单号不合法" in str(excinfo.value)
     # 契约不符时不得先发一轮注定 400 的请求
     assert called == []
+
+# ── 交付终态的持久化口径 ────────────────────────────────────────────────────
+
+
+def _values_by_name(statement) -> dict:
+    """把 update 语句的 values 摊成 {列名: 值}，避免依赖 Column 对象身份。"""
+    # func.now() 这类服务端表达式没有 .value，原样返回即可（用例不断言它们）
+    return {
+        column.name: (getattr(bind, "value", bind))
+        for column, bind in statement._values.items()
+    }
+
+
+class _RecordingSession(_FakeSession):
+    """记录 update 语句，用于断言落库字段（不连库）。"""
+
+    def __init__(self, result: _FakeResult, statements: list):
+        super().__init__(result)
+        self._statements = statements
+
+    async def execute(self, statement):
+        self._statements.append(statement)
+        return self.result
+
+
+async def test_finish_marks_delivery_status(storage):
+    """代传终态必须同时收敛 delivery_status。
+
+    只写 relay_status 的话，delivery_status 会永久停在 begin_delivery 写的 queued，
+    前端据此判断"是否已交付"永远拿不到 delivered——补交付入口会一直亮着，
+    用户每次打开面板都被提示"上传到平台"，而包早就归档了。
+    """
+    statements: list = []
+    service = LogCollectRelayService(
+        lambda: _RecordingSession(_FakeResult(rowcount=1), statements),
+        storage,
+        SangforRelayClient("http://relay"),
+    )
+
+    await service._finish(uuid4(), "success")
+    values = _values_by_name(statements[-1])
+    assert values["delivery_status"] == "delivered"
+    assert values["relay_status"] == "success"
+
+    statements.clear()
+    await service._finish(uuid4(), "failed", error="5888 无响应")
+    values = _values_by_name(statements[-1])
+    assert values["delivery_status"] == "failed"
+    assert values["delivery_error"] == "5888 无响应"

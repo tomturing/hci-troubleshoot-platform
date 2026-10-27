@@ -39,6 +39,9 @@ LogCollectModule = Literal[
 # 交付路径收敛为两条：acli_direct = P1（HCI 直传 5888），bridge_relay = P2（bridge 中转）。
 # 原 platform_direct（平台直传）对应已废弃的 P2，不再接受。
 UploadMode = Literal["acli_direct", "bridge_relay", "none"]
+# 创建任务时可选定的交付路径：只允许两条真实链路。
+# ``none`` 是历史空值语义（老记录没有 upload_mode），不允许作为用户的"设置"。
+PlannedUploadMode = Literal["acli_direct", "bridge_relay"]
 
 # 交付状态：描述「产物是否真的从节点到达平台」。
 #
@@ -79,6 +82,13 @@ class LogCollectTaskCreate(BaseModel):
     ips: list[str] = Field(default_factory=lambda: ["all"], description='目标主机；["all"] 表示全部在线节点')
     extra_paths: list[str] = Field(default_factory=list, max_length=20)
     remote_url: str | None = Field(default=None, description="上传目标（仅 http/https 官方日志服务器）")
+    upload_mode: PlannedUploadMode | None = Field(
+        default=None,
+        description=(
+            "交付路径（创建时确定）：acli_direct=P1 直传日志服务器；bridge_relay=P2 经平台中转。"
+            "省略时按 remote_url 是否提供推断，兼容未升级的客户端。"
+        ),
+    )
     baseline_report_hash: str | None = Field(
         default=None,
         max_length=64,
@@ -153,6 +163,21 @@ class LogCollectTaskCreate(BaseModel):
             raise ValueError("结束日期不能早于开始日期")
         if (self.date_to - self.date_from).days + 1 > MAX_DATE_RANGE_DAYS:
             raise ValueError(f"收集范围不能超过 {MAX_DATE_RANGE_DAYS} 天")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_upload_mode(self) -> LogCollectTaskCreate:
+        """交付路径与上传地址必须一致。
+
+        二者是同一决策的两个投影：P1 的唯一实现方式是让 acli 带 ``-u`` 直传，
+        因此有路径无地址无法执行；反过来给了地址却声明 P2，会让"平台留副本"
+        这个承诺失效（acli 会自己传给 5888，平台拿不到包）。
+        发现矛盾时拒绝，而不是静默取一个——静默取舍正是路径不可追溯的成因。
+        """
+        if self.upload_mode == "acli_direct" and not self.remote_url:
+            raise ValueError("P1 直传必须提供日志服务器上传地址（remote_url）")
+        if self.upload_mode == "bridge_relay" and self.remote_url:
+            raise ValueError("P2 经平台中转不应提供 remote_url：该值只用于 acli 直传")
         return self
 
     @field_validator("case_id")

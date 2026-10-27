@@ -113,6 +113,11 @@ class LogCollectService:
             ips=list(payload.ips),
             extra_paths=list(payload.extra_paths) or None,
             remote_url=payload.remote_url,
+            # 交付路径是用户的**决策**，必须在创建那一刻落库：
+            # 只在交付完成时补写的话，采集中的任务与补交付失败的任务都读不到它，
+            # 事后也无法区分"用户选了 P2"和"P1 失败后降级成 P2"。
+            # 未传时按 remote_url 推断，兼容未升级的客户端（P1 必带地址，P2 必不带）。
+            upload_mode=payload.upload_mode or ("acli_direct" if payload.remote_url else "bridge_relay"),
             # 探测事实随任务落库：失败任务必须能回答"用的哪版 acli / 什么架构"。
             # 只存前端内存时，关面板或换端后这条证据就没了（2026-10-27 实测 38/38 全空）。
             arch=payload.arch,
@@ -160,6 +165,19 @@ class LogCollectService:
         # 必须先把旧状态存下来：下面的 setattr 会把 task.status 直接改成目标值，
         # 之后再用 task.status 判断"是不是从终态复活"永远为假，接管/纠正分支会变成死代码。
         previous_status = task.status
+
+        # detail 是审计容器：基线指纹、交付路径降级记录等由不同动作分别写入。
+        # PATCH 若整块覆盖，写"降级原因"就会把 baseline_report_hash 冲掉，
+        # 后续归属判定随之失效。因此这里按字典合并；显式传 null 表示删除该键
+        # （例如降级记录被纠正后需要撤销）。
+        if data.get("detail") is not None:
+            merged = dict(task.detail or {})
+            for key, value in dict(data["detail"]).items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = value
+            data["detail"] = merged
 
         for key, value in data.items():
             setattr(task, key, value)
@@ -213,6 +231,10 @@ class LogCollectService:
         """
         task = await self.get_task(task_id)
         now = datetime.now(UTC)
+        # 补交付在物理上只能是 P2：acli 的上传是 ``create -u`` 的同一次执行，
+        # 没有独立的重传子命令。包一旦没走成 P1，唯一可重放的动作就是经平台中转。
+        # 在这里登记实际路径，而不是让前端再发一次 PATCH——少一次往返，也少一次漏写。
+        task.upload_mode = "bridge_relay"
         task.delivery_status = "queued"
         task.delivery_started_at = now
         task.delivery_finished_at = None

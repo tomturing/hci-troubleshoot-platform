@@ -115,6 +115,35 @@ class TestCreateTask:
         assert task.arch == "x86_64"
         assert task.acli_version == "1.0.1"
 
+    async def test_upload_mode_persisted_on_create(self, service, mock_repo):
+        """交付路径必须在创建那一刻落库。
+
+        只在交付完成时补写的话：采集中的任务读不到它、P1 失败降级后也无法区分
+        "用户本来就选 P2"与"P1 失败被迫改 P2"。
+        """
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(
+            make_payload(upload_mode="acli_direct", remote_url="http://acli.sangfor.com.cn:5888"),
+            "client-1",
+        )
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.upload_mode == "acli_direct"
+        assert task.remote_url == "http://acli.sangfor.com.cn:5888"
+
+    async def test_upload_mode_inferred_from_remote_url(self, service, mock_repo):
+        """未传 upload_mode 时按 remote_url 推断，兼容未升级的客户端。"""
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(make_payload(remote_url="http://acli.sangfor.com.cn:5888"), "client-1")
+        assert mock_repo.create.await_args.args[0].upload_mode == "acli_direct"
+
+        await service.create_task(make_payload(), "client-1")
+        assert mock_repo.create.await_args.args[0].upload_mode == "bridge_relay"
+
     async def test_conflict_when_active_task_exists(self, service, mock_repo):
         active = MagicMock(spec=LogCollectTask)
         active.task_id = "11111111-1111-1111-1111-111111111111"
@@ -254,6 +283,71 @@ class TestUpdateTask:
         assert result.error_message is None
         assert result.finished_at is None
 
+    async def test_detail_patch_merges_instead_of_overwrite(self, service, mock_repo):
+        """detail 是审计容器，PATCH 必须合并。
+
+        整块覆盖的后果很具体：P1 失败降级时写一条"降级原因"，
+        就会把下发时锚定的 baseline_report_hash 冲掉，之后所有归属判定失效。
+        """
+        task = MagicMock(spec=LogCollectTask)
+        task.status = "collecting"
+        task.progress = 10
+        task.detail = {"baseline_report_hash": "7843-1a2b3c4d"}
+        mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
+
+        result = await service.update_task(
+            "11111111-1111-1111-1111-111111111111",
+            LogCollectTaskPatch(detail={"upload_mode_switched_from": "acli_direct"}),
+        )
+
+        assert result.detail == {
+            "baseline_report_hash": "7843-1a2b3c4d",
+            "upload_mode_switched_from": "acli_direct",
+        }
+
+    async def test_detail_patch_null_removes_key(self, service, mock_repo):
+        """显式传 null 表示删除该键：撤销降级记录时不能留下悬空字段。"""
+        task = MagicMock(spec=LogCollectTask)
+        task.status = "collecting"
+        task.progress = 10
+        task.detail = {"baseline_report_hash": "7843-1a2b3c4d", "upload_mode_switched_from": "acli_direct"}
+        mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
+
+        result = await service.update_task(
+            "11111111-1111-1111-1111-111111111111",
+            LogCollectTaskPatch(detail={"upload_mode_switched_from": None}),
+        )
+
+        assert result.detail == {"baseline_report_hash": "7843-1a2b3c4d"}
+
+
+class TestBeginDelivery:
+    """补交付的登记语义：只推进 delivery_*，并把实际交付路径改成 P2。"""
+
+    async def test_registers_bridge_relay_and_keeps_collection_status(self, service, mock_repo):
+        task = MagicMock(spec=LogCollectTask)
+        task.status = "completed"
+        task.upload_mode = "acli_direct"
+        task.delivery_status = "none"
+        task.delivery_attempts = 0
+        mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
+
+        result = await service.begin_delivery("11111111-1111-1111-1111-111111111111")
+
+        # acli 没有独立重传接口：包一旦没走成 P1，补交付只能是 P2
+        assert result.upload_mode == "bridge_relay"
+        assert result.delivery_status == "queued"
+        assert result.delivery_attempts == 1
+        assert result.delivery_started_at is not None
+        # 采集结论不能被交付动作改写
+        assert result.status == "completed"
+
 
 class TestCancelTask:
     async def test_cancel_active_task(self, service, mock_repo):
@@ -336,6 +430,21 @@ class TestPayloadValidation:
         """用户指定的工单号（Q + 8 位日期 + 5 位序号）可直接用于日志任务。"""
         payload = make_payload(case_id="Q2026101401684")
         assert payload.case_id == "Q2026101401684"
+
+    # 交付路径与上传地址是同一决策的两个投影：P1 的唯一实现是 acli 带 -u 直传，
+    # 因此"有路径无地址"无法执行；"给地址却声明 P2"会让"平台留副本"的承诺失效。
+    # 矛盾时拒绝，而不是静默取一个——静默取舍正是路径不可追溯的成因。
+    def test_upload_mode_p1_requires_remote_url(self):
+        with pytest.raises(ValidationError, match="P1 直传必须提供"):
+            make_payload(upload_mode="acli_direct")
+
+    def test_upload_mode_p2_rejects_remote_url(self):
+        with pytest.raises(ValidationError, match="不应提供 remote_url"):
+            make_payload(upload_mode="bridge_relay", remote_url="http://acli.sangfor.com.cn:5888")
+
+    def test_upload_mode_rejects_unknown_value(self):
+        with pytest.raises(ValidationError):
+            make_payload(upload_mode="platform_direct")
 
     def test_case_id_rejects_invalid_calendar_date(self):
         """格式合法但日期不存在（2026-13-32）必须拒绝。"""

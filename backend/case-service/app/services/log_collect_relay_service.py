@@ -301,6 +301,16 @@ class LogCollectRelayService:
 
     async def _finish(self, task_id: UUID, status: str, *, error: str | None = None) -> None:
         payload: dict[str, Any] = {"relay_status": status, "relay_updated_at": func.now()}
+        # 交付状态必须随代传终态一起收敛：它是"产物是否真到了日志服务器"的唯一权威字段。
+        # 只写 relay_status 的话，delivery_status 会永远停在 begin_delivery 写的 queued，
+        # 前端据此判断"是否已交付"时永远拿不到 delivered——补交付入口会一直亮着。
+        payload["delivery_finished_at"] = func.now()
+        if status == "success":
+            payload["delivery_status"] = "delivered"
+            payload["delivery_error"] = None
+        else:
+            payload["delivery_status"] = "failed"
+            payload["delivery_error"] = (error or "归档到日志服务器失败")[:2000]
         if error:
             payload["error_code"] = "LC-TRANSFER-003"
             payload["error_message"] = error[:2000]
