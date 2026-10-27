@@ -578,19 +578,20 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 				cancel()
 				return
 			}
-			// job 是共享结构（status() 会并发读快照），所有修改必须在 r.mu 下完成。
+			// job 是共享结构（status() 会并发读快照，save() 也会 marshal 它），
+			// 所有对 job 的读写都必须在 r.mu 下完成：addUploadedPart 改 UploadedParts，
+			// 而 store.save 会 marshal 整个 job（含 UploadedParts）。锁外 save 会与
+			// 其它 worker 的 addUploadedPart 形成 data race（CI -race 已抓到）。
 			r.mu.Lock()
 			job.addUploadedPart(number)
 			sinceSave++
 			shouldSave := sinceSave >= deliverySaveEveryParts
 			if shouldSave {
 				sinceSave = 0
-			}
-			r.mu.Unlock()
-			if shouldSave {
 				_ = r.store.save(job)
 			}
-		}
+			r.mu.Unlock()
+			}
 	}
 
 	wg.Add(parts)
