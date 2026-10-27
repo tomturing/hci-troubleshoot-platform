@@ -144,13 +144,15 @@ func (b *Bridge) destroySession(key, reason, byConn string) bool {
 	return true
 }
 
-// holdSession 在会话入表时登记一个持有者（refs=1）。
+// holdSessionLocked 在会话入表时登记一个持有者（refs=1）。
 //
 // 为什么需要引用计数：会话可能被多条连接共用（终端连接 + 日志收集面板连接），
 // 只有"全部持有者都走了"才算空闲；单条连接关闭不代表没人用。
-func (b *Bridge) holdSession(key string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+//
+// 后缀 Locked 是硬约定：调用方必须已持有 b.mu，本函数自己绝不再加锁。
+// Go 的 sync.Mutex 不可重入——它原先自己 Lock()，而唯一调用方 set() 已在临界区内，
+// 于是任何一次建会话都会自死锁（表现为 go test 拖满超时，而不是快速失败）。
+func (b *Bridge) holdSessionLocked(key string) {
 	if b.sessionRefs == nil {
 		b.sessionRefs = make(map[string]int)
 	}

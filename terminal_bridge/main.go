@@ -4222,7 +4222,8 @@ func (b *Bridge) set(key string, s *SSHSession) {
 	defer b.mu.Unlock()
 	b.sessions[key] = s
 	// 入表即登记一个持有者：引用计数从 1 开始，WS 关闭时由 releaseSession 减回 0。
-	b.holdSession(key)
+	// 必须用 Locked 版本：本函数已持有 b.mu，而 Go 的 Mutex 不可重入。
+	b.holdSessionLocked(key)
 }
 
 func (b *Bridge) remove(key string) {

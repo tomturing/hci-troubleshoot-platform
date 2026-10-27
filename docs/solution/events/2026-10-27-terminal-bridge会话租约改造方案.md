@@ -52,11 +52,11 @@ deciders: team
 
 ## 改造方案（阶段三）
 
-- `lifecycle.go`：新增 `holdSession` / `releaseSession` / `forgetLease` / `reapIdleSessions` /
+- `lifecycle.go`：新增 `holdSessionLocked` / `releaseSession` / `forgetLease` / `reapIdleSessions` /
   `sessionIdleTTL` / `startSessionReaper`，常量 `sessionReasonIdleTTL`、默认值
   `defaultSessionIdleTTL=5min`；
 - `main.go`：`Bridge` 结构体加 `sessionRefs` / `sessionIdleAt`；`newBridge` 初始化；`set()`
-  入表即 `holdSession`；WS 关闭 defer 由 `destroySession` 改为 `releaseSession`；启动时
+  入表即 `holdSessionLocked`；WS 关闭 defer 由 `destroySession` 改为 `releaseSession`；启动时
   `startSessionReaper(bridge, sessionIdleTTL())`。
 
 ## 验收标准（阶段四）
@@ -65,3 +65,25 @@ deciders: team
 - 可观测：刷新页面后 `session.idle` 出现、原会话在 TTL 内可复用、超时才出现
   `session.destroyed{reason=idle_ttl}`；
 - 不复现：2026-10-27 14:37:49 类"面板采集被连坐清理"故障不再出现。
+
+## 订正记录
+
+### 2026-10-27：初版实现存在锁重入自死锁（CI 拖到 10m17s 超时才失败）
+
+**原始断言（保留不删）**：上文《改造方案》写的是「`set()` 入表即 `holdSession`」，
+当时 `holdSession` 自己也会 `b.mu.Lock()`。
+
+**已被证伪的部分**：Go 的 `sync.Mutex` **不可重入**。`set()` 已在 `b.mu` 临界区内再调
+`holdSession()` → 自己等自己放锁，任何一次建会话永久阻塞。表现不是崩溃而是“慢”：
+`go test` 默认 10 分钟才 panic，而 `terminal bridge simulation-auth gate` 的
+`timeout-minutes` 也是 10，于是它在 `format, test and vet` 步骤上卡满 10m17s 被杀，
+把死锁伪装成了“CI 很慢”。
+
+**修正依据与结果**：按 Go 惯例把它改名为 `holdSessionLocked`（后缀即“调用方必须已持锁”），
+删除函数内部的加锁，`set()` 改为调用 `holdSessionLocked`。原卡死的
+`TestDestroySessionEmitsLifecycleEvent` 从永久阻塞变为 0.00s 通过，
+`go test ./...`（9.9s）与 `go test -race ./...`（11.2s）全部通过。
+同时逐个复核了 `lifecycle.go` 其余加锁函数：`releaseSession` 在锁外 `blog`；
+`reapIdleSessions` 先 `Unlock` 再调 `destroySession`；`destroySession` 自身不持锁——
+均无同类隐患。验收标准补一条：**锁内绝不调用会再加锁的方法，需要持锁的辅助函数一律以
+`Locked` 后缀命名**。
