@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
   isCertificateUntrusted,
   platformCertTrusted,
@@ -116,5 +117,55 @@ describe('平台证书信任授权', () => {
   it('不写入 localStorage', () => {
     rememberPlatformCertTrust('https://d.example.cn:4443')
     expect(localStorage.getItem('hci.logCollect.trustPlatformCert:https://d.example.cn:4443')).toBeNull()
+  })
+})
+// 现场回归（Q2026102701193，2026-10-27）：`source_path 不能为空`。
+//
+// 根因不在载荷构造，而在**载荷→WS 消息**这一跳：历史上 submit 复用了
+// buildDeliveryMessage（按 camelCase 取字段），snake_case 载荷被逐字段丢空，
+// bridge 只收到 {type, case_id, node_ip}。更要命的是 delivery_mode / tls_insecure
+// 在那个 options 类型里根本不存在，所以 P2 交付与证书授权从未送达。
+//
+// 这条用例刻意用**真实函数组合**（payload → message）而不是分别断言，
+// 因为上一轮的组件测试 mock 了消息层、直接透传 payload，把断裂完全掩盖了。
+describe('buildDeliverySubmitMessage', () => {
+  const decode = (raw: string) => JSON.parse(raw) as Record<string, unknown>
+
+  it('协议载荷的每个字段都必须原样出现在消息里', () => {
+    const payload = buildDeliverySubmitPayload(baseArgs, 'https://platform.example.cn', true)
+    const msg = decode(buildDeliverySubmitMessage(payload, 'Q2026102701193', '172.28.24.194'))
+
+    expect(msg.type).toBe('delivery_submit')
+    expect(msg.case_id).toBe('Q2026102701193')
+    expect(msg.node_ip).toBe('172.28.24.194')
+    // 逐个字段对照 bridge 的 InMessage json tag
+    expect(msg.exec_id).toBe('task-1')
+    expect(msg.source_path).toBe(baseArgs.sourcePath)
+    expect(msg.platform_url).toBe('https://platform.example.cn')
+    expect(msg.upload_token).toBe('tok-abc')
+    expect(msg.chunk_size).toBe(10485760)
+    expect(msg.part_count).toBe(15)
+    expect(msg.total_size).toBe(150000000)
+    expect(msg.uploaded_parts).toEqual([1, 2])
+    expect(msg.delivery_mode).toBe('collect')
+    expect(msg.tls_insecure).toBe(true)
+  })
+
+  it('direct 模式必须送达（补交付的唯一开关）', () => {
+    const payload = buildDeliverySubmitPayload({ ...baseArgs, mode: 'direct' }, 'https://p.example.cn', false)
+    const msg = decode(buildDeliverySubmitMessage(payload, 'Q1'))
+    expect(msg.delivery_mode).toBe('direct')
+    // tls_insecure=false 也必须显式传：缺字段时 bridge 会走严格分支
+    expect(msg.tls_insecure).toBe(false)
+  })
+
+  it('uploaded_parts 为空数组也要传：漏传会让续传变成全量重传', () => {
+    const payload = buildDeliverySubmitPayload(
+      { ...baseArgs, session: { ...session, uploaded_parts: [] } },
+      'https://p.example.cn',
+      false,
+    )
+    const msg = decode(buildDeliverySubmitMessage(payload, 'Q1'))
+    expect(msg.uploaded_parts).toEqual([])
   })
 })

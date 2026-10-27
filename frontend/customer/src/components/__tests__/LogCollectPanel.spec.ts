@@ -77,6 +77,10 @@ vi.mock('@/api/terminal', () => ({
   // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
   buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
     JSON.stringify({ type: 'delivery', case_id: caseId, log_action: action, ...options }),
+  // submit 走独立入口（snake_case 载荷平铺）。mock 必须与真实实现同构，
+  // 否则又会像上一轮那样把"字段被丢空"掩盖成绿灯。
+  buildDeliverySubmitMessage: (payload: any, caseId: string, nodeIp?: string) =>
+    JSON.stringify({ type: 'delivery_submit', case_id: caseId, node_ip: nodeIp, ...payload }),
 }))
 
 vi.mock('@/api/logCollect', () => ({
@@ -920,10 +924,15 @@ describe('LogCollectPanel', () => {
     expect(vi.mocked(logCollectApi.deliverTask).mock.calls[0][0]).toBe('task-done')
     expect(vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.status)).toBe(false)
 
-    // 3) 交付作业以 direct 模式下发（不是 collect）
+    // 3) 交付作业以 direct 模式下发（不是 collect），且协议字段逐个到位
     await vi.waitFor(() =>
       expect(sentMessages.some((m) => m.includes('"delivery_mode":"direct"'))).toBe(true),
     )
+    const submitMsg = sentMessages.find((m) => m.includes('"type":"delivery_submit"')) || ''
+    expect(submitMsg).toContain(`"source_path":"${archivePath}"`)
+    expect(submitMsg).toContain('"upload_token":"token-123456"')
+    expect(submitMsg).toContain('"total_size":303104000')
+    expect(submitMsg).toContain('"tls_insecure":false')
     expect(sentMessages.some((m) => m.includes('"delivery_mode":"collect"'))).toBe(false)
     fakeSocket.onmessage?.({
       data: JSON.stringify({

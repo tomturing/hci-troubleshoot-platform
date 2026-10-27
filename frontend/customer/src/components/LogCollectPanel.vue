@@ -25,10 +25,12 @@ import {
   type UploadInitResult,
 } from '@/api/logCollect'
 import {
+  buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
   isCertificateUntrusted,
   platformCertTrusted,
   rememberPlatformCertTrust,
+  type DeliverySubmitPayload,
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import {
@@ -792,9 +794,20 @@ function sendAndWait(
       // 与 log_collect 同一锚点：不带 node_ip 时 bridge 会去找键为 caseID 的会话，
       // 而真实会话键是 caseID@nodeIP → 必然 session_missing（安装链路根本不会启动）。
       ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100, nodeIp: nodeIp.value }))
+    } else if (action === 'delivery_submit') {
+      // submit 携带的是完整协议载荷（snake_case）。**不能**走下面的通用组装：
+      // 那一层按 camelCase 取字段，会把 source_path / upload_token / total_size /
+      // delivery_mode / tls_insecure 全部丢成 undefined，bridge 只收到
+      // {type, case_id, node_ip}，直接报 "source_path 不能为空"（2026-10-27 现场）。
+      ws.send(
+        buildDeliverySubmitMessage(
+          options as unknown as DeliverySubmitPayload,
+          props.caseId,
+          nodeIp.value,
+        ),
+      )
     } else if (action.startsWith('delivery_')) {
-      // 交付作业：submit 立刻返回 job_id，执行权在 bridge；
-      // 后续只轮询 status，页面关闭不影响交付（重连后按同一 job_id 继续）。
+      // status / resume / cancel：字段少且都是单值，仍走通用消息构造
       ws.send(
         buildDeliveryMessage(
           action.replace('delivery_', '') as 'submit' | 'status' | 'resume' | 'cancel',

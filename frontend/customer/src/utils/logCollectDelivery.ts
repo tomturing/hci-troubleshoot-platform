@@ -68,6 +68,32 @@ export function buildDeliverySubmitPayload(
 }
 
 /**
+ * 构造 `delivery_submit` 的完整 WS 消息。
+ *
+ * 为什么不复用 `buildDeliveryMessage`：那一层按 **camelCase** 取字段
+ * （`options.sourcePath`、`options.uploadToken`…），而协议载荷是 snake_case
+ * （与 bridge 的 `InMessage` json tag 严格一致）。中间再翻译一次的结果是
+ * 字段**全部丢失**，bridge 只收到 `{type, case_id, node_ip}`，于是
+ * `normalizeArchivePath("")` 报 `source_path 不能为空`（2026-10-27 现场）。
+ * 更要命的是 `delivery_mode` / `tls_insecure` 连 options 类型里都没有，
+ * 所以 P2 交付与证书授权从未真正送到 bridge —— `bridge_relay` 从来没成功过。
+ *
+ * 载荷本身已经是协议的唯一权威描述，这里只做平铺，不做第二次映射。
+ */
+export function buildDeliverySubmitMessage(
+  payload: DeliverySubmitPayload,
+  caseId: string,
+  nodeIp?: string,
+): string {
+  return JSON.stringify({
+    type: 'delivery_submit',
+    case_id: caseId,
+    node_ip: nodeIp || undefined,
+    ...payload,
+  })
+}
+
+/**
  * 判断错误是否属于「平台证书不受信」。
  *
  * bridge 把 Go 标准库原文直接回传，例如：
