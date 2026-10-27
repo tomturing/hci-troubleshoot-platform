@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildSyncNotice, decideNodeSync, hashReport, resolveOwnership } from '../logCollectSync'
+import { blocksCreate, buildSyncNotice, decideNodeSync, hashReport, resolveOwnership } from '../logCollectSync'
 
 const STALE_REPORT = '状态：收集任务已完成！\n总进度：100% - 2/2\n归档状态：发送成功'
 const FRESH_REPORT = '状态：收集任务进行中！\n总进度：0% - 0/2'
@@ -118,6 +118,7 @@ describe('decideNodeSync 节点态直映射', () => {
       nodeState: 'completed',
       reportRefreshed: true,
       archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      archiveExists: true,
     })
     expect(action.action).toBe('adopt')
     expect(action.adoptMode).toBe('deliver')
@@ -125,20 +126,26 @@ describe('decideNodeSync 节点态直映射', () => {
   })
 
   it('平台失败 + 节点已完成但包已移除 → 只提示重新采集，不写库', () => {
-    const action = decideNodeSync({ platformStatus: 'failed', nodeState: 'completed', reportRefreshed: true })
+    const action = decideNodeSync({
+      platformStatus: 'failed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      archiveExists: false,
+    })
     expect(action.action).toBe('none')
     expect(action.reason).toContain('重新采集')
   })
 
   // 回归护栏（#1323，2026-10-27）：「采集完成」不等于「已交付」。
-  // completed 只是 acli 的报告，平台可能一个字节都没收到；此时包还在节点上，
+  // completed 只是 acli 的报告，平台可能一个字节都没收到；此时包还在节点上（stat 证实），
   // 唯一正确的出口是经平台中转补交付，而不是只给"重新收集"。
-  it('平台已完成但未交付 + 节点已完成且包仍在 → 上传到平台，不重新采集', () => {
+  it('平台已完成但未交付 + stat 证实包仍在 → 上传到平台，不重新采集', () => {
     const action = decideNodeSync({
       platformStatus: 'completed',
       nodeState: 'completed',
       reportRefreshed: true,
       archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      archiveExists: true,
       platformDelivered: false,
     })
     expect(action.action).toBe('adopt')
@@ -152,21 +159,71 @@ describe('decideNodeSync 节点态直映射', () => {
       nodeState: 'completed',
       reportRefreshed: true,
       archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      archiveExists: true,
       platformDelivered: true,
     })
     expect(action.action).toBe('none')
     expect(action.action).not.toBe('adopt')
   })
 
-  it('平台已完成但未交付 + 包已被移除（P1 成功后自删）→ 只提示，不造出空交付', () => {
+  it('平台已完成但未交付 + stat 证实包已不在 → 只提示，不造出空交付', () => {
     const action = decideNodeSync({
       platformStatus: 'completed',
       nodeState: 'completed',
       reportRefreshed: true,
+      archiveExists: false,
       platformDelivered: false,
     })
     expect(action.action).toBe('none')
     expect(action.reason).toContain('重新采集')
+  })
+
+  // 现场回归（工单 Q2026102701193，2026-10-27）：
+  // 节点 acli 报「日志收集单发送状态：发送成功」，插件随即自删 zip；
+  // 平台因漏记 delivery_status 而被判成"未交付 + 包仍在节点"，于是
+  //   a) 结果页一直提示「请点上传到平台」，点下去 stat exit 1；
+  //   b) 新建/重新收集被 preCreate 守卫拦回同一句提示 —— 完全死锁。
+  // 契约：节点报告发送成功就是 P1 的交付结论，平台只做补登，不得要求补交付。
+  it('已完成 + 节点报 P1 发送成功 + 平台无记录 → 补登已交付，绝不给上传入口', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      // 报告里仍带着路径，但文件已被插件删除
+      archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701193.zip',
+      archiveExists: false,
+      nodeDelivered: true,
+      platformDelivered: false,
+    })
+    expect(action.action).toBe('patch_delivered')
+    expect(action.action).not.toBe('adopt')
+    expect(action.reason).toContain('P1')
+  })
+
+  it('已完成 + 节点报 P1 发送失败 + 包仍在 → 补交付成立', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      archiveExists: true,
+      nodeDelivered: false,
+      platformDelivered: false,
+    })
+    expect(action.action).toBe('adopt')
+    expect(action.adoptMode).toBe('deliver')
+  })
+
+  it('已完成 + 未探测包存在性（旧 bridge）→ 不提供上传入口，只说明待确认', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701193.zip',
+      platformDelivered: false,
+    })
+    expect(action.action).toBe('none')
+    expect(action.action).not.toBe('adopt')
+    expect(action.reason).toContain('未确认')
   })
 
   it('平台已完成但未交付 + 节点无任务 → 没有可交付的物证，不提供上传入口', () => {
@@ -227,5 +284,26 @@ describe('buildSyncNotice', () => {
     )
     expect(notice).toContain('上一次任务')
     expect(notice).toContain('自动刷新会继续跟进')
+  })
+})
+
+// 现场回归（Q2026102701193，2026-10-27）：补交付待办把 create 也拦住的死锁。
+// 判定与"是否能新建任务"是两回事：补交付只说明节点上有个已完成的包，
+// 它不与新的 create 互斥；拦下来就会既不能新建、也补交付不了。
+describe('blocksCreate：新建任务守卫的边界', () => {
+  it('补交付待办不拦新建', () => {
+    expect(blocksCreate({ action: 'adopt', reason: '', adoptMode: 'deliver' })).toBe(false)
+  })
+
+  it('节点还在跑 / 游离任务必须拦（会撞插件互斥）', () => {
+    expect(blocksCreate({ action: 'adopt', reason: '', adoptMode: 'resume' })).toBe(true)
+    expect(blocksCreate({ action: 'cancel_retry', reason: '' })).toBe(true)
+    expect(blocksCreate({ action: 'warn_node_busy', reason: '' })).toBe(true)
+  })
+
+  it('无需用户决策的结论不拦', () => {
+    expect(blocksCreate(null)).toBe(false)
+    expect(blocksCreate({ action: 'none', reason: '' })).toBe(false)
+    expect(blocksCreate({ action: 'patch_delivered', reason: '' })).toBe(false)
   })
 })

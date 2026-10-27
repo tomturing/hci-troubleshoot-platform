@@ -32,6 +32,7 @@ import {
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import {
+  blocksCreate as blocksCreateAction,
   buildSyncNotice,
   decideNodeSync,
   fallbackNodeState,
@@ -143,6 +144,14 @@ interface ProgressSnapshot {
    * 插件 progress 本身不打印大小，P1 成功后包会被自删，所以经常为 0（= 未量到）。
    */
   archive_size?: number
+  /**
+   * 压缩包此刻是否真的在节点上（bridge 的 stat 结论）。
+   *
+   * 与 `archive_path` 的区别是决定性的：路径只说明"曾经生成过"，
+   * P1 发送成功后插件会立刻删除文件，报告里却仍带路径。
+   * 缺省（旧版 bridge）时必须当作"未确认"，不能当作"存在"。
+   */
+  archive_exists?: boolean
   upload_state: string
   hosts: Array<{ ip: string; status: string; percent: number }>
   /** 节点态归一化结果：none / running / completed / abnormal / unknown */
@@ -444,12 +453,22 @@ const resultSizeText = computed(() => {
 })
 
 /**
+ * 结果态是否该出现「上传到平台」。
+ *
+ * 只认对账结论（`adopt` + `deliver`），不自己再判一次"包在不在"：
+ * 两处各判一次必然分叉，而"包是否仍在"只有 bridge stat 的 `archive_exists` 可信。
+ */
+const canUploadFromNode = computed(
+  () => nodeAction.value === 'adopt' && nodeAdoptMode.value === 'deliver',
+)
+
+/**
  * 平台是否已有交付证据。
  *
  * 判据只能是交付证据，不能是采集状态：`status=completed` 只说明 acli 报采集结束，
  * 平台可能一个字节都没收到（2026-10-27 现场）。证据有三类：
  *   - P2：`relay_status=success` 或 `delivery_status=delivered`；
- *   - P1：`delivery_status=delivered`（由 upload_state「发送成功」回写）；
+ *   - P1：`delivery_status=delivered`（由节点报告的「发送成功」经 patch_delivered 回写）；
  *   - 老记录（upload_mode 是后补字段）：没有交付状态可比，按 P1 的口径兜底。
  */
 const resultDelivered = computed(() => {
@@ -486,10 +505,13 @@ const resultArtifactText = computed(() => {
 const resultCleanupTip = computed(() => {
   const task = resultTask.value
   if (!task || task.archive_deleted) return ''
+  // 顶部提示条已经在说"包仍在节点、可点上传到平台"：再说一遍只会在固定区占两行，
+  // 而且两条的措辞还会互相冲突（一条说仍在、一条说已删）。
+  if (canUploadFromNode.value) return ''
   if (resultMode.value === 'acli_direct') {
-    // 未交付的 P1 任务包还在节点上，说"无需清理"是错的：它要么等着补交付，要么需人工删。
     if (!resultDelivered.value) {
-      return '压缩包仍在节点上且尚未交付：可点「上传到平台」经平台中转归档，或自行删除该包。'
+      // 这里不能断言"包仍在节点"：没有 stat 证据，且 P1 成功后插件已自删。
+      return '平台尚未登记交付结论；P1 发送成功后插件会自动删除节点上的压缩包，无需人工清理。'
     }
     return 'P1 由插件直传日志服务器，上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
   }
@@ -498,16 +520,6 @@ const resultCleanupTip = computed(() => {
   }
   return ''
 })
-
-/**
- * 结果态是否该出现「上传到平台」。
- *
- * 只认对账结论（`adopt` + `deliver`），不自己再判一次"包在不在"：
- * 两处各判一次必然分叉，而"包是否仍在"只有 bridge stat 的结果可信。
- */
-const canUploadFromNode = computed(
-  () => nodeAction.value === 'adopt' && nodeAdoptMode.value === 'deliver',
-)
 
 /**
  * 固定提示区是否要占一行。
@@ -1164,7 +1176,8 @@ async function handleStart() {
     // 前置守卫：节点上有未结束/游离任务时，create 只会被插件互斥拒绝，
     // 平台还会白留一条 failed 记录。先对账，能自动修正的直接修正，需要用户决策的当场拦住。
     const preSync = await syncNodeState({ applyPatches: true, silent: true, source: 'preCreate' })
-    if (preSync && ['adopt', 'cancel_retry', 'warn_node_busy'].includes(preSync.action)) {
+    // 是否该拦见 blocksCreate：只拦"节点上有活会抢同一会话"，补交付待办不拦。
+    if (blocksCreateAction(preSync) && preSync) {
       stage.value = 'idle'
       ElMessage.warning(buildSyncNotice(preSync))
       return
@@ -1464,14 +1477,21 @@ async function syncNodeState(
     }
 
     const nodeState = snapshot.node_state ?? fallbackNodeState(snapshot)
-    // 交付证据：只有这两项能证明"包真的到了日志服务器"。
-    // 不能用 status==='completed' 代替——它只说明 acli 报采集结束（见 logCollectSync 注释）。
+    // 两个证据源必须分开传，不能在这里合并：
+    //   - platformDelivered：**平台侧**已有交付记录（P2 代传成功 / 已登记 delivered）；
+    //   - nodeDelivered：**本轮节点报告**里的 P1「发送成功」。
+    // 合并成一个是错的——判定层要靠"平台没记录但节点说成功"这个组合来识别
+    // "平台漏记、需要补登"（Q2026102701193），合并后这个组合永远不成立。
+    const nodeDelivered = deliveryEvidenceOf(snapshot, currentTask.value) === 'delivered'
     const platformDelivered =
       currentTask.value?.delivery_status === 'delivered' || currentTask.value?.relay_status === 'success'
     const action = decideNodeSync({
       platformStatus: currentTask.value?.status ?? null,
       nodeState,
       archivePath: snapshot.archive_path,
+      // 包是否存在只认 stat 结论：路径是"曾生成"，文件可能已被插件删除
+      archiveExists: snapshot.archive_exists,
+      nodeDelivered,
       progressTotal: snapshot.total,
       expectedHosts: expectedHostCount(),
       reportRefreshed: reportRefreshedOf(snapshot),
@@ -1500,15 +1520,23 @@ async function syncNodeState(
           : action.action === 'warn_completed_conflict' && action.canCorrect
             ? 'correct'
             : ''
-    nodeSyncHint.value = buildSyncNotice(action)
+    // patch_delivered 是后台补登、不需要用户做任何事：留一条常驻提示只会占用固定区
+    nodeSyncHint.value = action.action === 'patch_delivered' ? '' : buildSyncNotice(action)
 
     // syncPatchBlocked：收到过确定性拒绝（4xx）后不再自动写库。
     // 状态机拒绝不会因为再等 30 秒而变好，继续重试只会把同一条错误刷成日志噪音。
     if (options.applyPatches && currentTask.value && !syncPatchBlocked) {
-      if (action.action === 'patch_completed' || action.action === 'patch_failed') {
+      if (
+        action.action === 'patch_completed' ||
+        action.action === 'patch_failed' ||
+        action.action === 'patch_delivered'
+      ) {
         try {
           const patch =
-            action.action === 'patch_completed'
+            action.action === 'patch_delivered'
+              ? // 只补交付证据，status 保持 completed：它是采集结论，不该因为补登交付被重写
+                { delivery_status: 'delivered' as const }
+              : action.action === 'patch_completed'
               ? {
                   status: 'completed' as const,
                   progress: 100,
@@ -1542,6 +1570,11 @@ async function syncNodeState(
             // 否则页面会停在收集表单上、右下角按钮还写着「开始收集」，
             // 用户以为没完成（现场 2026-10-26 23:23）。
             showResult(currentTask.value)
+          } else if (action.action === 'patch_delivered') {
+            // 证据补登成功：不切视图、不改 stage——用户可能正看着结果页，
+            // 只需让归档状态从「尚未交付」变成「已由插件直传」。
+            stage.value = 'done'
+            if (viewMode.value === 'result') showResult(currentTask.value)
           } else {
             stage.value = 'failed'
             errorMessage.value = action.reason
@@ -1931,15 +1964,24 @@ async function runP2(
   ws: WebSocket,
   task: LogCollectTask,
   token: number,
-  options: { mode: 'collect' | 'direct'; sourcePath?: string } = { mode: 'collect' },
+  options: { mode: 'collect' | 'direct'; sourcePath?: string; totalSize?: number } = { mode: 'collect' },
 ) {
   const archivePath = options.sourcePath || progress.value?.archive_path || task.archive_path || ''
   if (!archivePath) throw new Error('未获取到压缩包路径，无法中转')
 
-  // 1) 取包大小（init 需要 total_size）
-  const statResult = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000)
-  if (statResult.status !== 'ok') throw new Error(statResult.message || '读取压缩包大小失败')
-  const totalSize = Number(statResult.log_data?.size || 0)
+  // 1) 取包大小（init 需要 total_size）。stat 顺带给出"文件此刻是否真的在"：
+  //    补交付场景里包可能已被插件删除（P1 发送成功后自删），必须在这里说人话，
+  //    而不是把 shell 的 exit 1 原样抛给用户（现场顶部弹出的 "Process exited with status 1"）。
+  //    调用方已经量过时（补交付入口先探存在性）直接复用，省一次 30s 预算的往返。
+  let totalSize = options.totalSize ?? 0
+  if (totalSize <= 0) {
+    const statResult = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000)
+    if (statResult.status !== 'ok') throw new Error(statResult.message || '读取压缩包大小失败')
+    if (statResult.log_data?.exists === false) {
+      throw new Error('压缩包已不在节点上（P1 发送成功后插件会自动删除），无法补交付；如需产物请重新采集')
+    }
+    totalSize = Number(statResult.log_data?.size || 0)
+  }
   if (totalSize <= 0) throw new Error('压缩包大小异常')
 
   // 2) 平台签发分片会话：走 /deliver 而非 /uploads。
@@ -2018,13 +2060,24 @@ async function uploadExistingPackage(ws: WebSocket, task: LogCollectTask, token:
     throw new Error('节点上没有可交付的压缩包路径（包可能已被移除）；如需产物请重新采集')
   }
 
+  // 先确认包真的还在，再动平台状态：否则 status 被改成 collecting 之后才发现传无可传，
+  // 平台就被留在"采集中"的假态里，只能靠下一轮对账再纠回来。
+  const probe = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000)
+  if (probe.status === 'ok' && probe.log_data?.exists === false) {
+    throw new Error('压缩包已不在节点上（P1 发送成功后插件会自动删除），无法补交付；如需产物请重新采集')
+  }
+
   // failed / cancelled → completed 在状态机里没有直连边，唯一合法出口是回到 collecting。
   // 这里走它只是为了"能落完成后态"，与重新采集无关：不发 create、不轮询 progress。
   if (task.status === 'failed' || task.status === 'cancelled') {
     currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
   }
 
-  await runP2(ws, task, token, { mode: 'direct', sourcePath: archivePath })
+  await runP2(ws, task, token, {
+    mode: 'direct',
+    sourcePath: archivePath,
+    totalSize: Number(probe.log_data?.size || 0),
+  })
 }
 
 /** 交付作业视图（与 bridge `deliveryJobView` 对齐）。 */

@@ -38,8 +38,29 @@ export interface SyncInput {
   /** 平台当前任务状态；为空表示平台上没有任务记录 */
   platformStatus?: PlatformStatus | null
   nodeState: NodeState
-  /** 节点上报的压缩包路径（用于"节点无任务但产物已生成"这一分支） */
+  /**
+   * 节点**报告过**的压缩包路径。
+   *
+   * 注意它只证明"曾经生成过这个路径"，不证明文件现在还在：P1 直传成功后插件立刻自删，
+   * 报告里却仍带着这个路径（工单 Q2026102701193，2026-10-27 现场）。
+   * 因此判断"包还在不在"必须看 `archiveExists`，不能用本字段。
+   */
   archivePath?: string
+  /**
+   * bridge 的 stat 结论：压缩包此刻是否真的在节点上。
+   *
+   * - `true`：文件存在 → 补交付在物理上成立；
+   * - `false`：文件不存在 → P1 成功后自删，补交付不成立（传无可传）；
+   * - `undefined`：没探测 / 旧版 bridge → **不得**据此给出补交付入口。
+   */
+  archiveExists?: boolean
+  /**
+   * 节点报告是否明确"已成功交付"（P1 的 `发送成功`）。
+   *
+   * 平台对 P1 直传是**零可观测**的：没有字节、没有分片、没有回执。唯一证据就是
+   * acli 的这句报告。所以 P1 的交付结论只能采信它，不能套用 P2 的"平台有记录"标准。
+   */
+  nodeDelivered?: boolean
   /** 节点 progress 里的采集总数 */
   progressTotal?: number
   /**
@@ -83,6 +104,8 @@ export type SyncActionKind =
   | 'cancel_retry'
   | 'patch_completed'
   | 'patch_failed'
+  /** 平台已完成、节点报告 P1 直传成功：把交付证据补写进平台（status 不动） */
+  | 'patch_delivered'
   | 'warn_node_busy'
   /** 平台已归档但节点仍在跑：提示冲突，必要时允许"以节点为准纠正" */
   | 'warn_completed_conflict'
@@ -234,11 +257,23 @@ export function decideNodeSync(input: SyncInput): SyncAction {
       }
     }
 
-    // 「采集完成」≠「已交付」：completed 只是 acli 的报告，产物可能一个字节都没出去。
-    // 交付的物理前提只有两条——节点上有完整包、平台有上传会话，因此这里只看这两条，
-    // 不要求先把状态改回采集中（那会抹掉"采集已完成"这个真实结论）。
+    // 「采集完成」≠「已交付」，但「未登记交付」也≠「未交付」：
+    // P1 的交付对平台不可观测，节点报告是唯一证据。报告说发送成功、平台却没记录，
+    // 只能说明**平台漏记**，不能据此让用户重传一个已被插件删除的包
+    // （工单 Q2026102701193，2026-10-27 现场：acli 报发送成功、zip 已自删，
+    //  面板却一直提示「压缩包仍在节点，请点上传到平台」，点下去 stat 必然 exit 1）。
+    if (!input.platformDelivered && input.nodeDelivered) {
+      return {
+        action: 'patch_delivered',
+        reason: '节点报告 P1 直传日志服务器成功，平台缺这条记录；按已交付补登（平台不留副本属 P1 的已知代价）',
+        ownership,
+      }
+    }
+
+    // 未交付：补交付的物理前提只有一条——**文件此刻真的在节点上**。
+    // 注意判据是 archiveExists（stat 结论），不是 archivePath（报告里的字符串）。
     if (!input.platformDelivered) {
-      if (nodeState === 'completed' && input.archivePath) {
+      if (nodeState === 'completed' && input.archiveExists === true) {
         return {
           action: 'adopt',
           reason: '平台已完成采集但日志尚未交付（压缩包仍在节点）；可经平台中转直接上传，不会重新采集',
@@ -247,10 +282,12 @@ export function decideNodeSync(input: SyncInput): SyncAction {
         }
       }
       if (nodeState === 'completed') {
-        // 包已不在：P1 直传成功后插件会自删，此时没有可交付的物证。
         return {
           action: 'none',
-          reason: '节点已采集完成但压缩包已被移除（P1 直传成功会自删），平台无需再上传；如需产物请重新采集',
+          reason:
+            input.archiveExists === false
+              ? '节点已采集完成且压缩包已不在（P1 发送成功后插件会自删），无需再上传；如需产物请重新采集'
+              : '节点已采集完成，但未确认压缩包是否仍在节点（缺少 stat 结论）；如需产物请重新采集',
           ownership,
         }
       }
@@ -283,7 +320,7 @@ export function decideNodeSync(input: SyncInput): SyncAction {
       // （工单 Q2026102701294：节点 100%、包 289 MiB 在盘，平台 failed）。
       // 正确做法不是"硬把终态改成完成"（那会说谎：平台根本没有产物），
       // 而是承认节点真相 → 走合法边回到采集中，随后立刻按 completed 收尾并交付。
-      if (input.archivePath) {
+      if (input.archiveExists === true) {
         return {
           action: 'adopt',
           reason: '节点已采集完成且压缩包仍在，平台只是没交付；接管后继续交付，不会重新采集',
@@ -295,7 +332,7 @@ export function decideNodeSync(input: SyncInput): SyncAction {
       // 强行接管只会拉包失败再挂一次，所以只提示、不写库、也不产生 409。
       return {
         action: 'none',
-        reason: '节点已采集完成，但压缩包已被移除且平台无产物记录；如需产物请重新采集',
+        reason: '节点已采集完成，但压缩包已不在且平台无产物记录；如需产物请重新采集',
         ownership,
       }
     }
@@ -349,6 +386,23 @@ export function fallbackNodeState(snapshot: {
   return 'unknown'
 }
 
+/**
+ * 下发新任务前的守卫：这个对账结论是否应该**阻止** create。
+ *
+ * 只拦"节点上确实有活、会与新 create 抢同一会话"的情形：
+ *   - `cancel_retry` / `warn_node_busy`：节点任务未结束或游离，create 必被插件互斥拒绝；
+ *   - `adopt(resume)`：节点还在跑，同样会撞互斥。
+ *
+ * 刻意**不拦** `adopt(deliver)`：它表示"节点已采完、包还在盘、平台没交付"，
+ * 而 acli 的 completed 任务并不与新的 create 互斥。把它也拦下来就会得到
+ * "既不能新建、也补交付不了"的死锁（Q2026102701193，2026-10-27 现场）。
+ */
+export function blocksCreate(action: SyncAction | null | undefined): boolean {
+  if (!action) return false
+  if (action.action === 'cancel_retry' || action.action === 'warn_node_busy') return true
+  return action.action === 'adopt' && action.adoptMode !== 'deliver'
+}
+
 /** 对账结论 → 用户可读提示（含下一步动作） */
 export function buildSyncNotice(action: SyncAction): string {
   switch (action.action) {
@@ -368,6 +422,9 @@ export function buildSyncNotice(action: SyncAction): string {
       return `已按节点状态修正为完成：${action.reason}`
     case 'patch_failed':
       return `已按节点状态修正为失败：${action.reason}`
+    case 'patch_delivered':
+      // 不是"已归档"的高调宣告：平台只是补上节点早已给出的结论，产物并不在平台侧。
+      return `日志已交付：${action.reason}`
     case 'warn_completed_conflict':
       return action.canCorrect
         ? `${action.reason}。可点「以节点为准纠正」把平台状态改回采集中并继续跟进（不会删除节点或日志服务器上的压缩包）。`

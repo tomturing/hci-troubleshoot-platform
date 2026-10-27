@@ -882,6 +882,8 @@ describe('LogCollectPanel', () => {
       total: 1,
       node_state: 'completed',
       archive_path: archivePath,
+      // 包存在性是 stat 结论；路径字符串本身不构成证据
+      archive_exists: true,
       upload_state: '发送失败',
       hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
       raw: '状态：收集任务已完成！\n总进度：100% - 1/1\n归档状态：发送失败',
@@ -908,7 +910,7 @@ describe('LogCollectPanel', () => {
         type: 'log_collect_result',
         log_action: 'stat',
         status: 'ok',
-        log_data: { size: 303104000 },
+        log_data: { size: 303104000, exists: true },
       }),
     })
     await flushPromises()
@@ -960,6 +962,71 @@ describe('LogCollectPanel', () => {
     expect(sentMessages.some((m) => m.includes('"log_action":"create"'))).toBe(false)
     expect(sentMessages.some((m) => m.includes('"log_action":"progress"'))).toBe(false)
     expect(wrapper.text()).toContain('该工单已完成日志收集')
+    wrapper.unmount()
+  })
+
+  /**
+   * 现场回归（工单 Q2026102701193，2026-10-27）：
+   * 节点 acli 报「日志收集单发送状态：发送成功」，插件随即自删 zip；平台因漏记
+   * delivery_status 被判成"未交付 + 包仍在节点"，于是结果页一直挂「上传到平台」，
+   * 点下去 stat exit 1，点重新收集又被前置守卫拦住 —— 完全死锁。
+   *
+   * 契约：P1 的交付结论只认节点报告。报告成功就补登 delivered，不给上传入口。
+   */
+  it('节点报 P1 发送成功但平台漏记时，补登已交付且不提供「上传到平台」', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.24.194', port: 22, username: 'root' }
+    const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026102701193.zip'
+    const done = taskFixture({
+      task_id: 'task-p1-done',
+      status: 'completed',
+      progress: 100,
+      archive_path: archivePath,
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      relay_status: 'none',
+      delivery_status: 'none',
+      ips: ['172.28.24.194'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    // 现场真实报告：发送成功；路径仍在报告里，但文件已被插件删除
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集已完成！',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: archivePath,
+          archive_exists: false,
+          upload_state: '发送成功',
+          hosts: [{ ip: '172.28.24.194', status: '收集完成', percent: 100 }],
+          raw: '状态：收集已完成！\n压缩包路径：/sf/data/local/acli/tmp/data/log_collect/Q2026102701193.zip\n发送地址：http://acli.sangfor.com.cn:5888\n状态：成功',
+        },
+      }),
+    })
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flushPromises()
+
+    const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
+    expect(patches.some((body: any) => body?.delivery_status === 'delivered')).toBe(true)
+    // 关键：不得再出现补交付入口
+    expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false)
+    expect(wrapper.text()).toContain('已由插件直传日志服务器')
     wrapper.unmount()
   })
 
