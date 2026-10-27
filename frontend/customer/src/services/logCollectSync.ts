@@ -90,6 +90,12 @@ export interface SyncAction {
    * 默认不自动执行——纠正会清掉本条任务的产物记录，必须由用户显式确认。
    */
   canCorrect?: boolean
+  /**
+   * 仅 adopt 使用，决定按钮语义：
+   * - `resume`：节点还在跑，接管后继续跟进采集进度；
+   * - `deliver`：节点已采完但平台没交付，接管后直接继续交付（不重新采集）。
+   */
+  adoptMode?: 'resume' | 'deliver'
 }
 
 const ACTIVE_STATUSES = new Set(['pending', 'probing', 'installing', 'collecting', 'packaging', 'uploading'])
@@ -224,13 +230,34 @@ export function decideNodeSync(input: SyncInput): SyncAction {
         action: 'adopt',
         reason: '平台已判失败/取消，但节点任务仍在运行，可接管继续',
         ownership,
+        adoptMode: 'resume',
       }
     }
     if (nodeState === 'abnormal') {
       return { action: 'cancel_retry', reason: '节点任务异常结束，需清理后重试', ownership }
     }
     if (nodeState === 'completed') {
-      return { action: 'patch_completed', reason: '节点任务已完成，修正平台终态', ownership }
+      // 这里曾经直接给 patch_completed，与后端状态机正面冲突：
+      // failed 是终态，唯一合法出口是 → collecting（接管）。于是每次对账都被
+      // 409 拒绝，30 秒一轮无限刷屏，节点上已经采好的包永远交付不出去
+      // （工单 Q2026102701294：节点 100%、包 289 MiB 在盘，平台 failed）。
+      // 正确做法不是"硬把终态改成完成"（那会说谎：平台根本没有产物），
+      // 而是承认节点真相 → 走合法边回到采集中，随后立刻按 completed 收尾并交付。
+      if (input.archivePath) {
+        return {
+          action: 'adopt',
+          reason: '节点已采集完成且压缩包仍在，平台只是没交付；接管后继续交付，不会重新采集',
+          ownership,
+          adoptMode: 'deliver',
+        }
+      }
+      // 无残留包：P1 直传成功时插件会自删，此时没有可交付的物证。
+      // 强行接管只会拉包失败再挂一次，所以只提示、不写库、也不产生 409。
+      return {
+        action: 'none',
+        reason: '节点已采集完成，但压缩包已被移除且平台无产物记录；如需产物请重新采集',
+        ownership,
+      }
     }
     return { action: 'none', reason: '节点无任务，平台终态与之一致', ownership }
   }
@@ -288,7 +315,9 @@ export function buildSyncNotice(action: SyncAction): string {
     case 'wait_refresh':
       return `${action.reason}（进度与状态暂不更新，自动刷新会继续跟进）`
     case 'adopt':
-      return `${action.reason}。可点「接管」继续采集，或「取消并重试」重新开始。`
+      return action.adoptMode === 'deliver'
+        ? `${action.reason}。请点「继续交付」完成上传，或「取消并重试」重新采集。`
+        : `${action.reason}。可点「接管」继续采集，或「取消并重试」重新开始。`
     case 'cancel_retry':
       return `${action.reason}。请点「取消并重试」清理节点任务后重新采集。`
     case 'warn_node_busy':

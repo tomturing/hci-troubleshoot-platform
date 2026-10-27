@@ -109,6 +109,27 @@ describe('decideNodeSync 节点态直映射', () => {
     )
   })
 
+  // 回归护栏（工单 Q2026102701294，2026-10-27）：failed 是终态，
+  // 直接 patch_completed 必然被后端状态机 409 拒绝，前端每 30 秒重试一次，
+  // 节点上 289 MiB 的包永远交付不出去。必须走合法边 → collecting 再收尾。
+  it('平台失败 + 节点已完成且包仍在 → 接管继续交付，绝不硬改终态', () => {
+    const action = decideNodeSync({
+      platformStatus: 'failed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+    })
+    expect(action.action).toBe('adopt')
+    expect(action.adoptMode).toBe('deliver')
+    expect(action.action).not.toBe('patch_completed')
+  })
+
+  it('平台失败 + 节点已完成但包已移除 → 只提示重新采集，不写库', () => {
+    const action = decideNodeSync({ platformStatus: 'failed', nodeState: 'completed', reportRefreshed: true })
+    expect(action.action).toBe('none')
+    expect(action.reason).toContain('重新采集')
+  })
+
   it('平台已归档但节点在跑（报告已刷新）→ 提示冲突，纠正需用户点一次', () => {
     const action = decideNodeSync({ platformStatus: 'completed', nodeState: 'running', reportRefreshed: true })
     expect(action.action).toBe('warn_completed_conflict')

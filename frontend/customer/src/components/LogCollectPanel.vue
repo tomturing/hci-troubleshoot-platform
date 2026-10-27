@@ -186,6 +186,8 @@ const baselineReportHash = ref('')
 const nodeSyncHint = ref('')
 // 僵尸任务/游离任务的一键动作（取消并重试 / 接管），空串表示无需处理
 const nodeAction = ref<'' | 'cancel_retry' | 'adopt' | 'correct'>('')
+// 接管按钮语义：resume=节点还在跑，接上进度；deliver=节点已采完，接着交付
+const nodeAdoptMode = ref<'resume' | 'deliver'>('resume')
 const transfer = reactive({ stage: '', percent: 0, pulled: 0, uploadedParts: 0, partCount: 0, sha256: '' })
 const relayStatus = ref<RelayStatus>('none')
 const cleanupTip = ref('')
@@ -714,10 +716,16 @@ function sendAndWait(
       // 所有动作一律锚定会话主机：nodeIp 是派生值，不存在"表单里另填一个"的可能，
       // 也就不会再出现写成空串（bridge 落到默认会话）或写成不存在节点（session_missing）。
       ws.send(
-        buildLogCollectMessage(props.caseId, action, {
-          ...(options as any),
-          nodeIp: nodeIp.value,
-        }),
+        buildLogCollectMessage(
+          props.caseId,
+          // 上面的分支已排除 acli_sync / delivery_*，走到这里只剩真正的 log_collect 动作，
+          // 显式收窄，避免带前缀的联合类型被 TS 拒绝（TS2345）。
+          action as 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer',
+          {
+            ...(options as any),
+            nodeIp: nodeIp.value,
+          },
+        ),
       )
     }
   })
@@ -816,6 +824,9 @@ const lastRefreshAt = ref<Date | null>(null)
 let pollingBridgeProgress = false
 // 对账互斥：自动轮询、手动刷新、打开面板可能同时触发，progress 请求不能并发
 let syncingNode = false
+// 自动写库熔断：一旦平台以 4xx 明确拒绝，重试同一请求永远不会成功（现场是
+// failed→completed 的 409 被每 30 秒重发一次）。用户发起新动作时再解除。
+let syncPatchBlocked = false
 
 const lastRefreshText = computed(() => {
   if (!lastRefreshAt.value) return ''
@@ -979,6 +990,8 @@ function startRecollect() {
   baselineReportHash.value = ''
   nodeSyncHint.value = ''
   nodeAction.value = ''
+  // 新一次下发 = 解除上一轮的写库熔断
+  syncPatchBlocked = false
   lastRefreshAt.value = null
   stopAutoSync()
   relayStatus.value = 'none'
@@ -1157,7 +1170,9 @@ async function handleStart() {
           status: 'failed',
           error_message: errorMessage.value,
           // 桥侧规范码：没有它，失败原因只能靠读 error_message 文本猜。
-          error_code: lastNodeErrorCode || undefined,
+          // 平台侧异常同样要保留规范码——只写 axios 原文（"Request failed with
+          // status code 500"）会让 error_code 永远为空，事后完全无法归因。
+          error_code: lastNodeErrorCode || platformErrorCode(error) || undefined,
         })
         .catch(() => undefined)
     }
@@ -1219,6 +1234,13 @@ function normalizeErrorMessage(text: string): string {
     .map((line) => line.trim())
     .filter((line) => line && !/^FATA\[\d+\]\s+execing command in container/.test(line))
   return (lines[0] || '').slice(0, 500)
+}
+
+// 平台侧异常的规范错误码：createApiClient 拦截器会把结构化 problem 挂到 error.problem。
+// 取不到就返回空串，由调用方回退到桥侧码/空值，绝不臆造一个码。
+function platformErrorCode(error: any): string {
+  const problem = error?.problem as { code?: unknown } | undefined
+  return typeof problem?.code === 'string' ? problem.code : ''
 }
 
 /**
@@ -1342,6 +1364,7 @@ async function syncNodeState(
     lastRefreshAt.value = new Date()
 
     // 只有需要用户决策时才亮按钮：接管（节点还在跑）、清理（节点异常/游离）
+    nodeAdoptMode.value = action.action === 'adopt' ? action.adoptMode ?? 'resume' : 'resume'
     nodeAction.value =
       action.action === 'adopt'
         ? 'adopt'
@@ -1352,7 +1375,9 @@ async function syncNodeState(
             : ''
     nodeSyncHint.value = buildSyncNotice(action)
 
-    if (options.applyPatches && currentTask.value) {
+    // syncPatchBlocked：收到过确定性拒绝（4xx）后不再自动写库。
+    // 状态机拒绝不会因为再等 30 秒而变好，继续重试只会把同一条错误刷成日志噪音。
+    if (options.applyPatches && currentTask.value && !syncPatchBlocked) {
       if (action.action === 'patch_completed' || action.action === 'patch_failed') {
         try {
           const patch =
@@ -1396,6 +1421,18 @@ async function syncNodeState(
           startAutoSync(TERMINAL_POLL_INTERVAL)
           if (!options.silent) ElMessage.success(buildSyncNotice(action))
         } catch (error: any) {
+          const status = Number(error?.response?.status ?? 0)
+          if (status >= 400 && status < 500) {
+            // 确定性拒绝（典型是 409：非法状态转换）。停止自动写库，并把平台现状
+            // 拉回来，让下一轮判定基于真实状态，而不是继续用过期投影打同一堵墙。
+            syncPatchBlocked = true
+            await logCollectApi
+              .getTask(currentTask.value.task_id)
+              .then((latest) => {
+                currentTask.value = latest
+              })
+              .catch(() => undefined)
+          }
           if (!options.silent) ElMessage.warning(`平台状态同步失败：${error?.message || error}`)
         }
       } else if (action.action === 'none' && nodeState === 'running') {
@@ -1508,11 +1545,16 @@ async function adoptNodeTask() {
   }
   const token = ++runToken
   try {
+    // 用户显式接管：解除自动对账的写库熔断，按真实状态重新推进
+    syncPatchBlocked = false
     stage.value = 'collecting'
     currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
+    const delivering = nodeAdoptMode.value === 'deliver'
     nodeAction.value = ''
     nodeSyncHint.value = ''
-    ElMessage.success('已接管节点任务，继续跟进进度')
+    ElMessage.success(
+      delivering ? '已接管节点任务，正在继续交付（不会重新采集）' : '已接管节点任务，继续跟进进度',
+    )
     await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
@@ -1551,6 +1593,8 @@ async function correctFromNode() {
   }
   const token = ++runToken
   try {
+    // 用户显式纠偏：解除自动对账的写库熔断
+    syncPatchBlocked = false
     stage.value = 'collecting'
     currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'collecting' })
     resultTask.value = null
@@ -2034,7 +2078,7 @@ onBeforeUnmount(() => {
       >
         <div v-if="nodeAction" class="lc-sync-actions">
           <el-button v-if="nodeAction === 'adopt'" size="small" type="primary" @click="adoptNodeTask">
-            接管继续
+            {{ nodeAdoptMode === 'deliver' ? '继续交付' : '接管继续' }}
           </el-button>
           <el-button v-if="nodeAction === 'cancel_retry'" size="small" type="danger" plain @click="cancelAndRetry">
             取消并重试
