@@ -29,28 +29,31 @@ describe('buildDeliverySubmitPayload', () => {
   // 这条断言直接对应 2026-10-27 现场：上限 15 片全部报 x509，
   // 根因就是载荷里没有 tls_insecure，bridge 的放宽分支永远进不去。
   // 一旦有人"清理无用字段"把它删掉，这里必须立刻红。
-  it('必须携带 tlsInsecure，且如实反映授权状态', () => {
-    expect(buildDeliverySubmitPayload(baseArgs, 'https://platform:4443', true).tlsInsecure).toBe(true)
-    expect(buildDeliverySubmitPayload(baseArgs, 'https://platform:4443', false).tlsInsecure).toBe(false)
+  // ⚠️ 字段名必须是 snake_case，与 bridge（terminal_bridge/main.go 的 InMessage
+  // Transfer* 的 json tag）严格一致；历史上前端发 camelCase 导致这些字段全部收不到，
+  // delivery 从 #1318 起就没真正把参数送到 bridge。
+  it('必须携带 tls_insecure，且如实反映授权状态', () => {
+    expect(buildDeliverySubmitPayload(baseArgs, 'https://platform:4443', true).tls_insecure).toBe(true)
+    expect(buildDeliverySubmitPayload(baseArgs, 'https://platform:4443', false).tls_insecure).toBe(false)
   })
 
   it('平台地址取当前页面 origin，不硬编码', () => {
     const payload = buildDeliverySubmitPayload(baseArgs, 'https://acli.example.cn:4443', true)
-    expect(payload.platformUrl).toBe('https://acli.example.cn:4443')
+    expect(payload.platform_url).toBe('https://acli.example.cn:4443')
   })
 
-  it('分片参数完整透传，缺一 bridge 就无法搬运', () => {
+  it('分片参数完整透传（snake_case），缺一 bridge 就无法搬运', () => {
     const payload = buildDeliverySubmitPayload(baseArgs, 'https://p', false)
-    expect(payload.execId).toBe('task-1')
-    expect(payload.sourcePath).toBe(baseArgs.sourcePath)
-    expect(payload.uploadToken).toBe('tok-abc')
-    expect(payload.chunkSize).toBe(10485760)
-    expect(payload.partCount).toBe(15)
-    expect(payload.totalSize).toBe(150000000)
+    expect(payload.exec_id).toBe('task-1')
+    expect(payload.source_path).toBe(baseArgs.sourcePath)
+    expect(payload.upload_token).toBe('tok-abc')
+    expect(payload.chunk_size).toBe(10485760)
+    expect(payload.part_count).toBe(15)
+    expect(payload.total_size).toBe(150000000)
   })
 
   it('已传分片用于续传，不能丢', () => {
-    expect(buildDeliverySubmitPayload(baseArgs, 'https://p', false).uploadedParts).toEqual([1, 2])
+    expect(buildDeliverySubmitPayload(baseArgs, 'https://p', false).uploaded_parts).toEqual([1, 2])
   })
 
   it('平台没返回已传分片时降级为空数组，而不是 undefined', () => {
@@ -59,13 +62,13 @@ describe('buildDeliverySubmitPayload', () => {
       'https://p',
       false,
     )
-    expect(payload.uploadedParts).toEqual([])
+    expect(payload.uploaded_parts).toEqual([])
   })
 
-  it('deliveryMode 区分采集衔接与补交付', () => {
-    expect(buildDeliverySubmitPayload(baseArgs, 'https://p', false).deliveryMode).toBe('collect')
+  it('delivery_mode 区分采集衔接与补交付', () => {
+    expect(buildDeliverySubmitPayload(baseArgs, 'https://p', false).delivery_mode).toBe('collect')
     expect(
-      buildDeliverySubmitPayload({ ...baseArgs, mode: 'direct' }, 'https://p', false).deliveryMode,
+      buildDeliverySubmitPayload({ ...baseArgs, mode: 'direct' }, 'https://p', false).delivery_mode,
     ).toBe('direct')
   })
 })

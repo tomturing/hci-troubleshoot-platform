@@ -21,17 +21,22 @@ export interface DeliverySubmitArgs {
   mode: 'collect' | 'direct'
 }
 
+// 注意：字段名必须与 bridge 的 InMessage Transfer* 的 json tag 严格一致（snake_case）。
+// bridge 用的是 `upload_token`/`source_path`/`platform_url`/`chunk_size`/`part_count`/
+// `total_size`/`uploaded_parts`/`delivery_mode`/`tls_insecure`（见 terminal_bridge/main.go），
+// 而非 camelCase。历史上前端发 camelCase 导致这些字段全部收不到——
+// delivery 从 #1318 起就没把参数真正送到 bridge。这是契约硬约束，不能改。
 export interface DeliverySubmitPayload {
-  execId: string
-  sourcePath: string
-  platformUrl: string
-  uploadToken: string
-  chunkSize: number
-  partCount: number
-  totalSize: number
-  uploadedParts: number[]
-  deliveryMode: 'collect' | 'direct'
-  tlsInsecure: boolean
+  exec_id: string
+  source_path: string
+  platform_url: string
+  upload_token: string
+  chunk_size: number
+  part_count: number
+  total_size: number
+  uploaded_parts: number[]
+  delivery_mode: 'collect' | 'direct'
+  tls_insecure: boolean
 }
 
 /**
@@ -49,16 +54,16 @@ export function buildDeliverySubmitPayload(
   tlsInsecure: boolean,
 ): DeliverySubmitPayload {
   return {
-    execId: args.taskId,
-    sourcePath: args.sourcePath,
-    platformUrl,
-    uploadToken: args.session.upload_token,
-    chunkSize: args.session.chunk_size,
-    partCount: args.session.part_count,
-    totalSize: args.totalSize,
-    uploadedParts: args.session.uploaded_parts ?? [],
-    deliveryMode: args.mode,
-    tlsInsecure,
+    exec_id: args.taskId,
+    source_path: args.sourcePath,
+    platform_url: platformUrl,
+    upload_token: args.session.upload_token,
+    chunk_size: args.session.chunk_size,
+    part_count: args.session.part_count,
+    total_size: args.totalSize,
+    uploaded_parts: args.session.uploaded_parts ?? [],
+    delivery_mode: args.mode,
+    tls_insecure: tlsInsecure,
   }
 }
 
