@@ -27,6 +27,14 @@ import (
 	"time"
 )
 
+// 交付模式。由平台/前端在 delivery_submit 中显式声明，bridge 不猜。
+const (
+	// deliveryModeCollect 默认：对应"采集刚发起，等它写完再搬"。
+	deliveryModeCollect = "collect"
+	// deliveryModeDirect 补交付：源包已由上一次采集产出，跳过 progress 直接搬。
+	deliveryModeDirect = "direct"
+)
+
 // deliveryPhase 是交付阶段。顺序即推进顺序，恢复时按它决定从哪继续。
 type deliveryPhase string
 
@@ -65,7 +73,16 @@ type deliveryJob struct {
 	LastError     string `json:"last_error"`
 	// NeedsReauth 表示 SSH 凭据或上传令牌已失效，需要前端重新下发后才能继续。
 	// 这是明确承认的边界：凭据不能明文落盘，进程重启后必然要重新认证。
-	NeedsReauth bool   `json:"needs_reauth"`
+	NeedsReauth bool `json:"needs_reauth"`
+	// Direct 表示"补交付已有包"：源包已由上一次采集产出，不必也不该再等 progress。
+	// 交付的充分必要条件只有两条——节点上存在完整包、平台有上传会话；
+	// 采集是否仍在跑与"能不能传这个包"没有因果关系。
+	Direct bool `json:"direct,omitempty"`
+	// TLSInsecure 表示本次交付允许跳过平台证书校验。
+	// 平台在客户内网普遍是自签证书，客户机系统根证书库不可能预置它，
+	// 不放宽就必然 x509 失败。这里不做全局开关：授权随 job 落盘，
+	// 只影响本任务的请求，用户撤销后新 job 自然恢复校验。
+	TLSInsecure bool   `json:"tls_insecure,omitempty"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
 }

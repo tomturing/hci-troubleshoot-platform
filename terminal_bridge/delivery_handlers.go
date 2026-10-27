@@ -92,6 +92,8 @@ func (b *Bridge) handleDeliverySubmit(ws *websocket.Conn, msg InMessage, cui str
 		PartCount:     msg.TransferPartCount,
 		SourceSize:    msg.TransferTotalSize,
 		UploadedParts: append([]int(nil), msg.TransferUploadedParts...),
+		Direct:        strings.EqualFold(strings.TrimSpace(msg.TransferDeliveryMode), deliveryModeDirect),
+		TLSInsecure:   msg.TransferTLSInsecure,
 	}
 	if job.LastError == "" {
 		job.LastError = ""
@@ -100,7 +102,7 @@ func (b *Bridge) handleDeliverySubmit(ws *websocket.Conn, msg InMessage, cui str
 
 	blog("INFO", "delivery.submit", "收到交付作业请求", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"job_id": submitted.JobID, "task_id": taskID, "source_path": sourcePath,
-		"part_count": job.PartCount, "chunk_size": job.ChunkSize,
+		"part_count": job.PartCount, "chunk_size": job.ChunkSize, "direct": job.Direct,
 	})
 	sendMsg(ws, OutMessage{
 		Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit", Status: "ok",

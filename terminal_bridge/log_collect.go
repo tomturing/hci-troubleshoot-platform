@@ -723,6 +723,48 @@ func fallbackLogCollectArchivePath(caseID string) string {
 	return path
 }
 
+// logCollectArchiveDir 是 acli 的产物目录；归档子目录放在它下面，避免与插件可能的历史 glob 撞车。
+const logCollectArchiveDir = "/sf/data/local/acli/tmp/data/log_collect"
+
+// archiveStaleLogCollectArchive 在 create 之前把上一次留下的同名包改名归档。
+//
+// 为什么必须做：产物路径由 acli 固定为 `{logCollectArchiveDir}/{case_id}.zip`，
+// 同一工单重新采集必然**同名覆盖**。现场表现为"刚采好的包被新任务删掉了"，
+// 而它正是补交付失败的物理原因——用户点上传时，磁盘上已是新任务的半成品。
+//
+// 为什么用 mv 不用 cp：同目录 rename 不占额外空间（现场包可达 20GB），
+// 且不改 acli 的写入语义——它仍按固定路径新建，我们只是先给旧文件让路。
+//
+// 失败不阻断：归档是"尽力而为"的保全动作，没权限/目录不存在都不应让采集停下。
+func archiveStaleLogCollectArchive(ctx context.Context, s *SSHSession, caseID, traceID, cui string) {
+	path := fallbackLogCollectArchivePath(caseID)
+	if path == "" {
+		return
+	}
+	stamp := time.Now().Format("20060102150405")
+	trimmed := strings.TrimSpace(caseID)
+	target := logCollectArchiveDir + "/archive/" + trimmed + "-" + stamp + ".zip"
+	// 目标路径同样进 shell，重跑一次白名单校验（不能只信来源）。
+	if !logCollectArchivePathPattern.MatchString(target) {
+		return
+	}
+	command := fmt.Sprintf(
+		`S=%s; if [ -f "$S" ]; then mkdir -p %s && mv "$S" %s && echo "__ARCHIVED__ %s" || echo "__ARCHIVE_FAILED__"; else echo "__NO_ARCHIVE__"; fi`,
+		shellQuote(path), shellQuote(logCollectArchiveDir+"/archive"), shellQuote(target), target,
+	)
+	output, _, err := s.runQuickCommand(ctx, command)
+	if err != nil {
+		blog("WARN", "log_collect.archive_failed", "归档旧压缩包失败（不阻断采集）", traceID, caseID, "", cui, map[string]any{
+			"source": path, "error": errString(err),
+		})
+		return
+	}
+	trimmedOut := strings.TrimSpace(output)
+	blog("INFO", "log_collect.archive_checked", "采集前检查旧压缩包", traceID, caseID, "", cui, map[string]any{
+		"source": path, "result": trimmedOut,
+	})
+}
+
 // stripAnsi 去掉终端转义序列：保留可读文本，避免解析与展示被颜色码污染。
 func stripAnsi(text string) string {
 	if text == "" {
@@ -898,6 +940,8 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		}
 		// 参数串由 buildLogCollectCreateCommand 校验并拼装，执行前必须经统一解析前缀，
 		// 与探测同源（否则非交互 PATH 缺 /sf/bin 时会 command not found）。
+		// 先保住上一次的包，再开始新的采集：产物路径固定同名，新采集会直接覆盖旧包。
+		archiveStaleLogCollectArchive(ctx, s, msg.CaseID, traceID, cui)
 		output, exitCode, err := s.runCommandPty(ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
 		status := "ok"
 		code := ""
