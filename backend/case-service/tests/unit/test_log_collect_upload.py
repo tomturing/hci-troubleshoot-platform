@@ -13,6 +13,9 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
+
+from app.schemas.log_collect import UploadCompleteRequest
 from app.services.log_collect_storage import (
     ArchiveTooLargeError,
     LocalLogCollectStorage,
@@ -332,3 +335,31 @@ async def test_status_returns_usable_token_for_resume(service):
     assert service.verify_token(str(task.task_id), snapshot["upload_token"]) is True
     # 跨任务不可用：令牌绑定 task_id
     assert service.verify_token(str(uuid4()), snapshot["upload_token"]) is False
+
+
+# ── 收尾请求体契约 ───────────────────────────────────────────────────────────
+
+
+def test_complete_request_treats_blank_sha256_as_undeclared():
+    """空串 sha256 必须等同于"未声明"。
+
+    现场回归（Q2026102701193，2026-10-27）：bridge 收尾固定发
+    ``{"parts": ..., "size": ..., "sha256": ""}``，而字段 pattern 只接受 64 位 hex，
+    空串在请求体校验层直接 422 —— 业务代码没被调用，15 个分片（1.4 GB）全部白传。
+    放宽必须落在服务端：客户机上的 bridge 不会随平台发布更新。
+    """
+    request = UploadCompleteRequest(parts=[1, 2], size=20, sha256="")
+    assert request.sha256 is None
+    assert request.size == 20
+    assert request.parts == [1, 2]
+
+
+def test_complete_request_keeps_valid_sha256():
+    digest = "a" * 64
+    assert UploadCompleteRequest(sha256=digest).sha256 == digest
+
+
+def test_complete_request_rejects_malformed_sha256():
+    # 放宽只针对"空串"，真正的非法值仍必须拦住
+    with pytest.raises(ValidationError):
+        UploadCompleteRequest(sha256="not-a-hash")

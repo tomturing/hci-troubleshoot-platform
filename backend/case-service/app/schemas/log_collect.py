@@ -368,6 +368,23 @@ class UploadCompleteRequest(BaseModel):
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     size: int | None = Field(default=None, ge=1)
 
+    @field_validator("sha256", mode="before")
+    @classmethod
+    def _empty_sha256_as_none(cls, value: object) -> object:
+        """空串等同于"未声明"。
+
+        为什么必须在服务端兼容：客户端（terminal_bridge）收尾时按固定结构发
+        ``{"parts": ..., "size": ..., "sha256": ""}``，而 ``pattern`` 只接受 64 位
+        hex，空串会在**请求体校验层**直接 422——业务代码根本没被调用，现场只能
+        看到"平台收尾失败 HTTP 422"，15 个分片白传（2026-10-27 现场：1.4 GB）。
+
+        只在服务端放宽而不是指望客户端改：客户机上的 bridge 是独立二进制，
+        平台发布不会更新它，兼容旧客户端必须落在服务端。
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
 
 class UploadCompleteResponse(BaseModel):
     upload_id: str

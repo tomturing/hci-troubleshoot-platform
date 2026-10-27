@@ -686,13 +686,27 @@ func uploadOnePart(ctx context.Context, client *http.Client, job *deliveryJob, t
 	return fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
 }
 
+// buildCompletePayload 组装收尾请求体。
+//
+// 硬约束：**不要放空 sha256**。平台对该字段有 `^[0-9a-f]{64}$` 的格式约束，
+// 空串会在请求体校验层直接 422——业务代码都进不去，现场只看到
+// "平台收尾失败 HTTP 422"，而 15 个分片已经全部传完（2026-10-27：1.4 GB 白传）。
+// "不声明"用字段缺省表达，而不是用空串表达。
+//
+// size 同理：0 表示尚未量到，缺省即"不校验"，避免刚恢复的作业被 ge=1 拦下。
+// 抽成纯函数是为了让这条契约能被单测钉住（字段一多就有人顺手加回去）。
+func buildCompletePayload(job *deliveryJob) map[string]any {
+	payload := map[string]any{"parts": job.UploadedParts}
+	if job.SourceSize > 0 {
+		payload["size"] = job.SourceSize
+	}
+	return payload
+}
+
 // complete 调平台数据面收尾（用上传令牌，不需要客户 Cookie），平台随后自动做代传。
 func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
-	body, err := json.Marshal(map[string]any{
-		"parts":  job.UploadedParts,
-		"size":   job.SourceSize,
-		"sha256": "",
-	})
+	payload := buildCompletePayload(job)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
