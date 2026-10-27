@@ -620,6 +620,34 @@ func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath stri
 	return size
 }
 
+// fallbackLogCollectArchivePath 在插件还没打印路径时，按约定推导压缩包位置。
+//
+// 第一性原理：压缩包大小是「文件存在期间」的物理属性，量它只需要路径，不需要插件同意。
+// 而现场数据（case Q2026101401683，staging bridge_execution_logs）显示：
+//
+//	11:13:20  progress(85%, 上传中)   archive_path = (空)
+//	11:38:28  progress(100%, 已成功)  archive_path = /sf/data/local/acli/tmp/data/log_collect/Q2026101401683.zip
+//
+// 也就是说插件在「进行中 / 上传中」阶段只打印「压缩包路径（完成日志下载后请手动删除压缩包）：」
+// 这一行标题、冒号后面是空的，直到 100% 完成才给出真实路径——而那时 P1 已上传成功、
+// 插件已自删包，stat 必然失败。于是 40 条 progress 事件的 archive_size 全为空：
+// 不是"忘了存"，是"从来没量到过"。
+//
+// 路径本身是可推导的：{case_id}.zip 固定落在 log_collect 目录下（P1 成功后自删，
+// 不会留同名残包）。case_id 会进 shell 命令，因此拼完必须再过一遍
+// logCollectArchivePathPattern（白名单 [A-Za-z0-9_.-]），不合法就放弃推导。
+func fallbackLogCollectArchivePath(caseID string) string {
+	trimmed := strings.TrimSpace(caseID)
+	if trimmed == "" {
+		return ""
+	}
+	path := "/sf/data/local/acli/tmp/data/log_collect/" + trimmed + ".zip"
+	if !logCollectArchivePathPattern.MatchString(path) {
+		return ""
+	}
+	return path
+}
+
 // stripAnsi 去掉终端转义序列：保留可读文本，避免解析与展示被颜色码污染。
 func stripAnsi(text string) string {
 	if text == "" {
@@ -794,7 +822,17 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 但压缩包大小没有别的来源：插件 progress 不打印大小，平台侧只有 P2 分片合并时
 		// 才知道字节数，P1 直传的记录因此长期显示「未记录」。这里只补一个纯信息字段，
 		// 量不到就留 0，不参与任何状态判断。
-		progress.ArchiveSize = probeLogCollectArchiveSize(ctx, s, progress.ArchivePath)
+		//
+		// 路径不能等插件施舍（见 fallbackLogCollectArchivePath）：插件只在 100% 完成后
+		// 才打印真实路径，那时包已自删。插件给了就用插件的，没给就按约定推导。
+		probePath := progress.ArchivePath
+		if strings.TrimSpace(probePath) == "" {
+			probePath = fallbackLogCollectArchivePath(msg.CaseID)
+		}
+		// 刻意不回填 progress.ArchivePath：前端 decideNodeSync 用「节点无任务 + 有 archive_path」
+		// 判定任务已完成，回填一个未经验证的推导路径会让它在"任务被清理但包还在"时误判完成。
+		// 大小是纯展示字段，不参与状态机，因此只补 size。
+		progress.ArchiveSize = probeLogCollectArchiveSize(ctx, s, probePath)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {

@@ -912,4 +912,94 @@ describe('LogCollectPanel', () => {
     expect(wrapper.text()).toContain('发送中')
     wrapper.unmount()
   })
+
+  /**
+   * 现场回归（工单 Q2026101401683）：「压缩包大小」长期显示「未记录（直传后压缩包已删除）」。
+   *
+   * staging 里该工单 40 条 progress 事件的 archive_size 全为空，成因有两层：
+   * ① 插件在「进行中 / 上传中」只打印路径标题、不给真实路径，bridge 无从 stat
+   *    （由 bridge 侧 fallbackLogCollectArchivePath 解决）；
+   * ② 即使过程中量到过，前端也只取「完成那一刻」的快照去 PATCH —— 而那一刻 P1 已上传成功、
+   *    插件已自删包，size 必然为空。观测值就这样被时间冲掉了。
+   *
+   * 本用例锁住 ②：过程中量到的值必须穿过时间写进完成记录。
+   */
+  it('过程中量到过压缩包大小时，完成 PATCH 必须带上它（而不是完成瞬间的空值）', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const live = taskFixture({
+      task_id: 'task-archive-size',
+      status: 'collecting',
+      progress: 85,
+      finished_at: null,
+      archive_path: null,
+      upload_mode: 'acli_direct',
+      ips: ['172.28.25.1'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [live] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(live)
+    // 调用记录跨用例累积，这里先清空，否则会把别的用例的 PATCH 一起数进来
+    vi.mocked(logCollectApi.patchTask).mockReset()
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({
+      ...live,
+      status: 'completed',
+      progress: 100,
+      archive_size: 314572800,
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    const refresh = () => wrapper.findAll('button').find((item) => item.text() === '刷新进度')
+    const pushProgress = (logData: Record<string, unknown>) =>
+      fakeSocket.onmessage?.({
+        data: JSON.stringify({ type: 'log_collect_result', log_action: 'progress', status: 'ok', log_data: logData }),
+      })
+
+    // 1) 上传窗口内的一次采样：包还在，量到了大小
+    expect(refresh()).toBeTruthy()
+    await refresh()!.trigger('click')
+    await flushPromises()
+    pushProgress({
+      status: '收集任务进行中！',
+      percent: 85,
+      done: 1,
+      total: 1,
+      node_state: 'running',
+      archive_path: '',
+      archive_size: 314572800,
+      upload_state: '',
+      hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+      raw: '状态：收集任务进行中！\n总进度：85% - 1/1',
+    })
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    // 2) 完成那一刻：P1 已上传成功、插件已自删包，这次采样量不到大小
+    await refresh()!.trigger('click')
+    await flushPromises()
+    pushProgress({
+      status: '收集任务已完成！',
+      percent: 100,
+      done: 1,
+      total: 1,
+      node_state: 'completed',
+      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+      upload_state: '发送成功',
+      hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+      raw: '状态：收集任务已完成！\n归档状态：发送成功',
+    })
+    await flushPromises()
+
+    const completed = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+    expect(completed).toHaveLength(1)
+    // 关键：带上过程中量到的 300MB，而不是完成瞬间的空值
+    expect(completed[0][1].archive_size).toBe(314572800)
+    wrapper.unmount()
+  })
 })
