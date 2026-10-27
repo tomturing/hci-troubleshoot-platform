@@ -648,7 +648,10 @@ jobs:
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           if [ "$IS_PR" = 'true' ] && [ "$FRONTEND_SCOPE" != 'full' ]; then
-            # 快速 PR 门禁验证 Vite 生产构建；vue-tsc 类型检查在完整回归中执行。
+            # 快速 PR 门禁必须同时跑 vue-tsc：main 上刚出过一起类型回归（#1311 的 TS2345），
+            # 因为 PR 阶段只跑 vite build、vue-tsc 被留到完整回归，结果 PR 全绿合入、main 长时间飘红。
+            # 多花的 30~60s 远小于一次 main 红身的代价。
+            pnpm --filter "@hci/$FRONTEND_SCOPE" exec vue-tsc -b
             pnpm --filter "@hci/$FRONTEND_SCOPE" exec vite build
             exit 0
           fi

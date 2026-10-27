@@ -57,7 +57,7 @@ jobs:
             echo "$UNFORMATTED"
             exit 1
           fi
-          go test ./...
+          go test -timeout 180s ./...
 
       - name: 交叉编译 terminal_bridge.exe (windows/amd64)
         run: bash scripts/build_terminal_bridge.sh
