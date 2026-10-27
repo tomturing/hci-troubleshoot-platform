@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -30,6 +31,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -607,6 +609,11 @@ type SSHSession struct {
 	simulationBackend string
 	// done 在 close() 时关闭，用于让保活 goroutine 立即退出（不靠轮询 closed 标志）。
 	done chan struct{}
+	// ownerConn 是建立本会话的浏览器连接 ID，createdAt 是建立时刻。
+	// 二者只用于生命周期事件（session.created/destroyed）：没有它们，
+	// 事后无法回答"谁建的、活了多久、被谁销毁"（2026-10-27 现场教训）。
+	ownerConn string
+	createdAt time.Time
 }
 
 func isSimulationLeaseCredential(msg InMessage) bool {
@@ -1783,7 +1790,9 @@ func (s *SSHSession) on_output_start(
 	ws *websocket.Conn,
 	stdout io.ReadCloser,
 	caseID string,
-	onExit func(),
+	// onExit 带上结束原因：调用方据此区分「远端退出」与「我们主动关闭」，
+	// 只有前者才需要记 session.destroyed（主动关闭已由 destroySession 留痕）。
+	onExit func(reason string),
 ) {
 	go func() {
 		buf := make([]byte, 4096)
@@ -1851,11 +1860,25 @@ func (s *SSHSession) on_output_start(
 			}
 		}
 
+		// 区分「谁结束了这条 SSH 连接」：local_close 是我们主动关的（连坐清理/重连覆盖/
+		// 显式断开），remote_eof 是远端 shell 自己退出的。历史实现把两者都写成一行
+		// "SSH 会话退出"，导致现场无法判断是节点断的、还是 bridge 自己清的。
+		reason := sessionReasonRemoteEOF
+		if s.isClosed() {
+			reason = "local_close"
+		}
+		exitErr := ""
 		if err := s.wait(); err != nil && !s.isClosed() {
+			exitErr = err.Error()
 			log.Printf("[Bridge] SSH 会话退出(异常): case=%s err=%v", caseID, err)
 		}
+		blog("WARN", "ssh.disconnected", "SSH 连接已结束", "", caseID, "", "", map[string]any{
+			"reason":           reason,
+			"exit_error":       exitErr,
+			"duration_seconds": int64(s.ageSeconds()),
+		})
 		sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
-		onExit()
+		onExit(reason)
 	}()
 }
 
@@ -4331,7 +4354,8 @@ func (b *Bridge) onlySessionForCase(caseID string) (*SSHSession, string) {
 }
 
 // autoConnectNode 使用已保存的认证信息自动连接新节点
-func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage, ownedSessions *ownedSessionTracker) *SSHSession {
+// connID/role 由调用方传入并写入 session.created：自动建连同样需要"谁建的"这一事实。
+func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage, ownedSessions *ownedSessionTracker, connID, role string) *SSHSession {
 	if msg.NodeIP == "" {
 		log.Printf("[Bridge] autoConnect: nodeIP 为空，跳过")
 		return nil
@@ -4379,13 +4403,19 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage, ownedSession
 	atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
 	// 自动连接的节点会话同样要保活：它常被日志采集挑中，长跑期间最容易撞上半开连接。
 	session.startKeepAlive(sshKeepAliveInterval())
+	// 自动建连也必须留痕：现场出现过"会话不是用户点出来的、而是 autoConnect 建的"，
+	// 事后无法区分，只能靠 source 字段。
+	logSessionCreated(session, key, connID, role, "auto_connect")
 
-	go session.on_output_start(ws, stdout, msg.CaseID, func() {
+	go session.on_output_start(ws, stdout, msg.CaseID, func(reason string) {
+		if reason == sessionReasonRemoteEOF {
+			b.destroySession(key, sessionReasonRemoteEOF, connID)
+			ownedSessions.remove(key)
+			return
+		}
 		b.remove(key)
 		ownedSessions.remove(key)
 	})
-
-	log.Printf("[Bridge] autoConnect: 连接成功 node=%s key=%s", msg.NodeIP, key)
 	return session
 }
 
@@ -4471,12 +4501,19 @@ func (t *ownedSessionTracker) drain() map[string]*SSHSession {
 
 func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	cui := customUIHost(customUI)
+	// connID 是本连接的唯一标识：没有它，connected/disconnected 与业务消息无法配对，
+	// 现场只能看到"19 次连、17 次断"却不知道哪次断掉了哪条会话。
+	connID := newConnID()
+	// role 由首条业务消息确定；端口探测连接永远停在 unknown（这是它们的正常形态）。
+	role := connRoleUnknown
+	openedAt := time.Now()
 	// 订阅必须先于 blog：否则"浏览器已连接"这条事件发生时本连接还不在 h.subs 里，
 	// 它自己的处理函数都收不到，浏览器也就永远无法把它回采入库（实测丢过 14 条同类事件）。
 	sub := logHub.addSubscriber(ws, cui)
 	// 连接建立即留痕：浏览器是否在线决定了命令能否下发，是"命令没结果"类问题的第一判据。
 	blog("INFO", "bridge.connected", "浏览器已连接", "", "", "", cui, map[string]any{
 		"origin": customUI, "custom_ui": cui, "remote": ws.RemoteAddr().String(),
+		"conn_id": connID,
 	})
 	// 连接握手首包：让浏览器可快速识别"对端确实是 terminal_bridge"，
 	// 用于端口冲突探测（避免误连占用主端口的陌生进程）。旧客户端会忽略未知类型。
@@ -4504,20 +4541,27 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	defer func() {
 		pingCancel() // 停止心跳 goroutine
 		<-pingDone   // 等待心跳 goroutine 退出
+		// 先摘会话再记断连：own_keys 必须反映"这次断连真正带走了哪些会话"。
+		// 2026-10-27 现场只能靠"报错比断连晚 266ms"反推，就是因为这里没有留痕。
+		owned := ownedSessions.drain()
+		destroyedKeys := make([]string, 0, len(owned))
+		for key, ownedSession := range owned {
+			if current := b.get(key); current == ownedSession {
+				// 统一销毁入口：close + 摘表 + session.destroyed{reason=ws_closed}。
+				b.destroySession(key, sessionReasonWSClosed, connID)
+				destroyedKeys = append(destroyedKeys, key)
+			}
+		}
 		// 断开留痕（含原因）：断连窗口内的命令结果会丢失，是"未收到执行结果"的高频根因。
 		blog("WARN", "bridge.disconnected", "浏览器已断开", "", sub.caseID, "", cui, map[string]any{
 			"custom_ui": cui, "remote": ws.RemoteAddr().String(), "reason": "connection_closed",
+			"conn_id": connID, "role": role,
+			"duration_seconds": int64(time.Since(openedAt).Seconds()),
+			"owned_keys":       destroyedKeys,
+			"active_sessions":  b.sessionCount(),
 		})
 		logHub.removeSubscriber(ws)
 		websocketWriteLocks.Delete(ws)
-		for key, owned := range ownedSessions.drain() {
-			current := b.get(key)
-			if current == owned {
-				current.close()
-				b.remove(key)
-				log.Printf("[Bridge] 连接断开后清理会话: key=%s", key)
-			}
-		}
 		// 浏览器断开后立即清理凭据缓存，缩短密码/私钥在内存中的生命周期。
 		b.clearLastAuth(sub.caseID)
 	}()
@@ -4540,8 +4584,22 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			log.Printf("[Bridge] 消息解析失败: remote=%v err=%v payload_bytes=%d", ws.RemoteAddr(), err, len(raw))
 			continue
 		}
-		log.Printf("[Bridge] 收到消息: type=%s case=%s node=%s container=%s",
-			msg.Type, msg.CaseID, msg.NodeIP, msg.Container)
+		// 高频消息降为 DEBUG：一条 progress 轮询就产生一行，现场 219 行「收到消息」
+		// 把真正的异常淹没了，而且它们全部没有 case_id / extra，云端也不可检索。
+		// ping/pong 连 DEBUG 都不记：它们由 WS 心跳承担，不是业务事实。
+		if msg.Type != "pong" && msg.Type != "ping" {
+			blog("DEBUG", "ws.message", "收到消息", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"msg_type": msg.Type, "container": msg.Container,
+			})
+		}
+		// 连接角色只在首条业务消息时确定一次：探测连接停在 unknown 是正确结果，
+		// 不能因为探测也发了 pong 就把它当成业务连接。
+		if assigned := roleOfMessageType(msg.Type); assigned != "" && role == connRoleUnknown {
+			role = assigned
+			blog("INFO", "conn.role", "连接用途已确定", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"conn_id": connID, "role": role,
+			})
+		}
 
 		switch msg.Type {
 
@@ -4553,17 +4611,17 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			)
 			_ = connectCtx
 			key := sessionKey(msg.CaseID, msg.NodeIP)
+			// 同键覆盖必须走统一销毁入口：否则「旧会话被新连接顶掉」这件事
+			// 在日志里完全不可见（只剩两条同键 ssh.connected，无法判断谁活了多久）。
 			if old := b.get(key); old != nil {
-				old.close()
-				b.remove(key)
+				b.destroySession(key, sessionReasonReconnect, connID)
 				ownedSessions.remove(key)
 			}
 			// 如果没指定 nodeIP，也清理默认会话
 			if msg.NodeIP == "" {
 				defaultKey := sessionKey(msg.CaseID, "")
 				if old := b.get(defaultKey); old != nil {
-					old.close()
-					b.remove(defaultKey)
+					b.destroySession(defaultKey, sessionReasonReconnect, connID)
 					ownedSessions.remove(defaultKey)
 				}
 			}
@@ -4602,13 +4660,21 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			// 归属工单并回放近期日志（异常重传）
 			logHub.setCase(sub, msg.CaseID)
 			sendMsg(ws, OutMessage{Type: "ssh_connected", CaseID: msg.CaseID, CustomUI: cui})
+			// 会话建立事件与会话销毁事件成对出现：只有销毁没有建立时，
+			// 无法区分「会话从没建过」和「建了又被清掉」——这两种处置完全不同。
+			logSessionCreated(session, key, connID, role, "ssh_connect")
 			blog("INFO", "ssh.connected", "SSH 认证成功", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"user": msg.Username, "host": msg.Host, "port": msg.Port, "key": key,
+				"conn_id": connID, "role": role,
 			})
-			log.Printf("[Bridge] SSH 认证成功: %s@%s:%d (key=%s)", msg.Username, msg.Host, msg.Port, key)
 
 			caseID := msg.CaseID
-			session.on_output_start(ws, stdout, caseID, func() {
+			session.on_output_start(ws, stdout, caseID, func(reason string) {
+				if reason == sessionReasonRemoteEOF {
+					b.destroySession(key, sessionReasonRemoteEOF, "")
+					ownedSessions.remove(key)
+					return
+				}
 				b.remove(key)
 				ownedSessions.remove(key)
 			})
@@ -4675,8 +4741,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			// 关闭当前 WebSocket 所拥有的该工单全部会话，防止自动节点会话泄漏。
 			for key, owned := range ownedSessions.drainCase(msg.CaseID) {
 				if current := b.get(key); current == owned {
-					current.close()
-					b.remove(key)
+					// 显式断开与"页面被关掉"在日志里必须区分：前者是用户意图，
+					// 后者是事故；两者都走同一入口，靠 reason 区分。
+					b.destroySession(key, sessionReasonClientDisconnect, connID)
 				}
 			}
 			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
@@ -4686,7 +4753,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			s, key := b.resolveSession(msg)
 			if s == nil && msg.NodeIP != "" {
 				// 自动连接新节点
-				s = b.autoConnectNode(ws, msg, ownedSessions)
+				s = b.autoConnectNode(ws, msg, ownedSessions, connID, role)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
 			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话
@@ -4805,7 +4872,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			// 根据 nodeIP 路由到正确的 SSH 会话
 			s, key := b.resolveSession(msg)
 			if s == nil && msg.NodeIP != "" {
-				s = b.autoConnectNode(ws, msg, ownedSessions)
+				s = b.autoConnectNode(ws, msg, ownedSessions, connID, role)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
 			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话。
@@ -4912,7 +4979,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			s, key := b.resolveSession(msg)
 			if s == nil && msg.NodeIP != "" {
 				// 复用既有自动连接：使用最近一次 ssh_connect 的认证信息连接目标节点。
-				s = b.autoConnectNode(ws, msg, ownedSessions)
+				s = b.autoConnectNode(ws, msg, ownedSessions, connID, role)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
 			}
 			if s == nil {
@@ -5334,6 +5401,9 @@ func main() {
 	}
 
 	bridge := newBridge()
+	// processStartedAt / bridgeSingleton 供退出事件与资源采样读取（生命周期事实只有一处真源）。
+	processStartedAt = time.Now()
+	bridgeSingleton = bridge
 	// 把所有标准库日志重定向为结构化日志并回采（统一可观测性）
 	log.SetOutput(bridgeLogWriter{})
 	log.SetFlags(0)
@@ -5341,6 +5411,11 @@ func main() {
 	// 按运行模式校正落盘策略，并记录启动事件：日志路径必须可自证，
 	// 否则排障时无法回答"日志到底写在哪"（工单 Q2026092010235 的直接教训）。
 	logHub.applyRuntimeMode(config.Mode)
+	// stderr 重定向必须晚于 applyRuntimeMode：cluster 模式的日志目录由 Helm 注入，
+	// 提前重定向会把 panic 栈写到 desktop 默认目录。
+	redirectStderrToFile()
+	// 5 分钟一条资源采样：Atom 级机器上采样本身也必须廉价（一天约 58KB）。
+	startResourceSampler(5 * time.Minute)
 	blog("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
 		"version":         getVersion(),
 		"commit":          CommitID,
@@ -5354,6 +5429,10 @@ func main() {
 		"log_level":       logHub.logLevelName(),
 		"pid":             os.Getpid(),
 		"goos":            runtime.GOOS,
+		// 起跑线资源快照：与 resource.sample / bridge.shutdown 对齐，
+		// 才能回答"是不是一路涨到崩溃"。
+		"goroutines": runtime.NumGoroutine(),
+		"sys_mb":     currentSysMB(),
 	})
 	shutdownTelemetry, telemetryErr := initTelemetry(context.Background())
 	if telemetryErr != nil {
@@ -5417,6 +5496,26 @@ func main() {
 	log.Printf("[Bridge] HCI SSH Bridge 已启动: version=%s commit=%s built=%s mode=%s listen=ws://%s",
 		getVersion(), CommitID, BuildTime, resolved.Mode, resolved.address())
 	log.Printf("[Bridge] Origin 策略已启用: allowed_origins=%s；结构化日志与状态指标已开启", resolved.AllowedOriginsRaw)
+
+	// 优雅退出：覆盖 Ctrl+C 与 SIGTERM。
+	// 边界说明（必须写清楚，别让人误以为万能）：Windows 关闭控制台窗口走 TerminateProcess，
+	// 进程收不到任何信号，仍然会"无痕消失"；但那类退出现在可以通过
+	// 「有 bridge.startup 无 bridge.shutdown」在云端被识别出来。
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-signalCh
+		blog("WARN", "bridge.shutdown", "terminal_bridge 收到退出信号，开始优雅退出", "", "", "", "", map[string]any{
+			"signal":          sig.String(),
+			"uptime_seconds":  int64(time.Since(processStartedAt).Seconds()),
+			"active_sessions": bridge.sessionCount(),
+		})
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[Bridge] 优雅退出失败: %v", err)
+		}
+	}()
 
 	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal("[Bridge] 启动失败: ", err)

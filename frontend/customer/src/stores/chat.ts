@@ -267,7 +267,29 @@ export const useChatStore = defineStore('chat', () => {
     if (bridgeLogTimer === null) bridgeLogTimer = window.setTimeout(flushBridgeLogs, 500)
   }
 
+  // 同一事件可能被多条 WS（终端连接 + 日志收集面板连接）同时推送：
+  // bridge 按订阅者广播，两条连接都在线时必然各收一份。
+  // 按 event_id 去重，否则 outbox 与后端写入都会被放大一倍（后端虽幂等，带宽不幂等）。
+  const seenBridgeLogIds = new Set<string>()
+  const SEEN_BRIDGE_LOG_CAP = 2000
+
+  /** 已见过返回 true（应丢弃）；未见返回 false 并登记。 */
+  function bridgeLogAlreadySeen(entry: Record<string, unknown>): boolean {
+    const eventId = typeof entry.event_id === 'string' ? entry.event_id : ''
+    if (!eventId) return false
+    if (seenBridgeLogIds.has(eventId)) return true
+    seenBridgeLogIds.add(eventId)
+    // Set 没有 FIFO：整批清空即可。清空窗口内可能重复上报极少量事件，
+    // 后端有 (event_id) 唯一约束 + ON CONFLICT DO NOTHING 兜底。
+    if (seenBridgeLogIds.size > SEEN_BRIDGE_LOG_CAP) {
+      seenBridgeLogIds.clear()
+    }
+    return false
+  }
+
   function forwardBridgeLog(entry: Record<string, unknown>) {
+    // 多连接广播去重必须在 case_id 归一之前：同一条事件不应因处理两次而产生两份 outbox。
+    if (bridgeLogAlreadySeen(entry)) return
     // 伪/缺失 case_id：有当前工单时归到当前工单；完全没有工单上下文时先暂存，
     // 等工单建立后回填（bridge.startup/connected 这类关键事件正是这种形态，
     // 直接丢弃会让"Bridge 未运行/连不上"在库里零证据）。

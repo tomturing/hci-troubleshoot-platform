@@ -221,6 +221,8 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 - 文件名：`bridge-<YYYYMMDD>-<实例ID前8位>.log`（一个进程一个文件，重启后新建）。
 - 轮转：超过 `HCI_BRIDGE_LOG_MAX_BYTES` 后重命名为 `*.log.1` 并新建空文件。
 - 重启续接：启动时回放最近一次运行的日志文件到内存缓冲，供晚连接的浏览器补收。
+- **stderr 独立落盘**：`bridge-stderr.log`（同目录，0600）。panic / runtime fatal 只写 stderr，
+  而 `log.SetOutput` 只接管标准库 log 包；不落盘的话，控制台窗口一关崩溃栈就永久丢失。
 
 ### 多工单隔离与关联
 
@@ -239,12 +241,21 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `bridge.already_running` | INFO | 检测到本机已有存活 Bridge，本次幂等退出（重复启动/未退净） |
 | `bridge.backup_port_activated` | WARN | 主端口被陌生进程占用，已回退至备用端口 47324 |
 | `bridge.port_conflict` | ERROR | 主备端口均不可用，fail-fast 退出，含占用地址与 best-effort 占用 PID |
-| `bridge.connected` | INFO | 浏览器 WebSocket 连接建立 |
-| `bridge.disconnected` | WARN | 浏览器断开（断连窗口内的命令结果会丢失） |
+| `bridge.shutdown` | WARN | 收到退出信号（Ctrl+C/SIGTERM），含 `signal`/`uptime_seconds`/`active_sessions`；**有 startup 无 shutdown = 被强杀** |
+| `bridge.panic` | ERROR | 未捕获 panic，含 `panic`/`stack`（完整栈见 `bridge-stderr.log`） |
+| `bridge.connected` | INFO | 浏览器 WebSocket 连接建立，含 `conn_id` |
+| `bridge.disconnected` | WARN | 浏览器断开（断连窗口内的命令结果会丢失）；含 `conn_id`/`role`/`duration_seconds`/`owned_keys` |
+| `conn.role` | INFO | 连接用途确定：`terminal`（终端族）或 `panel`（日志收集族）；探测连接停在 `unknown` |
+| `ws.message` | DEBUG | 收到消息（默认 INFO 级别不落盘；ping/pong 不记录） |
 | `ws.send_failed` | ERROR | 出站消息发送失败（结果回不去浏览器） |
-| `ssh.connected` | INFO | SSH 认证成功 |
+| `ssh.connected` | INFO | SSH 认证成功，含 `conn_id`/`role` |
+| `session.created` | INFO | 会话建立：`key`/`conn_id`/`role`/`source(ssh_connect\|auto_connect)` |
+| `session.destroyed` | WARN | 会话销毁：`reason(ws_closed\|reconnect\|remote_eof\|client_disconnect)`/`by_conn`/`owner_conn`/`age_seconds`/`active_sessions` |
+| `session.destroy_miss` | WARN | 销毁落空（键已不存在），用于识别重复清理链路 |
+| `ssh.disconnected` | WARN | SSH 连接结束：`reason(remote_eof\|local_close)`/`exit_error`/`duration_seconds` |
 | `ssh.keepalive_failed` | WARN | SSH 保活探测失败，会话判定失效并主动关闭（含 `address`/`error`） |
 | `ssh.output` | INFO | 终端输出回采 |
+| `resource.sample` | INFO | 5 分钟一次的 `goroutines`/`heap_alloc_mb`/`sys_mb`/`num_gc` 采样 |
 | `exec.request` / `exec.start` | INFO | 收到/开始执行命令 |
 | `exec.done` | INFO/ERROR | 执行完成，含 `exit_code`、`error_type`、`stderr_preview` |
 | `exec.timeout` | ERROR | 命令超时（显式事件，可独立检索） |

@@ -193,6 +193,28 @@ MAX_UPLOAD_FILE_BYTES = 12 * 1024 * 1024
 MAX_UPLOAD_FILES = 5
 # 单文件最大解析行数，防止超大文件拖垮请求
 MAX_UPLOAD_LINES_PER_FILE = 200_000
+# 命令输出预览落库上限（字符）：与桥侧截断口径对齐，避免单条 jsonb 无界增长。
+# 历史实现把 output_preview 恒写 None，等于把"命令到底输出了什么"永久丢弃——
+# 2026-10-27 现场连 acli 的失败原文都拿不到，只能回本地文件。
+MAX_OUTPUT_PREVIEW_CHARS = 4096
+
+
+def _preview_from_extra(extra: dict[str, Any] | None) -> str | None:
+    """从 extra 提取命令输出预览并做长度收敛。
+
+    桥侧把预览放在 ``extra.output_preview``（写入前已由 sanitizeExtra 脱敏），
+    这里只负责截断与空值归一：不能让缺失字段退化成空串写库。
+    """
+    if not extra:
+        return None
+    raw = extra.get("output_preview")
+    if raw is None:
+        return None
+    text = str(raw)
+    if not text:
+        return None
+    return text[:MAX_OUTPUT_PREVIEW_CHARS]
+
 
 # 落库结果 -> 统计字段名的映射（duplicates 为复数，避免调用方 KeyError）
 _OUTCOME_STAT_KEYS = {
@@ -306,7 +328,7 @@ async def _insert_entry(
             "duration_ms": extra.get("duration_ms"),
             "stdout_len": extra.get("stdout_len") or extra.get("stdout_bytes"),
             "stderr_len": extra.get("stderr_len") or extra.get("stderr_bytes"),
-            "output_preview": None,
+            "output_preview": _preview_from_extra(extra),
             "success": extra.get("success"),
             "error_type": extra.get("error_type"),
             "stdout_sha256": extra.get("stdout_sha256"),

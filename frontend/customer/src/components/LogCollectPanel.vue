@@ -607,6 +607,14 @@ function handleMessage(event: MessageEvent) {
   } catch {
     return
   }
+  // 桥的结构化日志也会推给本连接：面板这条 WS 没有绑定工单（sub.caseID 为空），
+  // bridge 按「全量订阅者」把日志推过来。历史实现在这里直接 return，
+  // 于是面板通道上的桥日志从未进入回采链路——2026-10-27 现场
+  // 云端查不到 log_collect.session_missing 的直接原因之一就是这个分支缺失。
+  if (data.type === 'bridge_log') {
+    chatStore.forwardBridgeLog(data as Record<string, unknown>)
+    return
+  }
   if (data.type === 'acli_sync_result') {
     const waiter = waiters.get('acli_sync')
     if (waiter) {

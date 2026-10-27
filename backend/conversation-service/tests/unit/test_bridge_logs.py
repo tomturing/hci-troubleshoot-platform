@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.routes.bridge_logs import (
+    MAX_OUTPUT_PREVIEW_CHARS,
     MAX_UPLOAD_FILE_BYTES,
     BridgeLogBatch,
     BridgeLogEntry,
@@ -28,6 +29,7 @@ from app.routes.bridge_logs import (
     _authenticate_batch,
     _is_internal_caller,
     _parse_event_time,
+    _preview_from_extra,
     _verify_batch_ownership,
     ingest_bridge_logs,
     upload_bridge_logs,
@@ -564,3 +566,24 @@ class TestUploadBridgeLogs:
         assert exc_info.value.status_code == 403
         mock_session.execute.assert_not_called()
         mock_session.commit.assert_not_called()
+
+
+class TestOutputPreview:
+    """命令输出预览落库。
+
+    历史实现把 `output_preview` 恒写 None，导致"命令到底输出了什么"在云端永久不可见，
+    现场只能回去翻本地 bridge-*.log（2026-10-27 现场即如此）。
+    """
+
+    def test_extracts_preview_from_extra(self):
+        assert _preview_from_extra({"output_preview": "日志收集任务下发成功！\n\n"}) == "日志收集任务下发成功！\n\n"
+
+    def test_truncates_long_preview(self):
+        preview = "x" * (MAX_OUTPUT_PREVIEW_CHARS + 100)
+        got = _preview_from_extra({"output_preview": preview})
+        assert got is not None
+        assert len(got) == MAX_OUTPUT_PREVIEW_CHARS
+
+    @pytest.mark.parametrize("extra", [None, {}, {"output_preview": None}, {"output_preview": ""}])
+    def test_missing_returns_none(self, extra):
+        assert _preview_from_extra(extra) is None
