@@ -106,6 +106,20 @@ export interface UploadInitResult {
   missing_parts: number[]
 }
 
+/**
+ * 补交付的签发结果。
+ *
+ * `already_delivered` 必须单独暴露：服务端对已交付任务做幂等短路时不会再开会话，
+ * 前端若只看 HTTP 200 就会误报"上传成功"，而用户真正想问的是"这次到底传没传"。
+ */
+export interface DeliverResult {
+  already_delivered: boolean
+  delivery_status: string
+  delivery_attempts: number
+  upload: UploadInitResult
+  source_path?: string | null
+}
+
 export interface UploadCompleteResult {
   upload_id: string
   object_key: string
@@ -181,6 +195,21 @@ export const logCollectApi = {
 
   async initUpload(taskId: string, body: { total_size: number; expected_sha256?: string }): Promise<UploadInitResult> {
     const { data } = await client.post(`/log-collect/tasks/${taskId}/uploads`, body)
+    return data
+  },
+
+  /**
+   * 补交付：为节点上已有的包签发上传会话。
+   *
+   * 与 `initUpload` 的差别在于它**不要求任务处于某个采集状态**，且由服务端负责
+   * 处理会话大小不一致（自动 abort 重建）。前端只需要给出"包多大、在哪"这两个
+   * 物理事实——它们来自 bridge 的 stat，平台无法自行获知。
+   */
+  async deliverTask(
+    taskId: string,
+    body: { total_size: number; source_path?: string; expected_sha256?: string; force?: boolean },
+  ): Promise<DeliverResult> {
+    const { data } = await client.post(`/log-collect/tasks/${taskId}/deliver`, body)
     return data
   },
 
