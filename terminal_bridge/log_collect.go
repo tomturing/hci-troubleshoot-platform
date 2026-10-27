@@ -908,10 +908,17 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
 			"node_state":  progress.NodeState,
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
-			"archive_size_diag": archiveSizeDiag,
 			"exit_code": exitCode,
 			"error": errString(err), "raw_len": len(output),
 		})
+		// stat 失败在采集早期是常态（包还没生成），只有进入上传窗口后的失败才值得留证：
+		// 否则每次轮询都多打一条，会把真正的现场信号淹掉。
+		if archiveSizeDiag != "" && progress.Percent >= 80 {
+			blog("WARN", "log_collect.archive_size_probe", "压缩包大小探测失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"path": probePath,
+				"diag": archiveSizeDiag,
+			})
+		}
 
 	case "stat":
 		// P3 编排需要先知道包大小才能 init 分片会话；只读单命令，走非 PTY 通道。
