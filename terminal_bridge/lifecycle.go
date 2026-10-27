@@ -64,7 +64,14 @@ const (
 	sessionReasonRemoteEOF        = "remote_eof"        // 远端 shell 退出
 	sessionReasonClientDisconnect = "client_disconnect" // 前端显式 ssh_disconnect
 	sessionReasonKeepAlive        = "keepalive_failed"  // 保活探测判定链路失效
+	sessionReasonIdleTTL          = "idle_ttl"          // 空闲租约超时，被 reaper 回收
 )
+
+// defaultSessionIdleTTL 是空闲租约的默认时长：WS 断开后给会话的宽限期。
+//
+// 必须长到覆盖"浏览器刷新→重连"与"短暂网络抖动"，又不能长到让孤儿会话久留占用远端 shell。
+// 默认 5 分钟：常规刷新在数秒内完成，统计类日志采集常在 1~2 分钟内结束。
+const defaultSessionIdleTTL = 5 * time.Minute
 
 // newConnID 生成进程内唯一的连接标识。
 func newConnID() string {
@@ -123,6 +130,8 @@ func (b *Bridge) destroySession(key, reason, byConn string) bool {
 	ownerConn, ageSeconds := session.ownerConn, int64(session.ageSeconds())
 	session.close()
 	b.remove(key)
+	// 租约簿记必须随会话一起清理，否则 reaper 会反复命中已不存在的键。
+	b.forgetLease(key)
 	blog("WARN", "session.destroyed", "SSH 会话被销毁", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key":             key,
 		"reason":          reason,
@@ -133,6 +142,117 @@ func (b *Bridge) destroySession(key, reason, byConn string) bool {
 		"session_keys":    b.sessionKeyList(8),
 	})
 	return true
+}
+
+// holdSessionLocked 在会话入表时登记一个持有者（refs=1）。
+//
+// 为什么需要引用计数：会话可能被多条连接共用（终端连接 + 日志收集面板连接），
+// 只有"全部持有者都走了"才算空闲；单条连接关闭不代表没人用。
+//
+// 后缀 Locked 是硬约定：调用方必须已持有 b.mu，本函数自己绝不再加锁。
+// Go 的 sync.Mutex 不可重入——它原先自己 Lock()，而唯一调用方 set() 已在临界区内，
+// 于是任何一次建会话都会自死锁（表现为 go test 拖满超时，而不是快速失败）。
+func (b *Bridge) holdSessionLocked(key string) {
+	if b.sessionRefs == nil {
+		b.sessionRefs = make(map[string]int)
+	}
+	b.sessionRefs[key] = 1
+	if b.sessionIdleAt != nil {
+		delete(b.sessionIdleAt, key)
+	}
+}
+
+// releaseSession 释放一条连接的持有权：归零后进入空闲租约，**不销毁会话**。
+//
+// 这是与历史行为的关键差别：过去 WS 一断就 close+remove，导致刷新页面/网络抖动
+// 会把正在被日志面板使用的会话一起带走（2026-10-27 14:37:49 的故障链）。
+func (b *Bridge) releaseSession(key, byConn string) {
+	b.mu.Lock()
+	if b.sessionRefs == nil {
+		b.sessionRefs = make(map[string]int)
+	}
+	if b.sessionIdleAt == nil {
+		b.sessionIdleAt = make(map[string]time.Time)
+	}
+	if refs := b.sessionRefs[key]; refs > 1 {
+		b.sessionRefs[key] = refs - 1
+		b.mu.Unlock()
+		return
+	}
+	b.sessionRefs[key] = 0
+	b.sessionIdleAt[key] = time.Now()
+	b.mu.Unlock()
+
+	blog("INFO", "session.idle", "会话已无持有者，进入空闲租约", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+		"key": key, "by_conn": byConn, "idle_ttl_seconds": int(sessionIdleTTL().Seconds()),
+	})
+}
+
+// forgetLease 清掉租约簿记（销毁时必须调用，否则 reaper 会反复命中空键）。
+func (b *Bridge) forgetLease(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.sessionRefs, key)
+	delete(b.sessionIdleAt, key)
+}
+
+// reapIdleSessions 回收空闲超时的会话，返回回收数量。
+//
+// 只在 refs==0 且空闲超过 TTL 时销毁：远端已 EOF 的会话会先被 onExit 清掉，
+// 这里只处理"连接都走了但会话还活着"的那一类。
+func (b *Bridge) reapIdleSessions(ttl time.Duration) int {
+	if ttl <= 0 {
+		return 0
+	}
+	now := time.Now()
+	b.mu.Lock()
+	victims := make([]string, 0, 4)
+	for key, idleAt := range b.sessionIdleAt {
+		if b.sessionRefs[key] > 0 {
+			continue
+		}
+		if now.Sub(idleAt) >= ttl {
+			victims = append(victims, key)
+		}
+	}
+	b.mu.Unlock()
+
+	for _, key := range victims {
+		b.destroySession(key, sessionReasonIdleTTL, "")
+	}
+	return len(victims)
+}
+
+// sessionIdleTTL 返回空闲租约时长；<=0 表示关闭租约回收（退化为"永不主动销毁"，
+// 仅建议在调试时使用，因为那样只能靠远端 EOF 或显式断开回收）。
+func sessionIdleTTL() time.Duration {
+	seconds := envIntOrDefault("HCI_BRIDGE_SESSION_IDLE_TTL_SECONDS", int(defaultSessionIdleTTL/time.Second))
+	return time.Duration(seconds) * time.Second
+}
+
+// startSessionReaper 周期性回收空闲会话。
+//
+// 扫描间隔取 TTL 的 1/4（最少 15 秒）：既不会让过期会话多留太久，
+// 也不会在 Atom 级机器上频繁抢锁。
+func startSessionReaper(bridge *Bridge, ttl time.Duration) {
+	if bridge == nil || ttl <= 0 {
+		return
+	}
+	interval := ttl / 4
+	if interval < 15*time.Second {
+		interval = 15 * time.Second
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if reaped := bridge.reapIdleSessions(ttl); reaped > 0 {
+				blog("INFO", "session.reaped", "空闲租约到期，已回收会话", "", "", "", "", map[string]any{
+					"reaped": reaped, "active_sessions": bridge.sessionCount(),
+				})
+			}
+		}
+	}()
 }
 
 // logSessionCreated 记录会话建立（含建立它的连接与角色）。

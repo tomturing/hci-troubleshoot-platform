@@ -4145,13 +4145,19 @@ type Bridge struct {
 	// 用于取消、去重与并发上限；由 sftpTasksMu 保护。
 	sftpTasksMu sync.Mutex
 	sftpTasks   map[string]*sftpTask
+	// 会话引用计数与空闲租约簿记：WS 关闭只 release 不销毁，会话在 TTL 内仍可被复用
+	// （日志面板借用的会话、以及刷新页面后准备接上的会话都不应被连坐清理）。
+	sessionRefs   map[string]int
+	sessionIdleAt map[string]time.Time
 }
 
 func newBridge() *Bridge {
 	return &Bridge{
-		sessions:  make(map[string]*SSHSession),
-		lastAuth:  make(map[string]InMessage),
-		sftpTasks: make(map[string]*sftpTask),
+		sessions:      make(map[string]*SSHSession),
+		lastAuth:      make(map[string]InMessage),
+		sftpTasks:     make(map[string]*sftpTask),
+		sessionRefs:   make(map[string]int),
+		sessionIdleAt: make(map[string]time.Time),
 	}
 }
 
@@ -4215,6 +4221,9 @@ func (b *Bridge) set(key string, s *SSHSession) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.sessions[key] = s
+	// 入表即登记一个持有者：引用计数从 1 开始，WS 关闭时由 releaseSession 减回 0。
+	// 必须用 Locked 版本：本函数已持有 b.mu，而 Go 的 Mutex 不可重入。
+	b.holdSessionLocked(key)
 }
 
 func (b *Bridge) remove(key string) {
@@ -4588,12 +4597,14 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		// 先摘会话再记断连：own_keys 必须反映"这次断连真正带走了哪些会话"。
 		// 2026-10-27 现场只能靠"报错比断连晚 266ms"反推，就是因为这里没有留痕。
 		owned := ownedSessions.drain()
-		destroyedKeys := make([]string, 0, len(owned))
+		releasedKeys := make([]string, 0, len(owned))
 		for key, ownedSession := range owned {
 			if current := b.get(key); current == ownedSession {
-				// 统一销毁入口：close + 摘表 + session.destroyed{reason=ws_closed}。
-				b.destroySession(key, sessionReasonWSClosed, connID)
-				destroyedKeys = append(destroyedKeys, key)
+				// 不再销毁：改为释放持有权，会话进入空闲租约，等 TTL 回收。
+				// WS 抖动/刷新不应带走正在被日志面板使用的会话
+				//（2026-10-27 14:37:49 故障链的根因）。
+				b.releaseSession(key, connID)
+				releasedKeys = append(releasedKeys, key)
 			}
 		}
 		// 断开留痕（含原因）：断连窗口内的命令结果会丢失，是"未收到执行结果"的高频根因。
@@ -4601,7 +4612,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			"custom_ui": cui, "remote": ws.RemoteAddr().String(), "reason": "connection_closed",
 			"conn_id": connID, "role": role,
 			"duration_seconds": int64(time.Since(openedAt).Seconds()),
-			"owned_keys":       destroyedKeys,
+			"owned_keys":       releasedKeys,
 			"active_sessions":  b.sessionCount(),
 		})
 		logHub.removeSubscriber(ws)
@@ -5509,6 +5520,9 @@ func main() {
 	redirectStderrToFile()
 	// 5 分钟一条资源采样：Atom 级机器上采样本身也必须廉价（一天约 58KB）。
 	startResourceSampler(5 * time.Minute)
+	// 空闲会话回收器：WS 关闭只 release 不销毁，超时无人复用的会话由 reaper 兜底回收，
+	// 回收间隔取 TTL 的 1/4（最少 15 秒），避免过期会话久留或 Atom 机器频繁抢锁。
+	startSessionReaper(bridge, sessionIdleTTL())
 	// 交付执行器：启动即扫描并恢复未完成作业。执行权在 bridge，
 	// 浏览器是否在线不影响；前端只通过 job_status 轮询进度。
 	deliveryRunnerInstance = newDeliveryRunner(bridge)
