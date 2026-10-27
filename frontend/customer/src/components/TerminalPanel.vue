@@ -19,6 +19,7 @@ import 'xterm/css/xterm.css'
 
 import { useChatStore } from '@/stores/chat'
 import { checkBridgeBeforeOpen } from '@/api/terminal'
+import SftpPanel from '@/components/SftpPanel.vue'
 import {
   createRecordingState,
   startRecording,
@@ -538,6 +539,12 @@ onBeforeUnmount(() => {
     <div v-if="terminalState === 'C'" class="terminal-stage">
       <div ref="terminalContainer" class="terminal-canvas" />
     </div>
+
+    <!--
+      状态C：终端下方的文件下载面板（Xshell / MobaXterm 语义）。
+      只在已连接时渲染：未连接时面板发不出 sftp_op，展示出来只会徒增困惑。
+    -->
+    <SftpPanel v-if="terminalState === 'C'" />
 
     <!--
       底部操作区：与日志收集、会话输入同构（hint 行 + 36px 控件行 + 按钮组），
