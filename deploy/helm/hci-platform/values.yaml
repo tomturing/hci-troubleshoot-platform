@@ -212,6 +212,20 @@ caseService:
     repository: hci-case-service
     tag: latest
   port: 8001
+  # 日志收集制品存储（P3 分片上传）。
+  #
+  # 第一性原理：分片必须落在「跨请求、跨 Pod 重启存在、且 uid=1000 可写」的目录。
+  # 容器 rootfs 的 /var/lib 属 root:0755，非 root 进程无法 mkdir，2026-10-27
+  # 工单 Q2026102701294 的上传 500 就是由此产生（现在是 LC-PLATFORM-007）。
+  # 默认开启独立 PVC；Pod 的 fsGroup=1000 会让 kubelet 把卷属组调整为可写。
+  # 关闭后必须自行保证 LOG_COLLECT_STORAGE_ROOT 可写，否则上传将明确报
+  # LC-PLATFORM-007（不再是裸 500）。
+  logCollectStorage:
+    enabled: true
+    # 单包上限 20GiB，合并峰值约 2 倍，故默认 50Gi。
+    size: "50Gi"
+    storageClassName: ""
+    mountPath: "/var/lib/log-collect"
   resources:
     requests:
       cpu: "50m"

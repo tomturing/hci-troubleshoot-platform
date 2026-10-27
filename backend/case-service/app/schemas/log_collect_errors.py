@@ -77,6 +77,8 @@ def build_problem(code: str, detail: str, trace_id: str | None = None) -> dict[s
             "owner": "platform",
             "retryable": "true",
             "detail": detail,
+            "user_hint": "",
+            "ops_hint": "",
             "trace_id": trace_id,
         }
     return {
@@ -88,5 +90,9 @@ def build_problem(code: str, detail: str, trace_id: str | None = None) -> dict[s
         "owner": meta["owner"],
         "retryable": normalize_retryable(meta["retryable"]),
         "detail": detail,
+        # user_hint / ops_hint 是"下一步怎么办"的唯一来源：前端直接展示 user_hint，
+        # 避免每个调用点自己拼建议（拼歪了就会出现"请稍后重试"这种空话）。
+        "user_hint": meta.get("user_hint", ""),
+        "ops_hint": meta.get("ops_hint", ""),
         "trace_id": trace_id,
     }

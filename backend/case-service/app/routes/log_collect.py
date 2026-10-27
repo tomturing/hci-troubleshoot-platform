@@ -37,7 +37,10 @@ from ..services.log_collect_service import (
     TaskConflictError,
     TaskNotFoundError,
 )
-from ..services.log_collect_storage import LocalLogCollectStorage
+from ..services.log_collect_storage import (
+    LocalLogCollectStorage,
+    LogCollectStorageUnavailableError,
+)
 from ..services.log_collect_upload_service import LogCollectUploadError, LogCollectUploadService
 
 logger = logging.getLogger(__name__)
@@ -85,7 +88,13 @@ def set_database_manager(db_manager: DatabaseManager) -> None:
 def get_upload_storage() -> LocalLogCollectStorage:
     global upload_storage
     if upload_storage is None:
-        upload_storage = LocalLogCollectStorage(settings.LOG_COLLECT_STORAGE_ROOT)
+        try:
+            upload_storage = LocalLogCollectStorage(settings.LOG_COLLECT_STORAGE_ROOT)
+        except LogCollectStorageUnavailableError as exc:
+            # 存储不可用是平台侧环境事实。不捕获的话它会冒泡成裸 500
+            # （现场只看到 "Request failed with status code 500"），
+            # 这里转成 LC-PLATFORM-007，详情里带目录/用户/原因。
+            raise _problem("LC-PLATFORM-007", str(exc)) from exc
     return upload_storage
 
 

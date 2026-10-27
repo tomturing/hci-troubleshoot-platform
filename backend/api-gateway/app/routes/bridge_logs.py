@@ -109,3 +109,69 @@ async def proxy_bridge_logs_upload(request: Request, client_id: str = Depends(re
                 status_code=503,
                 detail="Conversation service unavailable",
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# bridge 直传通道（不依赖浏览器 Cookie）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@router.post("/token")
+async def proxy_bridge_log_token(request: Request, client_id: str = Depends(require_user)):
+    """签发 bridge 日志直传令牌（前端调用，仍走服务端 Cookie 身份）。
+
+    网关只做签名注入：令牌的签发与校验都在 conversation-service，
+    网关不掌握令牌格式，避免两处实现漂移。
+    """
+    payload = await request.json()
+    headers = _signed_outbound_headers({}, client_id)
+    if traceparent := request.headers.get("traceparent"):
+        headers["traceparent"] = traceparent
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            response = await client.post(
+                f"{CONVERSATION_SERVICE_URL}/api/bridge-logs/token",
+                json=payload,
+                headers=headers,
+            )
+            return JSONResponse(content=response.json(), status_code=response.status_code)
+        except httpx.RequestError as exc:
+            logger.error(
+                f"gateway_bridge_log_token_error: {exc}",
+                extra={"event": "gateway_bridge_log_token_error", "error": str(exc)},
+            )
+            raise HTTPException(status_code=503, detail="Conversation service unavailable")
+
+
+@router.post("/direct")
+async def proxy_bridge_logs_direct(request: Request):
+    """代理 bridge 直传回采（**不依赖 Cookie**）。
+
+    安全边界（必须写清楚）：
+      - 本路由不做 `require_user`：bridge 是客户机上的本地进程，没有浏览器 Cookie；
+      - 身份完全由 `X-Bridge-Upload-Token` 承担，由 conversation-service 校验
+        （HMAC + 过期 + 绑定工单/实例），网关只透传、不解析、不签发；
+      - 因此这里**绝不能**注入或信任任何 `X-Client-ID` 头：客户端自报身份一律剥离。
+    """
+    payload = await request.json()
+    headers: dict[str, str] = {}
+    if token := request.headers.get("X-Bridge-Upload-Token"):
+        headers["X-Bridge-Upload-Token"] = token
+    if traceparent := request.headers.get("traceparent"):
+        headers["traceparent"] = traceparent
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(
+                f"{CONVERSATION_SERVICE_URL}/api/bridge-logs/direct",
+                json=payload,
+                headers=headers,
+            )
+            return JSONResponse(content=response.json(), status_code=response.status_code)
+        except httpx.RequestError as exc:
+            logger.error(
+                f"gateway_bridge_logs_direct_error: {exc}",
+                extra={"event": "gateway_bridge_logs_direct_error", "error": str(exc)},
+            )
+            raise HTTPException(status_code=503, detail="Conversation service unavailable")

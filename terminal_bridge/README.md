@@ -146,6 +146,9 @@ terminalBridge:
 | — | `HCI_BRIDGE_LOG_MAX_BYTES` | 单个日志文件最大字节数，默认 64 MiB，超限轮转为 `*.log.1` |
 | — | `HCI_BRIDGE_LOG_TO_DESKTOP` | desktop 模式桌面落盘开关，设为 `false`/`0`/`no` 关闭，默认开启 |
 | — | `HCI_BRIDGE_LOG_LEVEL` | 日志级别阈值 `DEBUG`/`INFO`/`WARN`/`ERROR`，默认 `INFO` |
+| — | `HCI_BRIDGE_LOG_UPLOAD_INTERVAL_SECONDS` | 直传批量上报间隔，默认 `2` |
+| — | `HCI_BRIDGE_LOG_UPLOAD_BATCH` | 单批条数，默认 `100`（上限 1000） |
+| — | `HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES` | 直传 outbox 字节上限，默认 8MB，超限丢最旧 |
 | — | `HCI_BRIDGE_SSH_KEEPALIVE_SECONDS` | SSH 应用层保活探测间隔（秒），默认 30；设为 `0` 关闭探测，仅保留 TCP keepalive |
 | — | `HCI_BRIDGE_SFTP_DIR` | 文件下载的**本机落地目录**，优先级最高；未设置时按 `$HOME/Downloads/hci-sftp` → `/var/lib/terminal-bridge/downloads` → `$TMPDIR/hci-sftp` 探测可写项 |
 | — | `HCI_BRIDGE_SFTP_MAX_BYTES` | 单文件下载上限（字节），默认 5 GiB；超过直接报 `too_large`，不静默截断 |
@@ -270,7 +273,24 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `sftp.session_missing` / `sftp.unavailable` | ERROR | 会话不存在 / 远端未启用 SFTP subsystem（此时改用 `sftp.exec_fallback` 下载） |
 | `sftp.tasks_cancelled_on_disconnect` | INFO | WebSocket 断开时回收本连接发起的下载任务数 |
 | `log.dropped` | WARN | 回采队列溢出等导致的日志丢弃（限频上报） |
+| `log_upload.configured` | INFO | 已收到直传凭据，直传通道启用（含 `endpoint`/`instance`） |
+| `log_upload.token_received` | INFO | 收到前端下发的直传令牌（只记长度，不记内容） |
+| `log_upload.failed` | WARN | 直传失败并退避重试（含 `backoff_seconds`/`queued`） |
+| `log_upload.recovered` | INFO | 进程重启后从 outbox 恢复未发送日志 |
 | `client.error` | ERROR | Custom-UI 浏览器未捕获异常（`service.name=customer-ui`） |
+
+### 自动直传（不依赖浏览器）
+
+自动回采 `bridge → WS → 浏览器 → 后端` 强依赖浏览器在线：刷新、断网、休眠都会让断连窗口内的
+日志永久丢失。直传通道把载体换成 bridge 自己：
+
+1. 前端向平台申请**短期令牌**（12h、绑定工单与桥实例），经 WS `bridge_log_token` 下发；
+2. bridge 先落盘 `bridge-log-outbox/<实例>.jsonl`，再由**唯一 worker 串行**批量
+   `POST /api/bridge-logs/direct`（gzip、100 条/批、2s 一次）；
+3. 失败整批保留并指数退避（1s→60s），重启后从 outbox 恢复；
+4. 无令牌时是彻底的空操作——旧平台/旧前端保持原链路。
+
+直传状态可在 `/status` 的 `log_upload` 字段看到（`enabled`/`queued`/`dropped`/`outbox`）。
 
 ### 上传本地日志
 
@@ -293,6 +313,7 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `sftp_op` | `sftp_action(list\|download\|cancel), sftp_path?, exec_id?, case_id, node_ip?, trace_id?` | 文件下载：`list` 时空 `sftp_path` 表示取登录用户 home；`download`/`cancel` 用 `exec_id` 作为任务 ID。**刻意没有本地落点字段** |
 | `resume` | `case_id` | 重放近期结构化日志 |
 | `ssh_disconnect` | `case_id, node_ip?` | 断开会话 |
+| `bridge_log_token` | `case_id, token, endpoint` | 下发日志直传凭据（短期、绑定工单与实例）；bridge 回 `bridge_log_token_ack` |
 
 ### Bridge → 浏览器
 

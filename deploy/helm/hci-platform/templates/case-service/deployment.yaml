@@ -8,6 +8,12 @@ metadata:
 spec:
   replicas: {{ .Values.caseService.replicaCount }}
   revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
+  {{- if .Values.caseService.logCollectStorage.enabled }}
+  # 日志存储是 RWO 卷 + 本地文件系统语义：两个 Pod 同时挂载会互相覆盖分片目录，
+  # 部分 CSI 还会让滚动更新卡在 ContainerCreating。先停旧 Pod 再起新 Pod 是刻意取舍。
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "hci.selectorLabels" (dict "name" "case-service" "Release" .Release) | nindent 6 }}
@@ -44,6 +50,10 @@ spec:
             - name: DATABASE_URL
               # 使用 Helm 渲染时 urlquery 对密码做 URL 编码，防止密码含 @ / : # 等特殊字符导致解析错误（PIT-022）
               value: {{ printf "postgresql+asyncpg://%s:%s@%s:5432/%s" .Values.config.postgresUser (.Values.secrets.postgresPassword | urlquery) .Values.config.postgresHost .Values.config.postgresDb | quote }}
+            - name: LOG_COLLECT_STORAGE_ROOT
+              # 显式写在 Deployment 里（而不是依赖镜像默认值）：存储路径与挂载点必须
+              # 由同一处声明，运维一眼能看出分片落在哪个卷。
+              value: {{ .Values.caseService.logCollectStorage.mountPath | quote }}
           livenessProbe:
             httpGet:
               path: /health
@@ -69,3 +79,14 @@ spec:
             failureThreshold: 30
           resources:
             {{- toYaml .Values.caseService.resources | nindent 12 }}
+          {{- if .Values.caseService.logCollectStorage.enabled }}
+          volumeMounts:
+            - name: case-service-log-collect
+              mountPath: {{ .Values.caseService.logCollectStorage.mountPath | quote }}
+          {{- end }}
+      {{- if .Values.caseService.logCollectStorage.enabled }}
+      volumes:
+        - name: case-service-log-collect
+          persistentVolumeClaim:
+            claimName: case-service-log-collect
+      {{- end }}

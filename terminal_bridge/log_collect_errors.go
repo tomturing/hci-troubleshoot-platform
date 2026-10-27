@@ -65,6 +65,11 @@ const (
 	ErrPlatRegression   = "LC-PLATFORM-004"
 	ErrPlatDuplicate    = "LC-PLATFORM-005"
 	ErrPlatDBDown       = "LC-PLATFORM-006"
+	// 日志包上传的平台侧存储故障：目录不可写 / 空间不足。
+	// 由 case-service 产生（不是桥侧），但同属 log_collect 错误码体系，
+	// 前端按同一个 problem 结构展示，避免出现裸 500。
+	ErrPlatStorageUnwritable = "LC-PLATFORM-007"
+	ErrPlatStorageLow        = "LC-PLATFORM-008"
 )
 
 // errorMeta 与 JSON 目录字段一一对应（retryable 统一为字符串：true/false/manual）。
@@ -124,6 +129,9 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrPlatRegression:   {"PLATFORM", "platform", "false", "api"},
 	ErrPlatDuplicate:    {"PLATFORM", "platform", "manual", "api"},
 	ErrPlatDBDown:       {"PLATFORM", "platform", "true", "api"},
+
+	ErrPlatStorageUnwritable: {"PLATFORM", "platform", "manual", "upload"},
+	ErrPlatStorageLow:        {"PLATFORM", "platform", "true", "upload"},
 }
 
 // validationErrorCode 把参数校验短名映射为规范错误码（短名仍保留在 error_type 中）。
