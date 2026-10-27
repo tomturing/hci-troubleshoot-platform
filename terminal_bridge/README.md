@@ -146,6 +146,9 @@ terminalBridge:
 | — | `HCI_BRIDGE_LOG_MAX_BYTES` | 单个日志文件最大字节数，默认 64 MiB，超限轮转为 `*.log.1` |
 | — | `HCI_BRIDGE_LOG_TO_DESKTOP` | desktop 模式桌面落盘开关，设为 `false`/`0`/`no` 关闭，默认开启 |
 | — | `HCI_BRIDGE_LOG_LEVEL` | 日志级别阈值 `DEBUG`/`INFO`/`WARN`/`ERROR`，默认 `INFO` |
+| — | `HCI_BRIDGE_LOG_UPLOAD_INTERVAL_SECONDS` | 直传批量上报间隔，默认 `2` |
+| — | `HCI_BRIDGE_LOG_UPLOAD_BATCH` | 单批条数，默认 `100`（上限 1000） |
+| — | `HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES` | 直传 outbox 字节上限，默认 8MB，超限丢最旧 |
 | — | `HCI_BRIDGE_SSH_KEEPALIVE_SECONDS` | SSH 应用层保活探测间隔（秒），默认 30；设为 `0` 关闭探测，仅保留 TCP keepalive |
 | — | `PLATFORM_ARTIFACT_URL` | 虚拟机控制台截图 PPM 直传的制品服务基址（conversation-service）；**未配置时 `capture_baseline` fail-closed 返回 `artifact_upload_disabled`，不降级 base64 over WS** |
 | — | `PLATFORM_INTERNAL_API_TOKEN` | PPM 直传的内部 Bearer Token（`INTERNAL_API_TOKEN` 对端校验） |
@@ -263,7 +266,24 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `exec.session_missing` | ERROR | SSH 会话不存在 |
 | `log_collect.session_missing` | ERROR | 日志收集动作找不到 SSH 会话；含 `requested_key`、`active_sessions`、`session_keys` 用于定性 |
 | `log.dropped` | WARN | 回采队列溢出等导致的日志丢弃（限频上报） |
+| `log_upload.configured` | INFO | 已收到直传凭据，直传通道启用（含 `endpoint`/`instance`） |
+| `log_upload.token_received` | INFO | 收到前端下发的直传令牌（只记长度，不记内容） |
+| `log_upload.failed` | WARN | 直传失败并退避重试（含 `backoff_seconds`/`queued`） |
+| `log_upload.recovered` | INFO | 进程重启后从 outbox 恢复未发送日志 |
 | `client.error` | ERROR | Custom-UI 浏览器未捕获异常（`service.name=customer-ui`） |
+
+### 自动直传（不依赖浏览器）
+
+自动回采 `bridge → WS → 浏览器 → 后端` 强依赖浏览器在线：刷新、断网、休眠都会让断连窗口内的
+日志永久丢失。直传通道把载体换成 bridge 自己：
+
+1. 前端向平台申请**短期令牌**（12h、绑定工单与桥实例），经 WS `bridge_log_token` 下发；
+2. bridge 先落盘 `bridge-log-outbox/<实例>.jsonl`，再由**唯一 worker 串行**批量
+   `POST /api/bridge-logs/direct`（gzip、100 条/批、2s 一次）；
+3. 失败整批保留并指数退避（1s→60s），重启后从 outbox 恢复；
+4. 无令牌时是彻底的空操作——旧平台/旧前端保持原链路。
+
+直传状态可在 `/status` 的 `log_upload` 字段看到（`enabled`/`queued`/`dropped`/`outbox`）。
 
 ### 上传本地日志
 
@@ -285,6 +305,7 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `vm_console_op` | `operation, capture_id, host_node_id, vm_id, exec_id, case_id, node_ip, timeout?, trace_id?` | 虚拟机控制台截图固定操作（无自由文本 command）；`operation` 仅 `capture_baseline` / `wake_down_key`，入口严格校验，非法输入 fail-closed |
 | `resume` | `case_id` | 重放近期结构化日志 |
 | `ssh_disconnect` | `case_id, node_ip?` | 断开会话 |
+| `bridge_log_token` | `case_id, token, endpoint` | 下发日志直传凭据（短期、绑定工单与实例）；bridge 回 `bridge_log_token_ack` |
 
 ### Bridge → 浏览器
 

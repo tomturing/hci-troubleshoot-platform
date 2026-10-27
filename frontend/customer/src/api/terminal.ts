@@ -184,7 +184,8 @@ export interface TerminalWsMessage {
   | 'ssh_disconnected'
   | 'ssh_output'
   | 'ssh_error'
-  | 'bridge_hello' // 连接握手首包：供端口冲突探测识别对端确为 terminal_bridge
+  | 'bridge_hello' // 连接握手首包：供端口冲突探测识别对端确为 terminal_bridge；detail 为桥实例号
+  | 'bridge_log_token_ack' // 桥已接收日志直传令牌（直传通道启用）
   | 'ping'         // WebSocket 保活心跳（服务端发送）
   | 'pong'
   | 'bridge_ready'

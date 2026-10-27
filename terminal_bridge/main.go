@@ -379,6 +379,12 @@ type InMessage struct {
 	// create 时作为 -u 上传目标（仅 http/https，且只认官方日志服务器白名单）。
 	RemoteURL string `json:"remote_url,omitempty"`
 
+	// ── bridge_log_token（日志直传凭据）专用字段 ──
+	// 前端向平台换取的短期令牌，只允许写绑定工单的日志；
+	// bridge 拿到后自行上报，不再依赖浏览器在线。
+	LogToken    string `json:"token,omitempty"`
+	LogEndpoint string `json:"endpoint,omitempty"`
+
 	// ── log_collect transfer（P3 段①+段②）专用字段 ──
 	// 段① 用 `tail -c +N` 从 HCI 续读到客户机；段② 按 chunk_size 切片直传平台数据面。
 	// 平台的 init / complete 由前端调用（需客户身份），bridge 只持数据面 token，
@@ -3720,6 +3726,10 @@ func (h *LogHub) publish(e logEntry) logEntry {
 	// P2-8: 更新 Prometheus 指标
 	atomic.AddUint64(&promMetrics.LogsCollectedTotal, 1)
 
+	// 直传入队必须发生在解锁之后：enqueue 自己持锁，且不能与 publish 的 h.mu 嵌套。
+	// 无令牌时它是空操作（只落本地文件），因此对旧前端完全无感。
+	logUpload.enqueue(e)
+
 	// 实时推送：publish 后立即异步 flush，保证 bridge_log 实时送达前端
 	// （此前只在 setCase 时 flush，导致 ssh.connected 之后的日志全部滞留 pending queue）
 	for _, sub := range eligibleSubscribers {
@@ -4517,7 +4527,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	})
 	// 连接握手首包：让浏览器可快速识别"对端确实是 terminal_bridge"，
 	// 用于端口冲突探测（避免误连占用主端口的陌生进程）。旧客户端会忽略未知类型。
-	sendMsg(ws, OutMessage{Type: "bridge_hello", Message: getVersion(), CustomUI: cui})
+	// detail 携带 instance_id：前端要用它申请"绑定实例"的日志直传令牌，
+	// 没有它令牌只能绑定工单，无法阻止令牌被复制到另一台桥。
+	sendMsg(ws, OutMessage{Type: "bridge_hello", Message: getVersion(), Detail: logHub.instanceID, CustomUI: cui})
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
 	ownedSessions := newOwnedSessionTracker()
 
@@ -5005,6 +5017,16 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		case "acli_sync":
 			go b.handleAcliSync(ws, msg, cui)
 
+		case "bridge_log_token":
+			// 前端下发的直传凭据：拿到即启动后台 worker，此后桥侧日志不再依赖浏览器。
+			// 令牌为空/endpoint 非法时 configure 直接返回，前端保持原有的浏览器回采链路。
+			logUpload.configure(msg.LogToken, msg.LogEndpoint, msg.CaseID, logHub.instanceID)
+			sendMsg(ws, OutMessage{Type: "bridge_log_token_ack", CaseID: msg.CaseID, Status: "ok"})
+			blog("INFO", "log_upload.token_received", "收到桥日志直传凭据", msg.TraceID, msg.CaseID, "", cui, map[string]any{
+				"endpoint":     msg.LogEndpoint,
+				"token_length": len(msg.LogToken),
+			})
+
 		case "log_collect":
 			go b.handleLogCollect(ws, msg, cui)
 		}
@@ -5229,6 +5251,9 @@ type serviceStatus struct {
 	WebSockets    int64        `json:"websocket_connections"`
 	Bridge        bridgeStatus `json:"bridge"`
 	Logs          logHubStatus `json:"logs"`
+	// LogUpload 暴露日志直传状态：现场第一句话往往是"到底有没有直传"，
+	// 没有这个字段就只能靠猜（浏览器关掉后是否还有日志进来）。
+	LogUpload map[string]any `json:"log_upload"`
 }
 
 func buildServiceStatus(bridge *Bridge, config runtimeConfig) serviceStatus {
@@ -5243,6 +5268,7 @@ func buildServiceStatus(bridge *Bridge, config runtimeConfig) serviceStatus {
 		WebSockets:    atomic.LoadInt64(&activeWebSockets),
 		Bridge:        bridge.status(),
 		Logs:          logHub.status(),
+		LogUpload:     logUploadStats(),
 	}
 }
 
