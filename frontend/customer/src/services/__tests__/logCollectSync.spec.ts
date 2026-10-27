@@ -130,6 +130,42 @@ describe('decideNodeSync 节点态直映射', () => {
     expect(action.reason).toContain('重新采集')
   })
 
+  // 回归护栏（Q2026102701294 第二层死锁，2026-10-27）：#1313 把 failed→collecting 的合法边
+  // 走通了，但接管后前端仍拿"当前已完成报告的指纹"当对账基线。节点任务早已结束、报告定格，
+  // reportRefreshed 恒为 false → 判 stale → wait_refresh → 轮询 720 次（60 分钟）后抛
+  // 「采集未完成」，409 死锁被换成了空转死锁。接管必须绕过归属判定。
+  it('接管交付：报告不再刷新也必须收敛为完成，不得空转', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'completed',
+      // 接管场景的现实输入：报告与"接管瞬间的基线"逐字相同
+      reportRefreshed: false,
+      archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701294.zip',
+      adoptedDeliver: true,
+    })
+    expect(action.action).toBe('patch_completed')
+    expect(action.action).not.toBe('wait_refresh')
+  })
+
+  it('未接管时旧报告仍必须拦下（放行范围不能过宽）', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'completed',
+      reportRefreshed: false,
+    })
+    expect(action.action).toBe('wait_refresh')
+  })
+
+  it('接管交付时节点仍在跑 → 不得误判为完成', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'running',
+      reportRefreshed: false,
+      adoptedDeliver: true,
+    })
+    expect(action.action).not.toBe('patch_completed')
+  })
+
   it('平台已归档但节点在跑（报告已刷新）→ 提示冲突，纠正需用户点一次', () => {
     const action = decideNodeSync({ platformStatus: 'completed', nodeState: 'running', reportRefreshed: true })
     expect(action.action).toBe('warn_completed_conflict')

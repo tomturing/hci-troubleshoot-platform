@@ -1460,6 +1460,9 @@ async function resumeTaskFlow(
   task: LogCollectTask,
   token: number,
   baseline = '',
+  // 「继续交付」接管：节点任务早已结束、报告定格，必须跳过"报告是否刷新"的归属判定，
+  // 否则会判 stale → wait_refresh → 空转到 60 分钟超时再失败。
+  adoptedDeliver = false,
 ) {
   // 主流程自己持有轮询权：先停掉接管态的自动刷新，避免两条链抢同一条 bridge 通道
   stopAutoSync()
@@ -1486,7 +1489,7 @@ async function resumeTaskFlow(
     throw new Error('平台任务处于交付阶段，但 bridge 侧没有对应作业（可能已重启且记录丢失），请使用「取消并重试」')
   }
 
-  const collected = await pollUntilCollected(ws, token, baseline)
+  const collected = await pollUntilCollected(ws, token, baseline, adoptedDeliver)
   if (token !== runToken) return
   if (!collected) throw new Error('采集未完成')
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
@@ -1555,7 +1558,14 @@ async function adoptNodeTask() {
     ElMessage.success(
       delivering ? '已接管节点任务，正在继续交付（不会重新采集）' : '已接管节点任务，继续跟进进度',
     )
-    await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
+    await resumeTaskFlow(
+      ws,
+      currentTask.value ?? task,
+      token,
+      // 接管交付时报告已定格：基线必须置空，否则会与"当下这份报告"逐字相同而判 stale。
+      delivering ? '' : readProgressHash(),
+      delivering,
+    )
   } catch (error: any) {
     if (token !== runToken) return
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
@@ -1642,6 +1652,7 @@ async function pollUntilCollected(
   ws: WebSocket,
   token: number,
   baseline = '',
+  adoptedDeliver = false,
 ): Promise<ProgressSnapshot | null> {
   // 采集上限 1 小时（720 次 × 5s）：超时明确失败，避免面板无限转圈。
   pollingBridgeProgress = true
@@ -1674,6 +1685,9 @@ async function pollUntilCollected(
           reportRefreshed: baselineHash ? hashReport(snapshot.raw ?? '') !== baselineHash : undefined,
           reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
           targetHosts: targetHostList(),
+          // 接管交付：报告在接管那一刻已定格，reportRefreshed 恒为 false，
+          // 必须显式放行，否则会判 stale 后空转到 60 分钟超时。
+          adoptedDeliver,
         })
         // 旧报告同样不能当展示数据（否则会显示上一轮的 100%）
         if (action.action !== 'wait_refresh') {

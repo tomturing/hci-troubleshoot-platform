@@ -62,6 +62,17 @@ export interface SyncInput {
   reportHosts?: string[]
   /** 本次任务的目标主机（`ips` 展开后的实际 IP 列表） */
   targetHosts?: string[]
+  /**
+   * 当前判定是否发生在「用户已点『继续交付』之后」的接管流程里。
+   *
+   * 为什么必须单独开关：归属判据的灵魂是「报告相对下发基线刷新过吗」，
+   * 它成立的前提是**任务还在跑、报告还会被重写**。接管场景恰好把这个前提打掉——
+   * 节点任务早已结束，报告定格，`reportRefreshed` 恒为 false，于是被判 stale →
+   * wait_refresh → 轮询空转 60 分钟后再失败（Q2026102701294 的第二层死锁）。
+   * 接管是用户看过这份报告后显式点的，归属已由用户确认，此时不该再用
+   * 「报告没刷新」去否决它。只对 completed 放行，running/abnormal 一律照旧。
+   */
+  adoptedDeliver?: boolean
 }
 
 /** 报告归属：本次任务 / 上一次任务的旧报告 / 无从判断 */
@@ -163,6 +174,21 @@ export function decideNodeSync(input: SyncInput): SyncAction {
   // 也不要按猜测去 cancel 一个可能正常的采集任务。
   if (nodeState === 'unknown') {
     return { action: 'none', reason: '节点状态无法识别，保持平台现状', ownership: 'unknown' }
+  }
+
+  // 接管交付：用户已显式点过「继续交付」，且此刻节点报的就是「已完成」。
+  //
+  // 必须绕过归属判定，原因不是"放宽标准"，而是它的前提已经不成立：
+  // 归属判定靠"报告是否相对下发基线刷新过"，而接管时节点任务早已结束、
+  // 报告定格，`reportRefreshed` 恒 false → 必判 stale → wait_refresh →
+  // 轮询 720 次（60 分钟）后抛「采集未完成」，把 409 死锁换成了空转死锁。
+  // 只放行 completed：节点仍在跑或异常结束时，接管者仍需按常规判据走。
+  if (input.adoptedDeliver && nodeState === 'completed') {
+    return {
+      action: 'patch_completed',
+      reason: '接管场景：用户已确认节点任务完成，直接收敛并继续交付',
+      ownership: 'current',
+    }
   }
 
   const { ownership, reason: ownershipReason } = resolveOwnership(input)
