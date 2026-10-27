@@ -1694,6 +1694,16 @@ onBeforeUnmount(() => {
     这里不再自带抽屉，避免与 el-drawer 的遮罩/焦点/位移动画语义互相打架。
   -->
   <div v-show="visible" class="lc-panel lc-body">
+    <!--
+      两段式：内容区（.lc-scroll）自己滚，底条（.lc-composer）是固定的 flex 尾项。
+
+      为什么不能继续用 position:sticky 把底条钉在滚动容器底部：sticky 元素钉住时
+      只是被"平移"上去，并没有腾出原位置的流动空间，所以只要不在最顶部滚到底，
+      它就会盖住此刻位于它下方的那条内容——实测表现为「节点任务进行中」这类提示条
+      下半截被底条吃掉（提示文案换行时更明显，因为提示条更高、被吃掉的比例更大）。
+      内容与底条同处一个滚动层，就必然互相抢占像素；分成两层才没有抢占关系。
+    -->
+    <div class="lc-scroll">
       <div class="lc-case-bar">
         <span class="lc-case-label">归档工单</span>
         <span class="lc-case-value">{{ caseId }}</span>
@@ -2008,6 +2018,7 @@ onBeforeUnmount(() => {
           class="lc-cleanup"
         />
       </template>
+    </div>
 
     <!--
       底部操作区：与中央会话、SSH 终端同构（hint 行 + 36px 控件行 + 按钮组），
@@ -2044,15 +2055,29 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/*
+ * 两段式布局：根容器不滚动，只负责「内容区 + 底条」两行。
+ * padding 与 gap 下沉到 .lc-scroll：底条要通栏贴边，根容器就不能有内边距。
+ */
 .lc-panel {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  /* 面板高度由 PanelShell 的 body 决定，内容超高时自己滚 */
-  overflow-y: auto;
+  /* 面板高度由 PanelShell 的 body 决定；滚动交给 .lc-scroll，根容器裁掉溢出 */
+  overflow: hidden;
   height: 100%;
   box-sizing: border-box;
+}
+
+/* 唯一滚动容器：内容再长也只在这里滚，底条不参与滚动，两者不会互相覆盖 */
+.lc-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   padding: 12px 16px;
+  box-sizing: border-box;
 }
 
 .lc-spacer {
@@ -2060,15 +2085,12 @@ onBeforeUnmount(() => {
 }
 
 /*
- * 底部操作区贴底：内容不足时靠 margin-top:auto 顶到底部，
- * 内容溢出时靠 sticky 继续钉在可视区底部。
- * 左右负 margin 抵消 .lc-panel 的 padding，让底条通栏贴边（与中央、终端一致）。
+ * 底部操作区：作为 flex 尾项占据真实高度——内容不足时靠 margin-top:auto 顶到底部，
+ * 内容溢出时它仍钉在可视区底部（因为内容区自己滚，它本来就没动过）。
+ * 不再需要 sticky / 负 bottom / z-index：那些都是为了在"同一滚动层"里假装贴底，
+ * 代价就是必然压住一条内容（见模板里那段说明）。
  */
 .lc-composer {
-  position: sticky;
-  bottom: -12px;
-  z-index: 1;
-  margin: 0 -16px -12px;
   margin-top: auto;
 }
 .lc-refresh-time {

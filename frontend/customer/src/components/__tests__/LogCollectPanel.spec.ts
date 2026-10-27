@@ -9,6 +9,8 @@
  * 3. 探测拿到节点清单后，目标主机必须一次性展示全部节点勾选项（含主控标记）。
  */
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { h } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
@@ -911,5 +913,53 @@ describe('LogCollectPanel', () => {
     expect(wrapper.text()).toContain('正在发送到日志服务器')
     expect(wrapper.text()).toContain('发送中')
     wrapper.unmount()
+  })
+})
+
+/**
+ * 布局契约：底条与内容必须分属两层。
+ *
+ * 历史问题：底条用 `position:sticky` + 负 `bottom` 钉在滚动容器底部。sticky 粘住时
+ * 只是把元素"平移"上去，并不腾出它原本占的流动空间，所以只要不是滚到最顶/最底，
+ * 它就会盖住此刻位于它下方的那条内容——实测就是「节点任务进行中」这类提示条下半截
+ * 被吃掉；提示文案换行时提示条更高，被吃掉的比例更明显（用户反馈的原话）。
+ *
+ * 修法不是调 sticky 的偏移量（那只是在换一个被吃掉的像素数），而是让内容区自己滚、
+ * 底条作为 flex 尾项占据真实高度：两者没有共同的滚动层，就没有抢占关系。
+ */
+describe('LogCollectPanel 底条与内容分层', () => {
+  const SOURCE = readFileSync(resolve(process.cwd(), 'src/components/LogCollectPanel.vue'), 'utf-8')
+
+  it('内容区 .lc-scroll 与底条 .lc-composer 是兄弟节点', () => {
+    const wrapper = mountPanel()
+    const scroll = wrapper.find('.lc-scroll')
+    expect(scroll.exists()).toBe(true)
+    // 底条一旦落在滚动容器里，滚动时必然与内容互相覆盖
+    expect(scroll.find('.lc-composer').exists()).toBe(false)
+    expect(wrapper.find('.lc-panel > .lc-composer').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('滚动由内容区自己承担，根容器只负责切分两行', () => {
+    const wrapper = mountPanel()
+    expect(wrapper.find('.lc-scroll').classes()).toContain('lc-scroll')
+    // 根容器含 .lc-scroll 与 .lc-composer 两个子层
+    expect(wrapper.findAll('.lc-panel > div')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('底条不再用 sticky + 负 bottom 假装贴底（负偏移必然压住一条内容）', () => {
+    const rule = SOURCE.match(/\.lc-composer\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    expect(rule).not.toMatch(/position:\s*sticky/)
+    expect(rule).not.toMatch(/bottom:\s*-/)
+    expect(rule).not.toMatch(/z-index/)
+  })
+
+  it('面板 padding 下沉到滚动容器，底条才能通栏贴边', () => {
+    const panelRule = SOURCE.match(/\.lc-panel\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    const scrollRule = SOURCE.match(/\.lc-scroll\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    expect(panelRule).not.toMatch(/padding:/)
+    expect(scrollRule).toMatch(/padding:\s*12px 16px/)
+    expect(scrollRule).toMatch(/overflow-y:\s*auto/)
   })
 })

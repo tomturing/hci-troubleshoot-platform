@@ -40,6 +40,10 @@ const terminalContainer = ref<HTMLElement | null>(null)
 
 const localInput = ref('')
 const manualDisconnect = ref(false)
+// 最近一条真正下发到远端 shell 的命令，供「上条命令」一键回填。
+// 断开连接时清空：换主机/换会话后再回填上一台机器的命令，等于把 A 机的操作
+// 顺手送到 B 机，这类误发在客户生产环境里代价很高。
+const lastExecutedCommand = ref('')
 
 // ===== 三态判断 =====
 const terminalState = computed(() => {
@@ -161,6 +165,7 @@ watch(isConnected, async (connected) => {
     // 断开连接 → 停止录制 + 销毁 xterm 实例
     await stopRecording(recordingState)
     disposeTerminal()
+    lastExecutedCommand.value = ''
     return
   }
   // 连接成功 → 开始录制
@@ -365,7 +370,23 @@ function executeCommand() {
   }
 
   chatStore.sendSSHCommand(command, 'terminal')
+  lastExecutedCommand.value = command
   localInput.value = ''
+}
+
+/**
+ * 回填上一条已执行的命令（不自动执行）。
+ *
+ * 只回填不重发：终端命令直接打到客户生产节点上，重发前用户必须能看见内容、
+ * 并有机会先改参数（多数场景是「上一条少个参数/换个节点」）。回填后聚焦输入框，
+ * 用户按 Enter 即发，比手打一遍快，也不会绕过人的确认。
+ */
+function recallLastCommand() {
+  if (!isConnected.value || !lastExecutedCommand.value) return
+  localInput.value = lastExecutedCommand.value
+  nextTick(() => {
+    terminalInputRef.value?.focus()
+  })
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -527,6 +548,14 @@ onBeforeUnmount(() => {
         <span v-if="!isConnected">请先点击『连接 SSH』按钮</span>
         <span v-else>
           Enter 执行 · Shift+Enter 换行 ·
+          <el-link
+            type="primary"
+            :underline="false"
+            :disabled="!lastExecutedCommand"
+            title="把上一条已执行的命令回填到输入框（不自动执行）"
+            @click="recallLastCommand"
+          >上条命令</el-link>
+          ·
           <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>
         </span>
       </div>

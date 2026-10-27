@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Finished, FirstAidKit, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
+import { Finished, FolderOpened, Monitor, Search, Tickets } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
@@ -156,7 +156,15 @@ function handleDownloadBridge() {
     <header class="app-header" :class="{ 'is-compact': isHeaderCompact }">
       <!-- 品牌区：通栏左对齐。顶栏横跨三栏，不跟随中央内容列限宽 -->
       <div class="header-brand">
-        <span class="brand-mark"><el-icon><FirstAidKit /></el-icon></span>
+        <!--
+          品牌图标与标题必须同义：本产品做的是「故障排查」，图标的语义应是「查找问题」。
+
+          原用 FirstAidKit（急救箱，箱体 + 十字）—— 读出来是"医疗 / 救助"，与「排查」不是一回事；
+          换成 Tools 也不行：那个图标实际是一个齿轮，读作"设置 / 配置"，会让人以为这是设置入口。
+          选 Search（放大镜）是因为"排查 = 把问题找出来"这件事在全世界只有这一个通用符号，
+          16px 下也最清晰，且与页面其余 Element Plus 线性图标同族，描边风格天然一致。
+        -->
+        <span class="brand-mark"><el-icon><Search /></el-icon></span>
         <h1>HCI 故障排查助手</h1>
         <span v-if="chatStore.currentCase" class="brand-case">
           {{ chatStore.currentCase.case_id }}
