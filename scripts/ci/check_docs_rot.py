@@ -53,10 +53,54 @@ REPO_PATH_PREFIXES = (
 REPO_PATH_RE = re.compile(r"`((?:" + "|".join(re.escape(p) for p in REPO_PATH_PREFIXES) + r")[^`\s]+)`")
 
 # C4: 占位符
+# 候选正则与下方强弱分级必须保持同步：`test_marker_tiers_are_in_sync` 逐条断言，
+# 防止「清单里写了、正则匹配不到」导致标记永远不触发的静默失效
+# （旧实现里 未实现/尚未实现/未完成/尚未完成 四个标记即属此类）。
 PLACEHOLDER_RE = re.compile(
-    r"(TODO|TBD|FIXME|XXX|待补充|待完善|待确认|待实现|占位|待定|此处填写|待更新|coming soon|not implemented|placeholder)",
+    r"(TODO|TBD|FIXME|XXX|待补充|待完善|待确认|待实现|占位|待定|此处填写|待更新"
+    r"|未实现|尚未实现|未完成|尚未完成|coming soon|not implemented|placeholder)",
     re.IGNORECASE,
 )
+
+# 强标记：作者在交代「这段我还没写完」时才会用的词，命中即上报。
+# 判据边界：只收录「对自己文字的交待」；描述系统/功能状态的词归为弱标记，
+# 否则 README 里「诊断未完成时」「该逻辑尚未实现」这类正常表达会被当成腐化。
+C4_STRONG_MARKERS = (
+    "TODO",
+    "TBD",
+    "FIXME",
+    "待补充",
+    "待完善",
+    "待更新",
+)
+
+# 弱标记：本身高度歧义，只有与强标记同行共现才上报。四类歧义来源：
+# ① 业务术语——「待确认」在本项目是工单状态枚举/风险等级/模型推断标签，
+#    还会被「等待确认」中切出来；
+# ② 系统/功能状态——「未实现/未完成/尚未实现」几乎全在描述代码或流程
+#    （「诊断未完成时」「该逻辑尚未实现」「Capability 未实现」），
+#    说的是功能没做，不是文档没写完；
+# ③ 模板指令——「此处填写」「占位」是给读者照着填的规范用语；
+# ④ 待实现/待定——功能路线图标注。
+C4_WEAK_MARKERS = (
+    "待确认",
+    "待实现",
+    "待定",
+    "占位",
+    "此处填写",
+    "未实现",
+    "尚未实现",
+    "未完成",
+    "尚未完成",
+    "coming soon",
+    "not implemented",
+    "placeholder",
+)
+
+# XXX 单独处理：既可能是真占位，也可能是标识符/编号/示例掩码
+# （V-xxx、PIT-xxx、ghp_xxxx、Q20260310xxxxx、revision_xxx），
+# 靠「是否与字母数字构成连续体」判定，见 is_marker_identifier()。
+C4_ID_MARKER = "XXX"
 
 # 代码围栏
 FENCE_RE = re.compile(r"^```", re.MULTILINE)
@@ -463,59 +507,137 @@ def check_repo_paths(files: list[Path]) -> list[dict]:
     return issues
 
 
+_QUOTE_PAIRS = (('"', '"'), ("“", "”"), ("「", "」"), ("‘", "’"))
+_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
+def _inline_code_spans(line: str) -> list[tuple[int, int]]:
+    """返回行内反引号代码段的内容区间（不含反引号本身）。"""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while True:
+        start = line.find("`", pos)
+        if start < 0:
+            break
+        end = line.find("`", start + 1)
+        if end < 0:
+            break
+        spans.append((start + 1, end))
+        pos = end + 1
+    return spans
+
+
+def _quoted_spans(line: str) -> list[tuple[int, int]]:
+    """返回引号包裹文本的内容区间（不含引号本身）。"""
+    spans: list[tuple[int, int]] = []
+    for left, right in _QUOTE_PAIRS:
+        pos = 0
+        while True:
+            start = line.find(left, pos)
+            if start < 0:
+                break
+            end = line.find(right, start + 1)
+            if end < 0:
+                break
+            spans.append((start + 1, end))
+            pos = end + 1
+    return spans
+
+
+def _covered(spans: list[tuple[int, int]], start: int, end: int) -> bool:
+    """[start, end) 是否完整落在某个区间内。"""
+    return any(s <= start and end <= e for s, e in spans)
+
+
+def is_marker_identifier(line: str, start: int, end: int) -> bool:
+    """`xxx` 与相邻字母/数字/连字符/下划线构成连续体时是标识符或示例，不是占位符。
+
+    V-xxx / PIT-xxx（编号格式）、Q20260310xxxxx（工单号）、ghp_xxxx（密钥掩码）、
+    revision_xxx（字段名）都属于此类——删掉它们反而让读者看不懂格式说明。
+    """
+    before = line[start - 1] if start > 0 else ""
+    after = line[end] if end < len(line) else ""
+    return before in _ID_CHARS or after in _ID_CHARS
+
+
+def placeholder_in_scope(rel_path: str) -> bool:
+    """C4 只审现行层：`*/events/` 与 `docs/archive/` 是史料，不算腐化。"""
+    return is_current_layer(rel_path.replace("\\", "/"))
+
+
+def classify_placeholder_line(line: str) -> list[str]:
+    """返回该行被认定为「文档自身没写完」的标记；空列表表示无需上报。
+
+    判定逻辑收在纯函数里而不是内联在 `check_placeholders()`，否则只能靠
+    造临时文件才能验证——这与 §九「判定逻辑必须可单测」是同一条要求。
+
+    四类语境豁免均为**确定性规则**（不靠关键词堆砌）：
+
+    - 行内代码：反引号内是字面示例（`sk-xxxx`、`tests/xxx/`）；
+    - 引号内：引号包住的是示例值/产品文案，不是作者对自己的交代；
+    - 标识符：`V-xxx` / `Q20260310xxxxx` / `revision_xxx` 与相邻字母数字构成连续体；
+    - 弱标记：本身歧义，需同行存在**真正起作用**的强标记才上报。
+    """
+    candidates = list(PLACEHOLDER_RE.finditer(line))
+    if not candidates:
+        return []
+    strong_lower = tuple(s.lower() for s in C4_STRONG_MARKERS)
+    code_spans = _inline_code_spans(line)
+    quote_spans = _quoted_spans(line)
+
+    def _literal(m: re.Match[str]) -> bool:
+        return _covered(code_spans, m.start(), m.end()) or _covered(quote_spans, m.start(), m.end())
+
+    # 真正在起作用的强标记不能是行内代码/引号里的字面文本。
+    # 否则一句「被 `# TODO` 注释保留为未完成状态」（引用他人未完成态作为证据）
+    # 会让同行的弱标记「未完成」借光上报。
+    active_strong = any(m.group(0).lower() in strong_lower and not _literal(m) for m in candidates)
+
+    hits: list[str] = []
+    for m in candidates:
+        marker = m.group(0)
+        upper = marker.upper()
+        is_strong = marker.lower() in strong_lower
+        # 弱标记（业务术语/系统状态/模板指令）必须与强标记同行共现才上报
+        if not is_strong and upper != C4_ID_MARKER and not active_strong:
+            continue
+        if _literal(m):
+            continue
+        if upper == C4_ID_MARKER and is_marker_identifier(line, m.start(), m.end()):
+            continue
+        hits.append(marker)
+    return hits
+
+
 def check_placeholders(files: list[Path]) -> list[dict]:
     """C4: 占位符/未完成标记
 
-    对抗性审查要点：项目本身大量使用"占位符"作为业务术语
-    （如模板占位符 {{var}}、图片占位符 ![img:N]），这些是正常语义，
-    不属于腐化。仅当标记出现在"文档自身声明未完成"的语境时才上报。
+    判据的正当性与其余门禁一致：**读者会照着现行文档行动**。因此：
+
+    1. 只审现行层（`is_current_layer`）。`*/events/` 与 `docs/archive/` 是史料，
+       当时写下的 TODO 就是当时的真实状态；报了也无法处置——把它「修掉」
+       等于伪造历史（§8.3），与 C1/C2/C3 限缩到现行层的理由同源。
+    2. 现行层里只有「文档自身声明某处还没写完」才是腐化。语境豁免见
+       `classify_placeholder_line()`，四类均按内容语义确定，不靠关键词堆砌。
     """
     issues = []
-    # 白名单已收敛为下方的强未完成标记：仅当标记本身属于“文档声明未完成”
-    # 语义时才上报，纯业务术语（模板占位符 {{var}}、图片占位符 ![img:N]）不算腐化。
-    strong_markers = (
-        "TODO",
-        "TBD",
-        "FIXME",
-        "待补充",
-        "待完善",
-        "待确认",
-        "待实现",
-        "待更新",
-        "此处填写",
-        "XXX",
-        "未实现",
-        "尚未实现",
-        "未完成",
-        "尚未完成",
-    )
     for f in files:
+        rel = str(f.relative_to(ROOT))
+        if not placeholder_in_scope(rel):
+            continue
         text = f.read_text(encoding="utf-8", errors="replace")
         # 忽略代码围栏内的 TODO（可能是示例代码）
         fences = compute_fences(text)
         for i, line in enumerate(text.splitlines(), 1):
             if is_fenced(i, fences):
                 continue
-            # 仅当出现强未完成标记时上报；纯业务术语（模板/图片占位符）不算腐化
-            for m in PLACEHOLDER_RE.finditer(line):
-                # 中文占位符需同时出现在强标记中才上报
-                if m.group(0).upper() not in ("TODO", "TBD", "FIXME", "XXX") and not any(
-                    sm in line for sm in strong_markers
-                ):
-                    continue
-                # "xxx" 用作示例命名（env:xxx、xxx-service、xxx 命令）不算腐化
-                if m.group(0).upper() == "XXX" and re.search(
-                    r"(env|service|命令|model|plugin|route|view|api|格式|参数|字段|端口|host|path|接口|module|package|tool|skill):?xxx|xxx[-_]",
-                    line,
-                    re.IGNORECASE,
-                ):
-                    continue
+            for marker in classify_placeholder_line(line):
                 issues.append(
                     {
                         "type": "C4",
-                        "file": str(f.relative_to(ROOT)),
+                        "file": rel,
                         "line": i,
-                        "detail": f"占位符: {m.group(0)} | {line.strip()[:80]}",
+                        "detail": f"占位符: {marker} | {line.strip()[:80]}",
                     }
                 )
     return issues
@@ -597,35 +719,73 @@ def check_secrets(files: list[Path], allowlist: set[str] | None = None) -> list[
     return issues
 
 
-# C7: 权威文档版本号一致性（防止 README/AGENTS/CLAUDE 互相矛盾）
-def check_version_consistency() -> list[dict]:
-    """C7: 核心文档中声明的版本号必须唯一且与 pyproject.toml 一致"""
-    issues = []
+# C7: 核心文档「当前版本」声明必须与唯一来源一致
+# 只有显式声明位才算声明；历史发布说明里的 vX.Y.Z 是记录，不是声明。
+C7_CORE_DOCS = ("README.md", "AGENTS.md", "CLAUDE.md")
+# 声明位关键词：可以是「当前版本 v2.31.0」，也可以是「v2.23.0 当前里程碑」
+# （本项目 README 就是后者，旧正则只认关键词在前，把真问题漏掉了）。
+CURRENT_VERSION_KEYWORD_RE = re.compile(
+    r"(当前版本|当前里程碑|最新版本|版本号?\s*[:：]|version\s*[:：])",
+    re.IGNORECASE,
+)
+VERSION_TOKEN_RE = re.compile(r"v?(\d+\.\d+\.\d+)")
+
+
+def _declared_package_version() -> str | None:
+    """pyproject.toml 声明的版本号（release-please 维护的唯一来源）。"""
     pyproject = ROOT / "pyproject.toml"
-    declared_versions: set[str] = set()
-    if pyproject.exists():
-        ver = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
-        if ver:
-            declared_versions.add(ver.group(1))
-    # 扫描核心文档中的 vX.Y.Z 版本声明
-    core_docs = [ROOT / "README.md", ROOT / "AGENTS.md", ROOT / "CLAUDE.md", ROOT / "docs/文档管理规范.md"]
-    found: dict[str, list[str]] = {}
-    for d in core_docs:
-        if not d.exists():
-            continue
-        for m in re.finditer(r"v(\d+\.\d+\.\d+)", d.read_text(encoding="utf-8")):
-            found.setdefault(m.group(1), []).append(str(d.relative_to(ROOT)))
-    # 若声明的版本多于 1 个且与 pyproject 不一致，上报
-    unique_versions = set(found.keys())
-    if len(unique_versions) > 1:
+    if not pyproject.exists():
+        return None
+    m = re.search(r'^version\s*=\s*["\']([^"\']+)["\']', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def check_version_consistency() -> list[dict]:
+    """C7: 核心文档声明的「当前版本」必须与 pyproject.toml 一致
+
+    对抗性审查要点（Wave 6）：旧实现把核心文档里出现的**所有** `vX.Y.Z` 都当成
+    「当前版本声明」，再要求全局唯一——任何带发布历史的 README 都必然恒报
+    （本项目 5 条历史更新说明会被判成「互相矛盾」，含被弃用的 2.1.1~2.1.4）。
+    README 首屏本就声明「版本以 pyproject.toml 为唯一来源，请勿硬编码版本号」，
+    因此判据只认「当前版本 / 当前里程碑 / 版本：」这类**显式声明位**：
+    历史更新说明是记录，不构成声明；全文没有声明位即无矛盾可言。
+
+    另有意排除 `docs/文档管理规范.md`：它用 v2.10 给自己编号，与产品版本是
+    两个命名空间，混在一起比对必然互相误伤。
+    """
+    issues: list[dict] = []
+    source = _declared_package_version()
+    if source is None:
         issues.append(
             {
                 "type": "C7",
-                "file": "README.md/AGENTS.md/CLAUDE.md",
+                "file": "pyproject.toml",
                 "line": 0,
-                "detail": f"版本号声明不一致: {sorted(unique_versions)}（pyproject.toml 声明: {sorted(declared_versions) or '未知'}）",
+                "detail": "pyproject.toml 未声明 version，C7 无法判定（唯一来源缺失）",
             }
         )
+        return issues
+    for name in C7_CORE_DOCS:
+        doc = ROOT / name
+        if not doc.exists():
+            continue
+        for i, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1):
+            if not CURRENT_VERSION_KEYWORD_RE.search(line):
+                continue
+            for m in VERSION_TOKEN_RE.finditer(line):
+                found = m.group(1)
+                if found != source:
+                    issues.append(
+                        {
+                            "type": "C7",
+                            "file": name,
+                            "line": i,
+                            "detail": (
+                                f"当前版本声明 v{found} 与 pyproject.toml 的 {source} 不一致"
+                                "（版本唯一来源见 README 首屏；历史发布说明除外）"
+                            ),
+                        }
+                    )
     return issues
 
 

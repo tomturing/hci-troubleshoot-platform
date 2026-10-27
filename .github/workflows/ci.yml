@@ -154,6 +154,7 @@ jobs:
               - 'scripts/ci/check_docs_rot.py'
               - 'scripts/ci/test_check_docs_rot_changed_only.py'
               - 'scripts/ci/test_check_docs_rot_semantics.py'
+              - 'scripts/ci/test_check_docs_rot_placeholders_version.py'
               - 'scripts/ci/check_docs_naming.py'
               - 'scripts/ci/test_check_docs_naming.py'
               - 'scripts/ci/check_docs_frontmatter.py'
@@ -196,6 +197,7 @@ jobs:
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
             scripts/ci/test_check_docs_rot_semantics.py \
+            scripts/ci/test_check_docs_rot_placeholders_version.py \
             scripts/ci/check_docs_rot.py \
             scripts/ci/check_docs_naming.py \
             scripts/ci/test_check_docs_naming.py \
@@ -222,6 +224,7 @@ jobs:
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
             scripts/ci/test_check_docs_rot_semantics.py \
+            scripts/ci/test_check_docs_rot_placeholders_version.py \
             scripts/ci/check_docs_rot.py \
             scripts/ci/check_docs_naming.py \
             scripts/ci/test_check_docs_naming.py \
@@ -241,6 +244,7 @@ jobs:
             scripts/ci/test_env_repo_sync_contract.py \
             scripts/ci/test_check_docs_rot_changed_only.py \
             scripts/ci/test_check_docs_rot_semantics.py \
+            scripts/ci/test_check_docs_rot_placeholders_version.py \
             scripts/ci/test_check_docs_naming.py \
             scripts/ci/test_check_docs_frontmatter.py \
             scripts/ci/test_check_docs_changelog.py \
