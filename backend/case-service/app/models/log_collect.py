@@ -60,6 +60,14 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     # 代传状态与任务主状态机解耦：主状态反映业务阶段，relay_status 反映归档结果
     relay_status = Column(String(16), nullable=False, default="none", server_default="'none'")
     relay_updated_at = Column(DateTime(timezone=True), nullable=True)
+    # 交付状态与采集状态正交：status 说"采集走到哪一步"，delivery_status 说"产物是否真到了平台"。
+    # 二者混用一个字段会重演 2026-10-27 的假完成——节点报 completed 就写 completed，
+    # 而平台侧一个字节都没有。补交付必须能独立记录、独立重试。
+    delivery_status = Column(String(16), nullable=False, default="none", server_default="'none'")
+    delivery_started_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_finished_at = Column(DateTime(timezone=True), nullable=True)
+    delivery_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    delivery_error = Column(Text, nullable=True)
     # 清理：平台只标记与告警，绝不自动删除，也不提供删除 API
     cleanup_state = Column(String(16), nullable=False, default="none", server_default="'none'")
     cleanup_reason = Column(String(64), nullable=True)

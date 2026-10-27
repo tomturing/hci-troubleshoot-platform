@@ -203,6 +203,26 @@ class LogCollectService:
         await self.repository.refresh(task)
         return task
 
+    async def begin_delivery(self, task_id) -> LogCollectTask:
+        """登记一次交付尝试，**不动 status**。
+
+        为什么必须只动 delivery_* ：``status`` 是采集结论（completed 表示 acli 采完了），
+        ``delivery_status`` 是产物去向。补交付发生在采集之后，改 status 会把
+        "采集已完成"这个真实结论抹掉——2026-10-27 现场正是因为没有这层区分，
+        才出现 completed + 平台零产物，而界面无处表达"采完了但没传上去"。
+        """
+        task = await self.get_task(task_id)
+        now = datetime.now(UTC)
+        task.delivery_status = "queued"
+        task.delivery_started_at = now
+        task.delivery_finished_at = None
+        task.delivery_error = None
+        task.delivery_attempts = (task.delivery_attempts or 0) + 1
+        task.updated_at = now
+        await self.repository.flush()
+        await self.repository.refresh(task)
+        return task
+
     async def cancel_task(self, task_id, reason: str | None = None) -> LogCollectTask:
         task = await self.get_task(task_id)
         if task.status in TERMINAL_STATUSES:
