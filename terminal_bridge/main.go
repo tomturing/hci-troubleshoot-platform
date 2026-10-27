@@ -397,6 +397,14 @@ type InMessage struct {
 	TransferTotalSize     int64  `json:"total_size,omitempty"`     // 压缩包总大小
 	TransferUploadedParts []int  `json:"uploaded_parts,omitempty"` // 平台已收到的分片（续传跳过）
 	TransferLocalPath     string `json:"local_path,omitempty"`     // 可选：客户机落地路径
+	// TransferDeliveryMode 决定交付前是否等采集：
+	//   collect（默认）—— 采集进行中，先只读 progress 等它收完再拉包；
+	//   direct        —— 用户显式要求"补交付已有包"，跳过等待，直接 stat 校验后拉包。
+	// 为什么必须由调用方显式声明：acli progress 是节点全局态、不带任务身份，
+	// 单看它能拿到的是"上一次采集的完成态"（2026-10-27 现场：新任务 4 秒即被判完成）。
+	TransferDeliveryMode string `json:"delivery_mode,omitempty"`
+	// TransferTLSInsecure 由前端在用户确认"该平台使用自签证书"后置位；bridge 只对本次交付放宽校验，不写全局状态。
+	TransferTLSInsecure bool `json:"tls_insecure,omitempty"`
 	// JobID 供 delivery_status / resume / cancel 定位作业（作业化后前端不再等待长任务）。
 	JobID string `json:"job_id,omitempty"`
 

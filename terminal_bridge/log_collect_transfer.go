@@ -105,6 +105,52 @@ func validUploadedParts(raw []int, partCount int) map[int]bool {
 	return uploaded
 }
 
+// buildPullCommand 构造从节点顺序读取的远端命令。
+//
+// 为什么是 `tail -c +N` 而不是 SFTP/range：HCI 侧实测只有 GNU tail 可用，
+// 且没有可依赖的 range 支持；`tail -c +N` 的 N 是 **1-based** 起始字节，
+// 所以本地已有 offset 字节时必须传 offset+1，差一会导致重传首字节或漏一字节，
+// 两者都会让最终的包摘要对不上，却要等整个包传完才暴露。
+//
+// 路径仍走 shellQuote：命令进的是远端 shell，路径来自平台下发的 archive_path，
+// 不因为"平台可信"就放弃转义。
+func buildPullCommand(remotePath string, offset int64) string {
+	return fmt.Sprintf("tail -c +%d %s", offset+1, shellQuote(remotePath))
+}
+
+// pullStart 描述一次下载的起点决策。
+type pullStart struct {
+	// Offset 是本次从节点读取的起始字节位置（本地已有字节数）。
+	Offset int64
+	// Discard 为真表示本地残包不可信，必须先删除再从头下载。
+	Discard bool
+	// Complete 为真表示本地已持有完整包，无需任何网络读取。
+	Complete bool
+}
+
+// resolvePullStart 依据两个物理事实决定续传起点：本地文件大小、远端源包大小。
+//
+// 三种边界各自的含义：
+//   - 本地为空或小于源包：正常续传，从已有字节处接着读；
+//   - 本地恰好等于源包：已传完，直接收工（重跑交付时能省掉整包重传）；
+//   - 本地大于源包：**必定**不是本次的包——同一份数据不可能是自己的前缀，
+//     只能是被同名覆盖/截断过的旧产物，追加进去会得到永远校验不过的坏包。
+//
+// remoteSize <= 0 表示远端大小未知（stat 失败）：此时无法判定完成，
+// 也不该丢弃本地数据（可能是正常的半包），一律按续传处理。
+func resolvePullStart(localSize, remoteSize int64) pullStart {
+	if remoteSize <= 0 {
+		return pullStart{Offset: localSize}
+	}
+	if localSize > remoteSize {
+		return pullStart{Offset: 0, Discard: true}
+	}
+	if localSize == remoteSize {
+		return pullStart{Offset: localSize, Complete: true}
+	}
+	return pullStart{Offset: localSize}
+}
+
 // pullArchive 把 HCI 上的压缩包续传到本地。
 //
 // 断点依据是「本地文件已有大小」：HCI 侧用 `tail -c +offset+1` 从断点继续读，
@@ -120,19 +166,19 @@ func (s *SSHSession) pullArchive(
 		return 0, err
 	}
 
-	var offset int64
+	var localSize int64
 	if info, err := os.Stat(localPath); err == nil {
-		offset = info.Size()
+		localSize = info.Size()
 	}
-	// 本地残留比源包还大，说明是不同任务的旧文件：丢弃重来。
-	if totalSize > 0 && offset > totalSize {
+	start := resolvePullStart(localSize, totalSize)
+	if start.Discard {
 		os.Remove(localPath)
-		offset = 0
 	}
-	if totalSize > 0 && offset == totalSize {
-		onProgress(offset, totalSize)
-		return offset, nil
+	if start.Complete {
+		onProgress(start.Offset, totalSize)
+		return start.Offset, nil
 	}
+	offset := start.Offset
 
 	session, err := s.client.NewSession()
 	if err != nil {
@@ -145,7 +191,7 @@ func (s *SSHSession) pullArchive(
 		return offset, fmt.Errorf("获取下载管道失败: %w", err)
 	}
 	// tail -c +N 的 N 为 1-based 起始字节位置。
-	command := fmt.Sprintf("tail -c +%d %s", offset+1, shellQuote(remotePath))
+	command := buildPullCommand(remotePath, offset)
 	if err := session.Start(command); err != nil {
 		return offset, fmt.Errorf("启动下载失败: %w", err)
 	}

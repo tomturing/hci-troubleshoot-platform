@@ -21,7 +21,14 @@ import {
   type LogCollectModule,
   type LogCollectTask,
   type RelayStatus,
+  type UploadInitResult,
 } from '@/api/logCollect'
+import {
+  buildDeliverySubmitPayload,
+  isCertificateUntrusted,
+  platformCertTrusted,
+  rememberPlatformCertTrust,
+} from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import {
   buildSyncNotice,
@@ -153,6 +160,13 @@ const stage = ref<Stage>('idle')
 const failedStep = ref(0)
 const probeResult = ref<ProbeResult | null>(null)
 const pathMode = ref<'P1' | 'P2' | ''>('')
+/**
+ * 用户是否手动选过交付路径。
+ *
+ * 探测结果只提供**默认值**：可达性判据可能因探测时机（5888 临时抖动、ACL 未放通）
+ * 而误判，用户若已明确选择就必须尊重，否则每次点「开始收集」都被静默改回。
+ */
+const pathModeTouched = ref(false)
 const currentTask = ref<LogCollectTask | null>(null)
 // 面板视图：form = 新建收集；result = 该工单已完成收集的只读结果
 const viewMode = ref<'form' | 'result'>('form')
@@ -384,6 +398,29 @@ const resultDeliveryText = computed(() => {
   if (resultMode.value === 'acli_direct') return 'P1 直传日志服务器'
   if (resultMode.value === 'bridge_relay') return 'P2 经平台中转'
   return '未记录'
+})
+
+/**
+ * 交付路径的选择说明。
+ *
+ * 两条路径不是 UI 偏好，而是**由网络可达性决定的物理选择**：
+ * P1 要求 HCI 自己能连日志服务器 5888；P2 改由客户机经平台代传，只要求 HCI 能连平台。
+ * 因此文案必须把"代价"讲清楚（P1 平台不留副本），而不是只给一个枚举值。
+ *
+ * 探测结论只用来**提示风险**，不用来禁止选择：可达性是时刻变化的（ACL 临时放通、
+ * 5888 抖动都会让探测误判），用户比探测更清楚现场网络。
+ */
+const pathModeHint = computed(() => {
+  const reachable = probeResult.value?.log_server_reachable
+  if (pathMode.value === 'P1') {
+    return reachable
+      ? 'acli 插件从 HCI 直接上传到日志服务器：省一跳中转，但平台不留副本，事后无法回看/下载'
+      : '探测显示 HCI 当前无法访问日志服务器，P1 可能在采集完成后上传失败；拿不准请选 P2'
+  }
+  if (pathMode.value === 'P2') {
+    return 'HCI 只生成压缩包，由客户机经平台中转到日志服务器：平台留副本，可回看/下载，但需要客户机在线'
+  }
+  return '未选择时按探测结果自动决定'
 })
 
 /**
@@ -1058,7 +1095,10 @@ async function handleStart() {
       await confirmInstall(ws)
     }
 
-    pathMode.value = probeResult.value.log_server_reachable ? 'P1' : 'P2'
+    // 只在用户没手选过时用探测结论兜底；已手选则原样保留（见 pathModeTouched 注释）
+    if (!pathModeTouched.value || !pathMode.value) {
+      pathMode.value = probeResult.value.log_server_reachable ? 'P1' : 'P2'
+    }
 
     // 守卫前把「最近一条任务」接回面板：failed 记录若未恢复，平台态为空会把
     // adopt 误判成 warn_node_busy（文案说"非本平台下发"），用户被引导去取消重试，
@@ -1769,33 +1809,24 @@ async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
   const totalSize = Number(statResult.log_data?.size || 0)
   if (totalSize <= 0) throw new Error('压缩包大小异常')
 
-  // 2) 平台初始化分片会话（幂等，重试会返回已传分片）
-  const session = await logCollectApi.initUpload(task.task_id, { total_size: totalSize })
+  // 2) 平台签发分片会话：走 /deliver 而非 /uploads。
+  //    /deliver 由服务端负责"会话大小不一致"的自愈与会话记账；
+  //    /uploads 会把 409 抛给前端，而前端从不 abort → 会话就此死锁（现场复现过）。
+  const delivered = await logCollectApi.deliverTask(task.task_id, {
+    total_size: totalSize,
+    source_path: archivePath,
+  })
 
   // 3) 交付作业化：submit 立刻返回 job_id，执行权交给 bridge。
   //    这一步之后浏览器关掉也不影响交付；旧实现要在这里挂 2 小时等 transfer 回包。
   stage.value = 'pulling'
   currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'uploading' })
-  const submitted = await sendAndWait(
-    ws,
-    'delivery_submit',
-    {
-      execId: task.task_id,
-      sourcePath: archivePath,
-      platformUrl: window.location.origin,
-      uploadToken: session.upload_token,
-      chunkSize: session.chunk_size,
-      partCount: session.part_count,
-      totalSize,
-      uploadedParts: session.uploaded_parts,
-    },
-    30000,
-  )
-  if (submitted.status !== 'ok') throw new Error(submitted.message || '交付作业提交失败')
-  const jobId = String((submitted.log_data as { job_id?: string } | null)?.job_id || `dj-${task.task_id}`)
-
-  // 4) 轮询作业状态（2s 一次），进度由 bridge 侧计算，前端只负责展示
-  await waitDeliveryJob(ws, jobId, token)
+  await runDeliveryJob(ws, token, {
+    task,
+    sourcePath: archivePath,
+    totalSize,
+    session: delivered.upload,
+  })
 
   // 5) 合并与代传由平台在数据面 complete 后自动触发（bridge 用上传令牌收尾），
   //    前端只等 relay 终态：这最后一步也不再依赖浏览器一直在线。
@@ -1863,6 +1894,99 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
     await sleep(2000)
   }
   throw new Error('交付超过 2 小时仍未完成，作业仍在 bridge 侧继续，可稍后刷新查看')
+}
+
+/**
+ * 向用户确认"该平台地址使用自签证书"。
+ *
+ * 文案必须同时说清三件事：为什么会失败（自签 CA 不可能在客户机系统信任库里）、
+ * 授权范围（仅本次浏览器会话 + 仅本任务）、代价（中间人可被冒充）。
+ * 只说"是否信任证书"会让用户无从判断。
+ */
+async function confirmTrustPlatformCertificate(origin: string): Promise<boolean> {
+  try {
+    await ElMessageBox.confirm(
+      `平台（${origin}）使用自签证书，客户机的系统根证书库不会预置这份 CA，` +
+        '因此上传必然报 x509 证书不受信。\n' +
+        '确认这是你正在使用的平台地址后，本次上传将跳过证书校验；授权仅在当前浏览器会话内有效，关闭页面即失效。',
+      '平台证书不受信',
+      {
+        confirmButtonText: '确认并继续上传',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 提交一次交付作业，返回 job_id。TLS 授权随作业下发，不写任何全局状态。
+ *
+ * 载荷由 `buildDeliverySubmitPayload` 构造并单测覆盖：漏传字段的代价是
+ * 整场上传失败（如 `tls_insecure`），不能在组件里手写。
+ */
+async function submitDeliveryJob(
+  ws: WebSocket,
+  args: { task: LogCollectTask; sourcePath: string; totalSize: number; session: UploadInitResult },
+  tlsInsecure: boolean,
+): Promise<string> {
+  const payload = buildDeliverySubmitPayload(
+    {
+      taskId: args.task.task_id,
+      sourcePath: args.sourcePath,
+      totalSize: args.totalSize,
+      session: args.session,
+      mode: 'collect',
+    },
+    window.location.origin,
+    tlsInsecure,
+  )
+  const submitted = await sendAndWait(ws, 'delivery_submit', { ...payload }, 30000)
+  if (submitted.status !== 'ok') throw new Error(submitted.message || '交付作业提交失败')
+  return String(
+    (submitted.log_data as { job_id?: string } | null)?.job_id || `dj-${args.task.task_id}`,
+  )
+}
+
+/**
+ * 提交并等待交付作业，证书不受信时向用户确认一次后自动重试。
+ *
+ * 为什么先试严格模式、失败后再问：
+ * 证书是否受信是**结果**不是预测——前端既拿不到 bridge 的信任链，也无法预判
+ * 客户机是否装过该 CA（有的现场确实装过）。先按严格走，只有真的 x509 才打扰用户，
+ * 这样"证书受信"的正常现场不会被多余弹窗拦一道。
+ *
+ * 为什么重试是安全的：job 进入终态后 `submit` 会替换并重新入队，已传分片从平台
+ * `/uploads` 重新读回，因此是**续传**而不是从头再来。
+ */
+async function runDeliveryJob(
+  ws: WebSocket,
+  token: number,
+  args: { task: LogCollectTask; sourcePath: string; totalSize: number; session: UploadInitResult },
+): Promise<void> {
+  const origin = window.location.origin
+  let tlsInsecure = platformCertTrusted(origin)
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const jobId = await submitDeliveryJob(ws, args, tlsInsecure)
+    try {
+      await waitDeliveryJob(ws, jobId, token)
+      return
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      // 只在"首次 + 尚未授权 + 确属证书问题"时打扰用户，其余错误原样抛出
+      if (attempt > 0 || tlsInsecure || !isCertificateUntrusted(message)) throw err
+      if (!(await confirmTrustPlatformCertificate(origin))) throw err
+      rememberPlatformCertTrust(origin)
+      tlsInsecure = true
+      // 以平台记录为准刷新已传分片：失败可能发生在第 N 片，续传不能靠旧快照
+      args.session = await logCollectApi.getUploadStatus(args.task.task_id)
+      stage.value = 'uploading'
+    }
+  }
 }
 
 /** 归档由服务端后台任务驱动，前端轮询超时只代表"结果未知"，不代表任务失败。 */
@@ -2306,6 +2430,19 @@ onBeforeUnmount(() => {
             />
             <div class="lc-hint">日志按天归档，将收集所选日期全天日志（最多 30 天）</div>
           </el-form-item>
+          <el-form-item label="交付路径">
+            <!--
+              必须可改：探测到的可达性只代表"那一刻"，ACL 临时放通、5888 抖动都会误判；
+              而两条路径的代价不同（P1 平台不留副本），只有用户能权衡。
+            -->
+            <el-radio-group v-model="pathMode" :disabled="running" @change="pathModeTouched = true">
+              <el-radio-button value="P2">P2 经平台中转</el-radio-button>
+              <el-radio-button value="P1">P1 直传日志服务器</el-radio-button>
+            </el-radio-group>
+            <div class="lc-hint" :class="{ 'lc-hint-warn': pathMode === 'P1' && probeResult && !probeResult.log_server_reachable }">
+              {{ pathModeHint }}
+            </div>
+          </el-form-item>
           <el-form-item label="发起节点">
             <!--
               只读展示：发起节点就是当前 SSH 会话连的那台机器，用户改不动、也不该改。
@@ -2549,6 +2686,10 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
   line-height: 1.5;
   margin-top: 4px;
+}
+/* 选择与探测结论冲突时只加色不改文案：提示必须同时说清"劝你别选"和"但你仍可以选" */
+.lc-hint-warn {
+  color: var(--el-color-warning);
 }
 /* 探测元信息：时间 / 命中的二进制 / 重新探测，弱化到不抢描述表的注意力 */
 .lc-probe-meta {

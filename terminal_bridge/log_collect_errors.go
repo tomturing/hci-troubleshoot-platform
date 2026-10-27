@@ -70,6 +70,9 @@ const (
 	// 前端按同一个 problem 结构展示，避免出现裸 500。
 	ErrPlatStorageUnwritable = "LC-PLATFORM-007"
 	ErrPlatStorageLow        = "LC-PLATFORM-008"
+	// 交付并发闸门：同一任务已有交付作业在跑时拒绝重复签发。
+	// 由 case-service 的 POST /tasks/{id}/deliver 产生。
+	ErrPlatDeliveryInFlight = "LC-PLATFORM-009"
 )
 
 // errorMeta 与 JSON 目录字段一一对应（retryable 统一为字符串：true/false/manual）。
@@ -81,6 +84,8 @@ type errorMeta struct {
 }
 
 var logCollectErrorMeta = map[string]errorMeta{
+	ErrPlatDeliveryInFlight: {"PLATFORM", "customer", "true", "api"},
+
 	ErrEnvArchUnsupported: {"ENV", "customer", "false", "probe"},
 	ErrEnvArchProbeFailed: {"ENV", "customer", "true", "probe"},
 	ErrEnvAcliMissing:     {"ENV", "customer", "true", "probe"},

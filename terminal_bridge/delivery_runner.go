@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -32,6 +33,10 @@ const (
 	deliveryJobTimeout = 6 * time.Hour
 	// 每传多少片落一次盘：太频繁会把磁盘打满（5120 片 × 写盘），太稀疏会丢进度。
 	deliverySaveEveryParts = 10
+	// 节点与客户机的时钟偏差容忍。判断"包是否属于本次采集"靠 mtime 与任务开始时间比较，
+	// 两边时钟不可能严格对齐；5 分钟既足以吸收常见 NTP 漂移，
+	// 又远小于一次真实采集的时长（十几分钟起），不会放过串味的旧包。
+	deliveryClockSkewTolerance = 5 * time.Minute
 )
 
 // deliveryRunner 是进程级单例。
@@ -280,7 +285,15 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 
 	switch job.Phase {
 	case phaseWaitingCollect, "":
-		if err := r.waitCollect(ctx, session, job); err != nil {
+		// 交付只有两条物理前提：节点上有完整包、平台有会话。
+		// "采集是否仍在跑"与"能不能传这个已有的包"没有因果关系，
+		// 所以补交付（Direct）必须跳过 waitCollect，否则会被节点全局的
+		// progress 态拖住甚至误判——那正是 2026-10-27 现场 4 秒"采集完成"的来源。
+		if job.Direct {
+			if err := r.prepareDirect(ctx, session, job); err != nil {
+				return err
+			}
+		} else if err := r.waitCollect(ctx, session, job); err != nil {
 			return err
 		}
 		fallthrough
@@ -315,6 +328,12 @@ func (r *deliveryRunner) sessionFor(job *deliveryJob) *SSHSession {
 // waitCollect 只读 progress，直到 acli 报 done == total。
 //
 // 硬约束：**绝不 cancel、绝不发 create**——采集是节点侧的事，交付只负责搬运。
+//
+// ⚠️ 完成判据必须叠加"包归属"：`acli log_collect progress` 是**节点全局态、不带任务身份**
+// （bridge_execution_logs 里 task_id 恒为空）。新任务 create 后它立刻返回上一次的
+// `done=1/total=1`，只看 Done>=Total 就会在 4 秒内把上一次的完成当成本次完成，
+// 然后去拉一个已被覆盖/不存在的包（2026-10-27 现场 48f890d5）。
+// 归属判据：磁盘上那个包的 mtime 不能早于本次任务开始时间。
 func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, job *deliveryJob) error {
 	deadline := time.Now().Add(deliveryCollectTimeout)
 	interval := 10 * time.Second
@@ -326,9 +345,26 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 		if err == nil {
 			progress := parseLogCollectProgress(output)
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
+				sourcePath := firstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
+				if sourcePath != "" {
+					// 串味判定：包比任务还老 ⇒ 这是上一次采集的产物，不能当本次结果。
+					if startedAt, ok := job.startedAt(); ok {
+						if mtime, statErr := statArchiveMTime(ctx, session, sourcePath); statErr == nil {
+							if mtime.Before(startedAt.Add(-deliveryClockSkewTolerance)) {
+								return fmt.Errorf(
+									"节点上的压缩包（%s，修改于 %s）早于本次采集开始（%s），判定为上一次任务的产物；"+
+										"请等本次采集真正结束后再交付，或确认节点上确有本次的包",
+									sourcePath,
+									mtime.Local().Format("2006-01-02 15:04:05"),
+									startedAt.Local().Format("2006-01-02 15:04:05"),
+								)
+							}
+						}
+					}
+				}
 				r.mu.Lock()
 				if job.SourcePath == "" {
-					job.SourcePath = progress.ArchivePath
+					job.SourcePath = sourcePath
 				}
 				job.Phase = phasePulling
 				r.mu.Unlock()
@@ -349,6 +385,93 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 			interval += 10 * time.Second
 		}
 	}
+}
+
+// prepareDirect 为"补交付"准备源包：不碰 progress，只量物理事实。
+//
+// 为什么要校验 zip 结束标记：acli 边采集边写 zip，"文件存在"不等于"包完整"。
+// 只 stat 大小会把半截包传上去，用户下载时才发现打不开——那时已经白跑一趟
+// 460MB~20GB 的传输。EOCD（PK\x05\x06）在 zip 写完时必然出现在尾部，
+// zip64 同样保留该标记（只是字段填 0xFFFF/0xFFFFFFFF），因此判据对所有尺寸都成立。
+func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession, job *deliveryJob) error {
+	sourcePath := strings.TrimSpace(job.SourcePath)
+	if sourcePath == "" {
+		return fmt.Errorf("缺少源包路径，无法交付")
+	}
+
+	output, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(sourcePath)))
+	if err != nil {
+		return fmt.Errorf("源包不可读（%s）：%w", sourcePath, err)
+	}
+	size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+	if parseErr != nil || size <= 0 {
+		return fmt.Errorf("源包大小异常（stat=%q，路径 %s）", strings.TrimSpace(output), sourcePath)
+	}
+
+	if err := verifyArchiveComplete(ctx, session, sourcePath); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	job.SourcePath = sourcePath
+	// 以节点上的真实大小为准：前端 stat 与这里可能来自不同时刻，
+	// 用旧值会把末片长度算错，导致最后一片永远校验不过。
+	job.SourceSize = size
+	job.Phase = phasePulling
+	r.mu.Unlock()
+	_ = r.store.save(job)
+
+	blog("INFO", "delivery.direct_ready", "补交付源包校验通过，开始拉取", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "source_path": sourcePath, "size": size,
+	})
+	return nil
+}
+
+// verifyArchiveComplete 通过 zip 尾部的 EOCD 标记判断包是否写完。
+// 只看尾部 64KiB：EOCD 在最末尾（含最大 65535 字节注释），无需读全文件。
+func verifyArchiveComplete(ctx context.Context, session *SSHSession, path string) error {
+	command := fmt.Sprintf(
+		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
+		shellQuote(path),
+	)
+	output, exitCode, err := session.runQuickCommand(ctx, command)
+	if err != nil {
+		return fmt.Errorf("校验压缩包完整性失败：%w", err)
+	}
+	// grep -c 命中返回 0；未命中返回 1（此时 exitCode != 0）
+	if strings.TrimSpace(output) == "0" || exitCode != 0 {
+		return fmt.Errorf("压缩包不完整（尾部无 zip 结束标记），可能仍在采集写入中：%s", path)
+	}
+	return nil
+}
+
+// statArchiveMTime 读取节点上文件的修改时间，用于判断包归属。
+func statArchiveMTime(ctx context.Context, session *SSHSession, path string) (time.Time, error) {
+	output, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", shellQuote(path)))
+	if err != nil {
+		return time.Time{}, err
+	}
+	epoch, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+	if parseErr != nil {
+		return time.Time{}, fmt.Errorf("解析 mtime 失败：%q", strings.TrimSpace(output))
+	}
+	return time.Unix(epoch, 0), nil
+}
+
+// startedAt 解析 job 的创建时间；解析不出来时返回 false（调用方跳过归属判定，
+// 宁可少判一次也不误杀正常交付）。
+func (j *deliveryJob) startedAt() (time.Time, bool) {
+	raw := strings.TrimSpace(j.CreatedAt)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 // pull 把包从 HCI 拉到本地；断点依据是本地文件大小（tail -c +N）。
@@ -388,6 +511,30 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 	return nil
 }
 
+// platformHTTPClient 构造访问平台的 HTTP 客户端。
+//
+// 为什么需要它：平台在客户内网普遍用自签证书（staging 实测 acli.sangfor.com.cn:4443），
+// 客户机的系统根证书库不可能预置该 CA，默认 Transport 必然
+// `x509: certificate signed by unknown authority`，且失败点在分片 1——用户看到的是
+// "上传中继失败"，与真实原因（证书不受信）毫无关系。
+//
+// 为什么不做全局开关：放宽校验的范围必须与"用户这一次的明确授权"等长。
+// 授权随 job 落盘（TLSInsecure），只影响本任务的 client；job 结束即失效，
+// 用户撤销后新 job 自动回到严格校验，不存在"一次放宽永久放宽"。
+func platformHTTPClient(job *deliveryJob, timeout time.Duration) *http.Client {
+	client := &http.Client{Timeout: timeout}
+	if job == nil || !job.TLSInsecure {
+		return client
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{
+		// #nosec G402 -- 自签证书内网平台，由用户按任务显式授权
+		InsecureSkipVerify: true,
+	}
+	client.Transport = transport
+	return client
+}
+
 // upload 分片上传；并发度由资源决定，已传分片自动跳过。
 func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 	if job.UploadToken == "" || job.PlatformURL == "" {
@@ -404,7 +551,7 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 
 	uploaded := job.uploadedSet()
 	parts := chunkConcurrencyFor(r.concurrency, job.ChunkSize, availableMemoryMB())
-	client := &http.Client{Timeout: logCollectPartTimeout}
+	client := platformHTTPClient(job, logCollectPartTimeout)
 
 	var (
 		errMu     sync.Mutex
@@ -431,18 +578,19 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 				cancel()
 				return
 			}
-			// job 是共享结构（status() 会并发读快照），所有修改必须在 r.mu 下完成。
+			// job 是共享结构（status() 会并发读快照，save() 也会 marshal 它），
+			// 所有对 job 的读写都必须在 r.mu 下完成：addUploadedPart 改 UploadedParts，
+			// 而 store.save 会 marshal 整个 job（含 UploadedParts）。锁外 save 会与
+			// 其它 worker 的 addUploadedPart 形成 data race（CI -race 已抓到）。
 			r.mu.Lock()
 			job.addUploadedPart(number)
 			sinceSave++
 			shouldSave := sinceSave >= deliverySaveEveryParts
 			if shouldSave {
 				sinceSave = 0
-			}
-			r.mu.Unlock()
-			if shouldSave {
 				_ = r.store.save(job)
 			}
+			r.mu.Unlock()
 		}
 	}
 
@@ -535,7 +683,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Upload-Token", job.UploadToken)
 
-	client := &http.Client{Timeout: logCollectPartTimeout}
+	client := platformHTTPClient(job, logCollectPartTimeout)
 	response, err := client.Do(request)
 	if err != nil {
 		return err

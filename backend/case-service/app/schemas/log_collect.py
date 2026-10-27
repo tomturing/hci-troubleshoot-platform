@@ -40,6 +40,22 @@ LogCollectModule = Literal[
 # 原 platform_direct（平台直传）对应已废弃的 P2，不再接受。
 UploadMode = Literal["acli_direct", "bridge_relay", "none"]
 
+# 交付状态：描述「产物是否真的从节点到达平台」。
+#
+# 与 ``LogCollectStatus`` 正交，故意不复用：
+#   - status=completed 只说明 acli 报采集完成，不代表平台收到了任何字节
+#     （2026-10-27 任务 630a39bb 即 completed + 零产物 + 无 delivery.submit）；
+#   - 补交付可以在任务已 completed/failed 之后重复执行，只推进 delivery_status。
+DeliveryStatus = Literal[
+    "none",  # 从未发起交付
+    "queued",  # 已签发上传会话，等 bridge 执行
+    "pulling",  # bridge 正从节点拉包
+    "uploading",  # 正在分片上传到平台
+    "relaying",  # 平台已合并，正在代传到日志服务器
+    "delivered",  # 终态：已归档
+    "failed",  # 终态：失败（可再次发起）
+]
+
 # 活跃状态：同一工单只允许一个（与部分唯一索引一致）
 ACTIVE_STATUSES: frozenset[str] = frozenset(
     {"pending", "probing", "installing", "collecting", "packaging", "uploading"}
@@ -169,6 +185,9 @@ class LogCollectTaskPatch(BaseModel):
     archive_path: str | None = None
     archive_size: int | None = Field(default=None, ge=0)
     archive_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # 交付状态可由前端/bridge 回写；与 status 正交，因此不参与状态机校验
+    delivery_status: DeliveryStatus | None = None
+    delivery_error: str | None = None
     detail: dict | None = None
     error_code: str | None = Field(default=None, max_length=64)
     error_message: str | None = None
@@ -222,6 +241,12 @@ class LogCollectTaskResponse(BaseModel):
     relay_chunk_index: int | None = None
     relay_chunk_total: int | None = None
     relay_restarts: int = 0
+    # 交付状态（与采集状态正交）：补交付可重复执行，只改这些字段、不动 status
+    delivery_status: str = "none"
+    delivery_started_at: datetime | None = None
+    delivery_finished_at: datetime | None = None
+    delivery_attempts: int = 0
+    delivery_error: str | None = None
     detail: dict = Field(default_factory=dict)
     error_code: str | None = None
     error_message: str | None = None
@@ -256,6 +281,37 @@ class UploadInitResponse(BaseModel):
     total_size: int
     uploaded_parts: list[int]
     missing_parts: list[int]
+
+
+class DeliverRequest(BaseModel):
+    """补交付请求：把节点上**已有的**包重新交付一次。
+
+    只需要两个物理事实：包多大、包在哪。二者都由前端从 bridge 的 stat 结果直接取得，
+    平台不再向节点要任何数据——平台本来就够不着客户内网的 HCI。
+    """
+
+    total_size: int = Field(ge=1, description="节点上压缩包的字节数（bridge stat 结果）")
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_path: str | None = Field(
+        default=None,
+        max_length=512,
+        description="节点上压缩包路径，仅登记给 bridge 使用；平台不访问该路径",
+    )
+    force: bool = Field(default=False, description="已交付是否强制重传")
+
+
+class DeliverResponse(BaseModel):
+    """补交付的签发结果。
+
+    ``already_delivered`` 用于让前端区分"这次真的开了个新会话"与"早传过了"，
+    避免把幂等短路误报成"上传成功"。
+    """
+
+    already_delivered: bool = False
+    delivery_status: str = "none"
+    delivery_attempts: int = 0
+    upload: UploadInitResponse
+    source_path: str | None = None
 
 
 class UploadStatusResponse(BaseModel):

@@ -510,6 +510,17 @@
       "http_status": 503,
       "user_hint": "平台日志存储空间不足（错误详情已给出所需与可用空间），请清理平台日志存储或扩容后重试。",
       "ops_hint": "合并阶段需要与包体等量的临时空间（峰值约 2 倍包体）；检查 LOG_COLLECT_STORAGE_ROOT 所在卷剩余容量。"
+    },
+    {
+      "code": "LC-PLATFORM-009",
+      "layer": "PLATFORM",
+      "stage": "api",
+      "title_zh": "任务正在交付中",
+      "owner": "customer",
+      "retryable": true,
+      "http_status": 409,
+      "user_hint": "该任务正在上传或代传中，请等待当前进度结束后再点上传。",
+      "ops_hint": "delivery_status 处于 pulling/uploading/relaying；长时间不动请查 bridge 交付作业日志与 relay_status。"
     }
   ]
 }

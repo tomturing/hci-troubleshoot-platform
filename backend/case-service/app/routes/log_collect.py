@@ -17,6 +17,8 @@ from sqlalchemy.exc import IntegrityError
 from ..config import settings
 from ..repositories.log_collect_repo import LogCollectTaskRepository
 from ..schemas.log_collect import (
+    DeliverRequest,
+    DeliverResponse,
     LogCollectTaskCreate,
     LogCollectTaskListResponse,
     LogCollectTaskPatch,
@@ -243,6 +245,84 @@ async def _owned_task(task_id: UUID, client_id: str, service: LogCollectService)
     if task.created_by != client_id:
         raise _problem(TaskNotFoundError.code, "Task not found")
     return task
+
+
+@router.post("/{task_id}/deliver", response_model=DeliverResponse)
+async def deliver_task(
+    task_id: UUID,
+    payload: DeliverRequest,
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+    upload_service: LogCollectUploadService = Depends(get_upload_service),
+):
+    """补交付：为节点上**已有的**包签发上传会话，不重新采集、不改采集状态。
+
+    为什么需要独立端点
+    ------------------
+    交付的物理前提只有两条：节点上有完整包、平台有上传会话。
+    它和"采集走到哪一步"没有因果关系，因此必须能与采集状态机解耦：
+    用户真正遇到的场景是"包早就采好了，只是没传上平台"，
+    而 completed 是终态且纠正会清空产物，原设计下这种任务没有任何上传入口。
+
+    幂等与并发
+    ----------
+    - 已 delivered 且未 ``force``：直接回现状，不重复开会话（避免误报"又传了一次"）；
+    - 正在 pulling/uploading/relaying：拒绝，避免两个页面同时点导致互相 abort；
+    - 会话大小不一致（LC-TRANSFER-004）：**自动 abort 后重建**。
+      原实现把这个 409 抛给前端且前端从不 abort，会话就此死锁、只能重启整轮。
+      重建是安全的：本端点代表用户的明确交付意图，此刻不存在"另一个上传正在进行"。
+    """
+    task = await _owned_task(task_id, client_id, service)
+
+    if task.delivery_status == "delivered" and not payload.force:
+        upload = await upload_service.status(task_id)
+        return DeliverResponse(
+            already_delivered=True,
+            delivery_status=task.delivery_status,
+            delivery_attempts=task.delivery_attempts or 0,
+            upload=UploadInitResponse(**upload, upload_token=""),
+            source_path=task.archive_path or payload.source_path,
+        )
+
+    if task.delivery_status in {"pulling", "uploading", "relaying"}:
+        raise _problem(
+            "LC-PLATFORM-009",
+            f"该任务正在交付中（{task.delivery_status}），请等待当前进度结束",
+        )
+
+    try:
+        upload = await upload_service.init(
+            task,
+            total_size=payload.total_size,
+            expected_sha256=payload.expected_sha256,
+        )
+    except LogCollectUploadError as exc:
+        if getattr(exc, "status", None) != 409:
+            raise _upload_problem(exc) from exc
+        # 409 = 既有会话大小对不上。重建而不是把死锁抛给用户。
+        logger.warning(
+            "log_collect.deliver.session_size_mismatch task_id=%s detail=%s",
+            task_id,
+            exc,
+        )
+        await upload_service.abort(task_id)
+        try:
+            upload = await upload_service.init(
+                task,
+                total_size=payload.total_size,
+                expected_sha256=payload.expected_sha256,
+            )
+        except LogCollectUploadError as retry_exc:
+            raise _upload_problem(retry_exc) from retry_exc
+
+    task = await service.begin_delivery(task_id)
+    return DeliverResponse(
+        already_delivered=False,
+        delivery_status=task.delivery_status,
+        delivery_attempts=task.delivery_attempts or 0,
+        upload=UploadInitResponse(**upload),
+        source_path=payload.source_path or task.archive_path,
+    )
 
 
 @router.post("/{task_id}/uploads", response_model=UploadInitResponse)
