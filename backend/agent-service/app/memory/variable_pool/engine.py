@@ -891,6 +891,19 @@ async def sop_request_variable(
             try:
                 tool_args = var_def.get("acquisition_args") or var_def.get("acquisition_args_template") or {}
                 tool_args = _render_args_template(tool_args, context_variables)
+                # 参数模板必须是对象：历史上 051 把模板列写成了 output_path 的值 "stdout"，
+                # 渲染后原样作为 args 传入执行器，在那里触发
+                # AttributeError: 'str' object has no attribute 'get'；
+                # 该异常被"失败即接管"捕获后降级成人工弹卡，日志只剩一句
+                # 'str' object has no attribute 'get'，根因（配置写错）完全不可见。
+                # 因此在此处提前判定并抛 ValueError（走 contract_error 分支，
+                # 日志里直接指出是 acquisition_args_template 类型问题）。
+                if not isinstance(tool_args, dict):
+                    raise ValueError(
+                        f"变量 {variable_name} 的 acquisition_args_template 必须是对象，"
+                        f"当前为 {type(tool_args).__name__}（{tool_args!r}）；"
+                        '正确写法：{"command": "acli ...", "reason": "..."}'
+                    )
                 # 透传 conversation_id（CompositeToolExecutor / BridgeRelayExecutor 均需此关键字参数）
                 tool_result = await tool_executor.execute(acquisition_tool, tool_args, conversation_id=conversation_id)
                 acquired_value = _extract_value(tool_result, variable_name, output_path)

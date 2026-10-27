@@ -150,6 +150,17 @@ const resultTask = ref<LogCollectTask | null>(null)
 const historyTotal = ref(0)
 const progress = ref<ProgressSnapshot | null>(null)
 /**
+ * 本次任务过程中观测到的最大压缩包字节数（0 = 还没量到过）。
+ *
+ * 压缩包大小是「文件存在期间」的常量：打包完成后不再变化，之后每次采样只会因为
+ * 「P1 上传成功、插件自删包」而变成 0。所以正确聚合方式是取**峰值**。
+ *
+ * 为什么必须单独记住：完成判据是「上传成功」，而这一刻包恰好已被删除——
+ * 只取"完成那一份快照"的话 archive_size 必然为空（现场 Q2026101401683 的 40 条
+ * progress 事件全空）。过程中的观测值被时间冲掉了，这正是「未记录」的真正成因。
+ */
+const observedArchiveSize = ref(0)
+/**
  * 本次下发的节点报告基线（报告指纹）。
  *
  * 第一性原理：acli 的 progress 是 **ticket 维度**的，同一工单重复 create 时
@@ -840,6 +851,8 @@ function showResult(task: LogCollectTask) {
   viewMode.value = 'result'
   stage.value = 'done'
   progress.value = null
+  // 结果态的数据全部来自平台任务记录，本次会话的峰值到此为止
+  observedArchiveSize.value = 0
   relayStatus.value = 'none'
   cleanupTip.value = ''
   errorMessage.value = ''
@@ -876,6 +889,8 @@ function startRecollect() {
   currentTask.value = null
   resumedTaskId.value = null
   progress.value = null
+  // 上一轮的压缩包大小不能带进新任务，否则新包还没生成就显示旧包的大小
+  observedArchiveSize.value = 0
   // 重新收集 = 新一次下发：上一轮的基线 / 提示 / 时间戳全部作废。
   // 否则新任务头几秒会拿旧基线比对，或者继续显示上一轮的"已完成"提示。
   baselineReportHash.value = ''
@@ -918,6 +933,8 @@ async function handleStart() {
   transfer.sha256 = ''
   currentTask.value = null
   progress.value = null
+  // 新任务从 0 开始记：不继承上一次的峰值
+  observedArchiveSize.value = 0
   relayStatus.value = 'none'
   const token = ++runToken
 
@@ -1099,7 +1116,11 @@ async function readNodeSnapshot(timeoutMs = 20000, force = false): Promise<Progr
   try {
     const result = await sendAndWait(socket, 'progress', {}, timeoutMs)
     if (result.status === 'error') return null
-    return (result.log_data as ProgressSnapshot | null) ?? null
+    const snapshot = (result.log_data as ProgressSnapshot | null) ?? null
+    // 打开面板对账 / 自动刷新 / 手动刷新 全部经过这里：统一记录压缩包大小，
+    // 否则会出现"某条路径能看到大小、另一条路径看不到"的随机感。
+    rememberObservedArchiveSize(snapshot)
+    return snapshot
   } catch {
     return null
   }
@@ -1123,6 +1144,18 @@ function targetHostList(): string[] {
 function applyNodeStage(snapshot: ProgressSnapshot) {
   if (stage.value !== 'collecting') return
   if (/发送中|上传中/.test(snapshot.upload_state ?? '')) stage.value = 'uploading'
+}
+
+/**
+ * 记录一次采样到的压缩包字节数（只保留峰值，见 observedArchiveSize 的说明）。
+ *
+ * 所有拿到节点快照的入口都要走这里：打开面板对账、自动刷新、手动刷新、主流程轮询。
+ * 漏掉任何一个入口，都会出现"某条路径下能看到大小、另一条路径下看不到"的随机感。
+ */
+function rememberObservedArchiveSize(snapshot: ProgressSnapshot | null) {
+  const size = Number(snapshot?.archive_size ?? 0)
+  if (!Number.isFinite(size) || size <= observedArchiveSize.value) return
+  observedArchiveSize.value = size
 }
 
 /** 任务上持久化的基线（换端接管时从 detail 恢复）。 */
@@ -1205,8 +1238,14 @@ async function syncNodeState(
                   upload_mode:
                     currentTask.value.upload_mode ?? (currentTask.value.remote_url ? 'acli_direct' : undefined),
                   archive_path: snapshot.archive_path || currentTask.value.archive_path || undefined,
-                  // 节点侧只在包还在时量得到；已有值优先保留，避免 P2 的记录被 0 覆盖
-                  archive_size: snapshot.archive_size || currentTask.value.archive_size || undefined,
+                  // 节点侧只在包还在时量得到；已有值优先保留，避免 P2 的记录被 0 覆盖。
+                  // 兜底顺序里必须有 observedArchiveSize：判"完成"的那份快照必然量不到
+                  // （P1 上传成功即删包），只用它的话大小永远写不进去。
+                  archive_size:
+                    snapshot.archive_size ||
+                    observedArchiveSize.value ||
+                    currentTask.value.archive_size ||
+                    undefined,
                 }
               : { status: 'failed' as const, error_message: action.reason }
           currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, patch)
@@ -1382,6 +1421,8 @@ async function pollUntilCollected(
       }
       const snapshot = result.log_data as ProgressSnapshot | null
       if (snapshot) {
+        // 主流程自己直连 sendAndWait，不走 readNodeSnapshot：这里单独记一次大小。
+        rememberObservedArchiveSize(snapshot)
         // 与「刷新进度」共用同一个判定：归属 → 映射，不再另写一套完成逻辑。
         // 这里的平台态固定按"本次采集进行中"算——主流程本身就在 collecting 上跑，
         // 若读取 currentTask 的瞬时值，会在 patch 后把 completed 再判成"已归档"而空转。
@@ -1434,9 +1475,10 @@ async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null)
   await markCompleted(task.task_id, {
     upload_mode: 'acli_direct',
     archive_path: snapshot?.archive_path || undefined,
-    // 大小来自 bridge 在上传窗口内的 stat（插件 progress 不打印大小）；
-    // 量不到就留空，结果态显示「未记录」而不是编一个数。
-    archive_size: snapshot?.archive_size || undefined,
+    // 大小来自 bridge 的 stat（插件 progress 不打印大小）。这里的 snapshot 是
+    // "上传成功"那一份——包已被插件自删，size 必然为 0，所以必须回退到过程中记录的峰值，
+    // 否则每次 P1 都会写成「未记录」。
+    archive_size: snapshot?.archive_size || observedArchiveSize.value || undefined,
   })
   stage.value = 'done'
   cleanupTip.value = 'P1 由插件直传日志服务器；上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'

@@ -32,11 +32,11 @@ def _kubectl(ns: str, *args: str) -> str:
     ).stdout
 
 
-def mint_lease(ns: str, pod: str, ttl: str) -> str:
+def mint_lease(ns: str, pod: str, ttl: str, manifest: str, variant: str) -> str:
     """在隔离 pod 内用其自有 lease key 现签 token，返回最后一行非空（htp2.<claims>.<sig>）。"""
     inner = (
-        f"HCI_SIM_FIXTURE_MANIFEST={MANIFEST_IN_POD} "
-        f"hci-sim lease --variant positive-realistic "
+        f"HCI_SIM_FIXTURE_MANIFEST={manifest} "
+        f"hci-sim lease --variant {variant} "
         f"--virtual-node SIM-HCI-NODE-01 --container host --ttl {ttl}"
     )
     out = _kubectl(ns, "exec", pod, "--", "sh", "-c", inner)
@@ -65,19 +65,25 @@ def main() -> None:
     ap.add_argument("--host", default=None, help="显式覆盖 SSH host")
     ap.add_argument("--port", type=int, default=2222)
     ap.add_argument("--ttl", default="4h")
+    # 其他场景（如 SOP#3 虚拟机开机失败）复用同一套签发流程时，
+    # manifest / variant / support_id 必须可覆盖，否则 lease 会绑到磁盘场景的 bundle 上。
+    ap.add_argument("--manifest", default=MANIFEST_IN_POD, help="pod 内 fixture manifest 绝对路径")
+    ap.add_argument("--variant", default="positive-realistic")
+    ap.add_argument("--support-id", dest="support_id", default="23999")
+    ap.add_argument(
+        "--commands",
+        default="acli --formatter json alert get -k 磁盘,acli --formatter json storage asan disk list,smartctl.real -a /dev/sdb",
+        help="recommended_commands，逗号分隔",
+    )
     ap.add_argument("--out", default=str(Path(__file__).resolve().parent / "connection.json"))
     args = ap.parse_args()
 
     host = args.host or resolve_host(args.namespace, args.pod, args.svc)
-    token = mint_lease(args.namespace, args.pod, args.ttl)
+    token = mint_lease(args.namespace, args.pod, args.ttl, args.manifest, args.variant)
     connection = {
-        "support_id": "23999",
-        "variant": "positive-realistic",
-        "recommended_commands": [
-            "acli --formatter json alert get -k 磁盘",
-            "acli --formatter json storage asan disk list",
-            "smartctl.real -a /dev/sdb",
-        ],
+        "support_id": args.support_id,
+        "variant": args.variant,
+        "recommended_commands": [c.strip() for c in args.commands.split(",") if c.strip()],
         "connection": {
             "host": host,
             "port": args.port,

@@ -512,3 +512,42 @@ func TestSessionByAddressHost(t *testing.T) {
 		t.Fatal("空节点不得命中")
 	}
 }
+
+// TestFallbackLogCollectArchivePath 覆盖压缩包路径推导。
+//
+// 现场（Q2026101401683）：插件在「进行中/上传中」阶段不打印压缩包路径，
+// 直到 100% 完成才给出，而那时 P1 已上传成功、插件已自删包，stat 必然失败。
+// 因此路径必须能按 {case_id}.zip 推导出来，否则 archive_size 永远是「未记录」。
+func TestFallbackLogCollectArchivePath(t *testing.T) {
+	const prefix = "/sf/data/local/acli/tmp/data/log_collect/"
+
+	if got := fallbackLogCollectArchivePath(" Q2026101401683 "); got != prefix+"Q2026101401683.zip" {
+		t.Fatalf("应裁剪首尾空格并拼出约定路径，实际 %q", got)
+	}
+	if got := fallbackLogCollectArchivePath(""); got != "" {
+		t.Fatalf("空 caseID 不得推导路径，实际 %q", got)
+	}
+	if got := fallbackLogCollectArchivePath("   "); got != "" {
+		t.Fatalf("纯空格 caseID 不得推导路径，实际 %q", got)
+	}
+
+	// caseID 会拼进 shell 命令，任何能逃出归档目录的字符都必须被白名单挡掉
+	for _, bad := range []string{
+		"Q2026;rm -rf /",
+		"Q2026$(id)",
+		"../../etc/passwd",
+		"Q2026 1001",
+		"Q2026`id`",
+		"Q2026|cat",
+	} {
+		if got := fallbackLogCollectArchivePath(bad); got != "" {
+			t.Fatalf("非法 caseID %q 不得推导路径，实际 %q", bad, got)
+		}
+	}
+
+	// 推导出来的路径必须能过 normalizeArchivePath（后续 stat 会再校验一次）
+	path := fallbackLogCollectArchivePath("Q2026101401683")
+	if _, err := normalizeArchivePath(path); err != nil {
+		t.Fatalf("推导路径应能被 normalizeArchivePath 接受：%v", err)
+	}
+}

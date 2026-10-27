@@ -441,7 +441,7 @@ async def run_scenario(
             if failed:
                 obs.error = f"环境事实注入失败: {failed}"
                 return obs
-            note(f"case environment seeded (alert/cluster)")
+            note("case environment seeded (alert/cluster)")
 
         # 2) 建会话
         resp = await client.post(
@@ -463,6 +463,11 @@ async def run_scenario(
             if code not in (200, 201):
                 obs.error = f"直连绑定 SOP#{bind_sop} 失败 {code}: {str(body)[:200]}"
                 return obs
+            # 直连绑定成功即视为命中该 SOP，这是确定事实，不能只靠终态事件反推：
+            # _scan_terminal_signals 仅尽力从 events 里提取 sop_document_id，
+            # 而链路常在绑定之后提前结束（命令全失败、缺应答停跑），
+            # 那时终态事件压根不产生，会把"已确定绑定的 SOP"误判成 hit=None（假阴性）。
+            obs.sop_document_hit_id = int(bind_sop)
             note(f"SOP#{bind_sop} execution bound (跳过 S0 分类)")
 
         # 1.6) 预种易触发 LLM 超时不定的派生变量（skill_call 产物），令链路确定性推进到结论。
