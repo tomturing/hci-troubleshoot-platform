@@ -149,6 +149,8 @@ terminalBridge:
 | — | `HCI_BRIDGE_LOG_UPLOAD_INTERVAL_SECONDS` | 直传批量上报间隔，默认 `2` |
 | — | `HCI_BRIDGE_LOG_UPLOAD_BATCH` | 单批条数，默认 `100`（上限 1000） |
 | — | `HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES` | 直传 outbox 字节上限，默认 8MB，超限丢最旧 |
+| — | `HCI_BRIDGE_DELIVERY_CONCURRENCY` | 任务内分片并发（1–4），默认按可用内存/CPU 自动决策 |
+| — | `HCI_BRIDGE_DELIVERY_TASKS` | 跨任务并发（1–2），默认 1；高配机才允许 2 |
 | — | `HCI_BRIDGE_SSH_KEEPALIVE_SECONDS` | SSH 应用层保活探测间隔（秒），默认 30；设为 `0` 关闭探测，仅保留 TCP keepalive |
 | — | `HCI_BRIDGE_SFTP_DIR` | 文件下载的**本机落地目录**，优先级最高；未设置时按 `$HOME/Downloads/hci-sftp` → `/var/lib/terminal-bridge/downloads` → `$TMPDIR/hci-sftp` 探测可写项 |
 | — | `HCI_BRIDGE_SFTP_MAX_BYTES` | 单文件下载上限（字节），默认 5 GiB；超过直接报 `too_large`，不静默截断 |
@@ -277,6 +279,11 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `log_upload.token_received` | INFO | 收到前端下发的直传令牌（只记长度，不记内容） |
 | `log_upload.failed` | WARN | 直传失败并退避重试（含 `backoff_seconds`/`queued`） |
 | `log_upload.recovered` | INFO | 进程重启后从 outbox 恢复未发送日志 |
+| `delivery.runner_started` | INFO | 交付执行器启动，含并发决策（`parts`/`tasks`/`reason`/`cpu`/`mem_mb`） |
+| `delivery.submitted` | INFO | 交付作业已提交（`job_id`/`task_id`/`source_path`） |
+| `delivery.recovered` | INFO | 进程重启后恢复未完成作业（含阶段与已拉/已传量） |
+| `delivery.collect_finished` | INFO | 节点采集完成，开始交付（`total`/`archive_path`） |
+| `delivery.job_finished` | INFO | 作业状态更新（`phase`/`attempt`/`needs_reauth`/进度） |
 | `client.error` | ERROR | Custom-UI 浏览器未捕获异常（`service.name=customer-ui`） |
 
 ### 自动直传（不依赖浏览器）
@@ -314,6 +321,10 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `resume` | `case_id` | 重放近期结构化日志 |
 | `ssh_disconnect` | `case_id, node_ip?` | 断开会话 |
 | `bridge_log_token` | `case_id, token, endpoint` | 下发日志直传凭据（短期、绑定工单与实例）；bridge 回 `bridge_log_token_ack` |
+| `delivery_submit` | `case_id, node_ip, exec_id(task_id), source_path, platform_url, upload_token, chunk_size, part_count, total_size, uploaded_parts?` | 提交交付作业，**立即返回 job_id**（执行权在 bridge） |
+| `delivery_status` | `job_id` | 查询作业快照（phase/progress/pulled_bytes/uploaded_parts/needs_reauth） |
+| `delivery_resume` | `job_id` | 重连后唤醒 `needs_reauth` 的作业 |
+| `delivery_cancel` | `job_id` | 取消作业（不碰节点上的 acli 任务） |
 
 ### Bridge → 浏览器
 

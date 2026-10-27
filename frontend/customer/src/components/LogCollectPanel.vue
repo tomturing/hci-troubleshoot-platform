@@ -11,6 +11,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   buildAcliSyncMessage,
+  buildDeliveryMessage,
   buildLogCollectMessage,
   createBridgeSocket,
   resolveBridgeUrl,
@@ -615,6 +616,16 @@ function handleMessage(event: MessageEvent) {
     chatStore.forwardBridgeLog(data as Record<string, unknown>)
     return
   }
+  if (data.type === 'delivery_result') {
+    // 作业化后 submit/status/resume/cancel 共用一种回包，按 log_action 映射回各自的等待器
+    const key = `delivery_${data.log_action}`
+    const waiter = waiters.get(key)
+    if (waiter) {
+      waiters.delete(key)
+      waiter(data)
+    }
+    return
+  }
   if (data.type === 'acli_sync_result') {
     const waiter = waiters.get('acli_sync')
     if (waiter) {
@@ -661,7 +672,18 @@ function handleMessage(event: MessageEvent) {
 
 function sendAndWait(
   ws: WebSocket,
-  action: 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer' | 'acli_sync',
+  action:
+    | 'probe'
+    | 'create'
+    | 'progress'
+    | 'cancel'
+    | 'stat'
+    | 'transfer'
+    | 'acli_sync'
+    | 'delivery_submit'
+    | 'delivery_status'
+    | 'delivery_resume'
+    | 'delivery_cancel',
   options: Record<string, unknown> = {},
   timeoutMs = 60000,
 ): Promise<any> {
@@ -678,6 +700,16 @@ function sendAndWait(
       // 与 log_collect 同一锚点：不带 node_ip 时 bridge 会去找键为 caseID 的会话，
       // 而真实会话键是 caseID@nodeIP → 必然 session_missing（安装链路根本不会启动）。
       ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100, nodeIp: nodeIp.value }))
+    } else if (action.startsWith('delivery_')) {
+      // 交付作业：submit 立刻返回 job_id，执行权在 bridge；
+      // 后续只轮询 status，页面关闭不影响交付（重连后按同一 job_id 继续）。
+      ws.send(
+        buildDeliveryMessage(
+          action.replace('delivery_', '') as 'submit' | 'status' | 'resume' | 'cancel',
+          props.caseId,
+          { ...(options as any), nodeIp: nodeIp.value },
+        ),
+      )
     } else {
       // 所有动作一律锚定会话主机：nodeIp 是派生值，不存在"表单里另填一个"的可能，
       // 也就不会再出现写成空串（bridge 落到默认会话）或写成不存在节点（session_missing）。
@@ -1394,12 +1426,73 @@ async function resumeTaskFlow(
 ) {
   // 主流程自己持有轮询权：先停掉接管态的自动刷新，避免两条链抢同一条 bridge 通道
   stopAutoSync()
+
+  // 平台已进入交付阶段（uploading）：作业在 bridge 里跑，接上轮询即可，
+  // 绝不能再走一遍"拉包 + 上传"。这也是断线/关页面后重开面板的恢复入口。
+  if (task.status === 'uploading') {
+    const jobId = `dj-${task.task_id}`
+    const probe = await sendAndWait(ws, 'delivery_status', { jobId }, 10000).catch(() => null)
+    if (probe && probe.status === 'ok') {
+      await waitDeliveryJob(ws, jobId, token)
+      stage.value = 'relaying'
+      await pollRelay(task.task_id, token)
+      if (token !== runToken) return
+      await markCompleted(task.task_id, {
+        upload_mode: 'bridge_relay',
+        archive_path: task.archive_path || undefined,
+      })
+      stage.value = 'done'
+      return
+    }
+    // 作业不在：bridge 重启且记录丢失，或任务是在另一台机器发起。
+    // 明确报错并给出可操作动作，避免界面永远停"上传中"。
+    throw new Error('平台任务处于交付阶段，但 bridge 侧没有对应作业（可能已重启且记录丢失），请使用「取消并重试」')
+  }
+
   const collected = await pollUntilCollected(ws, token, baseline)
   if (token !== runToken) return
   if (!collected) throw new Error('采集未完成')
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
-  if (isDirect) await finishP1(task, collected)
-  else await runP2(ws, task, token)
+  if (!isDirect) {
+    await runP2(ws, task, token)
+    return
+  }
+  try {
+    await finishP1(task, collected)
+  } catch (error) {
+    // P1 失败自动降级 P2：插件**只有直传成功才会自删压缩包**，
+    // 因此失败时源包仍在节点上，可以无损切到中转续传。
+    // 这是「P1 仍为默认（不占桥资源、少一次中转）」与「一定传得上去」之间的兜底。
+    const recovered = await fallbackToP2(ws, task, token, error)
+    if (!recovered) throw error
+  }
+}
+
+/**
+ * P1（acli 直传日志服务器）失败后切 P2（平台中转）。
+ *
+ * 判据必须用「节点上还有包」而不是「P1 报错」：
+ * 插件成功后自删，此时切换只会得到"源包不存在"，必须原样抛出原错误。
+ */
+async function fallbackToP2(
+  ws: WebSocket,
+  task: LogCollectTask,
+  token: number,
+  cause: unknown,
+): Promise<boolean> {
+  const archivePath = progress.value?.archive_path || ''
+  if (!archivePath) return false
+  // stat 失败说明包已被插件删除（多半是"其实传成功了"），不能降级
+  const statResult = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000).catch(() => null)
+  if (!statResult || statResult.status !== 'ok') return false
+
+  const reason = cause instanceof Error ? cause.message : String(cause)
+  ElMessage.warning(`直传日志服务器失败（${reason}），已自动切换平台中转续传`)
+  nodeSyncHint.value = '直传失败，已自动切换平台中转续传'
+  stage.value = 'pulling'
+  currentTask.value = await logCollectApi.patchTask(task.task_id, { upload_mode: 'bridge_relay' })
+  await runP2(ws, task, token)
+  return true
 }
 
 /** 一键「接管」：平台终态改回采集中，继续跟进节点上仍在跑的任务 */
@@ -1621,13 +1714,15 @@ async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
   // 2) 平台初始化分片会话（幂等，重试会返回已传分片）
   const session = await logCollectApi.initUpload(task.task_id, { total_size: totalSize })
 
-  // 3) bridge 拉取 + 分块上传
+  // 3) 交付作业化：submit 立刻返回 job_id，执行权交给 bridge。
+  //    这一步之后浏览器关掉也不影响交付；旧实现要在这里挂 2 小时等 transfer 回包。
   stage.value = 'pulling'
   currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'uploading' })
-  const transferred = await sendAndWait(
+  const submitted = await sendAndWait(
     ws,
-    'transfer',
+    'delivery_submit',
     {
+      execId: task.task_id,
       sourcePath: archivePath,
       platformUrl: window.location.origin,
       uploadToken: session.upload_token,
@@ -1636,19 +1731,17 @@ async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
       totalSize,
       uploadedParts: session.uploaded_parts,
     },
-    2 * 3600 * 1000,
+    30000,
   )
-  if (transferred.status !== 'ok') throw new Error(transferred.message || '日志包上传失败')
+  if (submitted.status !== 'ok') throw new Error(submitted.message || '交付作业提交失败')
+  const jobId = String((submitted.log_data as { job_id?: string } | null)?.job_id || `dj-${task.task_id}`)
 
-  // 4) 合并 + 校验
-  const completed = await logCollectApi.completeUpload(task.task_id, {
-    sha256: transfer.sha256 || undefined,
-    size: totalSize,
-  })
+  // 4) 轮询作业状态（2s 一次），进度由 bridge 侧计算，前端只负责展示
+  await waitDeliveryJob(ws, jobId, token)
 
-  // 5) 代传日志服务器（/relay 幂等启动，进度与终态一律以服务端 relay_status 为准）
+  // 5) 合并与代传由平台在数据面 complete 后自动触发（bridge 用上传令牌收尾），
+  //    前端只等 relay 终态：这最后一步也不再依赖浏览器一直在线。
   stage.value = 'relaying'
-  await logCollectApi.startRelay(task.task_id)
   await pollRelay(task.task_id, token)
   if (token !== runToken) return
 
@@ -1656,17 +1749,62 @@ async function runP2(ws: WebSocket, task: LogCollectTask, token: number) {
   await markCompleted(task.task_id, {
     upload_mode: 'bridge_relay',
     archive_path: archivePath,
-    archive_size: completed.size,
-    // sha256 有 64 位小写十六进制格式约束，格式不符时宁可不写，避免整条 PATCH 被 422 拒绝
-    archive_sha256: /^[0-9a-f]{64}$/.test(completed.sha256 || '') ? completed.sha256 : undefined,
+    archive_size: totalSize,
   })
   stage.value = 'done'
   cleanupTip.value =
-    `日志包已归档到日志服务器（${completed.size} 字节）。` +
+    `日志包已归档到日志服务器（${totalSize} 字节）。` +
     '平台保留副本供回看，HCI 上的采集包仍在，请在节点上自行清理：\n' +
     `rm -f ${archivePath}\n` +
     '注意：不要删除 /sf/data/local/acli/plugins 与 tasks 目录。'
   ElMessage.success('日志已上传平台并归档到日志服务器')
+}
+
+/** 交付作业视图（与 bridge `deliveryJobView` 对齐）。 */
+interface DeliveryJobView {
+  job_id?: string
+  phase?: string
+  progress?: number
+  pulled_bytes?: number
+  uploaded_parts?: number
+  part_count?: number
+  needs_reauth?: boolean
+  last_error?: string
+}
+
+/**
+ * 轮询交付作业直到终态。
+ *
+ * 为什么不订阅：作业在 bridge 里跑，浏览器随时可能断；轮询无状态，
+ * 重连后拿 job_id 再查一次就能继续显示，不需要服务端保存订阅关系。
+ */
+async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
+  // 上限 2 小时（3600 次 × 2s）：超过仍未完成交给外层提示，不再无限等待
+  for (let attempt = 0; attempt < 3600; attempt++) {
+    const result = await sendAndWait(ws, 'delivery_status', { jobId }, 10000)
+    if (token !== runToken) return
+    if (result.status !== 'ok') {
+      // 作业丢失（bridge 重启且记录未落盘）：降级为失败，由用户重试
+      throw new Error(result.message || '交付作业不存在')
+    }
+    const view = (result.log_data || {}) as DeliveryJobView
+    if (view.phase === 'pulling') stage.value = 'pulling'
+    if (view.phase === 'uploading' || view.phase === 'completing') stage.value = 'uploading'
+    transfer.percent = view.progress || 0
+    transfer.pulled = view.pulled_bytes || 0
+    transfer.uploadedParts = view.uploaded_parts || 0
+    transfer.partCount = view.part_count || 0
+
+    if (view.phase === 'done') return view
+    if (view.needs_reauth) {
+      throw new Error('交付需要重新认证：请重新连接 SSH 后继续（作业进度已保留）')
+    }
+    if (view.phase === 'failed') {
+      throw new Error(view.last_error || '交付失败（作业进度已保留，可重试）')
+    }
+    await sleep(2000)
+  }
+  throw new Error('交付超过 2 小时仍未完成，作业仍在 bridge 侧继续，可稍后刷新查看')
 }
 
 /** 归档由服务端后台任务驱动，前端轮询超时只代表"结果未知"，不代表任务失败。 */
