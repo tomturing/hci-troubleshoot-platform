@@ -89,13 +89,34 @@ var logCollectModuleCatalogOrder = []string{
 const logCollectAcliPathEnv = `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin";`
 
 // logCollectAcliCandidates 是 acli 二进制的解析顺序（HCI 官方入口在前）。
-//
 // 第一性原理：PATH 只能"追加"，而 sshd 非交互会话的默认 PATH
 // （/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin）排在我们的追加项之前。
 // 一旦节点上存在两份 acli（旧版落在 /usr/local/bin 等目录），`acli --version` 命中的是旧版，
 // 于是面板显示的版本与运维在登录 shell 里手敲的结果不一致，且无法自证。
-// 因此版本探测按绝对路径解析，并把真正命中的路径一起回传。
+// 因此所有 acli 调用都按绝对路径解析，并把真正命中的路径一起回传。
 var logCollectAcliCandidates = []string{"/sf/bin/acli", "/sf/sbin/acli"}
+
+// logCollectAcliResolve 返回一段 POSIX sh：把命中的 acli 绝对路径写入 $__acli。
+//
+// 这是全通道唯一的解析实现（probe / help / node list / create / progress / cancel 共用），
+// 顺序固定为：绝对路径候选（/sf/bin → /sf/sbin）→ `command -v acli` 兜底 → 空。
+// 2026-10-27 现场缺陷：探测走绝对路径命中 /sf/bin/acli，而 create/progress/cancel 裸写
+// `acli ...`，sshd 非交互会话 PATH 不含 /sf/bin|/sf/sbin 时报 `bash: acli: command not found`
+// ——用户看到"探测通过、一采集就失败"。同源解析就是为了让这种错位不可能再出现。
+func logCollectAcliResolve() string {
+	candidates := strings.Join(logCollectAcliCandidates, " ")
+	return `__acli_resolve_absent=1; __acli=""; for p in ` + candidates + `; do if [ -x "$p" ]; then __acli="$p"; __acli_resolve_absent=0; break; fi; done; if [ -z "$__acli" ]; then __acli=$(command -v acli 2>/dev/null); if [ -n "$__acli" ]; then __acli_resolve_absent=0; fi; fi;`
+}
+
+// logCollectAcliInvoke 把「acli 之后的参数串」包成可直接下发的自解析命令。
+//
+// 契约：args 不含 acli 本体（例如 `log_collect progress`）；返回串以 PATH 环境开头、
+// 以 `"$__acli" <args>` 结尾，解析失败时输出 __ACLI_ABSENT__ 并以 127 退出，
+// 使调用方拿到与"命令不存在"一致的失败语义（而不是误判成插件业务失败）。
+func logCollectAcliInvoke(args string) string {
+	return logCollectAcliPathEnv + " " + logCollectAcliResolve() +
+		` if [ "$__acli_resolve_absent" = "1" ]; then echo __ACLI_ABSENT__ >&2; exit 127; fi; "$__acli" ` + args
+}
 
 // buildAcliVersionCommand 生成既解析二进制路径、又输出原始版本的两段式命令。
 //
@@ -107,11 +128,11 @@ var logCollectAcliCandidates = []string{"/sf/bin/acli", "/sf/sbin/acli"}
 //
 // 候选都不存在时才回落 `command -v acli`，最后输出 __ACLI_ABSENT__，
 // 保证"未安装"的判定口径与旧实现一致（不会被误判成已安装）。
-// probe 与 acli_sync 复用同一命令：显示值与安装判定必须同源，否则会出现
-// "面板显示 1.0.1 但系统判定落后而反复重装"。
+// 解析逻辑与 logCollectAcliInvoke 共用 logCollectAcliResolve：显示值与实际执行
+// 必须是同一份二进制，否则会出现"面板显示 1.0.1、采集却命中旧版"的错位。
 func buildAcliVersionCommand() string {
-	candidates := strings.Join(logCollectAcliCandidates, " ")
-	return logCollectAcliPathEnv + ` for p in ` + candidates + `; do if [ -x "$p" ]; then v=$("$p" --version 2>&1); if [ -n "$v" ]; then printf '__ACLI_BIN__=%s\n' "$p"; printf '%s\n' "$v"; exit 0; fi; fi; done; b=$(command -v acli 2>/dev/null); if [ -n "$b" ]; then printf '__ACLI_BIN__=%s\n' "$b"; acli --version 2>&1; else echo __ACLI_ABSENT__; fi`
+	return logCollectAcliPathEnv + " " + logCollectAcliResolve() +
+		` if [ "$__acli_resolve_absent" = "1" ]; then echo __ACLI_ABSENT__; else printf '__ACLI_BIN__=%s\n' "$__acli"; "$__acli" --version 2>&1; fi`
 }
 
 // parseAcliBinary 从探测输出中取出实际命中的 acli 路径；取不到返回空串。
@@ -155,7 +176,9 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-// buildLogCollectCreateCommand 校验参数并返回可直接执行的 acli 命令。
+// buildLogCollectCreateCommand 校验参数并返回 acli 之后的参数串（不含 acli 本体）。
+// 调用方必须经 logCollectAcliInvoke 包成自解析命令，禁止裸拼 `acli`：
+// 非交互 SSH 会话的 PATH 不含 /sf/bin|/sf/sbin，裸命令必然 command not found。
 // 返回的 errType 非空表示拒绝执行，调用方应把原因回传前端。
 func buildLogCollectCreateCommand(req InMessage) (command string, errType string, errMsg string) {
 	ticket := strings.TrimSpace(req.TicketNo)
@@ -246,7 +269,7 @@ func buildLogCollectCreateCommand(req InMessage) (command string, errType string
 	}
 
 	parts := []string{
-		"acli", "log_collect", "create",
+		"log_collect", "create",
 		"-s", shellQuote(ticket),
 		"-m", shellQuote(strings.Join(normalized, ",")),
 		"-d", shellQuote(dateFrom + "," + dateTo),
@@ -385,7 +408,7 @@ func (s *SSHSession) probeLogCollectCatalog(ctx context.Context, result *logColl
 
 	// 实机验证：`acli log_collect create --help` 会以 exit code 1 结束
 	// （插件把 --help 判为未定义参数），但正文已完整打印，因此只认输出内容、不认退出码。
-	helpOut, _, _ := s.runCommandPty(ctx, logCollectAcliPathEnv+" acli log_collect create --help", 8*time.Second)
+	helpOut, _, _ := s.runCommandPty(ctx, logCollectAcliInvoke("log_collect create --help"), 8*time.Second)
 	if modules := parseLogCollectModuleCatalog(helpOut); len(modules) > 0 {
 		result.Modules = modules
 		result.CatalogSource = "acli_help"
@@ -395,10 +418,13 @@ func (s *SSHSession) probeLogCollectCatalog(ctx context.Context, result *logColl
 		result.CatalogNote = "acli 帮助解析失败，使用平台内置场景目录"
 	}
 
-	nodeOut, _, _ := s.runCommandPty(ctx, logCollectAcliPathEnv+" acli --formatter json platform node list", 8*time.Second)
+	nodeOut, _, _ := s.runCommandPty(ctx, logCollectAcliInvoke("--formatter json platform node list"), 8*time.Second)
 	result.Hosts = parseLogCollectNodeList(nodeOut)
 	if len(result.Hosts) == 0 {
-		result.CatalogNote = appendProbeNote(result.CatalogNote, "节点清单获取失败，可手动填写 IP")
+		// 旧版 acli（1.0.0）没有 `platform node list` 子命令，只写"获取失败"无法定因：
+		// 把输出首行一并带出，前端能直接看到是能力缺失还是空清单。
+		result.CatalogNote = appendProbeNote(result.CatalogNote,
+			"节点清单获取失败，可手动填写 IP："+firstNonEmpty(logCollectFailureLine(nodeOut), "无输出"))
 	}
 }
 
@@ -870,7 +896,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			})
 			return
 		}
-		output, exitCode, err := s.runCommandPty(ctx, command, logCollectCreateTimeout)
+		// 参数串由 buildLogCollectCreateCommand 校验并拼装，执行前必须经统一解析前缀，
+		// 与探测同源（否则非交互 PATH 缺 /sf/bin 时会 command not found）。
+		output, exitCode, err := s.runCommandPty(ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
 		status := "ok"
 		code := ""
 		// 失败原因优先取进程错误，其次取 acli 输出里的首个失败行。
@@ -889,15 +917,15 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
 			Message: firstNonEmpty(failure, strings.TrimSpace(output)),
-			Detail:  command, TraceID: traceID, CustomUI: cui,
+			Detail:  "acli " + command, TraceID: traceID, CustomUI: cui,
 		})
 		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": failure,
-			"command": redactCommand(command), "output_preview": stripAnsi(truncateString(output, 512)),
+			"command": redactCommand("acli " + command), "output_preview": stripAnsi(truncateString(output, 512)),
 		})
 
 	case "progress":
-		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect progress", logCollectProgressTimeout)
+		output, exitCode, err := s.runCommandPty(ctx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
 		progress := parseLogCollectProgress(output)
 		progress.NodeState = classifyLogCollectNodeState(progress)
 		// 这里刻意**不用** stat 结果判断"完成归属"：P1 直传成功后插件会自删压缩包，
@@ -998,7 +1026,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		outcome = "ok"
 
 	case "cancel":
-		output, exitCode, err := s.runCommandPty(ctx, "acli log_collect cancel", logCollectCancelTimeout)
+		output, exitCode, err := s.runCommandPty(ctx, logCollectAcliInvoke("log_collect cancel"), logCollectCancelTimeout)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {

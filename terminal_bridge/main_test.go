@@ -1107,7 +1107,7 @@ func TestBuildAcliVersionCommandPrefersAbsolutePath(t *testing.T) {
 	for _, fragment := range []string{
 		`for p in /sf/bin/acli /sf/sbin/acli`,
 		`[ -x "$p" ]`,
-		`printf '__ACLI_BIN__=%s\n' "$p"`,
+		`printf '__ACLI_BIN__=%s\n' "$__acli"`,
 		`command -v acli`,
 		`__ACLI_ABSENT__`,
 		`export PATH="$PATH:/sf/bin:/sf/sbin`,

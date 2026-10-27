@@ -29,7 +29,7 @@ func TestBuildLogCollectCreateCommand(t *testing.T) {
 			t.Fatalf("不应拒绝：%s %s", errType, errMsg)
 		}
 		for _, fragment := range []string{
-			"acli log_collect create",
+			"log_collect create",
 			"-s 'Q20261022001'",
 			"-m 'network'",
 			"-d '2026-10-21,2026-10-22'",
@@ -98,6 +98,66 @@ func TestBuildLogCollectCreateCommand(t *testing.T) {
 				t.Fatalf("期望拒绝类型 %s，实际 %s", tc.errType, errType)
 			}
 		})
+	}
+}
+
+// TestLogCollectAcliInvokeUsesResolvedPath 是 2026-10-27 现场缺陷的回归护栏。
+//
+// 现场：面板探测显示 /sf/bin/acli 与版本（带 PATH 前缀，绿），一按采集却报
+// `bash: acli: command not found`——因为 create/progress/cancel 当时是裸 `acli ...`，
+// 非交互 SSH 会话的 PATH 不含 /sf/bin|/sf/sbin。
+// 契约：所有 acli 动作都必须「PATH 前缀 + 绝对路径优先解析 + "$__acli" 执行」，
+// 解析失败统一 127 退出，让调用方按"工具缺失"而非"插件业务失败"处理。
+func TestLogCollectAcliInvokeUsesResolvedPath(t *testing.T) {
+	cases := []struct{ name, args string }{
+		{"create", "log_collect create -s 'Q1'"},
+		{"progress", "log_collect progress"},
+		{"cancel", "log_collect cancel"},
+		{"help", "log_collect create --help"},
+		{"node_list", "--formatter json platform node list"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := logCollectAcliInvoke(tc.args)
+			for _, fragment := range []string{
+				`export PATH="$PATH:/sf/bin:/sf/sbin`,
+				`for p in /sf/bin/acli /sf/sbin/acli`,
+				`[ -x "$p" ]`,
+				`command -v acli`,
+				`exit 127`,
+				`"$__acli" ` + tc.args,
+			} {
+				if !strings.Contains(got, fragment) {
+					t.Fatalf("命令缺少片段 %q：%s", fragment, got)
+				}
+			}
+			// 防退化：解析之后不得再出现裸 acli 执行（否则又会退回 PATH 依赖）。
+			if strings.Contains(got, `; acli `) {
+				t.Fatalf("命令仍含裸 acli 执行：%s", got)
+			}
+		})
+	}
+}
+
+// TestLogCollectCreateCommandRequiresInvoke 锁定"create 参数串不含 acli 本体"的契约：
+// 一旦有人把 acli 塞回参数串，执行侧就会变成 `"$__acli" acli ...`（双份），
+// 单元测试必须比现场更早发现。
+func TestLogCollectCreateCommandRequiresInvoke(t *testing.T) {
+	command, errType, _ := buildLogCollectCreateCommand(InMessage{
+		TicketNo: "Q20261022001",
+		Modules:  []string{"other"},
+		DateFrom: "2026-10-21",
+		DateTo:   "2026-10-22",
+		IPs:      "all",
+	})
+	if errType != "" {
+		t.Fatalf("不应拒绝：%s", errType)
+	}
+	if strings.HasPrefix(command, "acli ") || strings.Contains(command, " acli ") {
+		t.Fatalf("create 参数串不应包含 acli 本体：%s", command)
+	}
+	if !strings.Contains(logCollectAcliInvoke(command), `"$__acli" log_collect create`) {
+		t.Fatalf("invoke 后未使用解析结果执行：%s", logCollectAcliInvoke(command))
 	}
 }
 
