@@ -418,6 +418,23 @@ const resultCleanupTip = computed(() => {
   return ''
 })
 
+/**
+ * 固定提示区是否要占一行。
+ *
+ * 只有"不处置就没法继续"或"必须被用户读到的结论"才进固定区；
+ * 引导类 info 提示（请先连 SSH、正在读取环境）仍留在内容流里，跟着上下文走。
+ * 判断放在 computed 而不是模板里拼 v-if，是为了让固定区整块出现/消失，
+ * 不会出现"挂着一个空 gap 的白条"。
+ */
+const hasPinnedAlerts = computed(
+  () =>
+    chatStore.logCollectCaseOwned === false ||
+    prepareState.value === 'failed' ||
+    Boolean(nodeSyncHint.value) ||
+    Boolean(cleanupTip.value) ||
+    Boolean(resultCleanupTip.value),
+)
+
 /** 节点下拉文案：IP 是必选值，名称与主控标记只做辅助识别。 */
 function hostLabel(host: HostOption): string {
   const base = host.name ? `${host.ip}（${host.name}）` : host.ip
@@ -1745,6 +1762,82 @@ onBeforeUnmount(() => {
       下半截被底条吃掉（提示文案换行时更明显，因为提示条更高、被吃掉的比例更大）。
       内容与底条同处一个滚动层，就必然互相抢占像素；分成两层才没有抢占关系。
     -->
+    <!--
+      固定提示区：这里只放两类提示——「不处置就没法继续」（归属不符、环境准备失败），
+      和「必须让用户看到的结论」（节点对账、清理提醒）。
+
+      它们原先散在滚动内容里，只要内容比视口长，滚到两端就必然被视口边缘裁掉一截：
+      报错在顶部被切掉上半行、底部提示被底条吃掉下半行，文案换行时被吃掉的比例更大。
+      裁切不是遮挡，而是"滚动容器边界"，所以调 padding 治不好——只有把它们移出滚动层。
+      高度上限 45% 是兜底：提示再多也不至于把内容区挤没。
+    -->
+    <div v-if="hasPinnedAlerts" class="lc-alerts">
+      <!-- 跨身份复用他人工单：采集不阻断，但日志回传/录像回放必定被归属校验拒绝 -->
+      <el-alert
+        v-if="chatStore.logCollectCaseOwned === false"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="该工单属于其他会话身份"
+        description="采集可以继续，但日志回传与终端录像回放会被平台按归属拒绝；建议换用本人名下的工单号，或直接用当前工单重新采集。"
+      />
+      <!-- 准备失败的原样输出：acli 的 FATA 行就是用户唯一能拿去求助的证据，必须完整可见 -->
+      <el-alert
+        v-if="prepareState === 'failed'"
+        class="lc-prepare"
+        type="error"
+        :closable="false"
+        show-icon
+        :title="`环境准备失败：${prepareError}`"
+      >
+        <el-button size="small" text type="primary" :disabled="running" @click="prepare()">
+          重新读取
+        </el-button>
+      </el-alert>
+      <!--
+        两端对账结论：节点是唯一真相源，平台只是投影。
+        不一致时这里给出唯一出口——接管（节点还在跑）或取消并重试（节点异常），
+        用户不必再去 SSH 敲 acli log_collect cancel。
+      -->
+      <el-alert
+        v-if="nodeSyncHint"
+        :title="nodeSyncHint"
+        :type="nodeAction ? 'warning' : 'info'"
+        :closable="false"
+        show-icon
+        class="lc-sync"
+      >
+        <div v-if="nodeAction" class="lc-sync-actions">
+          <el-button v-if="nodeAction === 'adopt'" size="small" type="primary" @click="adoptNodeTask">
+            接管继续
+          </el-button>
+          <el-button v-if="nodeAction === 'cancel_retry'" size="small" type="danger" plain @click="cancelAndRetry">
+            取消并重试
+          </el-button>
+          <el-button v-if="nodeAction === 'correct'" size="small" type="warning" plain @click="correctFromNode">
+            以节点为准纠正
+          </el-button>
+        </div>
+      </el-alert>
+      <el-alert
+        v-if="cleanupTip"
+        :title="cleanupTip"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="lc-cleanup"
+      />
+      <!-- 结果态同样有 P1 直传的清理说明：只要它是"结论"，就一并留在可见区 -->
+      <el-alert
+        v-if="viewMode === 'result' && resultCleanupTip"
+        :title="resultCleanupTip"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="lc-cleanup"
+      />
+    </div>
+
     <div class="lc-scroll">
       <div class="lc-case-bar">
         <span class="lc-case-label">归档工单</span>
@@ -1773,16 +1866,6 @@ onBeforeUnmount(() => {
         </el-button>
       </div>
 
-      <!-- 跨身份复用他人工单：采集不阻断，但日志回传/录像回放必定被归属校验拒绝 -->
-      <el-alert
-        v-if="chatStore.logCollectCaseOwned === false"
-        type="warning"
-        :closable="false"
-        show-icon
-        title="该工单属于其他会话身份"
-        description="采集可以继续，但日志回传与终端录像回放会被平台按归属拒绝；建议换用本人名下的工单号，或直接用当前工单重新采集。"
-      />
-
       <!--
         结果态优先：已完成是平台上的既成事实，先把结论摆出来；
         重新收集只是可选项，不是默认动作。
@@ -1808,14 +1891,6 @@ onBeforeUnmount(() => {
           </el-descriptions-item>
           <el-descriptions-item label="归档状态">{{ resultArchiveText }}</el-descriptions-item>
         </el-descriptions>
-        <el-alert
-          v-if="resultCleanupTip"
-          :title="resultCleanupTip"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="lc-cleanup"
-        />
         <p class="lc-hint">
           当前客户端在本工单下共 {{ historyTotal }} 条收集记录；已完成的任务不会被覆盖，重新收集会新建一条任务。
         </p>
@@ -1912,19 +1987,6 @@ onBeforeUnmount(() => {
           show-icon
           title="正在读取集群环境：架构 / acli / 场景目录 / 节点清单…"
         />
-        <el-alert
-          v-else-if="prepareState === 'failed'"
-          class="lc-prepare"
-          type="error"
-          :closable="false"
-          show-icon
-          :title="`环境准备失败：${prepareError}`"
-        >
-          <el-button size="small" text type="primary" :disabled="running" @click="prepare()">
-            重新读取
-          </el-button>
-        </el-alert>
-
         <!-- 探测期间只锁"提交"，不锁表单：用户可以先看清可填项，不必等探测结束 -->
         <el-form
           :model="form"
@@ -2024,41 +2086,6 @@ onBeforeUnmount(() => {
             查看任务状态
           </el-button>
         </div>
-
-        <!--
-          两端对账结论：节点是唯一真相源，平台只是投影。
-          不一致时这里给出唯一出口——接管（节点还在跑）或取消并重试（节点异常），
-          用户不必再去 SSH 敲 acli log_collect cancel。
-        -->
-        <el-alert
-          v-if="nodeSyncHint"
-          :title="nodeSyncHint"
-          :type="nodeAction ? 'warning' : 'info'"
-          :closable="false"
-          show-icon
-          class="lc-sync"
-        >
-          <div v-if="nodeAction" class="lc-sync-actions">
-            <el-button v-if="nodeAction === 'adopt'" size="small" type="primary" @click="adoptNodeTask">
-              接管继续
-            </el-button>
-            <el-button v-if="nodeAction === 'cancel_retry'" size="small" type="danger" plain @click="cancelAndRetry">
-              取消并重试
-            </el-button>
-            <el-button v-if="nodeAction === 'correct'" size="small" type="warning" plain @click="correctFromNode">
-              以节点为准纠正
-            </el-button>
-          </div>
-        </el-alert>
-
-        <el-alert
-          v-if="cleanupTip"
-          :title="cleanupTip"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="lc-cleanup"
-        />
       </template>
     </div>
 
@@ -2108,6 +2135,23 @@ onBeforeUnmount(() => {
   overflow: hidden;
   height: 100%;
   box-sizing: border-box;
+}
+
+/*
+ * 固定提示区：与 .lc-scroll 平级，同样不参与滚动。
+ * 提示文案多长，它就长多高；换个说法是"提示永远完整，代价是内容区少几行"，
+ * 这个取舍对报错是对的——内容少几行可以滚，报错少几行就没有第二份了。
+ * 45% 上限是最后一道兜底：提示条再多也不能把内容区挤成一条缝。
+ */
+.lc-alerts {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px 0;
+  box-sizing: border-box;
+  max-height: 45%;
+  overflow-y: auto;
 }
 
 /* 唯一滚动容器：内容再长也只在这里滚，底条不参与滚动，两者不会互相覆盖 */

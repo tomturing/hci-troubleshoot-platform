@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Finished, FolderOpened, Monitor, Search, Tickets } from '@element-plus/icons-vue'
+import { Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
@@ -157,14 +157,33 @@ function handleDownloadBridge() {
       <!-- 品牌区：通栏左对齐。顶栏横跨三栏，不跟随中央内容列限宽 -->
       <div class="header-brand">
         <!--
-          品牌图标与标题必须同义：本产品做的是「故障排查」，图标的语义应是「查找问题」。
+          品牌图标与标题必须同义：本产品是「助手」，图标要指向"助手/AI"而不是"人工操作"。
 
-          原用 FirstAidKit（急救箱，箱体 + 十字）—— 读出来是"医疗 / 救助"，与「排查」不是一回事；
-          换成 Tools 也不行：那个图标实际是一个齿轮，读作"设置 / 配置"，会让人以为这是设置入口。
-          选 Search（放大镜）是因为"排查 = 把问题找出来"这件事在全世界只有这一个通用符号，
-          16px 下也最清晰，且与页面其余 Element Plus 线性图标同族，描边风格天然一致。
+          FirstAidKit 是急救箱（医疗语义）、Tools 是齿轮（设置语义）、Search 是放大镜（搜索语义），
+          三者都在描述"人做的事"，与「助手」这个主体对不上；用户明确要求换成机器人。
+
+          Element Plus 没有机器人图标，这里内联一支 24 栅格的机器人头：
+          天线 + 圆角头部 + 两颗眼睛 + 嘴线，线宽 1.8，与同栏 Element Plus 线性图标描边一致。
+          不套 el-icon：它的 `svg { fill: currentColor }` 会把 stroke 图标填成一团黑。
         -->
-        <span class="brand-mark"><el-icon><Search /></el-icon></span>
+        <span class="brand-mark" aria-hidden="true">
+          <svg
+            class="brand-mark__bot"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 6V3.6" />
+            <circle cx="12" cy="2.6" r="1.1" fill="currentColor" stroke="none" />
+            <rect x="4" y="6" width="16" height="12" rx="3.6" />
+            <path d="M9.6 10.6v2.2M14.4 10.6v2.2" />
+            <path d="M10.2 15.4h3.6" />
+            <path d="M2.6 10.8v3.2M21.4 10.8v3.2" />
+          </svg>
+        </span>
         <h1>HCI 故障排查助手</h1>
         <span v-if="chatStore.currentCase" class="brand-case">
           {{ chatStore.currentCase.case_id }}
@@ -512,6 +531,13 @@ body {
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.18);
   font-size: 16px;
+}
+
+/* 机器人头在 28px 方块里留 4px 呼吸位，线宽固定由 SVG 自己控制 */
+.brand-mark__bot {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .header-brand h1 {

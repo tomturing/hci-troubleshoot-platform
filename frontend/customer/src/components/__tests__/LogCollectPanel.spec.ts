@@ -1053,3 +1053,39 @@ describe('LogCollectPanel 底条与内容分层', () => {
     expect(scrollRule).toMatch(/overflow-y:\s*auto/)
   })
 })
+
+/**
+ * 固定提示区：第一次修底条时只把"内容"和"底条"分成两层，
+ * 但报错与状态提示仍留在滚动内容里，于是换了个方向继续出问题——
+ * 滚到顶部时报错被内容区上边界切掉上半行，滚到底部时底部提示被切掉下半行。
+ *
+ * 裁切来自"滚动容器边界"，不是元素互相遮挡，所以再调 padding / z-index 都治不好；
+ * 唯一解是把必须被读到的提示移出滚动层。这组断言把这个结构钉死。
+ */
+describe('LogCollectPanel 固定提示区', () => {
+  const SOURCE = readFileSync(resolve(process.cwd(), 'src/components/LogCollectPanel.vue'), 'utf-8')
+  const alertsBlock = SOURCE.split('class="lc-alerts"')[1]?.split('<div class="lc-scroll">')[0] ?? ''
+  const scrollBlock =
+    SOURCE.split('<div class="lc-scroll">')[1]?.split('class="panel-composer lc-composer"')[0] ?? ''
+
+  it('固定的提示区与滚动内容区是兄弟，不在滚动层内', () => {
+    expect(alertsBlock).not.toBe('')
+    expect(scrollBlock).not.toBe('')
+    // 固定区在前、滚动区在后：提示永远出现在内容上方，不随滚动移动
+    expect(SOURCE.indexOf('class="lc-alerts"')).toBeLessThan(SOURCE.indexOf('class="lc-scroll"'))
+  })
+
+  it('报错 / 对账 / 清理提示都在固定区，不在滚动区', () => {
+    for (const marker of ['lc-sync', 'lc-cleanup', '环境准备失败']) {
+      expect(alertsBlock).toContain(marker)
+      expect(scrollBlock).not.toContain(marker)
+    }
+  })
+
+  it('固定区自身不吃 flex 空间，且有高度上限兜底', () => {
+    const rule = SOURCE.match(/\.lc-alerts\s*\{([\s\S]*?)\}/)?.[1] ?? ''
+    expect(rule).toMatch(/flex:\s*0 0 auto/)
+    expect(rule).toMatch(/max-height:\s*45%/)
+    expect(rule).toMatch(/overflow-y:\s*auto/)
+  })
+})
