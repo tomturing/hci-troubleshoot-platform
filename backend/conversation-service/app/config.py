@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # 自动回采（bridge → WebSocket → 浏览器 → 后端）稳定后可整体关闭该兜底入口。
     BRIDGE_LOG_UPLOAD_ENABLED: bool = True
 
+    # bridge 日志直传令牌（浏览器关闭后仍能回传桥侧日志）。
+    # 密钥留空时回落到 INTERNAL_API_TOKEN：不新增配置，代价是内网令牌轮换会让
+    # 存量直传令牌同时失效（bridge 会在下一次 ssh_connect 重新取令牌）。
+    BRIDGE_LOG_TOKEN_SECRET: str = ""
+    # 令牌有效期上限 12 小时：覆盖一次完整采集+上传，又不至于成为长期凭证。
+    BRIDGE_LOG_TOKEN_TTL_SECONDS: int = 12 * 60 * 60
+
     # Scheduler 配置（用于真实 Pod 分配链路）
     SCHEDULER_SERVICE_URL: str = "http://scheduler-service:8003"
     SCHEDULER_ALLOCATE_TIMEOUT_SEC: int = 8

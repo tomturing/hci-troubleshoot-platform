@@ -618,6 +618,9 @@ export const useChatStore = defineStore('chat', () => {
   // 终端提示（非流式输出）：如 bridge 回包"输入无法路由到会话"。
   // 带唯一后缀刷新，保证相同文案也能触发下一次 watch。
   const sshTerminalNotice = ref<{ text: string; at: number } | null>(null)
+  // bridge 实例号：由握手首包 bridge_hello 的 detail 带回。
+  // 日志直传令牌要绑定到"这一台桥"，否则令牌被复制到别的机器也能用。
+  const bridgeInstanceId = ref('')
 
   // === Agent 命令执行结果等待队列 ===
   // 用于 waitForExecResult 函数，存储 execId → resolve 回调
@@ -2402,6 +2405,35 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * 为当前 SSH 会话申请「桥日志直传」令牌，并通过 WS 下发给 bridge。
+   *
+   * 为什么需要：自动回采链是 bridge → WS → 浏览器 → 后端，页面一关/一断，
+   * 桥侧日志就永久丢失（2026-10-27 现场最关键的一条就是这样丢的）。
+   * bridge 拿到只写日志的短期令牌后自行上报，不再依赖本页面是否在线。
+   *
+   * 失败必须静默降级：旧平台没有该接口、或客户机访问不到平台时，
+   * 保持原有的浏览器回采链路，不能因为"增强通道"失败而影响 SSH 本身。
+   */
+  async function issueBridgeLogToken(socket: WebSocket, caseId: string) {
+    if (!caseId) return
+    try {
+      const res = await apiClient.post('/bridge-logs/token', {
+        case_id: caseId,
+        bridge_instance_id: bridgeInstanceId.value || undefined,
+      })
+      const data = (res as { data?: Record<string, unknown> })?.data || {}
+      const token = String(data.token || '')
+      const uploadPath = String(data.upload_path || '')
+      if (!token || !uploadPath) return
+      const endpoint = new URL(uploadPath, window.location.origin).toString()
+      socket.send(JSON.stringify({ type: 'bridge_log_token', case_id: caseId, token, endpoint }))
+      devLog('SSH', '已下发日志直传令牌', { endpoint })
+    } catch (error) {
+      devLog('SSH', '日志直传令牌申请失败，保持浏览器回采', { error: String(error) })
+    }
+  }
+
   /** 清理 SSH WebSocket */
   function cleanupSshWebSocket() {
     clearSshAuthTimer()
@@ -2467,6 +2499,9 @@ export const useChatStore = defineStore('chat', () => {
         sshConnectionState.value = 'connected'
         resolve()
         checkAndSyncAcli().catch(() => {})
+        // 连接稳定后再申请直传令牌：避免"连上就断"的抖动期反复换取；
+        // 失败不影响 SSH（catch 已在函数内消化，降级为浏览器回采）。
+        void issueBridgeLogToken(socket, config.caseId)
       }
 
       // 清理旧连接
@@ -2532,6 +2567,12 @@ export const useChatStore = defineStore('chat', () => {
           const pongMsg = JSON.stringify({ type: 'pong', pong: msg.ping })
           socket.send(pongMsg)
           devLog('SSH', '收到 ping，已回复 pong', { ping: msg.ping })
+          return
+        }
+
+        if (msg.type === 'bridge_hello') {
+          // 握手首包的 detail 是桥实例号：申请日志直传令牌时用它绑定实例。
+          if (msg.detail) bridgeInstanceId.value = String(msg.detail)
           return
         }
 
@@ -3950,6 +3991,7 @@ export const useChatStore = defineStore('chat', () => {
     sshOutputBuffer,
     sshTerminalOutputEvent,
     sshTerminalNotice,
+    bridgeInstanceId,
     sshCommandConsumer,
     connectSSH,
     disconnectSSH,

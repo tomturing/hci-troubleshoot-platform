@@ -37,6 +37,7 @@ from sqlalchemy import text
 
 from ..config import settings
 from ..security.auth import authenticate_request
+from ..security.bridge_token import issue_bridge_log_token, verify_bridge_log_token
 
 logger = get_logger("bridge-logs-routes")
 router = APIRouter(tags=["bridge-logs"])
@@ -558,4 +559,129 @@ async def upload_bridge_logs(
         "case_id": body.case_id,
         **total,
         "files": files_summary,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# bridge 直传通道（不依赖浏览器）
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class BridgeLogTokenRequest(BaseModel):
+    """bridge 日志直传令牌申请。"""
+
+    case_id: str = Field(min_length=1, max_length=64)
+    bridge_instance_id: str = Field(default="", max_length=64)
+
+
+@router.post("/api/bridge-logs/token")
+async def issue_bridge_log_direct_token(
+    body: BridgeLogTokenRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    """为指定工单签发 bridge 日志直传令牌（客户身份，经网关 HMAC 签名）。
+
+    为什么需要它：自动回采链是 `bridge → WS → 浏览器 → 后端`，浏览器一关就断。
+    bridge 要自己上报，就必须有一份"只写日志"的短期凭证，而不是客户 Cookie。
+    """
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    internal = _is_internal_caller(authorization)
+    client_id: str | None = None
+    if not internal:
+        # 签发凭证必须严格身份：过渡模式的匿名（None）一律拒绝，
+        # 否则任何人都能拿到"写某个工单日志"的令牌。
+        client_id = await authenticate_request(request)
+        if not client_id:
+            raise HTTPException(status_code=401, detail="身份签名缺失或无效")
+        async for session in _db_manager.get_session():
+            await _assert_case_owned(session, body.case_id, client_id)
+
+    secret = settings.BRIDGE_LOG_TOKEN_SECRET or settings.INTERNAL_API_TOKEN
+    token, expires_at = issue_bridge_log_token(
+        client_id=client_id or "internal",
+        case_id=body.case_id,
+        bridge_instance_id=body.bridge_instance_id,
+        secret=secret,
+        ttl_seconds=settings.BRIDGE_LOG_TOKEN_TTL_SECONDS,
+    )
+    logger.info(
+        event="bridge_log_token_issued",
+        case_id=body.case_id,
+        bridge_instance_id=body.bridge_instance_id,
+        expires_at=expires_at,
+    )
+    return {
+        "ok": True,
+        "token": token,
+        "expires_at": expires_at,
+        "upload_path": "/api/bridge-logs/direct",
+    }
+
+
+@router.post("/api/bridge-logs/direct")
+async def ingest_bridge_logs_direct(
+    body: BridgeLogBatch,
+    x_bridge_upload_token: str | None = Header(default=None, alias="X-Bridge-Upload-Token"),
+):
+    """bridge 直传回采（令牌鉴权，不依赖浏览器 Cookie）。
+
+    与 `/api/bridge-logs` 的差别只有身份来源：不是 Cookie，而是令牌里已绑定的
+    client_id / case_id / bridge_instance_id。因此这里没有"归属校验"，只有
+    "令牌是否允许写这个工单"——条目里出现别的工单号一律丢弃并计入 forbidden。
+    """
+    secret = settings.BRIDGE_LOG_TOKEN_SECRET or settings.INTERNAL_API_TOKEN
+    payload = verify_bridge_log_token(x_bridge_upload_token or "", secret)
+    if payload is None:
+        raise HTTPException(status_code=401, detail="bridge 日志令牌无效或已过期")
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    client_id = str(payload["cid"])
+    case_id = str(payload["case"])
+    instance_id = str(payload.get("ins") or "")
+    user_id = f"bridge:{instance_id[:12]}" if instance_id else "bridge:unknown"
+
+    accepted = duplicates = skipped = forbidden = 0
+    async for session in _db_manager.get_session():
+        for entry in body.logs:
+            # 令牌绑定唯一工单：带别的工单号的条目不是"越权"，而是"串用"，直接丢弃。
+            entry_case = entry.case_id or case_id
+            if entry_case != case_id:
+                forbidden += 1
+                continue
+            # 实例绑定：条目自带实例号时必须与令牌一致，防止同一令牌被复制到别的桥。
+            if entry.bridge_instance_id and instance_id and entry.bridge_instance_id != instance_id:
+                forbidden += 1
+                continue
+            entry.case_id = case_id
+            if not entry.bridge_instance_id and instance_id:
+                entry.bridge_instance_id = instance_id
+            outcome = await _insert_entry(session, entry, user_id, fallback_case_id=case_id)
+            if outcome == "accepted":
+                accepted += 1
+            elif outcome == "duplicate":
+                duplicates += 1
+            else:
+                skipped += 1
+        await session.commit()
+
+    logger.info(
+        event="bridge_log_direct_ingest",
+        case_id=case_id,
+        bridge_instance_id=instance_id,
+        client_id=client_id,
+        accepted=accepted,
+        duplicates=duplicates,
+        skipped=skipped,
+        forbidden=forbidden,
+    )
+    return {
+        "ok": True,
+        "accepted": accepted,
+        "duplicates": duplicates,
+        "skipped": skipped,
+        "forbidden": forbidden,
     }
