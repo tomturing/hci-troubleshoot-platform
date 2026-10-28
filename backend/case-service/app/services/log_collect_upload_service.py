@@ -342,13 +342,16 @@ class LogCollectUploadService:
         task.object_key = object_key
         task.object_size = size
         task.object_sha256 = digest
-        # 这里必须 commit 而不能只 flush：路由在 complete 返回后会立刻
-        # relay_service.trigger() —— 那是**另一个 session** 对同一行的 UPDATE。
-        # 本事务若仍持有行锁，trigger 会与它互等形成死锁，30s 后被
-        # idle_in_transaction_session_timeout 强杀：本事务回滚（archive_* 全丢），
-        # trigger 却拿到了锁并启动代传 → relay 读到空 archive_path，
-        # 以"平台尚无制品"失败。现场 Q2026101500828 正是这条路径
-        # （commit 抛 InternalClientError 与"平台尚无制品"相隔 16ms）。
+        # 这里必须 commit 而不能只 flush，原因有二：
+        # 1) 路由在 complete 返回后会立刻 relay_service.trigger() —— 那是**另一个
+        #    session** 对同一行的 UPDATE。本事务若仍持有行锁，trigger 会与它互等
+        #    形成死锁，30s 后被 idle_in_transaction_session_timeout 强杀：本事务
+        #    回滚（archive_* 全丢），trigger 却拿到锁并启动代传 → relay 读到空
+        #    archive_path，以"平台尚无制品"失败。现场 Q2026101500828 正是这条路径
+        #    （commit 抛 InternalClientError 与"平台尚无制品"相隔 16ms）。
+        # 2) 行锁窗口必须压到毫秒级：主协程等 trigger、trigger 等行锁、行锁等本
+        #    事务提交、提交等路由返回，构成自死锁，只能靠 30s 超时"解死锁"，
+        #    代价是写入整体回滚而客户端拿到 200。2026-10-28 staging 实测复现。
         await self.repository.commit()
         await self.repository.refresh(task)
 
