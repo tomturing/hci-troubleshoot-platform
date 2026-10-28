@@ -372,41 +372,6 @@ async def test_complete_retry_reuses_merged_object(service, repo, storage):
     assert task.archive_sha256 == result["sha256"]
 
 
-async def test_complete_retry_reuses_merged_object(service, repo, storage):
-    """落库失败后重试不得重写整包。
-
-    现场 Q2026102800720（3.6 GiB）：complete 在落库那一步失败后重试了 4 次，
-    每次都把整包重新合并一遍——峰值磁盘翻倍、每次又都超过 30s，重试原地打转。
-    合并成功即落 marker（meta.json 的 merged 字段），重试校验大小一致直接复用。
-    """
-    task, total, _sha = make_task()
-    await service.init(task, total_size=total, expected_sha256=None)
-    payload = b"12345678" + b"9abcdefg" + b"hijk"
-    for index, start in enumerate((0, CHUNK, 2 * CHUNK), start=1):
-        await service.record_part(
-            task.task_id,
-            part_number=index,
-            chunks=chunks_of(payload[start : start + CHUNK]),
-            claimed_sha256=None,
-        )
-
-    # 第一次：合并成功，随后落库失败（模拟连接已被 PG 杀掉）
-    repo.flush.side_effect = RuntimeError("connection is closed")
-    with pytest.raises(RuntimeError):
-        await service.complete(task, parts=None, declared_sha256=None, declared_size=None)
-    repo.flush.side_effect = None
-
-    target = storage.object_path(task.case_id, str(task.task_id))
-    assert target.is_file(), "合并成品应已落盘（这正是现场的真实状态）"
-    first_mtime = target.stat().st_mtime_ns
-
-    result = await service.complete(task, parts=None, declared_sha256=None, declared_size=None)
-
-    assert result["sha256"] == hashlib.sha256(payload).hexdigest()
-    assert target.stat().st_mtime_ns == first_mtime, "重试应复用成品，而不是重写一遍"
-    assert task.archive_sha256 == result["sha256"]
-
-
 async def test_complete_rejects_missing_parts(service):
     task, total, _sha = make_task()
     await service.init(task, total_size=total, expected_sha256=None)
