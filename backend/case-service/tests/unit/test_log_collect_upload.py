@@ -51,6 +51,11 @@ def repo():
     repo = MagicMock()
     repo.flush = AsyncMock()
     repo.refresh = AsyncMock()
+    # complete 在合并前会显式结束只读事务（否则连接以 idle-in-transaction
+    # 超过 30 秒被 PostgreSQL 杀掉，落库时必然 InterfaceError）。这里显式给出
+    # 可 await 的 commit，避免依赖 MagicMock 的隐式异步协议。
+    repo.session = MagicMock()
+    repo.session.commit = AsyncMock()
     return repo
 
 
@@ -279,6 +284,43 @@ async def test_complete_updates_task_and_cleans_parts(service, repo, storage):
     assert repo.flush.await_count == 1
     # 临时分片已清理
     assert storage.existing_parts(str(task.task_id)) == []
+
+
+async def test_complete_ends_transaction_before_merge(service, repo, storage):
+    """合并（分钟级纯文件 I/O）之前必须已经结束只读事务。
+
+    现场事实：12.8 GiB 包合并期间连接以 idle-in-transaction 状态超过
+    `idle_in_transaction_session_timeout=30s`，被 PostgreSQL 主动 kill，
+    随后 flush 抛 `InterfaceError: connection is closed` → HTTP 500，
+    桥侧只看到「平台收尾失败 HTTP 500」，而分片其实已经全部传完。
+    """
+    task, total, _sha = make_task()
+    await service.init(task, total_size=total, expected_sha256=None)
+
+    payload = b"12345678" + b"9abcdefg" + b"hijk"
+    for index, start in enumerate((0, CHUNK, 2 * CHUNK), start=1):
+        await service.record_part(
+            task.task_id,
+            part_number=index,
+            chunks=chunks_of(payload[start : start + CHUNK]),
+            claimed_sha256=None,
+        )
+
+    observed: dict[str, int] = {}
+    original_merge = storage.merge
+
+    async def spy_merge(**kwargs):
+        observed["commits_before_merge"] = repo.session.commit.await_count
+        result = await original_merge(**kwargs)
+        observed["commits_during_merge"] = repo.session.commit.await_count
+        return result
+
+    storage.merge = spy_merge
+
+    await service.complete(task, parts=None, declared_sha256=None, declared_size=len(payload))
+
+    assert observed["commits_before_merge"] == 1, "合并开始前必须已经提交（结束）只读事务"
+    assert observed["commits_during_merge"] == 1, "合并过程中不得再提交"
 
 
 async def test_complete_rejects_missing_parts(service):

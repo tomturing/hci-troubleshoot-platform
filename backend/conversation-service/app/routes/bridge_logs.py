@@ -23,6 +23,7 @@ terminal_bridge 日志回采接口 - 统一工单关联的日志落库
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 import uuid
@@ -30,7 +31,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from sqlalchemy import text
@@ -623,7 +624,7 @@ async def issue_bridge_log_direct_token(
 
 @router.post("/api/bridge-logs/direct")
 async def ingest_bridge_logs_direct(
-    body: BridgeLogBatch,
+    request: Request,
     x_bridge_upload_token: str | None = Header(default=None, alias="X-Bridge-Upload-Token"),
 ):
     """bridge 直传回采（令牌鉴权，不依赖浏览器 Cookie）。
@@ -631,7 +632,23 @@ async def ingest_bridge_logs_direct(
     与 `/api/bridge-logs` 的差别只有身份来源：不是 Cookie，而是令牌里已绑定的
     client_id / case_id / bridge_instance_id。因此这里没有"归属校验"，只有
     "令牌是否允许写这个工单"——条目里出现别的工单号一律丢弃并计入 forbidden。
+
+    请求体为什么手工解析而不是用 Pydantic 参数：bridge 固定发送
+    ``Content-Encoding: gzip``，而 FastAPI 的 body 参数只认已解压的字节，
+    gzip 体会直接 400「There was an error parsing the body」。存量桥不会随平台
+    发版更新，只能由服务端解压（与网关侧同一改动，缺任一层都不通）。
     """
+    raw = await request.body()
+    if (request.headers.get("content-encoding") or "").strip().lower() in {"gzip", "x-gzip"}:
+        try:
+            raw = gzip.decompress(raw)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="gzip 请求体解压失败") from exc
+    try:
+        body = BridgeLogBatch.model_validate_json(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
     secret = settings.BRIDGE_LOG_TOKEN_SECRET or settings.INTERNAL_API_TOKEN
     payload = verify_bridge_log_token(x_bridge_upload_token or "", secret)
     if payload is None:

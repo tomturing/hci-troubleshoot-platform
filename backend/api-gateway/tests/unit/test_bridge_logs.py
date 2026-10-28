@@ -155,3 +155,76 @@ class TestBridgeLogsProxy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBridgeLogsDirectGzip(unittest.TestCase):
+    """直传代理必须自己解 gzip：桥侧固定发压缩体，网关原先直接 request.json()。
+
+    现场事实（2026-10-28）：同一端点发明文 → 401（路由正常），发 gzip → 500；
+    6 小时内 132 次 /direct 全部失败、0 次成功，桥侧日志 100% 进不来。
+    """
+
+    def setUp(self):
+        self.client = TestClient(app)
+        self.payload = {
+            "logs": [
+                {
+                    "case_id": "Q2026102801014",
+                    "level": "INFO",
+                    "event": "bridge.startup",
+                    "message": "桥已启动",
+                }
+            ]
+        }
+
+    @patch("app.routes.bridge_logs.httpx.AsyncClient")
+    def test_gzip_body_forwarded_as_plain_json(self, mock_client_cls):
+        import gzip
+        import json
+
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "accepted": 1}
+        mock_client.post.return_value = mock_response
+
+        response = self.client.post(
+            "/api/bridge-logs/direct",
+            content=gzip.compress(json.dumps(self.payload).encode()),
+            headers={"Content-Encoding": "gzip", "X-Bridge-Upload-Token": "tok-123"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        _, kwargs = mock_client.post.call_args
+        # 解压后再转发：下游拿到的是明文 JSON，不再带 Content-Encoding。
+        self.assertEqual(kwargs["json"], self.payload)
+        self.assertEqual(kwargs["headers"].get("X-Bridge-Upload-Token"), "tok-123")
+        self.assertNotIn("Content-Encoding", kwargs["headers"])
+
+    @patch("app.routes.bridge_logs.httpx.AsyncClient")
+    def test_plain_body_still_works(self, mock_client_cls):
+        mock_client = AsyncMock()
+        mock_client_cls.return_value.__aenter__.return_value = mock_client
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "accepted": 1}
+        mock_client.post.return_value = mock_response
+
+        response = self.client.post(
+            "/api/bridge-logs/direct",
+            json=self.payload,
+            headers={"X-Bridge-Upload-Token": "tok-123"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        _, kwargs = mock_client.post.call_args
+        self.assertEqual(kwargs["json"], self.payload)
+
+    def test_corrupt_gzip_returns_400(self):
+        response = self.client.post(
+            "/api/bridge-logs/direct",
+            content=b"\x1f\x8bnot-really-gzip",
+            headers={"Content-Encoding": "gzip", "X-Bridge-Upload-Token": "tok-123"},
+        )
+        self.assertEqual(response.status_code, 400)
