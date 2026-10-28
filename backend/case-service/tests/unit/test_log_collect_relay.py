@@ -401,3 +401,79 @@ async def test_run_keeps_sangfor_relay_error_code(storage):
     values = _values_by_name(statements[-1])
     assert values["relay_status"] == "failed"
     assert values["error_code"] == "LC-TRANSFER-001"
+
+
+async def test_run_retries_transient_then_succeeds(storage):
+    """瞬时错误（5888 临时不可达）自动重试，最终成功不应写 failed 终态。"""
+    task, _ = _make_task(storage, "Q1", b"01234567")
+    calls = {"n": 0}
+
+    async def flaky_run(_tid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SangforRelayError("5888 无响应", "LC-TRANSFER-003")
+        return None
+
+    finished = {}
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        max_attempts=2,
+        retry_base_delay=0.0,
+    )
+    service._run = flaky_run  # type: ignore[method-assign]
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
+            status=status, error=error, error_code=error_code
+        )
+    )
+    await service.run(task.task_id)
+    assert calls["n"] == 2
+    assert finished == {}, "成功路径不应调用 _finish 写终态"
+
+
+async def test_run_transient_exhausted_marks_failed(storage):
+    """瞬时错误重试耗尽后落 failed，且保留原始错误码。"""
+    task, _ = _make_task(storage, "Q1", b"01234567")
+    finished = {}
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        max_attempts=2,
+        retry_base_delay=0.0,
+    )
+    service._run = AsyncMock(side_effect=SangforRelayError("5888 无响应", "LC-TRANSFER-003"))
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
+            status=status, error=error, error_code=error_code
+        )
+    )
+    with pytest.raises(SangforRelayError):
+        await service.run(task.task_id)
+    assert finished["status"] == "failed"
+    assert finished["error_code"] == "LC-TRANSFER-003"
+
+
+async def test_run_permanent_error_not_retried(storage):
+    """永久错误（无制品 LC-TRANSFER-001）立即落 failed，不进入重试。"""
+    task, _ = _make_task(storage, "Q1", b"01234567")
+    finished = {}
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        max_attempts=3,
+        retry_base_delay=1.0,
+    )
+    service._run = AsyncMock(side_effect=SangforRelayError("平台尚无制品，无法代传", "LC-TRANSFER-001"))
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
+            status=status, error=error, error_code=error_code
+        )
+    )
+    with pytest.raises(SangforRelayError):
+        await service.run(task.task_id)
+    assert finished["status"] == "failed"
+    assert finished["error_code"] == "LC-TRANSFER-001"

@@ -990,6 +990,13 @@ function handleMessage(event: MessageEvent) {
   }
   if (data.type !== 'log_collect_result') return
   const action = data.log_action
+  // 桥已确认 SSH 会话不存在（LC-ENV-006）：前端 SSH 状态立刻置否。
+  // 否则 UI 仍显示「已连接」、按钮仍可点，用户会反复误发请求并收到同样的 session_missing——
+  // 这是 8×/天 LC-ENV-006 未被前端拦截的最后一环：面板这条 WS 未必是会话的属主连接，
+  // 可能没收到 ssh_disconnected，于是状态陈旧。此处用桥的权威判定自愈，避免反复误发。
+  if (data.error_code === 'LC-ENV-006' && chatStore.sshConnectionState === 'connected') {
+    chatStore.sshConnectionState = 'disconnected'
+  }
   // transfer 是持续事件流（拉取/上传各阶段多次回包），单独处理
   if (action === 'transfer') {
     const payload = data.log_data || {}
@@ -3279,10 +3286,10 @@ onBeforeUnmount(() => {
             <el-button
               v-if="!running"
               type="primary"
-              :disabled="prepareState === 'probing'"
+              :disabled="prepareState === 'probing' || !sshConnected"
               @click="handleStart"
             >
-              {{ prepareState === 'probing' ? '正在读取环境…' : '开始收集' }}
+              {{ prepareState === 'probing' ? '正在读取环境…' : (!sshConnected ? '请先连接 SSH' : '开始收集') }}
             </el-button>
             <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>
           </template>
