@@ -569,6 +569,42 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  /**
+   * 现场回归（截图二，2026-10-28）：P1 采集中途失败（66%、5/6 节点失败），
+   * 平台判 failed。结果卡原先按 upload_mode=acli_direct 把"无产物"讲成
+   * "直传后压缩包已删除 / 由插件上传后自动清理"——可 P1 从头到尾没发生，
+   * 这是把失败解释成"成功后的清理"。契约：失败任务必须按终态说，不套用 P1 成功叙事。
+   */
+  it('失败的 P1 任务不把无产物讲成"直传后已删除"', async () => {
+    const failedP1 = taskFixture({
+      task_id: 'task-failed-p1',
+      status: 'failed',
+      created_at: '2026-10-28T09:50:00+08:00',
+      finished_at: '2026-10-28T09:55:00+08:00',
+      upload_mode: 'acli_direct',
+      delivery_status: undefined,
+      archive_size: 0,
+      archive_path: '',
+    } as Partial<LogCollectTask>)
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [failedP1] })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const result = wrapper.find('.lc-result')
+    expect(result.exists()).toBe(true)
+    const text = result.text()
+    // 失败终态：这三条必须按"失败"措辞，禁止 P1 成功叙事
+    expect(text).toContain('本次采集失败，未产出压缩包')
+    expect(text).toContain('采集未成功，无产物')
+    expect(text).toContain('采集失败，未归档')
+    // 不得再出现把失败解释成"上传成功后自删"的话术
+    expect(text).not.toContain('直传后压缩包已删除')
+    expect(text).not.toContain('由插件上传后自动清理')
+    wrapper.unmount()
+  })
+
   // 现场反馈：产物位置是长路径，排在右列会把行高撑成两行且右侧留白；
   // 换成「产物位置在左、归档状态在右」后路径靠左读，短文案收口在右。
   it('结果态字段顺序把产物位置排在归档状态之前', async () => {
