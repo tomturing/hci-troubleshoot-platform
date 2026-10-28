@@ -3838,6 +3838,9 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     archive_path text,
     archive_size bigint,
     archive_sha256 char(64),
+    object_key text,
+    object_size bigint,
+    object_sha256 char(64),
     pull_offset_bytes bigint,
     pull_sha256 char(64),
     relay_upload_id text,
@@ -3888,6 +3891,9 @@ COMMENT ON COLUMN log_collect_task.status IS '任务状态机：pending/probing/
 COMMENT ON COLUMN log_collect_task.progress IS '总进度 0-100，来自 acli progress 的"总进度"字段';
 COMMENT ON COLUMN log_collect_task.detail IS '主机明细与上传状态等结构化进度快照';
 COMMENT ON COLUMN log_collect_task.archive_sha256 IS '压缩包 SHA-256（制品完整性校验）';
+COMMENT ON COLUMN log_collect_task.object_key IS '平台对象存储内的相对 key（P2：<case_id>/<upload_id>.zip）；P1 为 NULL，表示平台不留副本';
+COMMENT ON COLUMN log_collect_task.object_size IS '平台对象字节数（与 archive_size 区分：后者可能是节点侧包大小）';
+COMMENT ON COLUMN log_collect_task.object_sha256 IS '平台对象 SHA-256，用于事后校验对象是否被改写';
 COMMENT ON COLUMN log_collect_task.pull_offset_bytes IS 'P3 段① 已从 HCI 拉取到客户 PC 的字节数（rsync/SFTP 续传依据）';
 COMMENT ON COLUMN log_collect_task.pull_sha256 IS 'P3 段① 完成后源包 SHA-256，用于平台侧比对';
 COMMENT ON COLUMN log_collect_task.relay_upload_id IS 'P3 段③ 日志服务器返回的 upload_id，用于判断能否续传';

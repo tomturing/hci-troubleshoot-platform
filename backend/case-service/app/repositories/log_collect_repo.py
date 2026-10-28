@@ -70,5 +70,15 @@ class LogCollectTaskRepository:
     async def flush(self) -> None:
         await self.session.flush()
 
+    async def commit(self) -> None:
+        """显式提交当前事务。
+
+        默认事务边界由请求收尾统一提交，本层只 flush；但 complete 是例外：
+        合并是分钟级纯文件 IO，必须先结束只读事务（30s idle 超时会杀连接），
+        落库后又必须立即放行行锁给代传 trigger（否则自死锁）。这两处
+        不能等到请求收尾，只能显式提交。
+        """
+        await self.session.commit()
+
     async def refresh(self, task: LogCollectTask) -> None:
         await self.session.refresh(task)

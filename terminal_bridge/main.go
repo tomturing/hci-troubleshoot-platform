@@ -499,6 +499,10 @@ type OutMessage struct {
 	LogAction string `json:"log_action,omitempty"`
 	LogData   any    `json:"log_data,omitempty"`
 	Raw       string `json:"raw,omitempty"`
+	// TicketNo 原样回显请求里的工单号。acli 的采集任务是**节点级单任务**，
+	// 同一台节点可能正在跑另一个工单的采集；前端必须据此判断"这份进度属于谁"，
+	// 否则会把别单的 85% 渲染成本单的进度（2026-10-28 现场）。
+	TicketNo string `json:"ticket_no,omitempty"`
 
 	// ── 统一错误诊断字段（全链路错误码）──
 	// ErrorCode 是规范码（LC-<LAYER>-<NNN>），layer/owner/retryable 由 sendMsg 自动补全；

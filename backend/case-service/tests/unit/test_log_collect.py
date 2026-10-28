@@ -115,6 +115,55 @@ class TestCreateTask:
         assert task.arch == "x86_64"
         assert task.acli_version == "1.0.1"
 
+    async def test_probe_snapshot_persisted_with_task(self, service, mock_repo):
+        """探测快照必须随任务落库。
+
+        2026-10-28 现场：Q2026102800331 的 detail 只有 baseline_report_hash，
+        事后无法回答"节点清单为什么是空的、日志服务器通不通、哪版 acli"。
+        """
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        probe = {
+            "acli_version": "1.0.0",
+            "acli_build_time": "2026-05-20 17:22:16",
+            "architecture": "x86_64",
+            "hosts_count": 0,
+            "catalog_source": "acli_help",
+            "catalog_note": "节点清单获取失败：open /sys/fs/cgroup/cpu/cpuset.cpus",
+            "note": "curl 探测失败：000 10.006299",
+            "log_server_reachable": False,
+            "http_code": 0,
+        }
+        await service.create_task(
+            make_payload(
+                upload_mode="bridge_relay",
+                probe=probe,
+                baseline_report_hash="226-9204f7de",
+            ),
+            "client-1",
+        )
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.detail["baseline_report_hash"] == "226-9204f7de"
+        assert task.detail["probe"]["hosts_count"] == 0
+        assert task.detail["probe"]["log_server_reachable"] is False
+        assert "cpuset.cpus" in task.detail["probe"]["catalog_note"]
+
+    async def test_probe_snapshot_oversize_keeps_minimal(self, service, mock_repo):
+        """探测快照超限时只保留可对账的最小集合，不让 detail 无界增长。"""
+        mock_repo.get_active_by_case = AsyncMock(return_value=None)
+        mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
+
+        await service.create_task(
+            make_payload(probe={"extra": "x" * 9000, "acli_version": "1.0.0"}),
+            "client-1",
+        )
+
+        task = mock_repo.create.await_args.args[0]
+        assert task.detail["probe"]["truncated"] is True
+        assert task.detail["probe"]["acli_version"] == "1.0.0"
+
     async def test_upload_mode_persisted_on_create(self, service, mock_repo):
         """交付路径必须在创建那一刻落库。
 
@@ -457,6 +506,15 @@ class TestPayloadValidation:
 
     def test_empty_ips_default_to_all(self):
         payload = make_payload(ips=[])
+        assert payload.ips == ["all"]
+
+    # all 与具体 IP 是互斥语义：静默收窄会让落库结果与节点实际收到的命令不一致。
+    def test_ips_rejects_all_mixed_with_ip(self):
+        with pytest.raises(ValidationError, match="不能与具体 IP 混写"):
+            make_payload(ips=["all", "172.28.25.2"])
+
+    def test_ips_blank_entries_do_not_count_as_hosts(self):
+        payload = make_payload(ips=["all", "  "])
         assert payload.ips == ["all"]
 
     def test_patch_requires_field(self):

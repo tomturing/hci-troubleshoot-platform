@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from ..models.log_collect import LogCollectTask
@@ -22,6 +24,42 @@ from ..schemas.log_collect import (
     LogCollectTaskCreate,
     LogCollectTaskPatch,
 )
+
+# probe 快照入库上限：探测失败原因里会夹 acli 原始日志行，不设上限会让 detail 无界增长。
+_PROBE_SNAPSHOT_MAX_BYTES = 8192
+_PROBE_NOTE_MAX_CHARS = 1024
+
+
+def _build_task_detail(payload: LogCollectTaskCreate) -> dict[str, Any]:
+    """把"下发前的事实"固化进任务 detail。
+
+    第一性原理：任务失败后能自证的前提，是创建那一刻的环境被记下来了。
+    `baseline_report_hash` 只回答"报告是谁的"，回答不了"哪台机器、哪版 acli、
+    节点清单为什么是空的、日志服务器通不通"——而这些恰是事后定因的唯一入口。
+    """
+    detail: dict[str, Any] = {}
+    if payload.baseline_report_hash:
+        detail["baseline_report_hash"] = payload.baseline_report_hash
+    if payload.probe:
+        probe = dict(payload.probe)
+        for key in ("catalog_note", "note"):
+            value = probe.get(key)
+            if isinstance(value, str) and len(value) > _PROBE_NOTE_MAX_CHARS:
+                probe[key] = value[:_PROBE_NOTE_MAX_CHARS] + "…（已截断，完整内容见 bridge 事件）"
+        detail["probe"] = probe
+        if len(json.dumps(detail, ensure_ascii=False, default=str)) > _PROBE_SNAPSHOT_MAX_BYTES:
+            # 超限时保留可用于对账的最小集合，不让 detail 变成大对象存储。
+            detail["probe"] = {
+                "truncated": True,
+                "acli_version": probe.get("acli_version"),
+                "acli_build_time": probe.get("acli_build_time"),
+                "architecture": probe.get("architecture"),
+                "hosts_count": probe.get("hosts_count"),
+                "catalog_source": probe.get("catalog_source"),
+                "log_server_reachable": probe.get("log_server_reachable"),
+                "http_code": probe.get("http_code"),
+            }
+    return detail
 
 _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"probing", "installing", "collecting", "failed", "cancelled"}),
@@ -124,9 +162,9 @@ class LogCollectService:
             acli_version=payload.acli_version,
             status="pending",
             progress=0,
-            # 下发锚定的报告指纹必须随任务落库：前端内存里的基线在关面板、
+            # 下发锚定的报告指纹与探测快照必须随任务落库：前端内存里的基线在关面板、
             # 换浏览器、重启后会丢失，届时就无法判断"节点报告属于哪一次下发"。
-            detail=({"baseline_report_hash": payload.baseline_report_hash} if payload.baseline_report_hash else {}),
+            detail=_build_task_detail(payload),
             created_by=client_id,
             # trace_id 由平台兜底生成：前端若未传，任务仍必须有一个可贯穿
             # 「平台 → bridge → HCI → 回采日志」的链路 ID，否则远端无法按链路定位。
@@ -181,6 +219,18 @@ class LogCollectService:
 
         for key, value in data.items():
             setattr(task, key, value)
+
+        # P1 的"已交付"是插件自报：节点直传日志服务器，平台拿不到任何回执。
+        # 不改状态机（避免破坏既有记录），但必须把**判定依据**写进 detail，
+        # 否则事后无法区分"平台核验过"与"只有 acli 说成功"（2026-10-28 Q2026102800331）。
+        if task.upload_mode == "acli_direct" and task.delivery_status == "delivered":
+            evidence = dict(task.detail or {})
+            if evidence.get("delivery_evidence") != "acli_self_reported":
+                evidence["delivery_evidence"] = "acli_self_reported"
+                evidence["delivery_evidence_note"] = (
+                    "P1 直传：平台无独立回执，delivered 依据 acli 进度的 upload_state=成功 与压缩包自删"
+                )
+                task.detail = evidence
 
         if target_status in TERMINAL_STATUSES:
             task.finished_at = datetime.now(UTC)

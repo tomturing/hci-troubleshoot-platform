@@ -293,22 +293,23 @@ class LogCollectUploadService:
         if part_numbers != list(range(1, part_count + 1)):
             raise PartValidationError("parts 必须是从 1 到 part_count 的完整序列", status=400)
 
-        # 合并是纯文件 I/O，12.8 GiB 实测需要数分钟。而本请求的事务在
-        # `get_task` 的 SELECT 时就已经开启——如果让它一直持有，连接会以
-        # idle-in-transaction 状态超过 DatabaseManager 设定的 30 秒上限，
-        # 被 PostgreSQL 主动 kill，随后的 flush 必然抛
-        # `asyncpg InterfaceError: connection is closed` → HTTP 500。
-        # 2026-10-28 实测：6 小时内 62 次该错误，全部发生在 merge 之后落库时，
-        # 桥侧看到的是「平台收尾失败 HTTP 500」，而分片其实已经全部传完。
-        # 因此在合并前显式结束只读事务，合并结束后由 flush 自动开启新事务；
-        # 绝不允许多分钟的 I/O 跨在事务里。
-        await self.repository.session.commit()
+        # 先把下面要用的字段取出来：commit 之后不再依赖 ORM 的惰性加载。
+        case_id = task.case_id
+        expected_sha256 = declared_sha256 or meta.get("expected_sha256")
+
+        # 硬约束：合并是一次**长文件 IO**（3.6 GiB 实测 ~50s，12.8 GiB 数分钟，
+        # 20 GiB 更久），绝不能把 DB 事务跨在中间。事务在 get_task 的 SELECT 时
+        # 就已开启，连接级 idle_in_transaction_session_timeout 只有 30s，PG 会在
+        # 合并期间 terminate 连接，随后 flush 报 "connection is closed" → 500。
+        # 实测：2026-10-28 单日 6 小时内 62 次该错误（Q2026102800720 等），
+        # 平台 objects 下有完整包、库里 archive_* 为空，代传因此永不触发。
+        await self.repository.commit()
 
         try:
             size, digest, object_key = await self.storage.merge(
                 upload_id=upload_id,
                 part_numbers=part_numbers,
-                case_id=task.case_id,
+                case_id=case_id,
                 task_id=upload_id,
                 max_bytes=self.max_archive_bytes,
             )
@@ -327,7 +328,6 @@ class LogCollectUploadService:
             raise PartValidationError(
                 f"合并后大小不一致：声明 {declared_size}，实际 {size}"
             )
-        expected_sha256 = declared_sha256 or meta.get("expected_sha256")
         if expected_sha256 and expected_sha256 != digest:
             await self.storage.delete_multipart(upload_id)
             raise PartValidationError(
@@ -338,18 +338,22 @@ class LogCollectUploadService:
         task.archive_path = object_key
         task.archive_size = size
         task.archive_sha256 = digest
-        await self.repository.flush()
+        # 平台对象单独留索引：archive_* 在 P1 是节点路径，不能用来判断"平台有没有留包"。
+        task.object_key = object_key
+        task.object_size = size
+        task.object_sha256 = digest
+        # 这里必须 commit 而不能只 flush，原因有二：
+        # 1) 路由在 complete 返回后会立刻 relay_service.trigger() —— 那是**另一个
+        #    session** 对同一行的 UPDATE。本事务若仍持有行锁，trigger 会与它互等
+        #    形成死锁，30s 后被 idle_in_transaction_session_timeout 强杀：本事务
+        #    回滚（archive_* 全丢），trigger 却拿到锁并启动代传 → relay 读到空
+        #    archive_path，以"平台尚无制品"失败。现场 Q2026101500828 正是这条路径
+        #    （commit 抛 InternalClientError 与"平台尚无制品"相隔 16ms）。
+        # 2) 行锁窗口必须压到毫秒级：主协程等 trigger、trigger 等行锁、行锁等本
+        #    事务提交、提交等路由返回，构成自死锁，只能靠 30s 超时"解死锁"，
+        #    代价是写入整体回滚而客户端拿到 200。2026-10-28 staging 实测复现。
+        await self.repository.commit()
         await self.repository.refresh(task)
-        # 落库后必须立即提交，理由不再是超时而是**自死锁**：
-        # 路由在本函数返回后立刻 await relay_service.trigger()，它用独立连接
-        # UPDATE 同一行的 relay_status——而 UPDATE 需要的行锁正被本事务持有；
-        # 若本事务拖到请求收尾才提交，trigger 的 UPDATE 就永远等不到锁：
-        # 主协程等 trigger，trigger 等行锁，行锁等本事务提交，提交等路由返回。
-        # 整条链只能靠 idle-in-transaction 30 秒超时"解死锁"，代价是本事务被
-        # PostgreSQL 击杀、上面的写入全部回滚——客户端却拿到 200。
-        # 2026-10-28 staging 实测复现：archive_path 为空、relay 报"平台尚无制品"。
-        # 立即提交把行锁窗口从"请求剩余生命周期"压到毫秒级。
-        await self.repository.session.commit()
 
         await self.storage.delete_multipart(upload_id)
         return {

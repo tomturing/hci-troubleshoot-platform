@@ -496,6 +496,12 @@ export interface LogCollectMessageOptions {
   container?: string | null
   traceId?: string | null
   ticketNo?: string
+  /**
+   * 平台任务 ID。acli 的采集任务是节点级单任务，进度的归属只能靠
+   * 「工单号 + 任务 ID」这一对事实自证；只带工单号时，同一工单的多次任务
+   * 在事件里无法区分（2026-10-28 现场：progress 事件 task_id 全为空）。
+   */
+  execId?: string
   modules?: string[]
   dateFrom?: string
   dateTo?: string
@@ -534,6 +540,7 @@ export function buildLogCollectMessage(
     container: options.container || undefined,
     trace_id: options.traceId || undefined,
     ticket_no: options.ticketNo || undefined,
+    exec_id: options.execId || undefined,
     modules: options.modules?.length ? options.modules : undefined,
     date_from: options.dateFrom || undefined,
     date_to: options.dateTo || undefined,

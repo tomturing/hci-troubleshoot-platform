@@ -3422,11 +3422,51 @@ export const useChatStore = defineStore('chat', () => {
   const SSH_CREATION_ACLI_CHECK_TIMEOUT_MS = 5000
 
   /** 采集命令列表 */
-  const COLLECT_COMMANDS = [
+  const COLLECT_COMMANDS: { name: string; label: string; cmd: string; optional?: boolean }[] = [
     { name: 'cluster', label: '采集集群信息', cmd: 'acli platform info get' },
     { name: 'alert', label: '采集告警列表', cmd: 'acli --formatter json alert list' },
     { name: 'task', label: '采集失败任务列表', cmd: 'acli --formatter json task get -s failed -l 10' },
+    // 节点数不在 `platform info get` 的输出里，必须单独读清单。
+    // optional：acli 1.0.0 在 HCI 6.11 上会因 cgroup 读取失败而退出，
+    // 不能因为"读不到节点数"就让整个建单流程失败。
+    {
+      name: 'nodes',
+      label: '采集节点清单',
+      cmd: 'acli --formatter json platform node list',
+      optional: true,
+    },
   ]
+
+  /**
+   * 逐条执行环境采集命令。
+   *
+   * 可选命令失败只记录原因、不阻断建单：节点清单在 acli 1.0.0 + HCI 6.11 上
+   * 稳定失败（open /sys/fs/cgroup/cpu/cpuset.cpus），但它不是建单的前提。
+   */
+  async function runCollectCommands(
+    buffer: Record<string, string>,
+    run: (name: string, command: string) => Promise<BridgeCommandResult>,
+  ) {
+    for (const command of COLLECT_COMMANDS) {
+      const result = await run(command.label, command.cmd)
+      if (result.exitCode !== 0) {
+        if (command.optional) {
+          buffer[`${command.name}_error`] = (result.output || `exit=${result.exitCode}`).slice(0, 500)
+          appendSshCreationLog('warn', 'collect', `${command.label}失败（不阻断建单）`, {
+            command: command.name,
+            exitCode: result.exitCode,
+          })
+          continue
+        }
+        throw buildCommandError(command.label, result.output, result.exitCode)
+      }
+      buffer[command.name] = result.output
+      appendSshCreationLog('info', 'collect', '采集命令执行完成', {
+        command: command.name,
+        outputLength: result.output.length,
+      })
+    }
+  }
 
   function escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -3746,17 +3786,7 @@ export const useChatStore = defineStore('chat', () => {
                     })
 
                     // 安装成功后继续采集环境数据
-                    for (const command of COLLECT_COMMANDS) {
-                      const result = await runBridgeCommand(command.label, command.cmd)
-                      if (result.exitCode !== 0) {
-                        throw buildCommandError(command.label, result.output, result.exitCode)
-                      }
-                      collectBuffer[command.name] = result.output
-                      appendSshCreationLog('info', 'collect', '采集命令执行完成', {
-                        command: command.name,
-                        outputLength: result.output.length,
-                      })
-                    }
+                    await runCollectCommands(collectBuffer, runBridgeCommand)
 
                     await submitCollectedData(caseId, collectBuffer)
                     appendSshCreationLog('info', 'collect', '环境数据已提交到 Environment API', {
@@ -3783,17 +3813,7 @@ export const useChatStore = defineStore('chat', () => {
                 sshCreationPhase.value = 'collecting'
                 appendSshCreationLog('info', 'acli', '检测到 acli 可用，开始采集环境数据')
 
-                for (const command of COLLECT_COMMANDS) {
-                  const result = await runBridgeCommand(command.label, command.cmd)
-                  if (result.exitCode !== 0) {
-                    throw buildCommandError(command.label, result.output, result.exitCode)
-                  }
-                  collectBuffer[command.name] = result.output
-                  appendSshCreationLog('info', 'collect', '采集命令执行完成', {
-                    command: command.name,
-                    outputLength: result.output.length,
-                  })
-                }
+                await runCollectCommands(collectBuffer, runBridgeCommand)
 
                 await submitCollectedData(caseId, collectBuffer)
                 appendSshCreationLog('info', 'collect', '环境数据已提交到 Environment API', {
@@ -3987,7 +4007,20 @@ export const useChatStore = defineStore('chat', () => {
         const cleaned = stripAnsi(buffer.cluster)
         devLog('submitCollectedData', 'cluster 原始输出（截断）', { outputPreview: cleaned.substring(0, 100) })
         const clusterData = parseClusterOutput(cleaned)
-        devLog('submitCollectedData', 'cluster 解析成功', { keys: Object.keys(clusterData || {}) })
+        // 节点数不在 `platform info get` 的输出里（2026-10-28 实测），只能由
+        // node list 单独采集；采不到时必须把原因写进去，界面显示"未采集 + 原因"，
+        // 而不是渲染成 `?节点` 这种既像故障又像 0 的伪数据。
+        const nodeCount = parseNodeCount(buffer.nodes, buffer.nodes_error)
+        if (nodeCount.count !== null) {
+          clusterData.host_count = String(nodeCount.count)
+        } else {
+          clusterData.node_count_error = nodeCount.error
+        }
+        devLog('submitCollectedData', 'cluster 解析成功', {
+          keys: Object.keys(clusterData || {}),
+          hostCount: clusterData.host_count,
+          nodeCountError: nodeCount.error,
+        })
         await environmentApi.upsert(caseId, 'cluster', clusterData)
         devLog('submitCollectedData', 'cluster upsert 成功', { caseId })
       } catch (e) {
@@ -4079,6 +4112,38 @@ export const useChatStore = defineStore('chat', () => {
    *   acli platform info get; status=$?; printf '\n__HCI_DONE_...__:%s\n' "$status"
    * 因此输出中还会包含 marker 行和命令回显行。
    */
+  /**
+   * 从 `acli --formatter json platform node list` 提取节点数。
+   *
+   * 返回 count=null 时必须带可读原因：该命令在 acli 1.0.0 + HCI 6.11 上会因
+   * `open /sys/fs/cgroup/cpu/cpuset.cpus` 失败而只输出一行 error，
+   * 不能让"没采到"看起来像"0 个节点"。
+   */
+  function parseNodeCount(raw?: string, rawError?: string): { count: number | null; error: string } {
+    const source = (raw || '').trim()
+    if (!source) {
+      const reason = (rawError || '').trim()
+      return {
+        count: null,
+        error: reason
+          ? `节点清单未采集：${reason.slice(0, 300)}`
+          : '节点清单未采集（命令未执行或未返回输出）',
+      }
+    }
+    const parsed = parseJsonOutput(stripAnsi(source))
+    const data = Array.isArray(parsed) ? parsed : (parsed as Record<string, unknown> | null)?.data
+    if (Array.isArray(data)) {
+      return { count: data.length, error: '' }
+    }
+    // 命令 exit 0 但输出不是清单 JSON：把首行原文带出来，避免只报"解析失败"。
+    const firstLine =
+      stripAnsi(source)
+        .split('\n')
+        .map((line) => line.trim())
+        .find(Boolean) || '无输出'
+    return { count: null, error: `节点清单解析失败：${firstLine.slice(0, 300)}` }
+  }
+
   function parseClusterOutput(output: string): Record<string, unknown> {
     const cleaned = stripAnsi(output)
     const result: Record<string, unknown> = {}

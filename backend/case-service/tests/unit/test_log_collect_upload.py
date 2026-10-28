@@ -51,11 +51,10 @@ def repo():
     repo = MagicMock()
     repo.flush = AsyncMock()
     repo.refresh = AsyncMock()
-    # complete 在合并前会显式结束只读事务（否则连接以 idle-in-transaction
-    # 超过 30 秒被 PostgreSQL 杀掉，落库时必然 InterfaceError）。这里显式给出
-    # 可 await 的 commit，避免依赖 MagicMock 的隐式异步协议。
-    repo.session = MagicMock()
-    repo.session.commit = AsyncMock()
+    # complete 在合并前与落库后会各显式 commit 一次（否则连接以
+    # idle-in-transaction 超过 30 秒被 PostgreSQL 杀掉、或与代传 trigger
+    # 死锁）。这里显式给出可 await 的 commit，避免依赖 MagicMock 的隐式异步协议。
+    repo.commit = AsyncMock()
     return repo
 
 
@@ -281,18 +280,20 @@ async def test_complete_updates_task_and_cleans_parts(service, repo, storage):
     assert result["object_key"] == f"{task.case_id}/{task.task_id}.zip"
     assert task.archive_sha256 == result["sha256"]
     assert task.archive_size == len(payload)
-    assert repo.flush.await_count == 1
+    # 本服务只在两个点提交：合并前清事务、落库后放行。本层不再 flush。
+    assert repo.flush.await_count == 0
+    assert repo.commit.await_count == 2
     # 临时分片已清理
     assert storage.existing_parts(str(task.task_id)) == []
 
 
-async def test_complete_ends_transaction_before_merge(service, repo, storage):
-    """合并（分钟级纯文件 I/O）之前必须已经结束只读事务。
+async def test_complete_commits_before_merging(service, repo, storage, monkeypatch):
+    """合并（分钟级纯文件 I/O）之前必须已经提交只读事务。
 
-    现场事实：12.8 GiB 包合并期间连接以 idle-in-transaction 状态超过
-    `idle_in_transaction_session_timeout=30s`，被 PostgreSQL 主动 kill，
-    随后 flush 抛 `InterfaceError: connection is closed` → HTTP 500，
-    桥侧只看到「平台收尾失败 HTTP 500」，而分片其实已经全部传完。
+    现场 Q2026102800720：complete 在同一个事务里合并 3.6 GiB（~50s），
+    连接级 idle_in_transaction_session_timeout=30s 把连接 terminate 了，
+    随后 flush 报 "connection is closed" → 500，包已合并却在库里查不到。
+    这条断言锁的是顺序：merge 被调用时，commit 必须已经发生过。
     """
     task, total, _sha = make_task()
     await service.init(task, total_size=total, expected_sha256=None)
@@ -306,34 +307,32 @@ async def test_complete_ends_transaction_before_merge(service, repo, storage):
             claimed_sha256=None,
         )
 
-    observed: dict[str, int] = {}
+    observed: list[int] = []
     original_merge = storage.merge
 
     async def spy_merge(**kwargs):
-        observed["commits_before_merge"] = repo.session.commit.await_count
-        result = await original_merge(**kwargs)
-        observed["commits_during_merge"] = repo.session.commit.await_count
-        return result
+        observed.append(repo.commit.await_count)
+        return await original_merge(**kwargs)
 
-    storage.merge = spy_merge
+    monkeypatch.setattr(storage, "merge", spy_merge)
 
-    await service.complete(task, parts=None, declared_sha256=None, declared_size=len(payload))
+    await service.complete(task, parts=None, declared_sha256=None, declared_size=None)
 
-    assert observed["commits_before_merge"] == 1, "合并开始前必须已经提交（结束）只读事务"
-    assert observed["commits_during_merge"] == 1, "合并过程中不得再提交"
-    # 落库（flush 后）必须立即提交：路由随后会 await relay_service.trigger()，
-    # 它用独立连接 UPDATE 同一行——若本事务拖到请求收尾才提交，trigger 等行锁、
-    # 主协程等 trigger、提交等路由返回，构成自死锁，只能靠 30 秒 idle 超时
-    # "解死锁"，代价是写入整体回滚而客户端拿到 200（2026-10-28 staging 实测复现）。
-    assert repo.session.commit.await_count == 2, "落库后必须立即提交，释放行锁再触发代传"
+    assert observed == [1], "合并发生时事务必须已经提交（否则会被 30s 空闲超时杀掉）"
+    # 两次提交：合并前清事务 + 落库后放行。第二次必须发生在 trigger 代传之前，
+    # 否则 trigger（另一个 session 的 UPDATE）会与本事务的行锁互等成死锁
+    # （Q2026101500828：commit 报 InternalClientError 与"平台尚无制品"相隔 16ms；
+    # staging 同日实测复现：若拖到请求收尾才提交，trigger 等行锁、主协程等 trigger、
+    # 提交等路由返回，构成自死锁，只能靠 30s idle 超时"解死锁"，代价是写入整体
+    # 回滚而客户端拿到 200。）
+    assert repo.commit.await_count == 2
 
 
 async def test_complete_retry_reuses_merged_object(service, repo, storage):
     """落库失败后重试不得重写整包。
 
-    现场 Q2026102800720（3.6 GiB）：complete 在落库那一步失败后重试了 4 次，
-    每次都把整包重新合并一遍——峰值磁盘翻倍、每次又都超过 30s，重试原地打转。
-    合并成功即落 marker（meta.json 的 merged 字段），重试校验大小一致直接复用。
+    现场同一条任务重试了 4 次，每次都把 3.6 GiB 重新合并一遍——峰值磁盘翻倍、
+    每次又都超过 30s，重试注定原地打转。合并成功即落 marker，重试直接复用。
     """
     task, total, _sha = make_task()
     await service.init(task, total_size=total, expected_sha256=None)
@@ -346,11 +345,21 @@ async def test_complete_retry_reuses_merged_object(service, repo, storage):
             claimed_sha256=None,
         )
 
-    # 第一次：合并成功，随后落库失败（模拟连接已被 PG 杀掉）
-    repo.flush.side_effect = RuntimeError("connection is closed")
+    # 第一次：合并成功，随后落库 commit 失败（模拟连接已被 PG 杀掉）。
+    # commit 有两个调用点（合并前/落库后），只让**第二次**抛错——
+    # 如果第一次就抛，merge 根本不会执行，测不到"成品已落盘但元数据丢失"。
+    commit_calls = {"n": 0}
+
+    async def failing_commit():
+        commit_calls["n"] += 1
+        if commit_calls["n"] == 2:
+            raise RuntimeError("connection is closed")
+
+    repo.commit.side_effect = failing_commit
     with pytest.raises(RuntimeError):
         await service.complete(task, parts=None, declared_sha256=None, declared_size=None)
-    repo.flush.side_effect = None
+    assert commit_calls["n"] == 2, "失败必须发生在落库提交，而不是合并前的清事务"
+    repo.commit.side_effect = None
 
     target = storage.object_path(task.case_id, str(task.task_id))
     assert target.is_file(), "合并成品应已落盘（这正是现场的真实状态）"

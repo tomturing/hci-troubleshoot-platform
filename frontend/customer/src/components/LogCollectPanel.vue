@@ -21,6 +21,7 @@ import {
   type DeliveryStatus,
   type LogCollectModule,
   type LogCollectTask,
+  type ProbeHistoryItem,
   type RelayStatus,
   type UploadInitResult,
 } from '@/api/logCollect'
@@ -133,6 +134,8 @@ interface ProbeResult {
   hosts?: HostOption[]
   catalog_source?: 'acli_help' | 'platform_default'
   catalog_note?: string
+  /** 日志服务器探测失败原因（与 catalog_note 是两类独立故障，不能拼成一句） */
+  note?: string
 }
 
 type PrepareState = 'idle' | 'probing' | 'ready' | 'failed'
@@ -318,6 +321,36 @@ const hostChecked = computed<string[]>({
 const allHostsChecked = computed(
   () => hostOptions.value.length > 0 && hostChecked.value.length === hostOptions.value.length,
 )
+
+/** IPv4 字面量校验：与 bridge/平台两侧规则同口径（4 段、每段 0-255）。 */
+function isIPv4Literal(value: string): boolean {
+  const parts = value.split('.')
+  if (parts.length !== 4) return false
+  return parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
+}
+
+/**
+ * 把表单里的目标主机规整成 bridge 唯一认得的形态（`all` 或逗号分隔 IPv4）。
+ *
+ * 第一性原理：`acli -i` 只有两种合法输入——`all`，或逗号分隔的 IPv4；
+ * 它们互斥（"全部"已包含"其中某一台"），因此 all+IP 必须当场拒绝，
+ * 而不是让某一层替用户做取舍。
+ *
+ * 对抗性审查：必须在前端拦，因为两侧判罚并不对称——平台 `ips` 校验看到
+ * `all` 后按"全部"放行，bridge 却按原串逐项校验判非法；不拦的话用户拿到的是
+ * 「平台已建任务、节点下发失败」这种半成品状态。
+ *
+ * 返回 null 表示非法（调用方负责提示），'all' 表示全部在线节点。
+ */
+function normalizeTargetHosts(): string | null {
+  const hosts = form.ips
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+  if (!hosts.length) return 'all'
+  if (hosts.includes('all')) return hosts.length === 1 ? 'all' : null
+  return hosts.every(isIPv4Literal) ? hosts.join(',') : null
+}
 
 /**
  * 手填兜底提示：必须同时回答"为什么没有清单"和"该填什么"。
@@ -513,7 +546,60 @@ const pathModeHint = computed(() => {
   if (pathMode.value === 'P2') {
     return 'HCI 只生成压缩包，由客户机经平台中转到日志服务器：平台留副本，可回看/下载，但需要客户机在线'
   }
-  return '未选择时按探测结果自动决定'
+  return reachable === false
+    ? '未选择。探测显示 HCI 当前无法访问日志服务器：选 P1 可能上传失败，选 P2 由平台代传但需客户机在线'
+    : '未选择。探测确认可达时默认 P1；拿不准请选 P2（平台留副本，可回看/下载）'
+})
+
+/**
+ * 交付路径的**事实**来源。
+ *
+ * 有任务时只认 `upload_mode`：它是创建那一刻落库的决策，能回答"这单实际走哪条路"。
+ * 没有任务时才是探测建议，必须带「建议」二字——否则用户会把建议当成既成事实
+ * （2026-10-28 现场：Q2026102800331 实际 P1，界面因一次 curl 超时显示 P2，
+ * 事后只能靠命令行里的 -u 反推）。
+ */
+const deliveryModeFact = computed(() => {
+  const mode = currentTask.value?.upload_mode
+  if (mode === 'acli_direct') {
+    return { label: 'P1 直传日志服务器', type: 'success' as const, suggested: false }
+  }
+  if (mode === 'bridge_relay') {
+    return { label: 'P2 经平台中转', type: 'warning' as const, suggested: false }
+  }
+  if (!probeResult.value) {
+    return { label: '待探测', type: 'info' as const, suggested: false }
+  }
+  return probeResult.value.log_server_reachable
+    ? { label: 'P1 直传日志服务器（建议）', type: 'success' as const, suggested: true }
+    : { label: 'P2 经平台中转（建议）', type: 'warning' as const, suggested: true }
+})
+
+/**
+ * 探测失败的独立原因清单。
+ *
+ * 对抗性审查：节点清单失败（acli 自身）与日志服务器不可达（网络）是两条互不相干的
+ * 链路，此前被拼成一句展示，用户只能看到其中一条；分开列才能各自定因。
+ */
+const probeIssues = computed(() => {
+  const probe = probeResult.value
+  if (!probe) return [] as { key: string; title: string; detail: string }[]
+  const issues: { key: string; title: string; detail: string }[] = []
+  if (!probe.hosts?.length) {
+    issues.push({
+      key: 'hosts',
+      title: '节点清单获取失败（仍可手填 all 或节点 IP）',
+      detail: probe.catalog_note || 'acli 未返回任何节点，且没有给出原因',
+    })
+  }
+  if (!probe.log_server_reachable) {
+    issues.push({
+      key: 'logserver',
+      title: `日志服务器探测失败（HTTP ${probe.http_code ?? 0}）`,
+      detail: probe.note || `curl ${RELAY_URL} 无响应`,
+    })
+  }
+  return issues
 })
 
 /**
@@ -572,7 +658,10 @@ const resultArchiveText = computed(() => {
   // 试到哪一步了（Q2026102701193 现场库里就有一条 queued 卡了两天）。
   if (task.delivery_status === 'queued') return '交付已登记但未完成（可点「上传到平台」重试）'
   if (resultDelivered.value) {
-    return resultMode.value === 'acli_direct' ? '已由插件直传日志服务器' : '已归档到日志服务器'
+    // P1 平台拿不到回执：文案必须说清"这是节点自报"，不能让用户以为平台核验过。
+    return resultMode.value === 'acli_direct'
+      ? '已由插件直传日志服务器（节点自报，平台无独立回执）'
+      : '已归档到日志服务器'
   }
   if (task.status === 'completed') return '采集完成，尚未交付'
   return '未记录'
@@ -676,7 +765,12 @@ async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
   prepareError.value = ''
   try {
     const ws = await openSocket()
-    const probe = await sendAndWait(ws, 'probe', { remoteUrl: RELAY_URL, nodeIp: targetNode }, 90000)
+    const probe = await sendAndWait(
+      ws,
+      'probe',
+      { remoteUrl: RELAY_URL, nodeIp: targetNode, ticketNo: props.caseId },
+      90000,
+    )
     if (token !== prepareToken) return false
     if (probe.status !== 'ok') {
       throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
@@ -684,8 +778,17 @@ async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
     const data = probe.log_data as ProbeResult
     probeResult.value = data
     applyCatalog(data)
+    // 交付路径的默认值只在「用户从未选过」且探测**成功**时给一次。
+    // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定
+    // 「平台是否留副本」——2026-10-28 现场探测返回 000，4 分钟后 P1 却传成 2.99 GB，
+    // 界面却已把路径改成 P2，事后无法判断任务到底走的哪条路。
+    if (!pathModeTouched.value && !pathMode.value && data.log_server_reachable) {
+      pathMode.value = 'P1'
+    }
     probedAt.value = Date.now()
     prepareState.value = 'ready'
+    // 历史探测读的是 bridge 事件，失败不影响本次结果，因此不 await。
+    void loadProbeHistory()
     return true
   } catch (error: any) {
     if (token !== prepareToken) return false
@@ -1233,6 +1336,14 @@ async function handleStart() {
     return
   }
 
+  // 目标主机必须在下发前收敛成唯一合法形态：手填是自由文本，而 bridge 只认
+  // `all` 或逗号分隔 IPv4。等建完任务再被节点拒绝，等于白留一条 failed 记录。
+  const targetHosts = normalizeTargetHosts()
+  if (!targetHosts) {
+    ElMessage.warning('目标主机只能填 all 或英文逗号分隔的 IP，且 all 不能与具体 IP 混写')
+    return
+  }
+
   cleanupTip.value = ''
   errorMessage.value = ''
   failedStep.value = 0
@@ -1268,9 +1379,18 @@ async function handleStart() {
       await confirmInstall(ws)
     }
 
-    // 只在用户没手选过时用探测结论兜底；已手选则原样保留（见 pathModeTouched 注释）
-    if (!pathModeTouched.value || !pathMode.value) {
-      pathMode.value = probeResult.value.log_server_reachable ? 'P1' : 'P2'
+    // 只在用户从未手选、且探测确认可达时给一次默认值。
+    // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定交付路径
+    // （2026-10-28 现场：探测 000，P1 实际却传成 2.99 GB，界面已写成 P2）。
+    if (!pathModeTouched.value && !pathMode.value && probeResult.value.log_server_reachable) {
+      pathMode.value = 'P1'
+    }
+    if (!pathMode.value) {
+      stage.value = 'idle'
+      ElMessage.warning(
+        '请选择交付路径：探测显示日志服务器当前不可达，选 P1 可能在采集完成后上传失败',
+      )
+      return
     }
 
     // 守卫前把「最近一条任务」接回面板：failed 记录若未恢复，平台态为空会把
@@ -1315,7 +1435,7 @@ async function handleStart() {
         modules,
         date_from: form.dateRange[0],
         date_to: form.dateRange[1],
-        ips: form.ips.split(',').map((s) => s.trim()).filter(Boolean),
+        ips: targetHosts.split(','),
         remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // 交付路径必须随任务落库：只放在前端内存里的话，采集中的任务、以及
         // P1 失败降级后的任务都无法回答"当初选的是哪条路"。
@@ -1325,6 +1445,24 @@ async function handleStart() {
         arch: probeResult.value?.architecture || undefined,
         acli_version: probeResult.value?.acli_version || undefined,
         baseline_report_hash: baseline || undefined,
+        // 探测快照随任务落库：失败任务事后要能回答"当时那台机器是什么状态"。
+        // 只留在前端内存里，关面板或换端就永久丢失（2026-10-28 现场 detail 仅一个指纹）。
+        probe: probeResult.value
+          ? {
+              acli_version: probeResult.value.acli_version,
+              acli_build_time: probeResult.value.acli_build_time,
+              acli_binary: probeResult.value.acli_binary,
+              architecture: probeResult.value.architecture,
+              acli_installed: probeResult.value.acli_installed,
+              hosts_count: probeResult.value.hosts?.length ?? 0,
+              modules_count: probeResult.value.modules?.length ?? 0,
+              catalog_source: probeResult.value.catalog_source,
+              catalog_note: probeResult.value.catalog_note,
+              log_server_reachable: probeResult.value.log_server_reachable,
+              http_code: probeResult.value.http_code,
+              note: probeResult.value.note,
+            }
+          : undefined,
         trace_id: `lc-${props.caseId}-${Date.now()}`,
       })
     } catch (createError: any) {
@@ -1352,7 +1490,7 @@ async function handleStart() {
         modules,
         dateFrom: form.dateRange[0],
         dateTo: form.dateRange[1],
-        ips: form.ips.replace(/\s+/g, ''),
+        ips: targetHosts,
         remoteUrl: pathMode.value === 'P1' ? RELAY_URL : undefined,
       },
       180000,
@@ -1470,6 +1608,52 @@ function readProgressHash(): string {
   return hashReport(progress.value?.raw ?? '')
 }
 
+/** 节点上正在跑其它工单的采集时，记录那个工单号：只用于提示，不参与状态机。 */
+const foreignTicket = ref('')
+/** 自动轮询连续失败计数：静默重试不能变成永久无声。 */
+const syncFailureStreak = ref(0)
+
+/** 探测历史：面板只显示最新一次，历史失败原因必须能回看。 */
+const probeHistory = ref<ProbeHistoryItem[]>([])
+
+async function loadProbeHistory() {
+  try {
+    const { items } = await logCollectApi.listProbes(props.caseId, 10)
+    probeHistory.value = items || []
+  } catch {
+    // 历史只用于排障，读取失败不能影响当前探测与下发。
+    probeHistory.value = []
+  }
+}
+
+/** 历史条目标题：一眼看出"哪次、节点几个、日志服务器通不通"。 */
+function probeHistoryTitle(item: ProbeHistoryItem): string {
+  const extra = item.extra || {}
+  if (item.event === 'log_collect.create') {
+    return `下发任务（${String(extra.upload_mode ?? '路径未记录')}）`
+  }
+  const hosts = Number(extra.hosts_count ?? 0)
+  const reachable = extra.log_server_reachable === true ? '可达' : '不可达'
+  return `探测：节点 ${hosts} 个 / 日志服务器${reachable}`
+}
+
+/** 历史条目详情：完整失败原文（不截断），两类原因分行。 */
+function probeHistoryDetail(item: ProbeHistoryItem): string {
+  const extra = item.extra || {}
+  const lines: string[] = []
+  if (extra.catalog_note) lines.push(`节点清单：${String(extra.catalog_note)}`)
+  if (extra.note) lines.push(`日志服务器：${String(extra.note)}`)
+  if (!lines.length) {
+    return item.event === 'log_collect.create' ? '下发参数已记录，无失败信息' : '本次探测无失败信息'
+  }
+  return lines.join('\n')
+}
+
+function probeHistoryTime(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
+}
+
 /**
  * 读一次节点任务快照。
  *
@@ -1491,8 +1675,22 @@ async function readNodeSnapshot(timeoutMs = 20000, force = false): Promise<Progr
     }
   }
   try {
-    const result = await sendAndWait(ws, 'progress', {}, timeoutMs)
+    const result = await sendAndWait(
+      ws,
+      'progress',
+      { ticketNo: props.caseId, execId: currentTask.value?.task_id },
+      timeoutMs,
+    )
     if (result.status === 'error') return null
+    // 归属校验：acli 的采集任务是**节点级单任务**，同一节点可能正挂着别的工单。
+    // 桥接原样回显请求里的 ticket_no，据此判断这份进度属于谁；不属于本单时
+    // 返回 null（上层按 unknown 处理），绝不把别单进度渲染成本单状态。
+    const ticket = String(result.ticket_no ?? '').trim()
+    if (ticket && ticket !== props.caseId) {
+      foreignTicket.value = ticket
+      return null
+    }
+    foreignTicket.value = ''
     const snapshot = (result.log_data as ProgressSnapshot | null) ?? null
     // 打开面板对账 / 自动刷新 / 手动刷新 全部经过这里：统一记录压缩包大小，
     // 否则会出现"某条路径能看到大小、另一条路径看不到"的随机感。
@@ -1712,7 +1910,20 @@ async function syncNodeState(
               })
               .catch(() => undefined)
           }
-          if (!options.silent) ElMessage.warning(`平台状态同步失败：${error?.message || error}`)
+          if (!options.silent) {
+            ElMessage.warning(`平台状态同步失败：${error?.message || error}`)
+            syncFailureStreak.value = 0
+          } else {
+            // 静默重试不能变成永久无声：连续 3 次仍失败说明链路真的断了，
+            // 用户看到的只是过期投影（现场就出现过"卡在 85%"却无任何提示）。
+            syncFailureStreak.value += 1
+            if (syncFailureStreak.value >= 3) {
+              syncFailureStreak.value = 0
+              ElMessage.warning(
+                `连续 3 次同步平台任务状态失败，界面可能不是最新：${error?.message || error}`,
+              )
+            }
+          }
         }
       } else if (action.action === 'none' && nodeState === 'running') {
         // 平台进度只是投影，允许滞后；每 10% 落一次，避免 5s 一次的写放大
@@ -2720,8 +2931,9 @@ onBeforeUnmount(() => {
             <span :title="acliTitle">{{ acliVersionText }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="交付路径">
-            <el-tag :type="probeResult.log_server_reachable ? 'success' : 'warning'" size="small">
-              {{ probeResult.log_server_reachable ? 'P1 直传日志服务器' : 'P2 经平台中转' }}
+            <!-- 有任务时只认任务记录：探测推荐不能覆盖"这单实际走了哪条路" -->
+            <el-tag :type="deliveryModeFact.type" size="small">
+              {{ deliveryModeFact.label }}
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="可用空间">{{ probeResult.available_mb }} MB</el-descriptions-item>
@@ -2804,6 +3016,41 @@ onBeforeUnmount(() => {
           show-icon
           title="正在读取集群环境：架构 / acli / 场景目录 / 节点清单…"
         />
+        <!-- 探测失败必须显式告警：降级可用 ≠ 用户不需要知道 -->
+        <el-alert
+          v-for="issue in probeIssues"
+          :key="issue.key"
+          class="lc-prepare"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="issue.title"
+        >
+          <div class="lc-probe-detail">{{ issue.detail }}</div>
+        </el-alert>
+        <el-alert
+          v-if="foreignTicket"
+          class="lc-prepare"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="`节点上存在其它工单的采集任务（${foreignTicket}），本单不采用该进度`"
+        />
+        <!-- 探测历史：只显示最新一次会让"上次为什么失败"永久丢失 -->
+        <el-collapse v-if="probeHistory.length" class="lc-probe-history">
+          <el-collapse-item :title="`探测历史（最近 ${probeHistory.length} 条）`" name="probe">
+            <div
+              v-for="(item, index) in probeHistory"
+              :key="`${item.created_at}-${index}`"
+              class="lc-probe-history-item"
+            >
+              <div class="lc-probe-history-head">
+                {{ probeHistoryTime(item.created_at) }} · {{ probeHistoryTitle(item) }}
+              </div>
+              <div class="lc-probe-detail">{{ probeHistoryDetail(item) }}</div>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
         <!-- 探测期间只锁"提交"，不锁表单：用户可以先看清可填项，不必等探测结束 -->
         <el-form
           :model="form"
@@ -3113,6 +3360,28 @@ onBeforeUnmount(() => {
 /* 选择与探测结论冲突时只加色不改文案：提示必须同时说清"劝你别选"和"但你仍可以选" */
 .lc-hint-warn {
   color: var(--el-color-warning);
+}
+/* 探测失败原文：可能夹着 acli 的日志行，必须保留空白与长串，不能截断成一句 */
+.lc-probe-detail {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--el-font-family-mono, monospace);
+}
+.lc-probe-history {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.lc-probe-history-item + .lc-probe-history-item {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--el-border-color-lighter);
+}
+.lc-probe-history-head {
+  font-weight: 600;
+  color: var(--el-text-color-regular);
 }
 /* 历史记录切换：一行内可换行，条数多时不撑破抽屉 */
 .lc-history {

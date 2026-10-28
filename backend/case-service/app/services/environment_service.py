@@ -154,6 +154,9 @@ class EnvironmentService:
             "hci_version": env_data.get("hci_version", "未知"),
             "cluster_name": env_data.get("name", "未知"),  # [cluster] name= 字段
             "host_count": env_data.get("host_count", "未知"),  # 当前采集命令不含此字段
+            # 采不到节点数时的原始原因（acli 报错首行）。只显示 `?节点` 无法定因，
+            # 也让"平台没采"与"采集失败"看起来一样（2026-10-28 现场）。
+            "node_count_error": env_data.get("node_count_error", ""),
             "storage_type": env_data.get("storage_type", "未知"),
             "network_config": env_data.get("mcastaddr", "未知"),  # 组播地址体现网络配置
         }

@@ -421,8 +421,18 @@ func (s *SSHSession) probeLogCollectCatalog(ctx context.Context, result *logColl
 	nodeOut, _, _ := s.runCommandPty(ctx, logCollectAcliInvoke("--formatter json platform node list"), 8*time.Second)
 	result.Hosts = parseLogCollectNodeList(nodeOut)
 	if len(result.Hosts) == 0 {
-		// 旧版 acli（1.0.0）没有 `platform node list` 子命令，只写"获取失败"无法定因：
-		// 把输出首行一并带出，前端能直接看到是能力缺失还是空清单。
+		// 主命令失败不等于"没有节点"：旧版 acli（1.0.0）会因 cgroup 读取失败只输出错误行。
+		// 备选命令 `host list` 在部分构建中存在；不存在时只是多一条失败输出，
+		// 不影响主流程，也不会把"命令缺失"误报成"节点为空"。
+		if altOut, _, altErr := s.runCommandPty(ctx, logCollectAcliInvoke("--formatter json host list"), 8*time.Second); altErr == nil {
+			if altHosts := parseLogCollectNodeList(altOut); len(altHosts) > 0 {
+				result.Hosts = altHosts
+				result.CatalogNote = appendProbeNote(result.CatalogNote, "节点清单取自备选命令 host list")
+			}
+		}
+	}
+	if len(result.Hosts) == 0 {
+		// 把主命令输出首行一并带出：前端要能区分"能力缺失/执行报错/真没节点"。
 		result.CatalogNote = appendProbeNote(result.CatalogNote,
 			"节点清单获取失败，可手动填写 IP："+firstNonEmpty(logCollectFailureLine(nodeOut), "无输出"))
 	}
@@ -472,22 +482,45 @@ func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
 	return options
 }
 
+// logCollectNodeListPayload 是 `platform node list` 的 JSON 结构。
+type logCollectNodeListPayload struct {
+	Data []struct {
+		IP     string `json:"ip"`
+		Name   string `json:"name"`
+		Master int    `json:"master"`
+	} `json:"data"`
+}
+
+// findLogCollectNodeListPayload 从脏输出中找出节点清单 JSON 对象。
+//
+// 对抗性审查：不能再用"首个 `{` 到末个 `}`"截取。acli 会在 stdout 里先打一行
+// `{"@timestamp":...,"level":"error",...}` 形式的运行日志（2026-10-28 现场：
+// open /sys/fs/cgroup/cpu/cpuset.cpus 失败），首个 `{` 命中日志行、末个 `}` 命中
+// 节点 JSON，拼起来必然 Unmarshal 失败——即使节点 JSON 本身完好，清单也会是空的。
+//
+// 改为从每个 `{` 起点解码一个 JSON 值：json.Decoder 解析完对象即停，尾部日志
+// 不参与解析，只接受含 data 数组的对象。
+func findLogCollectNodeListPayload(raw string) *logCollectNodeListPayload {
+	for offset := 0; offset < len(raw); {
+		idx := strings.IndexByte(raw[offset:], '{')
+		if idx < 0 {
+			return nil
+		}
+		start := offset + idx
+		var payload logCollectNodeListPayload
+		if err := json.NewDecoder(strings.NewReader(raw[start:])).Decode(&payload); err == nil && payload.Data != nil {
+			return &payload
+		}
+		offset = start + 1
+	}
+	return nil
+}
+
 // parseLogCollectNodeList 解析 `acli --formatter json platform node list` 的输出。
-// PTY 可能混入提示符或告警，因此只截取最外层 JSON 对象；失败返回 nil。
+// PTY 可能混入提示符、告警或日志行；失败返回 nil（前端降级为手填）。
 func parseLogCollectNodeList(raw string) []logCollectHostOption {
-	start := strings.Index(raw, "{")
-	end := strings.LastIndex(raw, "}")
-	if start < 0 || end <= start {
-		return nil
-	}
-	var payload struct {
-		Data []struct {
-			IP     string `json:"ip"`
-			Name   string `json:"name"`
-			Master int    `json:"master"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(raw[start:end+1]), &payload); err != nil {
+	payload := findLogCollectNodeListPayload(raw)
+	if payload == nil {
 		return nil
 	}
 
@@ -920,6 +953,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: "ok", LogData: probe, TraceID: traceID, CustomUI: cui,
+			TicketNo: msg.TicketNo,
 		})
 		blog("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": probe.Architecture, "acli_installed": probe.AcliInstalled,
@@ -970,6 +1004,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
 			Message: firstNonEmpty(failure, strings.TrimSpace(output)),
 			Detail:  "acli " + command, TraceID: traceID, CustomUI: cui,
+			TicketNo: msg.TicketNo,
 		})
 		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": failure,
@@ -1027,6 +1062,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, LogData: progress, Raw: output, ErrorCode: code,
 			Message: errString(err), TraceID: traceID, CustomUI: cui,
+			TicketNo: msg.TicketNo,
 		})
 		// 探测结论必须随进度一起落库：现场问"为什么面板不给上传入口"时，
 		// 只有这三个字段能回答"探的是哪条路径、包到底在不在、为什么量不到"。
@@ -1041,8 +1077,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
 			"archive_exists": archiveExists, "archive_probe_path": probePath,
 			"archive_probe_source": probeSource,
-			"exit_code":            exitCode,
-			"error":                errString(err), "raw_len": len(output),
+			// ticket_no 必须落事件：acli 是节点级单任务，同一节点可能同时挂着
+			// 别的工单的采集，事后只能靠它判断这份进度属于谁。
+			"ticket_no": msg.TicketNo, "task_id": msg.ExecID,
+			"exit_code": exitCode,
+			"error":     errString(err), "raw_len": len(output),
 		}
 		// diag 只在探测失败时非空：空值不写，避免每条进度都多一个无意义键。
 		if archiveSizeDiag != "" {

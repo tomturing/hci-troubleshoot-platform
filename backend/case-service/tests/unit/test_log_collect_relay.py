@@ -201,13 +201,19 @@ async def test_run_marks_failed_when_archive_missing(storage):
     service = LogCollectRelayService(
         make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
     )
-    service._finish = AsyncMock(side_effect=lambda task_id, status, error=None: finished.update(status=status, error=error))
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
+            status=status, error=error, error_code=error_code
+        )
+    )
 
     with pytest.raises(SangforRelayError):
         await service.run(task.task_id)
 
     assert finished["status"] == "failed"
     assert "平台副本不存在" in finished["error"]
+    # 错误码必须保留 SangforRelayError 自己的分类，不得被统一改写成 003
+    assert finished["error_code"] == "LC-TRANSFER-001"
 
 
 # ── 归档文件名契约（5888 只接受 <工单号>.zip）────────────────────────────────
@@ -350,3 +356,48 @@ async def test_finish_marks_delivery_status(storage):
     values = _values_by_name(statements[-1])
     assert values["delivery_status"] == "failed"
     assert values["delivery_error"] == "5888 无响应"
+    assert values["error_code"] == "LC-TRANSFER-003"
+
+
+async def test_finish_preserves_original_error_code(storage):
+    """失败终态必须保留异常自身的错误码。
+
+    Q2026101500828 现场：relay 因"平台尚无制品"（LC-TRANSFER-001）失败，
+    但 run() 把所有异常统一写成 LC-TRANSFER-003，前端只见"归档失败"，
+    排障者无法区分"没制品"与"传输失败"——这正是死锁缺陷被掩盖 11 次的原因。
+    """
+    statements: list = []
+    service = LogCollectRelayService(
+        lambda: _RecordingSession(_FakeResult(rowcount=1), statements),
+        storage,
+        SangforRelayClient("http://relay"),
+    )
+
+    await service._finish(
+        uuid4(), "failed", error="平台尚无制品，无法代传", error_code="LC-TRANSFER-001"
+    )
+    values = _values_by_name(statements[-1])
+    assert values["error_code"] == "LC-TRANSFER-001"
+    assert values["error_message"] == "平台尚无制品，无法代传"
+    assert values["delivery_status"] == "failed"
+
+
+async def test_run_keeps_sangfor_relay_error_code(storage):
+    """run() 捕获 SangforRelayError 时必须透传其 code，不做统一改写。"""
+    statements: list = []
+    service = LogCollectRelayService(
+        lambda: _RecordingSession(_FakeResult(rowcount=1), statements),
+        storage,
+        SangforRelayClient("http://relay"),
+    )
+
+    async def boom(_task_id):
+        raise SangforRelayError("平台尚无制品，无法代传", "LC-TRANSFER-001")
+
+    service._run = boom  # type: ignore[method-assign]
+    with pytest.raises(SangforRelayError):
+        await service.run(uuid4())
+
+    values = _values_by_name(statements[-1])
+    assert values["relay_status"] == "failed"
+    assert values["error_code"] == "LC-TRANSFER-001"

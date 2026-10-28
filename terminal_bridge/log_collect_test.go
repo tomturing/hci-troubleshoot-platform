@@ -433,6 +433,35 @@ func TestParseLogCollectNodeListDegrade(t *testing.T) {
 	}
 }
 
+// TestParseLogCollectNodeListWithLogNoise 覆盖 acli 在节点 JSON 之前打运行日志的现场。
+//
+// 2026-10-28 实测：`acli --formatter json platform node list` 先输出一行
+// {"@timestamp":...,"level":"error","content":"...open /sys/fs/cgroup/cpu/cpuset.cpus..."}，
+// 再输出清单。旧实现取"首个 { 到末个 }"，把日志行与清单拼在一起，Unmarshal 必失败，
+// 于是 hosts_count 恒为 0——即使清单本身完好。
+func TestParseLogCollectNodeListWithLogNoise(t *testing.T) {
+	raw := "2026/10/28 11:11:51 {\"@timestamp\":\"2026-10-28T11:11:51.214+08\",\"level\":\"error\",\"content\":\"[0] internal/cpu_linux.go:29 open /sys/fs/cgroup/cpu/cpuset.cpus: no such file or directory\"}\n" +
+		`{"data":[{"ip":"192.168.255.51","name":"node1","master":1},{"ip":"192.168.255.52","name":"node2","master":0}]}` +
+		"\nSangfor:node1# "
+	hosts := parseLogCollectNodeList(raw)
+	if len(hosts) != 2 {
+		t.Fatalf("日志噪声下的清单一应解析出 2 个节点，实际 %d 个：%+v", len(hosts), hosts)
+	}
+	if hosts[0].IP != "192.168.255.51" || !hosts[0].Master || hosts[1].IP != "192.168.255.52" {
+		t.Fatalf("节点字段解析错误：%+v", hosts)
+	}
+}
+
+// TestParseLogCollectNodeListKeepsFirstValidObject 覆盖"多个 JSON 值并列"：
+// 第一个花括号是无关 JSON 时，必须继续找下一个，而不是直接放弃。
+func TestParseLogCollectNodeListKeepsFirstValidObject(t *testing.T) {
+	raw := `{"msg":"init"}` + "\n" + `{"data":[{"ip":"10.0.0.1","name":"a"}]}`
+	hosts := parseLogCollectNodeList(raw)
+	if len(hosts) != 1 || hosts[0].IP != "10.0.0.1" {
+		t.Fatalf("应跳过无关 JSON 取到清单，实际：%+v", hosts)
+	}
+}
+
 // TestSessionByNodeIP 覆盖"会话键含工单号、采集按节点复用"的回退规则。
 // 现场问题：用户在 SSH 终端或旧工单下登录过（键为 terminal-only@IP / 旧工单@IP），
 // 换到新工单采集时精确键失配，直接报 session_missing（LC-ENV-006）；
