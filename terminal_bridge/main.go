@@ -662,14 +662,126 @@ type SSHSession struct {
 	// 结束，SSH 连接与 exec 通道其实都还活着——历史实现把它当成整条连接失效并
 	// destroySession，于是 24 次交付中断全部停在 duration_seconds=600 上。
 	longTasks atomic.Int32
+	// lastBusyAt 记录最近一次业务动作（日志采集/进度/交付/stat/transfer）的时刻（Unix 毫秒）。
+	//
+	// 为什么需要：长任务只能覆盖"显式包裹"的拉取，而日志采集是一连串短命令
+	// （create → progress × N → stat），bridge 无状态、不知道作业何时结束，包裹不成对。
+	// 于是采集跑过 10 分钟后 shell 必然被 TMOUT 踢掉，EOF 被当成整条连接失效并
+	// destroySession：后续 progress 全部 session_missing，前端只能干等到 60s 超时，
+	// 报成误导性的"progress 超时（60s）"（2026-10-28 现场）。
+	// 事实是：runCommandPty 每次都 client.NewSession() 开新 channel，
+	// shell 退出只是少了一个终端回显通道，连接与 exec 通道都还能用。
+	lastBusyAt atomic.Int64
+	// orphaned 表示会话已被摘出路由表（重连覆盖），但底层连接要留给进行中的长任务。
+	orphaned atomic.Bool
+	// shellRespawns 统计本会话自动重建交互 shell 的次数（上限 maxShellRespawns）。
+	shellRespawns atomic.Int32
+}
+
+// maxShellRespawns 限制单个会话自动重建交互 shell 的次数。
+//
+// 为什么要有上限：重建只延长"可用"，不能替代用户重新登录。若用户已离开数小时，
+// 每 600s 重建一次等于在节点上无限续开登录 shell，既不礼貌也会累积远端进程。
+// 业务活跃窗口（默认 15 分钟）本身会过期，上限只是兜底的第二道闸。
+const maxShellRespawns = 3
+
+// shellRespawnNotice 是重建成功后写进终端的一行说明。
+//
+// 必须写进终端输出而不是弹窗：用户切回来时弹窗早已消失，而他要解释的是
+// "为什么提示符变了、交互式菜单没了"——这件事只有留在终端里才看得到。
+const shellRespawnNotice = "\r\n[bridge] 设备空闲 10 分钟已自动登出（TMOUT=600）。已在同一条 SSH 连接上重新登录，命令可继续输入；注意当前目录与交互式菜单状态不会保留。\r\n"
+
+// respawnShell 在同一条 SSH 连接上重新开一个交互 shell。
+//
+// 为什么必须做：HCI 的交互式 shell 空闲 10 分钟必然自动登出（TMOUT=600），
+// 而现场最常见的使用方式就是"敲完命令去查资料"。旧实现把 shell 退出当成整条连接失效：
+// 终端断开、必须重新认证重连，采集与交付也被连坐（2026-10-28 现场）。
+// 不能 unset TMOUT（客户安全策略，清除会触发审计），所以只能"退出后重建"——
+// 同一条连接允许再开 channel，代价仅是 shell 内的状态（当前目录、交互菜单）丢失。
+func (s *SSHSession) respawnShell() (io.ReadCloser, error) {
+	s.mu.Lock()
+	client, old := s.client, s.session
+	if client == nil || s.closed {
+		s.mu.Unlock()
+		return nil, errors.New("SSH 连接已不可用")
+	}
+	s.mu.Unlock()
+
+	next, err := client.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("重建交互 shell 失败（新建 channel）: %w", err)
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = next.Close()
+		return nil, errors.New("会话已关闭，放弃重建")
+	}
+	s.session = next
+	s.mu.Unlock()
+	if old != nil {
+		_ = old.Close()
+	}
+	return s.start()
 }
 
 // beginLongTask / endLongTask 成对包裹一个长任务，保护会话不被 shell 退出连坐。
 func (s *SSHSession) beginLongTask() { s.longTasks.Add(1) }
 
-func (s *SSHSession) endLongTask() { s.longTasks.Add(-1) }
+func (s *SSHSession) endLongTask() {
+	if s.longTasks.Add(-1) > 0 {
+		return
+	}
+	// 已被重连覆盖摘表的会话，长任务结束后没有任何路由能再找到它：
+	// 此时必须自行关闭，否则这条连接会永远挂在远端 shell 上。
+	if s.orphaned.Load() {
+		go s.close()
+	}
+}
 
 func (s *SSHSession) hasLongTask() bool { return s.longTasks.Load() > 0 }
+
+// markBusy 标记「这条连接刚被业务用过」。
+//
+// 与 beginLongTask 的区别：长任务是显式的成对包裹（拉取前/后各一次），
+// 而日志采集是一串短命令且结束时机未知，只能用时间窗表达"仍在被使用"——
+// 窗口到期保护自动失效，不会像漏减的计数那样永久泄漏。
+func (s *SSHSession) markBusy() {
+	if s == nil {
+		return
+	}
+	s.lastBusyAt.Store(time.Now().UnixMilli())
+}
+
+// isBusyWithin 判断窗口内是否发生过业务动作；lastBusyAt 为 0 表示从未被用过。
+func (s *SSHSession) isBusyWithin(window time.Duration) bool {
+	if s == nil || window <= 0 {
+		return false
+	}
+	last := s.lastBusyAt.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.UnixMilli(last)) < window
+}
+
+// isBusy 判断会话是否处于业务活跃窗口内。
+func (s *SSHSession) isBusy() bool { return s.isBusyWithin(sessionBusyGrace()) }
+
+// busyAgeSeconds 返回距上次业务动作的秒数；从未被用过返回 -1（区分"没用过"与"刚用过"）。
+func (s *SSHSession) busyAgeSeconds() float64 {
+	if s == nil {
+		return -1
+	}
+	last := s.lastBusyAt.Load()
+	if last == 0 {
+		return -1
+	}
+	return time.Since(time.UnixMilli(last)).Seconds()
+}
+
+// markOrphaned 标记会话已被摘表，底层连接由长任务结束后自行关闭。
+func (s *SSHSession) markOrphaned() { s.orphaned.Store(true) }
 
 // startShellHeartbeat 周期向交互式 shell 注入一个无副作用的 NUL 字节，重置 TMOUT。
 //
@@ -1981,14 +2093,38 @@ func (s *SSHSession) on_output_start(
 		})
 
 		// 主交互 shell 退出（HCI TMOUT=600）不等于整条 SSH 连接失效：
-		// 交付拉取走的是独立 exec 通道，连接与通道都还能用。
+		// 交付拉取走独立 exec 通道，日志采集/进度每次也是 client.NewSession() 开新 channel，
+		// 连接与通道都还能用。
 		// 此时若照常 destroySession，正在跑的 12.8 GiB 拉取会被瞬间腰斩，
-		// 且作业只能停在 needs_reauth（现场 24 次交付中断全部如此）。
-		// 因此只要还有长任务占用 exec 通道，就只摘掉 shell，保留连接。
-		if reason == sessionReasonRemoteEOF && s.hasLongTask() {
-			blog("WARN", "session.shell_eof_detached", "交互式 shell 已退出，连接保留给进行中的长任务", "", caseID, "", "", map[string]any{
-				"duration_seconds": int64(s.ageSeconds()),
-				"long_tasks":       s.longTasks.Load(),
+		// 且作业只能停在 needs_reauth（现场 24 次交付中断全部如此）；
+		// 采集中被摘表则表现为后续 progress 全部 session_missing（2026-10-28 现场：
+		// 600s EOF → 摘表 → 前端干等 60s 报"progress 超时（60s）"）。
+		// 因此只要还有长任务占用 exec 通道，或刚才还在被业务使用，就只摘掉 shell，保留连接。
+		if reason == sessionReasonRemoteEOF && (s.hasLongTask() || s.isBusy()) {
+			// 连接没坏，坏的是被 TMOUT 踢掉的 shell。优先在同一条连接上重建：
+			// 用户可能只是去查资料了，不该被判"已断开、请重新认证"。
+			if s.shellRespawns.Load() < maxShellRespawns {
+				if reader, respawnErr := s.respawnShell(); respawnErr == nil {
+					respawnCount := s.shellRespawns.Add(1)
+					blog("WARN", "session.shell_respawned", "交互 shell 被设备空闲超时踢出，已在同一条连接上重建", "", caseID, "", "", map[string]any{
+						"duration_seconds":   int64(s.ageSeconds()),
+						"respawns":           respawnCount,
+						"long_tasks":         s.longTasks.Load(),
+						"busy_age_seconds":   int64(s.busyAgeSeconds()),
+						"busy_grace_seconds": int(sessionBusyGrace().Seconds()),
+					})
+					sendMsg(ws, OutMessage{Type: "ssh_output", CaseID: caseID, Output: shellRespawnNotice})
+					// 继续转发新 shell 的输出。递归而非另起循环：onExit 语义保持不变，
+					// 真正的连接结束仍会走到最外层那条路径。
+					s.on_output_start(ws, reader, caseID, onExit)
+					return
+				}
+			}
+			blog("WARN", "session.shell_eof_detached", "交互式 shell 已退出，连接保留给进行中的业务", "", caseID, "", "", map[string]any{
+				"duration_seconds":   int64(s.ageSeconds()),
+				"long_tasks":         s.longTasks.Load(),
+				"busy_age_seconds":   int64(s.busyAgeSeconds()),
+				"busy_grace_seconds": int(sessionBusyGrace().Seconds()),
 			})
 			if ws != nil {
 				sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
@@ -4830,14 +4966,17 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			// 同键覆盖必须走统一销毁入口：否则「旧会话被新连接顶掉」这件事
 			// 在日志里完全不可见（只剩两条同键 ssh.connected，无法判断谁活了多久）。
 			if old := b.get(key); old != nil {
-				b.destroySession(key, sessionReasonReconnect, connID)
+				// 长任务进行中禁止腰斩：用户看到"终端断开"就会去重连，而重连必然走到这里。
+				// 无条件 destroySession 会把正在进行的 12.8 GiB 拉取直接打断到 needs_reauth，
+				// 因此改为只摘表、保留连接，由长任务结束时的自愈逻辑关闭。
+				b.destroyOrDetachSession(key, sessionReasonReconnect, connID)
 				ownedSessions.remove(key)
 			}
 			// 如果没指定 nodeIP，也清理默认会话
 			if msg.NodeIP == "" {
 				defaultKey := sessionKey(msg.CaseID, "")
 				if old := b.get(defaultKey); old != nil {
-					b.destroySession(defaultKey, sessionReasonReconnect, connID)
+					b.destroyOrDetachSession(defaultKey, sessionReasonReconnect, connID)
 					ownedSessions.remove(defaultKey)
 				}
 			}
@@ -4917,6 +5056,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			if key != sessionKey(msg.CaseID, "") && key != sessionKey(msg.CaseID, msg.NodeIP) {
 				log.Printf("[Bridge] ssh_input 兜底命中会话: case=%s key=%s active=%s", msg.CaseID, key, activeKey)
 			}
+			// 键盘输入本身就是最强的使用证据：用户刚敲过键，shell 被 TMOUT 踢掉时
+			// 必须重建而不是判"已断开"，否则"敲完命令去查资料"必然换来一次重连。
+			s.markBusy()
 			s.send(msg.Data)
 
 		case "ssh_inject_command":
