@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import ipaddress
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
-
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
