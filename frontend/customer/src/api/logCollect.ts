@@ -142,6 +142,8 @@ export interface LogCollectTask {
   archive_path?: string | null
   archive_size?: number | null
   archive_sha256?: string | null
+  /** 端到端完整性：verified = 源包摘要与平台副本一致；unverified = 无基线，仅传输层校验 */
+  integrity_state?: 'verified' | 'unverified'
   cleanup_state: 'none' | 'required' | 'acked'
   cleanup_reason?: string | null
   archive_deleted: boolean

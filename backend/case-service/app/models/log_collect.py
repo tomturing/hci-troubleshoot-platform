@@ -74,6 +74,12 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     delivery_finished_at = Column(DateTime(timezone=True), nullable=True)
     delivery_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     delivery_error = Column(Text, nullable=True)
+    # 端到端完整性结论：verified = 节点源包摘要与平台合并结果一致（有基线且相符）；
+    # unverified = 没拿到基线，只做了传输层校验，不得对外宣称"完整性已校验"。
+    # 校验失败不是一种状态：它表现为 complete 返回 4xx，制品不会落库。
+    integrity_state = Column(
+        String(16), nullable=False, default="unverified", server_default="'unverified'"
+    )
     # 清理：平台只标记与告警，绝不自动删除，也不提供删除 API
     cleanup_state = Column(String(16), nullable=False, default="none", server_default="'none'")
     cleanup_reason = Column(String(64), nullable=True)

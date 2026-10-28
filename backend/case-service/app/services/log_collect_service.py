@@ -289,6 +289,9 @@ class LogCollectService:
         task.delivery_started_at = now
         task.delivery_finished_at = None
         task.delivery_error = None
+        # 上一次交付的完整性结论对新一次交付不成立：包可能被重采/覆盖。
+        # 不复位就会出现"这次没校验、却顶着上次的 verified 徽标"。
+        task.integrity_state = "unverified"
         task.delivery_attempts = (task.delivery_attempts or 0) + 1
         task.updated_at = now
         await self.repository.flush()

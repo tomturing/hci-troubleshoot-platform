@@ -26,6 +26,12 @@ type deliveryJobView struct {
 	Attempt       int    `json:"attempt"`
 	NeedsReauth   bool   `json:"needs_reauth"`
 	LastError     string `json:"last_error"`
+	// 完整性结论随作业一起回传：前端据此显示"已校验/未校验"，
+	// 不允许把 unverified 渲染成成功徽标。
+	Integrity     string `json:"integrity,omitempty"`
+	IntegrityNote string `json:"integrity_note,omitempty"`
+	SourceSHA256  string `json:"source_sha256,omitempty"`
+	LocalSHA256   string `json:"local_sha256,omitempty"`
 }
 
 func toDeliveryJobView(job *deliveryJob) deliveryJobView {
@@ -37,6 +43,8 @@ func toDeliveryJobView(job *deliveryJob) deliveryJobView {
 		Progress: job.progress(), SourceSize: job.SourceSize, PulledBytes: job.PulledBytes,
 		PartCount: job.PartCount, UploadedParts: len(job.UploadedParts),
 		Attempt: job.Attempt, NeedsReauth: job.NeedsReauth, LastError: job.LastError,
+		Integrity: job.Integrity, IntegrityNote: job.IntegrityNote,
+		SourceSHA256: job.SourceSHA256, LocalSHA256: job.LocalSHA256,
 	}
 }
 

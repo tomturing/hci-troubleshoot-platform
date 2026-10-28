@@ -3855,6 +3855,7 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     delivery_finished_at timestamptz,
     delivery_attempts integer NOT NULL DEFAULT 0,
     delivery_error text,
+    integrity_state varchar(16) NOT NULL DEFAULT 'unverified',
     cleanup_state varchar(16) NOT NULL DEFAULT 'none',
     cleanup_reason varchar(64),
     cleanup_ack_by varchar(64),
@@ -3879,7 +3880,8 @@ CREATE TABLE IF NOT EXISTS log_collect_task (
     CONSTRAINT ck_log_collect_cleanup_state CHECK ((cleanup_state)::text = ANY ((ARRAY['none'::character varying, 'required'::character varying, 'acked'::character varying])::text[])),
     CONSTRAINT ck_log_collect_pull_offset CHECK ((pull_offset_bytes IS NULL) OR (pull_offset_bytes >= 0)),
     CONSTRAINT ck_log_collect_relay_status CHECK ((relay_status)::text = ANY ((ARRAY['none'::character varying, 'pending'::character varying, 'running'::character varying, 'success'::character varying, 'failed'::character varying])::text[])),
-    CONSTRAINT ck_log_collect_delivery_status CHECK ((delivery_status)::text = ANY ((ARRAY['none'::character varying, 'queued'::character varying, 'pulling'::character varying, 'uploading'::character varying, 'relaying'::character varying, 'delivered'::character varying, 'failed'::character varying])::text[]))
+    CONSTRAINT ck_log_collect_delivery_status CHECK ((delivery_status)::text = ANY ((ARRAY['none'::character varying, 'queued'::character varying, 'pulling'::character varying, 'uploading'::character varying, 'relaying'::character varying, 'delivered'::character varying, 'failed'::character varying])::text[])),
+    CONSTRAINT ck_log_collect_integrity_state CHECK ((integrity_state)::text = ANY ((ARRAY['unverified'::character varying, 'verified'::character varying])::text[]))
 );
 
 COMMENT ON TABLE log_collect_task IS '日志收集任务表 — 承载 acli log_collect 的控制面状态，执行发生在 terminal_bridge';
@@ -3894,6 +3896,7 @@ COMMENT ON COLUMN log_collect_task.archive_sha256 IS '压缩包 SHA-256（制品
 COMMENT ON COLUMN log_collect_task.object_key IS '平台对象存储内的相对 key（P2：<case_id>/<upload_id>.zip）；P1 为 NULL，表示平台不留副本';
 COMMENT ON COLUMN log_collect_task.object_size IS '平台对象字节数（与 archive_size 区分：后者可能是节点侧包大小）';
 COMMENT ON COLUMN log_collect_task.object_sha256 IS '平台对象 SHA-256，用于事后校验对象是否被改写';
+COMMENT ON COLUMN log_collect_task.integrity_state IS '端到端完整性结论：verified=客户端声明的整包摘要与平台合并结果一致；unverified=无基线，仅做了传输层校验';
 COMMENT ON COLUMN log_collect_task.pull_offset_bytes IS 'P3 段① 已从 HCI 拉取到客户 PC 的字节数（rsync/SFTP 续传依据）';
 COMMENT ON COLUMN log_collect_task.pull_sha256 IS 'P3 段① 完成后源包 SHA-256，用于平台侧比对';
 COMMENT ON COLUMN log_collect_task.relay_upload_id IS 'P3 段③ 日志服务器返回的 upload_id，用于判断能否续传';

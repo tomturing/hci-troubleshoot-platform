@@ -129,10 +129,39 @@ type deliveryJob struct {
 	// 平台在客户内网普遍是自签证书，客户机系统根证书库不可能预置它，
 	// 不放宽就必然 x509 失败。这里不做全局开关：授权随 job 落盘，
 	// 只影响本任务的请求，用户撤销后新 job 自然恢复校验。
-	TLSInsecure bool   `json:"tls_insecure,omitempty"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	TLSInsecure bool `json:"tls_insecure,omitempty"`
+
+	// ── 端到端完整性（2026-10-28）────────────────────────────────────────────
+	//
+	// 第一性原理：能证明"三处是同一份字节"的锚点只能在源端产生。分片哈希只证明
+	// 单跳不损坏，证明不了上游是谁；平台自算的 object_sha256 也只能自证。
+	// 因此作业必须持有节点侧摘要，并让每一跳向它收敛。
+	//
+	// SourceSHA256 / SourceMD5 / DigestSource 描述节点侧基线（可能为空 = 节点没有
+	// 可用摘要命令，此时整条链只能做传输层校验，状态记 unverified）。
+	SourceSHA256 string `json:"source_sha256,omitempty"`
+	SourceMD5    string `json:"source_md5,omitempty"`
+	DigestSource string `json:"digest_source,omitempty"`
+	// LocalSHA256 是本地副本的 SHA-256：complete 时声明给平台做整包比对。
+	LocalSHA256 string `json:"local_sha256,omitempty"`
+	// Integrity 是本次交付的完整性结论：verified / unverified。
+	Integrity     string `json:"integrity,omitempty"`
+	IntegrityNote string `json:"integrity_note,omitempty"`
+
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
+
+// 完整性结论枚举。刻意只有两个成功态：
+//   - verified：节点基线摘要与平台合并结果一致（端到端成立）；
+//   - unverified：没拿到基线，只做了传输层校验，不得对外宣称"完整性已校验"。
+//
+// 校验失败不是一种"状态"，而是错误：作业会停在失败阶段并带上期望/实际值，
+// 所以不需要第三个终态值。
+const (
+	integrityVerified   = "verified"
+	integrityUnverified = "unverified"
+)
 
 // progress 返回 0-100 的整体进度：拉取占前 50%，上传占后 50%。
 func (j *deliveryJob) progress() int {

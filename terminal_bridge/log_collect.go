@@ -659,6 +659,88 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 	return result
 }
 
+// ── 源包摘要（端到端完整性基线）──────────────────────────────────────────────
+
+// 20 GiB 的 sha256 在 HCI 上约 1~3 分钟；留足余量但不能无限等：
+// 交互式 shell 的 TMOUT 是 600s，超过它的单命令会被远端直接踢掉。
+const logCollectDigestTimeout = 8 * time.Minute
+
+// logCollectDigestAlgoRe 只接受两种摘要形态：sha256(64) / md5(32)。
+var logCollectDigestAlgoRe = regexp.MustCompile(`^(sha256|md5|acli) ([0-9a-f]{32}|[0-9a-f]{64})$`)
+
+// buildSourceDigestCommand 构造"取源包摘要"的单命令。
+//
+// 第一性原理：能证明"节点上的包 = 平台副本 = 5888 归档件"的锚点只能在源端产生；
+// 分片哈希只证明单跳不损坏，证明不了上游是谁。
+//
+// 为什么优先 sha256sum：链路其余环节（分片、平台合并）全是 SHA-256，同算法才能
+// 直接比对；md5 只是老节点的降级手段。为什么最后才退 acli system md5sum：它的
+// 参数形态随插件版本变化，1.0.0 上未必存在，而前两者是标准 coreutils/busybox。
+//
+// 失败语义：任何一步都算不出来就输出空行，由调用方把完整性降级为 unverified——
+// 绝不能因为"取不到摘要"就让一次 20 GiB 的采集白跑。
+func buildSourceDigestCommand(path string) string {
+	quoted := shellQuote(path)
+	return logCollectAcliPathEnv + " " + logCollectAcliResolve() +
+		` if command -v sha256sum >/dev/null 2>&1; then echo "sha256 $(sha256sum ` + quoted + ` 2>/dev/null | awk '{print $1}')"; ` +
+		`elif command -v md5sum >/dev/null 2>&1; then echo "md5 $(md5sum ` + quoted + ` 2>/dev/null | awk '{print $1}')"; ` +
+		`elif [ "$__acli_resolve_absent" = "0" ]; then echo "acli $("$__acli" system md5sum ` + quoted + ` 2>/dev/null | tr -d ' \r' | grep -oE '[0-9a-f]{32}' | head -n1)"; ` +
+		`else echo ""; fi`
+}
+
+// parseSourceDigestOutput 解析摘要命令输出。
+//
+// 从后往前找第一条合法结果：acli 解析段可能打印版本/告警噪声，最后一条有效行
+// 才是真正的结果。算法与长度必须自洽，防止把 32 位 md5 当成 sha256 用。
+func parseSourceDigestOutput(output string) (algo, digest, note string) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(stripAnsi(lines[i]))
+		match := logCollectDigestAlgoRe.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		algo, digest = match[1], match[2]
+		if algo == "sha256" && len(digest) != 64 {
+			continue
+		}
+		if (algo == "md5" || algo == "acli") && len(digest) != 32 {
+			continue
+		}
+		if algo == "acli" {
+			// acli system md5sum 只有 md5 口径，算法名必须归一到 md5。
+			algo = "md5"
+		}
+		return algo, digest, ""
+	}
+	trimmed := strings.TrimSpace(output)
+	if len(trimmed) > 200 {
+		trimmed = trimmed[:200]
+	}
+	if trimmed == "" {
+		trimmed = "节点上没有可用的摘要命令（sha256sum / md5sum / acli system md5sum 均不可用）"
+	}
+	return "", "", trimmed
+}
+
+// probeSourceDigest 在节点上取一次源包摘要（尽力而为，不阻断交付）。
+func (s *SSHSession) probeSourceDigest(ctx context.Context, path string) (string, string, error) {
+	if s == nil {
+		return "", "", fmt.Errorf("no-session")
+	}
+	digestCtx, cancel := context.WithTimeout(ctx, logCollectDigestTimeout)
+	defer cancel()
+	output, _, err := s.runQuickCommand(digestCtx, buildSourceDigestCommand(path))
+	if err != nil {
+		return "", "", fmt.Errorf("摘要命令执行失败: %w", err)
+	}
+	algo, digest, note := parseSourceDigestOutput(output)
+	if algo == "" {
+		return "", "", fmt.Errorf("%s", note)
+	}
+	return algo, digest, nil
+}
+
 // probeLogCollectArchiveSize 量一次压缩包字节数。
 //
 // 时机敏感：P1 直传成功后插件会立刻删除压缩包，只有上传窗口内的轮询能拿到值。

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
 import re
 import time
@@ -191,6 +192,24 @@ class LogCollectRelayService:
         if size <= 0:
             raise SangforRelayError("平台副本为空文件", "LC-TRANSFER-002")
 
+        # 代传前核对"要发的这份字节"与落库的制品一致。
+        # 第一性原理：5888 不回摘要，平台能做的最后一次自证就在出站前——
+        # 若副本在合并后被改写/截断，只有这里能拦住，否则坏包会一路进归档。
+        recorded_size = getattr(task, "object_size", None)
+        if recorded_size and int(recorded_size) != size:
+            raise SangforRelayError(
+                f"平台副本大小与落库不一致：落库 {recorded_size}，实际 {size}",
+                "LC-TRANSFER-002",
+            )
+        expected_digest = (getattr(task, "object_sha256", None) or "").strip().lower()
+        if expected_digest:
+            actual_digest = await asyncio.to_thread(self._file_sha256, path)
+            if actual_digest != expected_digest:
+                raise SangforRelayError(
+                    f"平台副本摘要与落库不一致：落库 {expected_digest}，实际 {actual_digest}",
+                    "LC-TRANSFER-002",
+                )
+
         # 归档名必须由**工单号**构造，不能用平台内部的 task_id（UUID）：
         # 5888 会直接 400 Invalid filename，而那个错误对排障毫无指向性。
         archive_name = self.archive_filename(task.case_id)
@@ -254,6 +273,16 @@ class LogCollectRelayService:
                 f"工单号不合法，无法确定归档文件名：{value or '<空>'}", "LC-TRANSFER-001"
             )
         return f"{value}.zip"
+
+    @staticmethod
+    def _file_sha256(path) -> str:
+        """流式算整包 SHA-256；20 GiB 用 4 MiB 块读，内存占用与包大小无关。"""
+
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
 
     @staticmethod
     def _read_chunk(path, index: int, chunk_size: int, total: int) -> bytes:

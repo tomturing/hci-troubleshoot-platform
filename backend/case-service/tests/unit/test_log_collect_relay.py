@@ -401,3 +401,58 @@ async def test_run_keeps_sangfor_relay_error_code(storage):
     values = _values_by_name(statements[-1])
     assert values["relay_status"] == "failed"
     assert values["error_code"] == "LC-TRANSFER-001"
+
+
+# ── 出站前自证：平台副本必须与落库的制品一致 ────────────────────────────────
+
+
+async def test_run_rejects_object_digest_mismatch_before_upload(storage, monkeypatch):
+    """摘要不一致必须 fail-fast：5888 不回摘要，出站前是最后的拦截点。"""
+
+    case_id = "Q2026102700002"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    task.object_size = 8
+    task.object_sha256 = "0" * 64  # 与真实内容不符
+    called: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        called.append(request.url.path)
+        return httpx.Response(200, json={"upload_id": "u-1", "chunk_size": CHUNK})
+
+    _patch_http_transport(monkeypatch, handler)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    service._finish = AsyncMock()
+
+    with pytest.raises(SangforRelayError) as excinfo:
+        await service.run(task.task_id)
+
+    assert excinfo.value.code == "LC-TRANSFER-002"
+    assert "摘要与落库不一致" in str(excinfo.value)
+    # 关键否定断言：不一致时一个字节都不该发给 5888
+    assert called == []
+
+
+async def test_run_rejects_object_size_mismatch_before_upload(storage, monkeypatch):
+    case_id = "Q2026102700003"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    task.object_size = 999  # 与磁盘实际大小不符
+    called: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        called.append(request.url.path)
+        return httpx.Response(200, json={"upload_id": "u-1", "chunk_size": CHUNK})
+
+    _patch_http_transport(monkeypatch, handler)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    service._finish = AsyncMock()
+
+    with pytest.raises(SangforRelayError) as excinfo:
+        await service.run(task.task_id)
+
+    assert excinfo.value.code == "LC-TRANSFER-002"
+    assert "大小与落库不一致" in str(excinfo.value)
+    assert called == []

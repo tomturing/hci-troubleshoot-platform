@@ -283,6 +283,11 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `delivery.submitted` | INFO | 交付作业已提交（`job_id`/`task_id`/`source_path`） |
 | `delivery.recovered` | INFO | 进程重启后恢复未完成作业（含阶段与已拉/已传量） |
 | `delivery.collect_finished` | INFO | 节点采集完成，开始交付（`total`/`archive_path`） |
+| `delivery.digest_probed` | INFO | 已取得节点源包摘要（`algorithm`/`digest`/`source_size`），作为端到端基线 |
+| `delivery.digest_unavailable` | WARN | 节点无可用摘要命令，完整性降级为 `unverified`（不阻断交付） |
+| `delivery.pull_verified` | INFO | 拉取完成并与基线比对（`size`/`sha256`/`source_sha256`/`integrity`） |
+| `delivery.local_discarded` | WARN | 本地副本校验失败，已删除残包并重置分片进度 |
+| `delivery.integrity_confirmed` | INFO | 平台回执确认完整性结论（`integrity`/`sha256`） |
 | `delivery.job_finished` | INFO | 作业状态更新（`phase`/`attempt`/`needs_reauth`/进度） |
 | `client.error` | ERROR | Custom-UI 浏览器未捕获异常（`service.name=customer-ui`） |
 

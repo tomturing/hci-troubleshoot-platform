@@ -285,6 +285,8 @@ class LogCollectTaskResponse(BaseModel):
     relay_chunk_index: int | None = None
     relay_chunk_total: int | None = None
     relay_restarts: int = 0
+    # 完整性结论：verified / unverified（见 log_collect_task.integrity_state）
+    integrity_state: str = "unverified"
     # 交付状态（与采集状态正交）：补交付可重复执行，只改这些字段、不动 status
     delivery_status: str = "none"
     delivery_started_at: datetime | None = None
@@ -411,3 +413,5 @@ class UploadCompleteResponse(BaseModel):
     size: int
     sha256: str
     part_count: int
+    # 平台对整包的最终结论：只有客户端声明过摘要并核对通过才是 verified。
+    integrity_state: str = "unverified"

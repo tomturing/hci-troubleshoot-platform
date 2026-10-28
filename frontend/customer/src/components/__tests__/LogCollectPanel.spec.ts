@@ -615,9 +615,38 @@ describe('LogCollectPanel', () => {
     await flushPromises()
 
     const labels = wrapper.findAll('.desc-label').map((node) => node.text())
-    expect(labels.slice(-2)).toEqual(['产物位置', '归档状态'])
+    // 完整性排最后：它是"归档之后还有没有对账"的补充结论，不能挤占产物/归档主信息。
+    expect(labels.slice(-3)).toEqual(['产物位置', '归档状态', '完整性'])
     // 大小正常展示成 MB，不再落到「未记录」
     expect(wrapper.text()).toContain('100.0 MB')
+    wrapper.unmount()
+  })
+
+  // 对抗性审查：没有基线时必须显性说"未校验"，不能留空或写成已校验——
+  // 空白会被用户读成"没问题"，而这正是旧链路最大的隐患。
+  it('完整性未校验时给出显性否定文案', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [taskFixture()] })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('未校验源包')
+    expect(wrapper.text()).not.toContain('已校验：源包摘要与平台副本一致')
+    wrapper.unmount()
+  })
+
+  it('完整性 verified 时展示已校验', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [taskFixture({ integrity_state: 'verified' })],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已校验：源包摘要与平台副本一致')
     wrapper.unmount()
   })
 
