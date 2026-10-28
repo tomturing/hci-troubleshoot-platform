@@ -34,3 +34,17 @@
   border-radius: 0;
   border: none;
 }
+
+/*
+ * 遮罩是「视口级图层」，任何内容列的宽度约束都不得作用到它。
+ *
+ * 历史坑：`.chat-window > *` 的 max-width: 860 曾把就地渲染的 .el-overlay
+ * 裁成 860px，1920 屏上表现为「左半屏变暗、右半屏正常」。
+ * 内容列限宽是「块级内容」的约束，模态遮罩不该参与其中，因此这里统一兜底：
+ * 只要还有别的内容容器把宽度压到子元素上，遮罩仍然铺满视口。
+ * 用双类名提高权重（而非 !important），保证能压过 `父选择器 > *` 这类规则。
+ */
+body .el-overlay.el-overlay {
+  max-width: none;
+  max-height: none;
+}

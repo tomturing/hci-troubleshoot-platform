@@ -269,8 +269,13 @@ function handleQuoteToChat(content: string) {
  * 早先这些块各自通栏（1352）、气泡却 860 居中，同一屏上宽度五花八门，
  * 视觉上像几块互不相干的板子拼在一起。限宽放在子项上而不是外壳上，
  * 外壳仍是通栏灰底，不会出现"两侧露页面底色"的空白带。
+ *
+ * 必须排除 .el-overlay：el-dialog 不开 append-to-body 时是「就地渲染」，
+ * 遮罩会成为 .chat-window 的直接子元素（组件根元素会继承本组件的 scoped
+ * 属性，所以 `> *` 必然命中它）。遮罩一旦被限宽就只剩 860px——1920 屏上
+ * 表现为「左半屏变暗、右半屏照常」，看起来像渲染坏了一半。
  */
-.chat-window > * {
+.chat-window > :not(.el-overlay) {
   width: 100%;
   max-width: 860px;
 }
