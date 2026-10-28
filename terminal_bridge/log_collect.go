@@ -1079,9 +1079,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"archive_probe_source": probeSource,
 			// ticket_no 必须落事件：acli 是节点级单任务，同一节点可能同时挂着
 			// 别的工单的采集，事后只能靠它判断这份进度属于谁。
-			"ticket_no":            msg.TicketNo, "task_id": msg.ExecID,
-			"exit_code":            exitCode,
-			"error":                errString(err), "raw_len": len(output),
+			"ticket_no": msg.TicketNo, "task_id": msg.ExecID,
+			"exit_code": exitCode,
+			"error":     errString(err), "raw_len": len(output),
 		}
 		// diag 只在探测失败时非空：空值不写，避免每条进度都多一个无意义键。
 		if archiveSizeDiag != "" {
