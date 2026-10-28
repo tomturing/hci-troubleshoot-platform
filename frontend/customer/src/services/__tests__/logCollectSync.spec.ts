@@ -133,7 +133,22 @@ describe('decideNodeSync 节点态直映射', () => {
       archiveExists: false,
     })
     expect(action.action).toBe('none')
+    expect(action.reason).toContain('压缩包已不在')
     expect(action.reason).toContain('重新采集')
+  })
+
+  // 回归护栏（工单 Q2026102701403，2026-10-28）：旧版 bridge 不返回 archive_exists，
+  // 前端收到 undefined 却断言"压缩包已不在"，现场 455 MiB 的包明明在盘上，
+  // 用户因此只能重采一遍。未探测到 ≠ 已删除，两种说法必须能区分。
+  it('平台失败 + 节点已完成但缺少 stat 结论 → 不得谎报"包已不在"', () => {
+    const action = decideNodeSync({
+      platformStatus: 'failed',
+      nodeState: 'completed',
+      reportRefreshed: true,
+    })
+    expect(action.action).toBe('none')
+    expect(action.reason).toContain('未确认')
+    expect(action.reason).not.toContain('压缩包已不在')
   })
 
   // 回归护栏（#1323，2026-10-27）：「采集完成」不等于「已交付」。

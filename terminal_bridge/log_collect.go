@@ -991,8 +991,15 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 路径不能等插件施舍（见 fallbackLogCollectArchivePath）：插件只在 100% 完成后
 		// 才打印真实路径，那时包已自删。插件给了就用插件的，没给就按约定推导。
 		probePath := progress.ArchivePath
+		// 来源必须与路径一起记录：插件的路径是"报告声称"，推导路径是"约定假设"，
+		// 两者出问题时的排查方向完全不同（插件改目录 vs 约定失效）。
+		probeSource := "plugin"
 		if strings.TrimSpace(probePath) == "" {
 			probePath = fallbackLogCollectArchivePath(msg.CaseID)
+			probeSource = "fallback"
+		}
+		if strings.TrimSpace(probePath) == "" {
+			probeSource = "none"
 		}
 		// 刻意不回填 progress.ArchivePath：前端 decideNodeSync 用「节点无任务 + 有 archive_path」
 		// 判定任务已完成，回填一个未经验证的推导路径会让它在"任务被清理但包还在"时误判完成。
@@ -1021,16 +1028,27 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			Status: status, ExitCode: exitCode, LogData: progress, Raw: output, ErrorCode: code,
 			Message: errString(err), TraceID: traceID, CustomUI: cui,
 		})
-		blog("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		// 探测结论必须随进度一起落库：现场问"为什么面板不给上传入口"时，
+		// 只有这三个字段能回答"探的是哪条路径、包到底在不在、为什么量不到"。
+		// 以前只回给前端、不写日志 —— Q2026102701403 现场库里就查不到 archive_exists，
+		// 只能靠 archive_size 有值反推 exists=true，多花了一轮定位。
+		fields := map[string]any{
 			"parse_ok": progress.ParseOK, "percent": progress.Percent,
 			"done": progress.Done, "total": progress.Total,
 			"status_text": progress.Status, "archive_path": progress.ArchivePath,
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
 			"node_state":  progress.NodeState,
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
-			"exit_code": exitCode,
-			"error":     errString(err), "raw_len": len(output),
-		})
+			"archive_exists": archiveExists, "archive_probe_path": probePath,
+			"archive_probe_source": probeSource,
+			"exit_code":            exitCode,
+			"error":                errString(err), "raw_len": len(output),
+		}
+		// diag 只在探测失败时非空：空值不写，避免每条进度都多一个无意义键。
+		if archiveSizeDiag != "" {
+			fields["archive_probe_diag"] = archiveSizeDiag
+		}
+		blog("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, fields)
 		// stat 失败在采集早期是常态（包还没生成），只有进入上传窗口后的失败才值得留证：
 		// 否则每次轮询都多打一条，会把真正的现场信号淹掉。
 		if archiveSizeDiag != "" && progress.Percent >= 80 {

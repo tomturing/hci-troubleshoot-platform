@@ -586,6 +586,22 @@ const resultArtifactText = computed(() => {
   return resultMode.value === 'acli_direct' ? '由插件上传后自动清理，路径未记录' : '未记录'
 })
 
+/**
+ * 结果态的失败原因。
+ *
+ * 顶部提示条一直写着"失败原因见下方错误信息"，但结果态从未渲染过 error_message：
+ * Q2026102701403 现场（采集 455 MiB 后分片上传报 x509 证书不受信）只能靠查库才知道，
+ * 界面上一个字都没有。错误码与原因分开拼，方便用户直接把这一行报给支持。
+ *
+ * 空值时不能编造原因：平台确实可能没记录（比如取消、或历史任务），只能如实说明。
+ */
+const resultFailureText = computed(() => {
+  const task = resultTask.value
+  if (!task) return ''
+  const code = task.error_code ? `[${task.error_code}] ` : ''
+  return `${code}${task.error_message || '平台未记录失败原因（可在桥日志中按工单号检索）'}`
+})
+
 const resultCleanupTip = computed(() => {
   const task = resultTask.value
   if (!task || task.archive_deleted) return ''
@@ -2663,6 +2679,17 @@ onBeforeUnmount(() => {
             <span :title="resultArtifactText">{{ resultArtifactText }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="归档状态">{{ resultArchiveText }}</el-descriptions-item>
+          <!--
+            failed / cancelled 才出现：失败原因是采集结论的一部分，不是可选调试信息。
+            顶部提示条说"失败原因见下方错误信息"，就必须真的有这一行。
+          -->
+          <el-descriptions-item
+            v-if="resultTask.status === 'failed' || resultTask.status === 'cancelled'"
+            label="失败原因"
+            :span="descColumns"
+          >
+            <span class="lc-error-text">{{ resultFailureText }}</span>
+          </el-descriptions-item>
         </el-descriptions>
         <p class="lc-hint">
           当前客户端在本工单下共 {{ historyTotal }} 条收集记录；已完成的任务不会被覆盖，重新收集会新建一条任务。
@@ -3076,6 +3103,12 @@ onBeforeUnmount(() => {
   color: var(--el-text-color-secondary);
   line-height: 1.5;
   margin-top: 4px;
+}
+/* 失败原因常带长 URL 与 TLS 原文：必须允许任意位置换行，否则会把描述表撑破 */
+.lc-error-text {
+  color: var(--el-color-danger);
+  word-break: break-all;
+  line-height: 1.6;
 }
 /* 选择与探测结论冲突时只加色不改文案：提示必须同时说清"劝你别选"和"但你仍可以选" */
 .lc-hint-warn {
