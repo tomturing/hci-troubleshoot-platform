@@ -316,8 +316,8 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	}
 
 	session := r.sessionFor(job)
-	if session == nil {
-		return &deliveryAuthError{reason: "SSH 会话不存在（需重新连接节点）"}
+	if err := requireSessionForPhase(job.Phase, session); err != nil {
+		return err
 	}
 
 	switch job.Phase {
@@ -360,6 +360,30 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 func (r *deliveryRunner) sessionFor(job *deliveryJob) *SSHSession {
 	session, _, _ := r.bridge.resolveLogCollectSession(InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
 	return session
+}
+
+// deliveryPhaseNeedsNode 判断该阶段是否必须访问节点（因此必须有 SSH 会话）。
+//
+// 物理事实：上传与收尾只读**本地副本**、只访问平台 HTTP，全程不碰 HCI。
+// 把它们一并绑在 SSH 会话上，等于让"节点连接掉了"去否决一件根本不需要节点的事。
+// 现场 Q2026102800720（3.6 GiB）就是这条错误绑定收尾的：平台收尾连续 500 的
+// 几分钟里 SSH 会话被回收，第 5 次重试直接按"凭据失效"判死，而当时 110/110 片
+// 已在平台、本地副本也完整——差一步就归档成功。
+func deliveryPhaseNeedsNode(phase deliveryPhase) bool {
+	switch phase {
+	case phaseWaitingCollect, phasePulling:
+		return true
+	default:
+		return false
+	}
+}
+
+// requireSessionForPhase 只在真的需要节点时，把"没有会话"判定为需要重新认证。
+func requireSessionForPhase(phase deliveryPhase, session *SSHSession) error {
+	if session == nil && deliveryPhaseNeedsNode(phase) {
+		return &deliveryAuthError{reason: "SSH 会话不存在（需重新连接节点）"}
+	}
+	return nil
 }
 
 // waitCollect 只读 progress，直到 acli 报 done == total。

@@ -235,9 +235,19 @@ class LocalLogCollectStorage:
         task_id: str,
         max_bytes: int,
     ) -> tuple[int, str, str]:
-        """按序流式合并分片，返回 (size, sha256, object_key)。"""
+        """按序流式合并分片，返回 (size, sha256, object_key)。
+
+        幂等：若上一次合并已经成功落盘、只是元数据没写进库（complete 在落库
+        那一步失败），重试直接复用成品，不再重写整包。否则每次重试都要重写
+        3.6 GiB，峰值磁盘翻倍，也很容易再踩一次超时——重试注定原地打转。
+        """
 
         target = self.object_path(case_id, task_id)
+        object_key = f"{case_id}/{task_id}.zip"
+        reused = self._reuse_merged(upload_id, target, object_key)
+        if reused is not None:
+            return reused
+
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = target.with_name(f"{target.name}.tmp")
         digest = hashlib.sha256()
@@ -273,8 +283,49 @@ class LocalLogCollectStorage:
             raise
 
         await anyio.to_thread.run_sync(os.replace, temporary, target)
-        object_key = f"{case_id}/{task_id}.zip"
-        return total, digest.hexdigest(), object_key
+        digest_hex = digest.hexdigest()
+        # 只在原子 rename 成功之后记 marker：它是"重试可以跳过重写"的唯一依据。
+        self._mark_merged(upload_id, total, digest_hex)
+        return total, digest_hex, object_key
+
+    def _reuse_merged(
+        self, upload_id: str, target: Path, object_key: str
+    ) -> tuple[int, str, str] | None:
+        """判定能否直接复用上一次的合并成品。
+
+        只认自己写的 marker（合并成功后立即落 meta.json），且要求成品仍在、
+        大小与 marker 一致。**不重算 SHA-256**：20 GiB 重算与重新合并同价，
+        复用就失去意义了。
+        """
+
+        meta = self.read_meta(upload_id) or {}
+        marker = meta.get("merged")
+        if not isinstance(marker, dict):
+            return None
+        size = int(marker.get("size") or 0)
+        digest = str(marker.get("sha256") or "")
+        if size <= 0 or len(digest) != 64:
+            return None
+        try:
+            if target.stat().st_size != size:
+                return None
+        except OSError:
+            return None
+        return size, digest, object_key
+
+    def _mark_merged(self, upload_id: str, size: int, digest: str) -> None:
+        """记录合并完成的标记。
+
+        写失败不影响本次结果（成品已落盘、元数据接下来还要入库），
+        最坏情况只是下一次重试重新合并一遍。
+        """
+
+        meta = self.read_meta(upload_id)
+        if meta is None:
+            return
+        meta["merged"] = {"size": size, "sha256": digest}
+        with contextlib.suppress(OSError):
+            self.write_meta(upload_id, meta)
 
     # ── 清理临时分片 ────────────────────────────────────────────────────────
 
