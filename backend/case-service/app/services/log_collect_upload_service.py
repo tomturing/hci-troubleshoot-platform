@@ -340,6 +340,16 @@ class LogCollectUploadService:
         task.archive_sha256 = digest
         await self.repository.flush()
         await self.repository.refresh(task)
+        # 落库后必须立即提交，理由不再是超时而是**自死锁**：
+        # 路由在本函数返回后立刻 await relay_service.trigger()，它用独立连接
+        # UPDATE 同一行的 relay_status——而 UPDATE 需要的行锁正被本事务持有；
+        # 若本事务拖到请求收尾才提交，trigger 的 UPDATE 就永远等不到锁：
+        # 主协程等 trigger，trigger 等行锁，行锁等本事务提交，提交等路由返回。
+        # 整条链只能靠 idle-in-transaction 30 秒超时"解死锁"，代价是本事务被
+        # PostgreSQL 击杀、上面的写入全部回滚——客户端却拿到 200。
+        # 2026-10-28 staging 实测复现：archive_path 为空、relay 报"平台尚无制品"。
+        # 立即提交把行锁窗口从"请求剩余生命周期"压到毫秒级。
+        await self.repository.session.commit()
 
         await self.storage.delete_multipart(upload_id)
         return {

@@ -321,6 +321,11 @@ async def test_complete_ends_transaction_before_merge(service, repo, storage):
 
     assert observed["commits_before_merge"] == 1, "合并开始前必须已经提交（结束）只读事务"
     assert observed["commits_during_merge"] == 1, "合并过程中不得再提交"
+    # 落库（flush 后）必须立即提交：路由随后会 await relay_service.trigger()，
+    # 它用独立连接 UPDATE 同一行——若本事务拖到请求收尾才提交，trigger 等行锁、
+    # 主协程等 trigger、提交等路由返回，构成自死锁，只能靠 30 秒 idle 超时
+    # "解死锁"，代价是写入整体回滚而客户端拿到 200（2026-10-28 staging 实测复现）。
+    assert repo.session.commit.await_count == 2, "落库后必须立即提交，释放行锁再触发代传"
 
 
 async def test_complete_rejects_missing_parts(service):
