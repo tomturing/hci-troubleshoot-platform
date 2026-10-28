@@ -12,6 +12,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from shared.database.postgres import DatabaseManager
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from ..config import settings
@@ -44,6 +45,7 @@ from ..services.log_collect_storage import (
     LogCollectStorageUnavailableError,
 )
 from ..services.log_collect_upload_service import LogCollectUploadError, LogCollectUploadService
+from ..services.operation_audit import write_operation_audit
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +160,7 @@ async def create_task(
     """
     await verify_case_exists(payload.case_id, service.repository.session)
     try:
-        return await service.create_task(payload, client_id)
+        task = await service.create_task(payload, client_id)
     except TaskConflictError as exc:
         raise _problem(
             exc.code,
@@ -169,6 +171,93 @@ async def create_task(
         # 并发窗口内两个请求同时通过应用层检查：数据库部分唯一索引兜底。
         # 这里不查活跃任务（session 已失效），前端可用"查看任务状态"重新拉取。
         raise _problem("LC-PLUGIN-007", "该工单已有进行中的日志收集任务") from exc
+
+    # 请求级事实必须留痕：任务表存的是服务端归一化后的结果，回答不了
+    # "用户当时选的是 P1 还是 P2、探测到了什么"。审计写失败不影响建任务。
+    if database_manager is not None:
+        await write_operation_audit(
+            database_manager.async_session_factory,
+            action="log_collect.create",
+            resource_type="log_collect_task",
+            resource_id=str(task.task_id),
+            details={
+                "case_id": payload.case_id,
+                "origin_node_ip": payload.origin_node_ip,
+                "upload_mode": task.upload_mode,
+                "remote_url_set": bool(payload.remote_url),
+                "modules": list(payload.modules),
+                "date_from": str(payload.date_from),
+                "date_to": str(payload.date_to),
+                "ips": payload.ips,
+                "acli_version": payload.acli_version,
+                "arch": payload.arch,
+                "probe": payload.probe,
+            },
+            trace_id=task.trace_id,
+        )
+    return task
+
+
+@router.get("/artifacts")
+async def list_artifacts(
+    case_id: str = Query(..., min_length=1, max_length=20, description="工单号"),
+    limit: int = Query(20, ge=1, le=100),
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+) -> dict:
+    """平台侧产物索引：回答"这单平台有没有留包、包多大、sha 是多少"。
+
+    第一性原理：P1 是节点直传日志服务器，平台**不留副本**，所以 object_* 为 NULL；
+    P2 才会有对象 key/size/sha。此前只能进容器 `ls`，导致"有没有包"无法产品化回答。
+    """
+    await verify_case_exists(case_id, service.repository.session)
+    items, _ = await service.list_tasks(case_id, created_by=client_id, limit=limit)
+    return {
+        "items": [
+            {
+                "task_id": str(task.task_id),
+                "upload_mode": task.upload_mode,
+                "object_key": task.object_key,
+                "object_size": task.object_size,
+                "object_sha256": task.object_sha256,
+                "archive_size": task.archive_size,
+                "delivery_status": task.delivery_status,
+                "created_at": task.created_at,
+            }
+            for task in items
+        ]
+    }
+
+
+@router.get("/probes")
+async def list_probes(
+    case_id: str = Query(..., min_length=1, max_length=20, description="工单号"),
+    limit: int = Query(20, ge=1, le=100),
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+) -> dict:
+    """探测历史：把"节点清单为什么空、日志服务器为什么不可达"变成可回看的事实。
+
+    数据源是 bridge 事件表（jsonb extra），只取下发前探测与下发两条事件。
+    """
+    await verify_case_exists(case_id, service.repository.session)
+    rows = (
+        (
+            await service.repository.session.execute(
+                text(
+                    "SELECT created_at, event, level, extra "
+                    "FROM bridge_execution_logs "
+                    "WHERE case_id = :case_id "
+                    "AND event IN ('log_collect.probe', 'log_collect.create') "
+                    "ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"case_id": case_id, "limit": limit},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return {"items": [dict(row) for row in rows]}
 
 
 @router.get("", response_model=LogCollectTaskListResponse)

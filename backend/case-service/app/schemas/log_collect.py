@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -103,6 +103,15 @@ class LogCollectTaskCreate(BaseModel):
     # 否则无法区分「acli 版本不支持 log_collect」与「参数/环境错误」。
     arch: str | None = Field(default=None, max_length=16, description="发起节点架构（probe 实测）")
     acli_version: str | None = Field(default=None, max_length=32, description="发起节点 acli 版本（probe 实测）")
+    probe: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "下发前的探测快照（acli 版本/构建/架构/节点清单数/场景目录来源/"
+            "日志服务器可达性与两类失败原因）。"
+            "任务失败后必须能回答\"当时那台机器是什么状态\"，只留在前端内存里，"
+            "关面板或换端就永久丢失（2026-10-28 现场：任务 detail 只有报告指纹）。"
+        ),
+    )
 
     @field_validator("origin_node_ip")
     @classmethod
@@ -124,10 +133,20 @@ class LogCollectTaskCreate(BaseModel):
     def _validate_ips(cls, value: list[str]) -> list[str]:
         if not value:
             return ["all"]
+        # 空白项不构成"选择了一台主机"，不能因为它放行/放大计数
+        effective = [item for item in value if item and item.strip()]
+        if not effective:
+            return ["all"]
         normalized: list[str] = []
-        for item in value:
+        for item in effective:
             item = item.strip()
             if item == "all":
+                # 第一性原理：`all` 与具体 IP 混写没有语义（"全部"已包含"其中某一台"），
+                # 只能是二选一。早先在这里静默收窄为 ["all"]，会让落库结果与 bridge
+                # 实际收到的字符串不一致：bridge 按原串校验判非法，平台却已建出任务，
+                # 用户最终看到的是"任务已创建但下发失败"。
+                if len(effective) > 1:
+                    raise ValueError("目标主机 all 不能与具体 IP 混写")
                 return ["all"]
             try:
                 ipaddress.IPv4Address(item)

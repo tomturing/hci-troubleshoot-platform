@@ -95,7 +95,10 @@ const summaryText = computed(() => {
     const version = ctx.env_info.hci_version && ctx.env_info.hci_version !== '未知' ? ctx.env_info.hci_version : null
     const hostCount = ctx.env_info.host_count && ctx.env_info.host_count !== '未知' ? ctx.env_info.host_count : null
     if (version || hostCount) {
-      parts.push(`集群信息: ${version || '版本待采集'}, ${hostCount || '?'}节点`)
+      // 不用 `?节点`：它既像故障又像 0，用户无法判断该重试还是该换采集方式。
+      parts.push(
+        `集群信息: ${version || '版本待采集'}, ${hostCount ? `${hostCount} 节点` : '节点数未采集'}`,
+      )
     } else {
       parts.push('集群信息: 待采集')
     }
@@ -228,6 +231,10 @@ function getProcessType(process?: string): 'done' | 'failed' | 'queued' | 'cance
           </div>
           <div v-if="chatStore.environmentContext.env_info.host_count && chatStore.environmentContext.env_info.host_count !== '未知'">
             节点数量: {{ chatStore.environmentContext.env_info.host_count }}
+          </div>
+          <!-- 未采到必须给原因：只显示"未采集"用户无法判断是没采、还是采失败 -->
+          <div v-else-if="chatStore.environmentContext.env_info.node_count_error" class="no-data-hint">
+            节点数量: 未采集（{{ chatStore.environmentContext.env_info.node_count_error }}）
           </div>
           <!-- 所有字段均为"未知"时显示提示 -->
           <div

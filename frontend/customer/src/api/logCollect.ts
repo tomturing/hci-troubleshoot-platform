@@ -34,6 +34,26 @@ export type LogCollectStatus =
 
 export type RelayStatus = 'none' | 'pending' | 'running' | 'success' | 'failed'
 
+/** 探测历史条目（bridge 事件 extra 为自由结构，按需读取已知字段）。 */
+export interface ProbeHistoryItem {
+  created_at: string
+  event: string
+  level: string
+  extra: Record<string, unknown>
+}
+
+/** 平台侧产物索引：object_key 为空即"平台没留副本"（P1）。 */
+export interface LogCollectArtifact {
+  task_id: string
+  upload_mode: string | null
+  object_key: string | null
+  object_size: number | null
+  object_sha256: string | null
+  archive_size: number | null
+  delivery_status: string
+  created_at: string
+}
+
 /**
  * 交付状态：描述「产物是否真的从节点到达了日志服务器」。
  *
@@ -81,6 +101,26 @@ export interface LogCollectTaskCreate {
   arch?: string
   /** 发起节点 acli 版本（probe 实测）：与 arch 一同回答「哪版 acli 失败」 */
   acli_version?: string
+  /**
+   * 下发前的探测快照。
+   *
+   * 失败任务事后要能自证"当时那台机器是什么状态"：节点清单为什么是空的、
+   * 日志服务器通不通、命中的哪份 acli。只放在前端内存里，关面板或换端即丢失。
+   */
+  probe?: {
+    acli_version?: string
+    acli_build_time?: string
+    acli_binary?: string
+    architecture?: string
+    acli_installed?: boolean
+    hosts_count?: number
+    modules_count?: number
+    catalog_source?: string
+    catalog_note?: string
+    log_server_reachable?: boolean
+    http_code?: number
+    note?: string
+  }
 }
 
 export interface LogCollectTask {
@@ -204,6 +244,22 @@ export const logCollectApi = {
 
   async getTask(taskId: string): Promise<LogCollectTask> {
     const { data } = await client.get(`/log-collect/tasks/${taskId}`)
+    return data
+  },
+
+  /** 探测历史：节点清单/日志服务器失败原因可回看（数据源是 bridge 事件表）。 */
+  async listProbes(caseId: string, limit = 10): Promise<{ items: ProbeHistoryItem[] }> {
+    const { data } = await client.get('/log-collect/tasks/probes', {
+      params: { case_id: caseId, limit },
+    })
+    return data
+  },
+
+  /** 平台产物索引：判断"这单平台有没有留包"（P1 无对象，P2 才有）。 */
+  async listArtifacts(caseId: string, limit = 20): Promise<{ items: LogCollectArtifact[] }> {
+    const { data } = await client.get('/log-collect/tasks/artifacts', {
+      params: { case_id: caseId, limit },
+    })
     return data
   },
 

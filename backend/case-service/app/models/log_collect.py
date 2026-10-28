@@ -48,6 +48,12 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     archive_path = Column(Text, nullable=True)
     archive_size = Column(BigInteger, nullable=True)
     archive_sha256 = Column(String(64), nullable=True)
+    # 平台对象索引：仅 P2 有值，P1 为 NULL（平台不留副本）。
+    # 与 archive_* 解耦：archive_path 在 P1 是节点绝对路径、在 P2 是对象 key，
+    # 语义混用导致"平台有没有留包"只能进容器 ls。
+    object_key = Column(Text, nullable=True)
+    object_size = Column(BigInteger, nullable=True)
+    object_sha256 = Column(String(64), nullable=True)
     # P2 段①：从 HCI 拉取到客户 PC 的进度，rsync/SFTP 断点续传依据
     pull_offset_bytes = Column(BigInteger, nullable=True)
     pull_sha256 = Column(String(64), nullable=True)
