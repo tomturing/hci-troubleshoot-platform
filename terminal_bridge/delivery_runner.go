@@ -255,8 +255,11 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 		job.Attempt++
 		job.LastError = err.Error()
 		// 凭据类失败单独标记：它不是"重试能好"的错误，必须等人。
+		// 完整性类失败同理：源包与基线不一致，重试只会再白拉一遍 20 GiB。
 		if isDeliveryAuthError(err) {
 			job.NeedsReauth = true
+			job.Phase = phaseFailed
+		} else if isDeliveryFatalError(err) {
 			job.Phase = phaseFailed
 		} else if job.Attempt < budget {
 			// 可恢复失败：后台会退避重排，因此对外只能表现为 retrying。
@@ -451,6 +454,8 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 				blog("INFO", "delivery.collect_finished", "节点采集已完成，开始交付", "", job.CaseID, job.NodeIP, "", map[string]any{
 					"job_id": job.JobID, "total": progress.Total, "archive_path": progress.ArchivePath,
 				})
+				// 采集刚完成、包在节点上还是新的，此刻取基线最可靠。
+				r.ensureSourceDigest(ctx, session, job)
 				return nil
 			}
 		}
@@ -503,7 +508,52 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession,
 	blog("INFO", "delivery.direct_ready", "补交付源包校验通过，开始拉取", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "source_path": sourcePath, "size": size,
 	})
+	// 摘要必须在拉取前取：拉完再取，节点上的包可能已被下一次采集同名覆盖，
+	// 拿到的基线就不属于本次交付，后面每一跳的"校验通过"都会变成假证据。
+	r.ensureSourceDigest(ctx, session, job)
 	return nil
+}
+
+// ensureSourceDigest 取一次节点侧源包摘要，作为端到端完整性的唯一基线。
+//
+// 为什么失败不阻断：HCI 可能既没有 sha256sum 也没有 md5sum（精简系统），取不到
+// 摘要不等于包坏了。此时降级为 unverified，并在 UI 上明示"未校验源包"，
+// 让用户自己决定是否接受——比直接让 20 GiB 的采集白跑更合理。
+func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *SSHSession, job *deliveryJob) {
+	if session == nil || strings.TrimSpace(job.SourcePath) == "" {
+		return
+	}
+	r.mu.Lock()
+	already := job.SourceSHA256 != "" || job.SourceMD5 != ""
+	r.mu.Unlock()
+	if already {
+		return
+	}
+
+	algo, digest, err := session.probeSourceDigest(ctx, job.SourcePath)
+	r.mu.Lock()
+	if err != nil {
+		job.Integrity = integrityUnverified
+		job.IntegrityNote = "未取得源包摘要：" + err.Error()
+		r.mu.Unlock()
+		_ = r.store.save(job)
+		blog("WARN", "delivery.digest_unavailable", "节点无法计算源包摘要，完整性校验降级", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "source_path": job.SourcePath, "error": err.Error(),
+		})
+		return
+	}
+	job.DigestSource = algo
+	if algo == "sha256" {
+		job.SourceSHA256 = digest
+	} else {
+		job.SourceMD5 = digest
+	}
+	// 这里只拿到"基线"，还不代表任何一跳校验通过；Integrity 留给 pull/complete 定论。
+	r.mu.Unlock()
+	_ = r.store.save(job)
+	blog("INFO", "delivery.digest_probed", "已取得节点源包摘要", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "algorithm": algo, "digest": digest, "source_size": job.SourceSize,
+	})
 }
 
 // verifyArchiveComplete 通过 zip 尾部的 EOCD 标记判断包是否写完。
@@ -561,13 +611,14 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 	if job.LocalPath == "" {
 		job.LocalPath = filepath.Join(os.TempDir(), "hci-log-collect", job.TaskID+".zip")
 	}
-	// 恢复场景：size 未知时先量一次，否则无法判断"是否已拉完"。
-	if job.SourceSize <= 0 {
-		output, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(job.SourcePath)))
-		if err == nil {
-			if size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64); parseErr == nil {
-				job.SourceSize = size
-			}
+	// 每次都重新量源包大小，而不是只在"未知"时量：
+	// 前端 stat 与本阶段可能相隔很久（用户点了补交付又放了半小时），陈旧的大小
+	// 会让末片长度算错，也会把"源包已被同名覆盖"误判成"网络中断"，然后无限重拉。
+	if output, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(job.SourcePath))); err == nil {
+		if size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64); parseErr == nil && size > 0 {
+			r.mu.Lock()
+			job.SourceSize = size
+			r.mu.Unlock()
 		}
 	}
 	// 拉取是唯一必须长期占用 SSH 的环节：12.8 GiB @ ~10 MB/s 需要 20 分钟以上，
@@ -599,7 +650,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 		}
 	}
 
-	written, err := session.pullArchive(ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
+	written, localSum, err := session.pullArchive(ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
 		r.mu.Lock()
 		job.PulledBytes = done
 		if job.SourceSize <= 0 && total > 0 {
@@ -609,14 +660,110 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 		_ = r.store.save(job)
 	})
 	if err != nil {
-		return fmt.Errorf("拉取中断（已拉 %d 字节）: %w", written, err)
+		wrapped := fmt.Errorf("拉取中断（已拉 %d 字节）: %w", written, err)
+		if errors.Is(err, errPullSizeMismatch) {
+			// 源包字节数变了：继续重试只会重复拉一遍，直接终态等人处理。
+			return &deliveryFatalError{reason: wrapped.Error() + "；源包可能已被覆盖或截断，重试无意义"}
+		}
+		return wrapped
 	}
+
+	r.mu.Lock()
+	job.PulledBytes = written
+	job.LocalSHA256 = localSum
+	sourceSHA := job.SourceSHA256
+	sourceMD5 := job.SourceMD5
+	localPath := job.LocalPath
+	expectedSize := job.SourceSize
+	r.mu.Unlock()
+
+	// ── 段① 完整性结论（比对逻辑抽成纯函数便于单测钉住）─────────────────
+	localMD5 := ""
+	if sourceSHA == "" && sourceMD5 != "" {
+		localMD5, err = fileDigest(localPath, "md5")
+		if err != nil {
+			return fmt.Errorf("计算本地副本 MD5 失败: %w", err)
+		}
+	}
+	if verifyErr := verifyPulledIntegrity(sourceSHA, sourceMD5, localSum, localMD5, written, expectedSize); verifyErr != nil {
+		if isDeliveryFatalError(verifyErr) {
+			// 残包不能留：下次续传会把它当"已拉部分"接着追加，永远修不好。
+			r.discardLocalCopy(job, verifyErr.Error())
+		}
+		return verifyErr
+	}
+
 	r.mu.Lock()
 	job.PulledBytes = written
 	job.Phase = phaseUploading
+	if sourceSHA != "" || sourceMD5 != "" {
+		job.Integrity = integrityVerified
+		job.IntegrityNote = ""
+	} else {
+		// 没有基线时不得宣称"已校验"：这只证明了单跳传输一致，证明不了上游。
+		job.Integrity = integrityUnverified
+		job.IntegrityNote = "节点未提供源包摘要，仅校验了传输一致性"
+	}
 	r.mu.Unlock()
 	_ = r.store.save(job)
+	blog("INFO", "delivery.pull_verified", "拉取完成并完成完整性比对", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "size": written, "sha256": localSum,
+		"source_sha256": sourceSHA, "source_md5": sourceMD5, "integrity": job.Integrity,
+	})
 	return nil
+}
+
+// verifyPulledIntegrity 判定"拉下来的字节"是否就是节点上的那个包。
+//
+// 判据顺序刻意固定：先大小、再摘要。大小不等时摘要必然不等，先报大小可以给出
+// 更可操作的提示（"包被截断/覆盖"），而不是一串 64 位 hex 让用户去猜。
+//
+// 返回的错误一律是 fatal：源包内容已经变了，重试只会重复拉一遍。
+func verifyPulledIntegrity(sourceSHA, sourceMD5, localSHA, localMD5 string, written, expected int64) error {
+	if expected > 0 && written != expected {
+		return &deliveryFatalError{reason: fmt.Sprintf(
+			"拉取字节数与源包不一致：期望 %d，实际 %d；节点上的包可能已被覆盖或截断，请重新采集后再交付",
+			expected, written,
+		)}
+	}
+	if sourceSHA != "" {
+		if !strings.EqualFold(sourceSHA, localSHA) {
+			return &deliveryFatalError{reason: fmt.Sprintf(
+				"源包完整性校验失败：节点 SHA-256 %s，本地副本 %s；已丢弃本地残包，需重新采集后再交付",
+				sourceSHA, localSHA,
+			)}
+		}
+		return nil
+	}
+	if sourceMD5 != "" && !strings.EqualFold(sourceMD5, localMD5) {
+		return &deliveryFatalError{reason: fmt.Sprintf(
+			"源包完整性校验失败：节点 MD5 %s，本地副本 %s；已丢弃本地残包，需重新采集后再交付",
+			sourceMD5, localMD5,
+		)}
+	}
+	return nil
+}
+
+// discardLocalCopy 丢弃不可信的本地副本，并清空分片进度。
+//
+// 为什么必须连 UploadedParts 一起清：平台上的分片是按旧包内容算的哈希，
+// 源包变了以后继续"跳过已传分片"会拼出前半旧包 + 后半新包的杂交产物；
+// 那种包连大小都可能对，只有整包摘要能发现，代价是又白跑一轮。
+func (r *deliveryRunner) discardLocalCopy(job *deliveryJob, reason string) {
+	r.mu.Lock()
+	path := job.LocalPath
+	job.PulledBytes = 0
+	job.UploadedParts = nil
+	job.Integrity = integrityUnverified
+	job.IntegrityNote = reason
+	r.mu.Unlock()
+	if path != "" {
+		_ = os.Remove(path)
+	}
+	_ = r.store.save(job)
+	blog("WARN", "delivery.local_discarded", "本地副本校验失败，已丢弃并重置分片进度", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "local_path": path, "reason": reason,
+	})
 }
 
 // platformHTTPClient 构造访问平台的 HTTP 客户端。
@@ -794,6 +941,14 @@ func buildCompletePayload(job *deliveryJob) map[string]any {
 	if job.SourceSize > 0 {
 		payload["size"] = job.SourceSize
 	}
+	// 声明整包摘要，让平台的合并结果有可比对的对象。
+	// 优先节点基线（端到端），没有基线时退本地副本摘要（至少覆盖 ②→③）；
+	// 两者都为空就保持字段缺省，绝不能传空串（会 422，见上）。
+	if sum := strings.TrimSpace(job.SourceSHA256); sum != "" {
+		payload["sha256"] = sum
+	} else if sum := strings.TrimSpace(job.LocalSHA256); sum != "" {
+		payload["sha256"] = sum
+	}
 	return payload
 }
 
@@ -829,12 +984,40 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 		return wrapTransientTransport(err)
 	}
 	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	ackBody, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 		return &deliveryAuthError{reason: fmt.Sprintf("上传令牌失效（HTTP %d）", response.StatusCode)}
 	}
+	if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity {
+		// 4xx 是业务校验失败（大小/摘要不一致、parts 不完整），重试同样失败；
+		// 且每次重试都要在服务端重新合并一遍整包，代价远高于一次重拉。
+		detail := strings.TrimSpace(string(ackBody))
+		if len(detail) > 400 {
+			detail = detail[:400]
+		}
+		return &deliveryFatalError{reason: fmt.Sprintf("平台收尾校验未通过（HTTP %d）：%s", response.StatusCode, detail)}
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return platformStatusError("平台收尾失败", response.StatusCode)
+	}
+
+	// 平台回执里的 integrity_state 才是最终结论：真正做过整包比对的是服务端，
+	// bridge 侧只能证明"拉下来的字节"没问题。
+	var ack struct {
+		IntegrityState string `json:"integrity_state"`
+		SHA256         string `json:"sha256"`
+	}
+	if jsonErr := json.Unmarshal(ackBody, &ack); jsonErr == nil && strings.TrimSpace(ack.IntegrityState) != "" {
+		r.mu.Lock()
+		job.Integrity = strings.TrimSpace(ack.IntegrityState)
+		if job.Integrity == integrityVerified {
+			job.IntegrityNote = ""
+		}
+		r.mu.Unlock()
+		_ = r.store.save(job)
+		blog("INFO", "delivery.integrity_confirmed", "平台确认交付完整性", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "integrity": ack.IntegrityState, "sha256": ack.SHA256,
+		})
 	}
 	return nil
 }
@@ -843,6 +1026,21 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 type deliveryAuthError struct{ reason string }
 
 func (e *deliveryAuthError) Error() string { return e.reason }
+
+// deliveryFatalError 表示"重试必然同样失败"的完整性/数据错误。
+//
+// 与 authError 的区别：它不需要人做任何额外动作，只是继续重试没有意义。
+// 典型场景：节点源包与拉取结果摘要不一致（包已被同名覆盖），重试会再白拉
+// 一次 20 GiB，一天之内就能把客户机带宽和磁盘打满。
+type deliveryFatalError struct{ reason string }
+
+func (e *deliveryFatalError) Error() string { return e.reason }
+
+// isDeliveryFatalError 用 errors.As 穿透包装。
+func isDeliveryFatalError(err error) bool {
+	var target *deliveryFatalError
+	return errors.As(err, &target)
+}
 
 // deliveryTransientError 表示"平台暂时不可用，等一会儿重试就能成"。
 //

@@ -280,11 +280,56 @@ async def test_complete_updates_task_and_cleans_parts(service, repo, storage):
     assert result["object_key"] == f"{task.case_id}/{task.task_id}.zip"
     assert task.archive_sha256 == result["sha256"]
     assert task.archive_size == len(payload)
+    # 声明了整包摘要且核对通过 → 这才是 verified 的唯一来源
+    assert result["integrity_state"] == "verified"
+    assert task.integrity_state == "verified"
     # 本服务只在两个点提交：合并前清事务、落库后放行。本层不再 flush。
     assert repo.flush.await_count == 0
     assert repo.commit.await_count == 2
     # 临时分片已清理
     assert storage.existing_parts(str(task.task_id)) == []
+
+
+async def test_complete_without_digest_stays_unverified(service, repo, storage):
+    """没声明摘要时必须落 unverified，不能因为"平台算出了 sha256"就宣称校验通过。"""
+
+    task, total, _sha = make_task()
+    await service.init(task, total_size=total, expected_sha256=None)
+    payload = b"12345678" + b"9abcdefg" + b"hijk"
+    for index, start in enumerate((0, CHUNK, 2 * CHUNK), start=1):
+        await service.record_part(
+            task.task_id,
+            part_number=index,
+            chunks=chunks_of(payload[start : start + CHUNK]),
+            claimed_sha256=None,
+        )
+
+    result = await service.complete(task, parts=None, declared_sha256=None, declared_size=None)
+
+    assert result["integrity_state"] == "unverified"
+    assert task.integrity_state == "unverified"
+    assert task.object_sha256 == result["sha256"]
+
+
+async def test_complete_accepts_uppercase_declared_digest(service, repo, storage):
+    """客户端发大写十六进制不能被误判成不一致——否则会删掉一个本来完整的制品。"""
+
+    task, total, _sha = make_task()
+    await service.init(task, total_size=total, expected_sha256=None)
+    payload = b"12345678" + b"9abcdefg" + b"hijk"
+    for index, start in enumerate((0, CHUNK, 2 * CHUNK), start=1):
+        await service.record_part(
+            task.task_id,
+            part_number=index,
+            chunks=chunks_of(payload[start : start + CHUNK]),
+            claimed_sha256=None,
+        )
+
+    result = await service.complete(
+        task, parts=None, declared_sha256=hashlib.sha256(payload).hexdigest().upper(), declared_size=None
+    )
+
+    assert result["integrity_state"] == "verified"
 
 
 async def test_complete_commits_before_merging(service, repo, storage, monkeypatch):
