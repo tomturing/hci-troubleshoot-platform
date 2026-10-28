@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
+import { Download, Finished, FolderOpened, Monitor, Tickets } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { getClientId } from '@/utils/clientId'
 import ChatWindow from '@/components/ChatWindow.vue'
@@ -8,6 +8,7 @@ import HistoryPanel from '@/components/HistoryPanel.vue'
 import LogCollectCaseDialog from '@/components/LogCollectCaseDialog.vue'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
 import PanelShell from '@/components/PanelShell.vue'
+import SftpPanel from '@/components/SftpPanel.vue'
 import SshConnectDialog from '@/components/SshConnectDialog.vue'
 import TerminalPanel from '@/components/TerminalPanel.vue'
 
@@ -349,17 +350,51 @@ function handleDownloadBridge() {
       >
         <template #rail>
           <el-tooltip content="SSH 终端" placement="left" :show-after="400">
-            <button type="button" class="rail-btn" @click="chatStore.checkAndOpenTerminal()">
+            <button
+              type="button"
+              class="rail-btn"
+              :class="{
+                'is-active': chatStore.isRightPanelOpen && chatStore.rightPanelTab === 'terminal',
+              }"
+              @click="chatStore.checkAndOpenTerminal()"
+            >
               <el-icon><Monitor /></el-icon>
+            </button>
+          </el-tooltip>
+          <!--
+            文件下载与 SSH 终端平级：共用右栏这一块位置，靠页签切换。
+            未登录时 openSftpPanel 会先弹统一的 SSH 登录框（同一个模板），
+            登录成功后自动落到本页签。
+          -->
+          <el-tooltip content="文件下载" placement="left" :show-after="400">
+            <button
+              type="button"
+              class="rail-btn"
+              :class="{
+                'is-active': chatStore.isRightPanelOpen && chatStore.rightPanelTab === 'sftp',
+              }"
+              @click="chatStore.openSftpPanel()"
+            >
+              <el-icon><Download /></el-icon>
             </button>
           </el-tooltip>
         </template>
         <template #title>
-          <el-icon><Monitor /></el-icon>
-          <span>SSH 终端</span>
+          <el-icon>
+            <component :is="chatStore.rightPanelTab === 'terminal' ? Monitor : Download" />
+          </el-icon>
+          <span>{{ chatStore.rightPanelTab === 'terminal' ? 'SSH 终端' : '文件下载' }}</span>
         </template>
 
-        <TerminalPanel @open-terminal-history="openCurrentCaseTerminalHistory" />
+        <!--
+          v-show 而不是 v-if：切页签不能销毁 xterm 实例，更不能断开 SSH 会话
+          （文件下载用的就是这条会话）。
+        -->
+        <TerminalPanel
+          v-show="chatStore.rightPanelTab === 'terminal'"
+          @open-terminal-history="openCurrentCaseTerminalHistory"
+        />
+        <SftpPanel v-show="chatStore.rightPanelTab === 'sftp'" />
       </PanelShell>
     </div>
 

@@ -1,15 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { h, reactive } from 'vue'
+import { h, reactive, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import SftpPanel from '@/components/SftpPanel.vue'
 
 /**
- * SftpPanel 交互契约（SSH 终端下方的文件下载面板）。
+ * SftpPanel 交互契约（右栏「文件下载」页签）。
  *
- * 三条不可退让的边界：
+ * 四条不可退让的边界：
  * 1. 前端只能提交“远端路径”，面板里不存在任何本地路径输入；
  * 2. 目录与文件的行点击语义必须分开（目录=进入，文件=下载），点错就是白跑一次传输；
- * 3. 下载进行中不得重复发起（bridge 侧有并发上限，重复点击只会拿到 too_many_tasks）。
+ * 3. 下载进行中不得重复发起（bridge 侧有并发上限，重复点击只会拿到 too_many_tasks）；
+ * 4. 未登录/会话掉线时只给登录入口，且入口必须是 store 的统一登录门禁
+ *    （与 SSH 终端共用同一套模板），不能在这里另造一套表单。
  */
 let mockStore: any
 
@@ -69,7 +71,8 @@ const passthrough = (name: string, tag = 'div') => ({
 function baseStore(overrides: Record<string, unknown> = {}) {
   return reactive({
     sshConnectionState: 'connected',
-    sftpPanelVisible: true,
+    isRightPanelOpen: true,
+    rightPanelTab: 'sftp',
     sftpRemoteDir: '/var/log',
     sftpParentDir: '/var',
     sftpEntries: [],
@@ -78,7 +81,7 @@ function baseStore(overrides: Record<string, unknown> = {}) {
     sftpListError: '',
     sftpListTruncated: false,
     sftpTransfer: null,
-    toggleSftpPanel: vi.fn(),
+    openSftpPanel: vi.fn(),
     sftpList: vi.fn().mockResolvedValue(undefined),
     sftpDownload: vi.fn(),
     sftpCancelDownload: vi.fn(),
@@ -114,10 +117,35 @@ describe('SftpPanel 文件下载面板', () => {
     wrapper.unmount()
   })
 
-  it('点击标题切换展开状态', async () => {
+  it('首次进入页签自动列一次默认目录', () => {
     const wrapper = mountPanel()
-    await wrapper.find('button.sftp-toggle').trigger('click')
-    expect(mockStore.toggleSftpPanel).toHaveBeenCalled()
+    expect(mockStore.sftpList).toHaveBeenCalledWith('')
+    wrapper.unmount()
+  })
+
+  it('页签不可见时不发目录请求', async () => {
+    mockStore.isRightPanelOpen = false
+    const wrapper = mountPanel()
+    expect(mockStore.sftpList).not.toHaveBeenCalled()
+
+    mockStore.isRightPanelOpen = true
+    await nextTick()
+    expect(mockStore.sftpList).toHaveBeenCalledWith('')
+    wrapper.unmount()
+  })
+
+  it('未登录时只给「连接 SSH」入口，且复用 store 的统一登录门禁', async () => {
+    mockStore.sshConnectionState = 'disconnected'
+    const wrapper = mountPanel()
+
+    expect(wrapper.text()).toContain('文件下载需要先登录 SSH')
+    expect(wrapper.findAll('input.input-stub')).toHaveLength(0)
+
+    const loginBtn = wrapper.findAll('button.btn-stub').find((b: any) =>
+      b.text().includes('连接 SSH'),
+    )!
+    await loginBtn.trigger('click')
+    expect(mockStore.openSftpPanel).toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -220,16 +248,6 @@ describe('SftpPanel 文件下载面板', () => {
     mockStore.sftpListTruncated = true
     const wrapper = mountPanel()
     expect(wrapper.text()).toContain('仅显示前 2000 项')
-    wrapper.unmount()
-  })
-
-  it('折叠状态下不渲染面板主体', () => {
-    mockStore.sftpPanelVisible = false
-    const wrapper = mountPanel()
-    const body = wrapper.find('.sftp-body')
-    // v-show：元素存在但被隐藏，避免展开时重新挂载丢失滚动位置
-    expect(body.exists()).toBe(true)
-    expect((body.element as HTMLElement).style.display).toBe('none')
     wrapper.unmount()
   })
 })

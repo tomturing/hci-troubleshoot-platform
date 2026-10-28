@@ -596,8 +596,23 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
-  // 终端面板状态
+  // 右栏面板状态（页签决定展开后显示哪一块）
   const showTerminalSidebar = ref(false)
+  /**
+   * 右栏页签：SSH 终端 / 文件下载。
+   *
+   * 两者都是「对着同一台主机操作」，共用一个会话与同一块抽屉位置；
+   * 各开一个抽屉反而会互相挤压出两条窄缝。
+   */
+  const rightPanelTab = ref<'terminal' | 'sftp'>('terminal')
+  /**
+   * 登录成功后要落到哪个页签。
+   *
+   * 文件下载的门禁是「先登录再进面板」，而登录动作复用统一的 SSH 弹框，
+   * 登录成功回调只知道"打开右栏"，不知道是谁发起的。用这个一次性意图把
+   * 目标页签带过去，避免用户点了文件下载却被丢到终端页。
+   */
+  const pendingRightPanelTab = ref<'terminal' | 'sftp' | null>(null)
   const terminalInputCommand = ref('')
   const assistantDraftText = ref('')
 
@@ -632,7 +647,6 @@ export const useChatStore = defineStore('chat', () => {
   const sftpListLoading = ref(false)
   const sftpListError = ref('')
   const sftpListTruncated = ref(false)
-  const sftpPanelVisible = ref(false)
   // 传输状态：存在即表示有一次下载在进行中或刚结束（用于停止按钮与结果展示）
   const sftpTransfer = ref<{
     taskId: string
@@ -819,8 +833,19 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 左侧是否被占用：日志收集与历史工单互斥，同一时刻只允许一个。 */
   const isLeftPanelOpen = computed(() => logCollectVisible.value || showHistoryDrawer.value)
-  /** 右侧是否被占用：SSH 终端。 */
+  /** 右侧是否被占用：SSH 终端 / 文件下载共用同一块面板。 */
   const isRightPanelOpen = computed(() => showTerminalSidebar.value)
+
+  /**
+   * SSH 终端页签是否真正可见。
+   *
+   * 面板被文件下载页签占用时，终端并没有"消失"（实例仍在，只是 v-show 隐藏），
+   * 但往终端里写命令/回显是看不见的。自动化动作（如 acli 安装后的 hash -r）
+   * 必须按"可见"而不是"面板打开"判断，否则会把输出写进隐形终端。
+   */
+  const isTerminalVisible = computed(
+    () => showTerminalSidebar.value && rightPanelTab.value === 'terminal',
+  )
 
   /**
    * 左侧面板当前页签。
@@ -2233,8 +2258,8 @@ export const useChatStore = defineStore('chat', () => {
   /** 发送命令到终端（CommandBlock 手动模式调用，仅填充输入框） */
   function sendCommandToTerminal(command: string) {
     terminalInputCommand.value = command
-    enforceOverlayExclusive('right')
-    showTerminalSidebar.value = true
+    // 命令要送进终端输入框：右栏若停在文件下载页，必须先切回终端页，否则用户看不到命令
+    openRightPanel('terminal')
   }
 
   function clearTerminalInput() {
@@ -2303,6 +2328,17 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
+   * 打开右栏并落到指定页签。
+   *
+   * 右栏只有一块位置：SSH 终端与文件下载互斥，否则两块内容会挤在同一条边上。
+   */
+  function openRightPanel(tab: 'terminal' | 'sftp'): void {
+    enforceOverlayExclusive('right')
+    rightPanelTab.value = tab
+    showTerminalSidebar.value = true
+  }
+
+  /**
    * 点击「终端」按钮的入口
    * 先检测 Bridge，根据结果决定：直接打开侧边栏 或 提示下载
    */
@@ -2311,8 +2347,7 @@ export const useChatStore = defineStore('chat', () => {
     const running = await checkBridgeRunning()
     if (running) {
       bridgeStatus.value = 'running'
-      enforceOverlayExclusive('right')
-      showTerminalSidebar.value = true
+      openRightPanel('terminal')
     } else {
       bridgeStatus.value = 'not_running'
       // 让 App.vue 展示下载提示弹窗（通过 showBridgeDownload 状态驱动）
@@ -2320,9 +2355,42 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  /**
+   * 登录成功后打开右栏。
+   *
+   * 页签取"挂起意图"，缺省为终端：统一的登录回调（SshConnectSection）只知道
+   * 「连接成功」，不知道用户是从终端还是文件下载进来的，写死 terminal 会让
+   * 点文件下载的人被丢回终端页。
+   */
   function openTerminalSidebar() {
-    enforceOverlayExclusive('right')
-    showTerminalSidebar.value = true
+    const tab = pendingRightPanelTab.value ?? 'terminal'
+    pendingRightPanelTab.value = null
+    openRightPanel(tab)
+  }
+
+  /**
+   * 打开「文件下载」页签。
+   *
+   * 文件下载复用 SSH 会话（bridge 侧是同一个 *ssh.Client），未登录时什么也做不了。
+   * 门禁不复用 TerminalPanel 的三态按钮，而是直接走统一登录弹框——登录表单、
+   * bridge 引导、错误处理都只有一份实现（SshConnectSection），不重复造轮子。
+   * 登录成功后登录回调消费 pendingRightPanelTab，自动落到文件下载页。
+   */
+  async function openSftpPanel(): Promise<void> {
+    if (sshConnectionState.value !== 'connected') {
+      pendingRightPanelTab.value = 'sftp'
+      bridgeStatus.value = 'checking'
+      const status = await checkBridgeBeforeOpen()
+      bridgeStatus.value = status === 'running' ? 'running' : 'not_running'
+      sshConnectDialogBridgeStatus.value = status
+      openSshFlowDialog(
+        currentCase.value?.case_id ?? logCollectCaseId.value ?? null,
+        'terminal-only',
+      )
+      return
+    }
+    pendingRightPanelTab.value = null
+    openRightPanel('sftp')
   }
 
   function closeTerminalSidebar() {
@@ -2364,6 +2432,8 @@ export const useChatStore = defineStore('chat', () => {
     const mode = sshFlowDialogMode.value
 
     sshFlowDialogVisible.value = false
+    // 取消登录即放弃"登录后落到文件下载页"的意图：留着会让下一次任意登录都跳页面
+    pendingRightPanelTab.value = null
 
     // create-case 模式下用户取消 SSH，不得把待发送内容转交 Agent，直接进入离线诊断。
     if (mode === 'create-case' && caseId && currentCase.value?.case_id === caseId) {
@@ -2510,6 +2580,8 @@ export const useChatStore = defineStore('chat', () => {
       }
 
       function failConnect(error: Error, state: 'error' | 'disconnected' = 'error') {
+        // 登录失败即放弃"登录后落到文件下载页"的意图，否则下次任意登录都会跳页面
+        pendingRightPanelTab.value = null
         if (settled) {
           sshConnectionState.value = state
           cleanupSshWebSocket()
@@ -2781,7 +2853,7 @@ export const useChatStore = defineStore('chat', () => {
         // "acli: No such file or directory"，只有新 shell 才会重查 PATH——
         // 用户看到的现象就是"必须重连终端"。这里补上缺失的生效动作：让活着的 shell 失效缓存。
         // 环境采集用的是同一个输入通道，抢过来会把采集命令的输出错路由到终端
-        if (showTerminalSidebar.value && sshCommandConsumer.value !== 'collection') {
+        if (isTerminalVisible.value && sshCommandConsumer.value !== 'collection') {
           devLog('acli', '安装已替换 acli 可执行文件，正在对当前终端执行 hash -r 使其立即生效')
           sendSSHCommand('hash -r', 'terminal')
         } else {
@@ -3073,15 +3145,6 @@ export const useChatStore = defineStore('chat', () => {
     sftpListTruncated.value = false
     sftpListLoading.value = false
     sftpTransfer.value = null
-  }
-
-  /** 切换面板可见性；首次打开自动列默认目录（由 bridge 解析成远端 home） */
-  async function toggleSftpPanel(visible?: boolean) {
-    const next = typeof visible === 'boolean' ? visible : !sftpPanelVisible.value
-    sftpPanelVisible.value = next
-    if (next && !sftpEntries.value.length && !sftpListLoading.value) {
-      await sftpList('')
-    }
   }
 
   /** 列远端目录；path 为空表示让 bridge 给出默认目录 */
@@ -4149,6 +4212,8 @@ export const useChatStore = defineStore('chat', () => {
     isRightPanelOpen,
     leftPanelTab,
     collapseLeftPanel,
+    rightPanelTab,
+    isTerminalVisible,
     showTerminalReplay,
     terminalReplayCaseId,
     openTerminalReplay,
@@ -4250,8 +4315,8 @@ export const useChatStore = defineStore('chat', () => {
     forwardBridgeLog,
     importBridgeLogsToCase,
     sendSSHCommand,
-    // SFTP 文件下载（SSH 终端下方）
-    sftpPanelVisible,
+    // 文件下载（右栏独立页签，与 SSH 终端共用面板）
+    openSftpPanel,
     sftpRemoteDir,
     sftpParentDir,
     sftpEntries,
@@ -4260,7 +4325,6 @@ export const useChatStore = defineStore('chat', () => {
     sftpListError,
     sftpListTruncated,
     sftpTransfer,
-    toggleSftpPanel,
     sftpList,
     sftpDownload,
     sftpCancelDownload,

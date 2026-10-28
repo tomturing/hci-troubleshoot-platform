@@ -1,18 +1,23 @@
 <script setup lang="ts">
 /**
  * SftpPanel.vue
- * SSH 终端下方的文件下载面板（对齐 Xshell / MobaXterm 的 SFTP 语义）。
+ * 右栏「文件下载」抽屉（对齐 Xshell / MobaXterm 的 SFTP 语义）。
+ *
+ * 定位：与「SSH 终端」平级的独立页签，不再嵌在终端底部。理由是二者都是
+ * 「对着同一台主机的一次操作」，但查看文件列表时终端输出并不需要同时可见；
+ * 塞在终端下发条里等于把一块独立工作区压成一条 24px 高的折叠条。
  *
  * 关键语义：文件从远端主机**直接**落到 terminal_bridge 所在机器
  * （桌面模式=工程师本机；集群模式=Pod 的持久卷），不经浏览器中转。
  * 因此这里只展示元数据：目录项、进度、落地路径，绝不搬运文件字节。
+ *
+ * 登录门禁在 store 的 openSftpPanel() 里（未登录先弹统一 SSH 登录框），
+ * 本组件只兜底"进来之后会话掉了"的情况，仍然复用同一个登录入口。
  */
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   ArrowUp,
-  CaretBottom,
-  CaretRight,
   CopyDocument,
   Document,
   Download,
@@ -40,19 +45,26 @@ const manualPath = ref('')
 
 const entries = computed<SftpEntry[]>(() => chatStore.sftpEntries)
 const transfer = computed(() => chatStore.sftpTransfer)
-const panelVisible = computed(() => chatStore.sftpPanelVisible)
 const listLoading = computed(() => chatStore.sftpListLoading)
 const listError = computed(() => chatStore.sftpListError)
+
+/** 会话是否在线：文件下载的一切动作都依赖它（bridge 复用同一个 SSH 连接） */
+const connected = computed(() => chatStore.sshConnectionState === 'connected')
+
+/** 页签是否真正可见：隐藏时不该发目录请求，也不该刷新列表 */
+const active = computed(
+  () => chatStore.isRightPanelOpen && chatStore.rightPanelTab === 'sftp',
+)
 
 /** 是否有下载正在进行（done 即终态，允许再次发起） */
 const transferring = computed(() => Boolean(transfer.value) && transfer.value?.phase !== 'done')
 
-// 面板处于展开状态但列表是空的（首次展开 / 重连后已重置）时自动拉一次默认目录。
-// 只监听“展开 + 连接状态”两个信号，不会因列表内容变化而循环请求。
+// 首次进入页签（或重连后目录被清空）自动拉一次默认目录。
+// 只监听「可见 + 连接状态」两个信号，不会因列表内容变化而循环请求。
 watch(
-  () => [panelVisible.value, chatStore.sshConnectionState] as const,
-  ([visible, state]) => {
-    if (visible && state === 'connected' && !chatStore.sftpEntries.length && !chatStore.sftpListLoading) {
+  () => [active.value, connected.value] as const,
+  ([visible, online]) => {
+    if (visible && online && !chatStore.sftpEntries.length && !chatStore.sftpListLoading) {
       void chatStore.sftpList('')
     }
   },
@@ -130,8 +142,12 @@ async function copyText(text: string, hint: string) {
   }
 }
 
-function toggle() {
-  void chatStore.toggleSftpPanel()
+/**
+ * 会话掉线后重新登录：直接复用 store 的登录门禁，
+ * 与「SSH 终端」页签点击登录走的是同一个弹框，不另做一套表单。
+ */
+function requestLogin() {
+  void chatStore.openSftpPanel()
 }
 
 function refresh() {
@@ -198,30 +214,15 @@ function useRemoteDirAsManual() {
 
 <template>
   <div class="sftp-panel">
-    <div class="sftp-header">
-      <button type="button" class="sftp-toggle" @click="toggle">
-        <el-icon>
-          <CaretBottom v-if="panelVisible" />
-          <CaretRight v-else />
-        </el-icon>
-        <span class="sftp-toggle__label">文件下载</span>
-        <span class="sftp-toggle__meta">
-          {{ panelVisible ? (chatStore.sftpRemoteDir || '未加载') : '从远端主机下载到本机' }}
-        </span>
-      </button>
-      <el-button
-        v-if="panelVisible"
-        text
-        size="small"
-        class="sftp-header__action"
-        :loading="listLoading"
-        @click="refresh"
-      >
-        <el-icon><Refresh /></el-icon>
-      </el-button>
+    <!-- 未登录兜底：入口处已用统一登录弹框拦截，这里覆盖"进来之后会话断了" -->
+    <div v-if="!connected" class="sftp-offline">
+      <el-icon class="sftp-offline__icon"><Download /></el-icon>
+      <p class="sftp-offline__title">文件下载需要先登录 SSH</p>
+      <p class="sftp-offline__hint">下载走的是同一条 SSH 会话，不额外认证</p>
+      <el-button type="primary" @click="requestLogin">连接 SSH</el-button>
     </div>
 
-    <div v-show="panelVisible" class="sftp-body">
+    <template v-else>
       <!-- 落地目录：本功能唯一的交付凭据，必须一直可见 -->
       <div class="sftp-landing">
         <span class="sftp-landing__label">保存到本机</span>
@@ -237,202 +238,204 @@ function useRemoteDirAsManual() {
         >
           <el-icon><CopyDocument /></el-icon>
         </el-button>
-      </div>
-
-      <!-- 路径导航 -->
-      <div class="sftp-pathbar">
-        <el-input
-          v-model="pathInput"
-          size="small"
-          class="sftp-pathbar__input"
-          placeholder="远端目录，留空=登录用户 home"
-          @keydown.enter.prevent="goToPath"
-        />
-        <el-button
-          text
-          size="small"
-          :disabled="!chatStore.sftpParentDir"
-          title="上级目录"
-          @click="goParent"
-        >
-          <el-icon><ArrowUp /></el-icon>
-        </el-button>
-        <el-button text size="small" @click="goToPath">转到</el-button>
-      </div>
-
-      <!-- 手动路径下载：SFTP 子系统不可用时，这是唯一入口 -->
-      <div class="sftp-manual">
-        <el-input
-          v-model="manualPath"
-          size="small"
-          class="sftp-manual__input"
-          placeholder="或直接输入文件绝对路径，如 /var/log/messages"
-          @keydown.enter.prevent="downloadManual"
-          @focus="useRemoteDirAsManual"
-        />
-        <el-button type="primary" size="small" :disabled="transferring" @click="downloadManual">
-          下载
+        <el-button text size="small" :loading="listLoading" title="刷新当前目录" @click="refresh">
+          <el-icon><Refresh /></el-icon>
         </el-button>
       </div>
 
-      <p v-if="listError" class="sftp-error">{{ listError }}</p>
-
-      <!-- 传输状态：进度条 + 落地路径 + 取消 -->
-      <div v-if="transfer" class="sftp-transfer" :class="{ 'is-error': transferFailed }">
-        <div class="sftp-transfer__head">
-          <span class="sftp-transfer__status">{{ transferStatusText }}</span>
-          <el-tag v-if="transfer.transport" size="small" effect="plain" type="info">
-            {{ transfer.transport === 'sftp' ? 'SFTP' : 'tail 回退' }}
-          </el-tag>
-          <el-button
-            v-if="transferring"
-            text
+      <div class="sftp-body">
+        <!-- 路径导航 -->
+        <div class="sftp-pathbar">
+          <el-input
+            v-model="pathInput"
             size="small"
-            class="sftp-transfer__cancel"
-            @click="cancelDownload"
-          >
-            取消
-          </el-button>
-        </div>
-        <el-progress
-          :percentage="transfer.percent"
-          :stroke-width="6"
-          :show-text="false"
-          :status="transferFailed ? 'exception' : transfer.status === 'ok' ? 'success' : undefined"
-        />
-        <div class="sftp-transfer__numbers">
-          <span>{{ formatSize(transfer.bytes) }} / {{ formatSize(transfer.totalBytes) }}</span>
-          <span v-if="transfer.sha256" class="sftp-transfer__sha" :title="transfer.sha256">
-            sha256 {{ transfer.sha256.slice(0, 12) }}…
-          </span>
-        </div>
-        <div v-if="transfer.localPath" class="sftp-transfer__local">
-          <span class="sftp-transfer__local-label">落地文件</span>
-          <span class="sftp-transfer__local-path" :title="transfer.localPath">
-            {{ transfer.localPath }}
-          </span>
+            class="sftp-pathbar__input"
+            placeholder="远端目录，留空=登录用户 home"
+            @keydown.enter.prevent="goToPath"
+          />
           <el-button
             text
             size="small"
-            title="复制落地文件路径"
-            @click="copyText(transfer.localPath, '文件路径已复制')"
+            :disabled="!chatStore.sftpParentDir"
+            title="上级目录"
+            @click="goParent"
           >
-            <el-icon><CopyDocument /></el-icon>
+            <el-icon><ArrowUp /></el-icon>
+          </el-button>
+          <el-button text size="small" @click="goToPath">转到</el-button>
+        </div>
+
+        <!-- 手动路径下载：SFTP 子系统不可用时，这是唯一入口 -->
+        <div class="sftp-manual">
+          <el-input
+            v-model="manualPath"
+            size="small"
+            class="sftp-manual__input"
+            placeholder="或直接输入文件绝对路径，如 /var/log/messages"
+            @keydown.enter.prevent="downloadManual"
+            @focus="useRemoteDirAsManual"
+          />
+          <el-button type="primary" size="small" :disabled="transferring" @click="downloadManual">
+            下载
           </el-button>
         </div>
-      </div>
 
-      <!-- 目录列表 -->
-      <div class="sftp-list">
-        <div v-if="listLoading && !entries.length" class="sftp-list__empty">正在读取目录…</div>
-        <div v-else-if="!entries.length" class="sftp-list__empty">
-          {{ listError ? '目录未加载' : '目录为空，或请输入绝对路径' }}
-        </div>
-        <div
-          v-for="entry in entries"
-          :key="entry.path"
-          class="sftp-row"
-          :class="{ 'is-dir': entry.is_dir }"
-        >
-          <el-tooltip :content="entryTooltip(entry)" placement="top" :show-after="400">
-            <button
-              type="button"
-              class="sftp-row__name"
-              @click="entry.is_dir ? openDir(entry) : downloadEntry(entry)"
+        <p v-if="listError" class="sftp-error">{{ listError }}</p>
+
+        <!-- 传输状态：进度条 + 落地路径 + 取消 -->
+        <div v-if="transfer" class="sftp-transfer" :class="{ 'is-error': transferFailed }">
+          <div class="sftp-transfer__head">
+            <span class="sftp-transfer__status">{{ transferStatusText }}</span>
+            <el-tag v-if="transfer.transport" size="small" effect="plain" type="info">
+              {{ transfer.transport === 'sftp' ? 'SFTP' : 'tail 回退' }}
+            </el-tag>
+            <el-button
+              v-if="transferring"
+              text
+              size="small"
+              class="sftp-transfer__cancel"
+              @click="cancelDownload"
             >
-              <el-icon class="sftp-row__icon">
-                <Folder v-if="entry.is_dir" />
-                <Document v-else />
-              </el-icon>
-              <span class="sftp-row__text">{{ entry.name }}</span>
-            </button>
-          </el-tooltip>
-          <span class="sftp-row__size">{{ entry.is_dir ? '' : formatSize(entry.size) }}</span>
-          <el-button
-            v-if="!entry.is_dir"
-            text
-            size="small"
-            class="sftp-row__download"
-            :disabled="transferring"
-            title="下载到本机"
-            @click="downloadEntry(entry)"
-          >
-            <el-icon><Download /></el-icon>
-          </el-button>
+              取消
+            </el-button>
+          </div>
+          <el-progress
+            :percentage="transfer.percent"
+            :stroke-width="6"
+            :show-text="false"
+            :status="transferFailed ? 'exception' : transfer.status === 'ok' ? 'success' : undefined"
+          />
+          <div class="sftp-transfer__numbers">
+            <span>{{ formatSize(transfer.bytes) }} / {{ formatSize(transfer.totalBytes) }}</span>
+            <span v-if="transfer.sha256" class="sftp-transfer__sha" :title="transfer.sha256">
+              sha256 {{ transfer.sha256.slice(0, 12) }}…
+            </span>
+          </div>
+          <div v-if="transfer.localPath" class="sftp-transfer__local">
+            <span class="sftp-transfer__local-label">落地文件</span>
+            <span class="sftp-transfer__local-path" :title="transfer.localPath">
+              {{ transfer.localPath }}
+            </span>
+            <el-button
+              text
+              size="small"
+              title="复制落地文件路径"
+              @click="copyText(transfer.localPath, '文件路径已复制')"
+            >
+              <el-icon><CopyDocument /></el-icon>
+            </el-button>
+          </div>
         </div>
-        <p v-if="chatStore.sftpListTruncated" class="sftp-list__truncated">
-          目录项过多，仅显示前 2000 项；建议直接输入目标文件路径下载
-        </p>
+
+        <!-- 目录列表 -->
+        <div class="sftp-list">
+          <div v-if="listLoading && !entries.length" class="sftp-list__empty">正在读取目录…</div>
+          <div v-else-if="!entries.length" class="sftp-list__empty">
+            {{ listError ? '目录未加载' : '目录为空，或请输入绝对路径' }}
+          </div>
+          <div
+            v-for="entry in entries"
+            :key="entry.path"
+            class="sftp-row"
+            :class="{ 'is-dir': entry.is_dir }"
+          >
+            <el-tooltip :content="entryTooltip(entry)" placement="top" :show-after="400">
+              <button
+                type="button"
+                class="sftp-row__name"
+                @click="entry.is_dir ? openDir(entry) : downloadEntry(entry)"
+              >
+                <el-icon class="sftp-row__icon">
+                  <Folder v-if="entry.is_dir" />
+                  <Document v-else />
+                </el-icon>
+                <span class="sftp-row__text">{{ entry.name }}</span>
+              </button>
+            </el-tooltip>
+            <span class="sftp-row__size">{{ entry.is_dir ? '' : formatSize(entry.size) }}</span>
+            <el-button
+              v-if="!entry.is_dir"
+              text
+              size="small"
+              class="sftp-row__download"
+              :disabled="transferring"
+              title="下载到本机"
+              @click="downloadEntry(entry)"
+            >
+              <el-icon><Download /></el-icon>
+            </el-button>
+          </div>
+          <p v-if="chatStore.sftpListTruncated" class="sftp-list__truncated">
+            目录项过多，仅显示前 2000 项；建议直接输入目标文件路径下载
+          </p>
+        </div>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
+/*
+ * 面板占满整个右栏主体（原来是终端下方的可折叠条）。
+ * 深色是右栏的身份色，与 SSH 终端保持一致，不随页签切换而闪烁。
+ */
 .sftp-panel {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   background: #2d2d2d;
-  border-top: 1px solid #333;
   color: #cfcfcf;
   font-size: 12px;
-  /* 面板高度可增长，但绝不把终端挤到不可用：上限交给下方 sftp-body 的 max-height */
-  flex-shrink: 0;
 }
 
-.sftp-header {
+.sftp-offline {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  text-align: center;
+}
+
+.sftp-offline__icon {
+  font-size: 32px;
+  color: #6b6b6b;
+}
+
+.sftp-offline__title {
+  margin: 0;
+  font-size: 14px;
+  color: #e0e0e0;
+}
+
+.sftp-offline__hint {
+  margin: 0 0 4px;
+  color: #8a8a8a;
+}
+
+.sftp-landing {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
-}
-
-.sftp-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  padding: 4px 2px;
-  background: transparent;
-  border: none;
-  color: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.sftp-toggle:hover {
-  color: #9cdcfe;
-}
-
-.sftp-toggle__label {
-  font-weight: 600;
-  color: #9cdcfe;
+  padding: 8px 10px;
+  border-bottom: 1px solid #333;
   flex-shrink: 0;
 }
 
-.sftp-toggle__meta {
-  color: #8a8a8a;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sftp-header__action {
-  color: #9cdcfe;
-  padding: 0 4px;
-}
-
 .sftp-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 0 8px 8px;
-  /* 抽屉高度有限：列表自己滚动，不参与外层 flex 抢高度 */
-  max-height: 46vh;
+  padding: 8px 10px 10px;
+  /* 目录列表可能与视口等高：自己滚动，不参与外层 flex 抢高度 */
   overflow-y: auto;
 }
 
-.sftp-landing,
 .sftp-pathbar,
 .sftp-manual {
   display: flex;

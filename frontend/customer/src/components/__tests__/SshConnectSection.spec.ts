@@ -26,6 +26,8 @@ const { mockStore } = vi.hoisted(() => ({
     connectSSH: vi.fn(),
     setLastSshHost: vi.fn(),
     openTerminalSidebar: vi.fn(),
+    /** 右栏页签：成功文案要跟随它（终端 / 文件下载是两个不同的目的地） */
+    rightPanelTab: 'terminal' as 'terminal' | 'sftp',
   },
 }))
 
@@ -99,6 +101,7 @@ describe('SshConnectSection', () => {
     mockStore.connectSSH.mockReset()
     mockStore.setLastSshHost.mockReset()
     mockStore.openTerminalSidebar.mockReset()
+    mockStore.rightPanelTab = 'terminal'
   })
 
   it('bridge 未运行 → 显示引导，不渲染表单', async () => {
@@ -195,6 +198,25 @@ describe('SshConnectSection', () => {
     expect(ok).toBe(false)
     expect(wrapper.emitted('connected')).toBeUndefined()
     expect(wrapper.text()).toContain('密码错误')
+    wrapper.unmount()
+  })
+
+  it('成功态只渲染一个状态图标（绿勾），文案随右栏页签变化', async () => {
+    mockStore.connectSSH.mockResolvedValue(undefined)
+    mockStore.rightPanelTab = 'sftp'
+    const wrapper = await mountSection({ mode: 'dialog' })
+    await flushPromises()
+
+    const connectBtn = wrapper.findAll('button').find((b) => b.text().includes('连接'))!
+    await connectBtn.trigger('click')
+    await flushPromises()
+
+    // 文件下载页签：不能谎称"终端已打开"
+    expect(wrapper.text()).toContain('SSH 连接成功，文件下载已打开')
+    // 成功态只允许一个状态图标（历史上绿勾 + 文字前灰勾同时出现）；
+    // el-icon 的 stub 渲染成 <span>，因此 <span> 的数量就是图标数量
+    const html = wrapper.find('.success-section').html()
+    expect((html.match(/<span/g) || []).length).toBe(1)
     wrapper.unmount()
   })
 

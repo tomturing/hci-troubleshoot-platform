@@ -19,7 +19,6 @@ import 'xterm/css/xterm.css'
 
 import { useChatStore } from '@/stores/chat'
 import { checkBridgeBeforeOpen } from '@/api/terminal'
-import SftpPanel from '@/components/SftpPanel.vue'
 import {
   createRecordingState,
   startRecording,
@@ -184,6 +183,23 @@ watch(isConnected, async (connected) => {
     })
   })
 })
+
+/**
+ * 页签切回终端时重新 fit。
+ *
+ * 切到「文件下载」页签后终端被 v-show 隐藏，容器尺寸变成 0；
+ * 再切回来时必须重新计算行列，否则列数会停留在隐藏前的值（表现为换行错位）。
+ */
+watch(
+  () => chatStore.isRightPanelOpen && chatStore.rightPanelTab === 'terminal',
+  async (visible) => {
+    if (!visible || !isConnected.value) return
+    await nextTick()
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => fitTerminal())
+    })
+  },
+)
 
 function initTerminal() {
   if (!terminalContainer.value || xterm) return
@@ -541,10 +557,9 @@ onBeforeUnmount(() => {
     </div>
 
     <!--
-      状态C：终端下方的文件下载面板（Xshell / MobaXterm 语义）。
-      只在已连接时渲染：未连接时面板发不出 sftp_op，展示出来只会徒增困惑。
+      文件下载已从终端底部拆出，成为右栏与「SSH 终端」平级的独立页签
+      （见 App.vue 的右栏 rail 与 SftpPanel.vue）。终端这里不再嵌 SFTP 面板。
     -->
-    <SftpPanel v-if="terminalState === 'C'" />
 
     <!--
       底部操作区：与日志收集、会话输入同构（hint 行 + 36px 控件行 + 按钮组），

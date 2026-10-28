@@ -169,21 +169,9 @@ describe('TerminalPanel「上条命令」', () => {
       sshTerminalOutputEvent: '',
       sshTerminalNotice: null,
       sshCommandConsumer: 'terminal',
-      // SFTP 面板：已连接时 TerminalPanel 会渲染 SftpPanel，store mock 需覆盖其依赖状态
-      // （默认收起：本用例集不关心文件下载，不展开就不发任何 sftp_op 请求）
-      sftpPanelVisible: false,
-      sftpRemoteDir: '',
-      sftpParentDir: '',
-      sftpEntries: [],
-      sftpDownloadDir: '',
-      sftpListLoading: false,
-      sftpListError: '',
-      sftpListTruncated: false,
-      sftpTransfer: null,
-      toggleSftpPanel: vi.fn(),
-      sftpList: vi.fn(),
-      sftpDownload: vi.fn(),
-      sftpCancelDownload: vi.fn(),
+      // 右栏页签：文件下载已从终端底部拆为独立页签，终端本组件不再依赖 sftp 状态
+      isRightPanelOpen: true,
+      rightPanelTab: 'terminal',
     })
   })
 

@@ -16,7 +16,7 @@
  */
 import { ref, reactive, computed, watch, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, CircleCheckFilled, Download, Loading, Refresh } from '@element-plus/icons-vue'
+import { CircleCheckFilled, Download, Loading, Refresh } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { checkBridgeBeforeOpen, type TerminalAuthType } from '@/api/terminal'
 import SshFormSection from './SshFormSection.vue'
@@ -277,6 +277,16 @@ onBeforeUnmount(() => {
 })
 
 const isDialog = computed(() => props.mode === 'dialog')
+
+/**
+ * 成功文案：右栏现在有两个页签，摘要必须说清"打开的是哪一块"。
+ * 页签由 store 决定（登录成功后 openTerminalSidebar 已把挂起意图落位），
+ * 因此这里读 store 而不是自己猜。
+ */
+const successText = computed(() => {
+  if (!props.openTerminal) return 'SSH 连接成功'
+  return chatStore.rightPanelTab === 'sftp' ? 'SSH 连接成功，文件下载已打开' : 'SSH 连接成功，终端已打开'
+})
 </script>
 
 <template>
@@ -354,12 +364,15 @@ const isDialog = computed(() => props.mode === 'dialog')
       </div>
     </div>
 
-    <!-- ===== 成功（dialog 自动收起前）===== -->
+    <!--
+      ===== 成功（dialog 自动收起前）=====
+      成功态只允许一个图标：这里保留带语义色（绿）与固定尺寸的实心勾，
+      删掉文字里那个默认灰的同义勾——两个勾描述同一件事，视觉上只会让人
+      怀疑「是不是还有一步没完成」。
+    -->
     <div v-else-if="viewState === 'success'" class="success-section">
-      <el-icon color="#67c23a" :size="24"><CircleCheckFilled /></el-icon>
-      <p class="ssh-success-text">
-        <el-icon><CircleCheck /></el-icon>{{ openTerminal ? 'SSH 连接成功，终端已打开' : 'SSH 连接成功' }}
-      </p>
+      <el-icon class="ssh-success-icon" color="#67c23a" :size="28"><CircleCheckFilled /></el-icon>
+      <p class="ssh-success-text">{{ successText }}</p>
     </div>
   </div>
 </template>
@@ -456,9 +469,14 @@ const isDialog = computed(() => props.mode === 'dialog')
   gap: 8px;
   margin-top: 16px;
 }
+.ssh-success-icon {
+  display: block;
+  margin: 0 auto;
+}
+
 .ssh-success-text {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  margin-top: 10px;
+  font-size: 14px;
+  color: #303133;
 }
 </style>
