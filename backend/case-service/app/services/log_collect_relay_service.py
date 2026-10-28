@@ -169,7 +169,11 @@ class LogCollectRelayService:
         try:
             await self._run(task_id)
         except Exception as exc:  # noqa: BLE001 - 任何异常都必须落到 failed，不能静默
-            await self._finish(task_id, "failed", error=str(exc))
+            # 错误码必须保留异常自己的分类：SangforRelayError 带有明确 code
+            # （如 LC-TRANSFER-001 平台尚无制品），统一改写成 LC-TRANSFER-003
+            # 会让前端只见"归档失败"、排障者无从定位是"没制品"还是"传输失败"。
+            code = getattr(exc, "code", None) or "LC-TRANSFER-003"
+            await self._finish(task_id, "failed", error=str(exc), error_code=code)
             raise
 
     async def _run(self, task_id: UUID) -> None:
@@ -299,7 +303,14 @@ class LogCollectRelayService:
             )
             await session.commit()
 
-    async def _finish(self, task_id: UUID, status: str, *, error: str | None = None) -> None:
+    async def _finish(
+        self,
+        task_id: UUID,
+        status: str,
+        *,
+        error: str | None = None,
+        error_code: str = "LC-TRANSFER-003",
+    ) -> None:
         payload: dict[str, Any] = {"relay_status": status, "relay_updated_at": func.now()}
         # 交付状态必须随代传终态一起收敛：它是"产物是否真到了日志服务器"的唯一权威字段。
         # 只写 relay_status 的话，delivery_status 会永远停在 begin_delivery 写的 queued，
@@ -312,7 +323,7 @@ class LogCollectRelayService:
             payload["delivery_status"] = "failed"
             payload["delivery_error"] = (error or "归档到日志服务器失败")[:2000]
         if error:
-            payload["error_code"] = "LC-TRANSFER-003"
+            payload["error_code"] = error_code
             payload["error_message"] = error[:2000]
         async with self.session_factory() as session:
             await session.execute(

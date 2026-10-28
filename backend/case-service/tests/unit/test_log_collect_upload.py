@@ -277,7 +277,9 @@ async def test_complete_updates_task_and_cleans_parts(service, repo, storage):
     assert result["object_key"] == f"{task.case_id}/{task.task_id}.zip"
     assert task.archive_sha256 == result["sha256"]
     assert task.archive_size == len(payload)
-    assert repo.flush.await_count == 1
+    # 本服务只在两个点提交：合并前清事务、落库后放行。本层不再 flush。
+    assert repo.flush.await_count == 0
+    assert repo.commit.await_count == 2
     # 临时分片已清理
     assert storage.existing_parts(str(task.task_id)) == []
 
@@ -313,7 +315,10 @@ async def test_complete_commits_before_merging(service, repo, storage, monkeypat
     await service.complete(task, parts=None, declared_sha256=None, declared_size=None)
 
     assert observed == [1], "合并发生时事务必须已经提交（否则会被 30s 空闲超时杀掉）"
-    assert repo.commit.await_count == 1
+    # 两次提交：合并前清事务 + 落库后放行。第二次必须发生在 trigger 代传之前，
+    # 否则 trigger（另一个 session 的 UPDATE）会与本事务的行锁互等成死锁
+    # （Q2026101500828：commit 报 InternalClientError 与"平台尚无制品"相隔 16ms）。
+    assert repo.commit.await_count == 2
 
 
 async def test_complete_retry_reuses_merged_object(service, repo, storage):
@@ -333,11 +338,21 @@ async def test_complete_retry_reuses_merged_object(service, repo, storage):
             claimed_sha256=None,
         )
 
-    # 第一次：合并成功，随后落库失败（模拟连接已被 PG 杀掉）
-    repo.flush.side_effect = RuntimeError("connection is closed")
+    # 第一次：合并成功，随后落库 commit 失败（模拟连接已被 PG 杀掉）。
+    # commit 有两个调用点（合并前/落库后），只让**第二次**抛错——
+    # 如果第一次就抛，merge 根本不会执行，测不到"成品已落盘但元数据丢失"。
+    commit_calls = {"n": 0}
+
+    async def failing_commit():
+        commit_calls["n"] += 1
+        if commit_calls["n"] == 2:
+            raise RuntimeError("connection is closed")
+
+    repo.commit.side_effect = failing_commit
     with pytest.raises(RuntimeError):
         await service.complete(task, parts=None, declared_sha256=None, declared_size=None)
-    repo.flush.side_effect = None
+    assert commit_calls["n"] == 2, "失败必须发生在落库提交，而不是合并前的清事务"
+    repo.commit.side_effect = None
 
     target = storage.object_path(task.case_id, str(task.task_id))
     assert target.is_file(), "合并成品应已落盘（这正是现场的真实状态）"

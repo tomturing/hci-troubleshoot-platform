@@ -342,7 +342,14 @@ class LogCollectUploadService:
         task.object_key = object_key
         task.object_size = size
         task.object_sha256 = digest
-        await self.repository.flush()
+        # 这里必须 commit 而不能只 flush：路由在 complete 返回后会立刻
+        # relay_service.trigger() —— 那是**另一个 session** 对同一行的 UPDATE。
+        # 本事务若仍持有行锁，trigger 会与它互等形成死锁，30s 后被
+        # idle_in_transaction_session_timeout 强杀：本事务回滚（archive_* 全丢），
+        # trigger 却拿到了锁并启动代传 → relay 读到空 archive_path，
+        # 以"平台尚无制品"失败。现场 Q2026101500828 正是这条路径
+        # （commit 抛 InternalClientError 与"平台尚无制品"相隔 16ms）。
+        await self.repository.commit()
         await self.repository.refresh(task)
 
         await self.storage.delete_multipart(upload_id)

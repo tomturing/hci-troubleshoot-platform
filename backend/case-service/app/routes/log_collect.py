@@ -613,6 +613,10 @@ async def complete_upload_direct(
 
     # 合并成功即启动代传：trigger 内部幂等（只有把 relay_status 从非 running 改成
     # running 的调用者才真正执行），因此重复 complete 不会重复代传。
+    # 前置条件：complete 内部必须已把 archive_* **提交**（不能只 flush）——
+    # trigger 是另一个 session 对同一行的 UPDATE，本事务若仍持行锁，
+    # 两者互等成死锁，30s 后被 idle_in_transaction_session_timeout 强杀，
+    # 表现为"元数据回滚 + relay 读到空 archive_path"（Q2026101500828）。
     started = await relay_service.trigger(task_id)
     if started:
         background = asyncio.create_task(relay_service.run(task_id))
