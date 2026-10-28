@@ -51,6 +51,9 @@ def repo():
     repo = MagicMock()
     repo.flush = AsyncMock()
     repo.refresh = AsyncMock()
+    # complete 在合并前与落库后会各显式 commit 一次（否则连接以
+    # idle-in-transaction 超过 30 秒被 PostgreSQL 杀掉、或与代传 trigger
+    # 死锁）。这里显式给出可 await 的 commit，避免依赖 MagicMock 的隐式异步协议。
     repo.commit = AsyncMock()
     return repo
 
@@ -285,7 +288,7 @@ async def test_complete_updates_task_and_cleans_parts(service, repo, storage):
 
 
 async def test_complete_commits_before_merging(service, repo, storage, monkeypatch):
-    """合并前必须先把读事务提交掉。
+    """合并（分钟级纯文件 I/O）之前必须已经提交只读事务。
 
     现场 Q2026102800720：complete 在同一个事务里合并 3.6 GiB（~50s），
     连接级 idle_in_transaction_session_timeout=30s 把连接 terminate 了，
@@ -294,6 +297,7 @@ async def test_complete_commits_before_merging(service, repo, storage, monkeypat
     """
     task, total, _sha = make_task()
     await service.init(task, total_size=total, expected_sha256=None)
+
     payload = b"12345678" + b"9abcdefg" + b"hijk"
     for index, start in enumerate((0, CHUNK, 2 * CHUNK), start=1):
         await service.record_part(
@@ -303,6 +307,7 @@ async def test_complete_commits_before_merging(service, repo, storage, monkeypat
             claimed_sha256=None,
         )
 
+<<<<<<< HEAD
     observed: list[int] = []
     original_merge = storage.merge
 

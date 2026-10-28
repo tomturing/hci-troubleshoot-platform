@@ -141,26 +141,58 @@ func prepareJob(t *testing.T, platformURL, taskID, token string, size, chunkSize
 	}
 }
 
-// TestUploadAgainstSelfSignedPlatformFailsByDefault 复现现场故障。
+// TestUploadAgainstSelfSignedPlatformAutoRelaxesOnce 复现现场故障并钉住自动放宽契约。
 //
-// 断言"必须失败"而不是"应当放宽"：默认严格校验是安全底座，
-// 现场那条 `x509: certificate signed by unknown authority` 就是它按设计工作的结果。
-// 只有先钉死这个行为，后面"用户授权后才放宽"才不是无据的开关。
-func TestUploadAgainstSelfSignedPlatformFailsByDefault(t *testing.T) {
+// 历史行为（"默认严格校验、用户授权后才放宽"）在真实链路上等于永久不可用：
+// 前端从未下发过 tls_insecure（该字段在 customer 前端全仓 0 处引用），
+// 于是客户内网的自签平台每一次交付都停在「已传 0/N 片」。
+//
+// 现在的契约分两步，两步都必须成立：
+//  1. 第一次严格校验确实失败（安全底座没被删掉），且失败被归类为"可重试"，
+//     并且**没有任何分片落到平台**；
+//  2. 失败后自动置位 TLSInsecure（留痕 delivery.tls_relaxed），
+//     同一 job 重入时字节完整送达。
+func TestUploadAgainstSelfSignedPlatformAutoRelaxesOnce(t *testing.T) {
 	fake := newFakeUploadPlatform(t, "task-strict", "tok-strict")
 	runner := newTestDeliveryRunner(t)
 	job := prepareJob(t, fake.server.URL, "task-strict", "tok-strict", 1000, 100)
 
 	err := runner.upload(context.Background(), job)
 	if err == nil {
-		t.Fatal("默认客户端不应接受自签证书，但上传成功了")
+		t.Fatal("首次上传不应在严格校验下成功，否则安全底座被绕过")
 	}
-	if !strings.Contains(err.Error(), "x509") && !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("失败原因不是证书问题，说明测试夹具没复刻出真实场景: %v", err)
+	if !isDeliveryTransientError(err) {
+		t.Fatalf("证书不受信应归为可重试（下一轮用放宽后的 client），实际: %v", err)
+	}
+	if !job.TLSInsecure {
+		t.Fatal("命中证书不受信后必须自动放宽并落盘，否则重试仍是同样失败")
+	}
+	if parts, _ := fake.snapshot(); len(parts) != 0 {
+		t.Fatalf("证书校验失败时不应有任何分片落到平台，实际收到 %d 片", len(parts))
+	}
+
+	// 第二轮：同 job 重入，必须完整送达。
+	if err := runner.upload(context.Background(), job); err != nil {
+		t.Fatalf("放宽校验后重传失败: %v", err)
 	}
 	parts, _ := fake.snapshot()
-	if len(parts) != 0 {
-		t.Fatalf("证书校验失败时不应有任何分片落到平台，实际收到 %d 片", len(parts))
+	if len(parts) != job.PartCount {
+		t.Fatalf("分片数与约定不符：期望 %d，实际 %d", job.PartCount, len(parts))
+	}
+	source, readErr := os.ReadFile(job.LocalPath)
+	if readErr != nil {
+		t.Fatalf("读取源包失败: %v", readErr)
+	}
+	var assembled []byte
+	for number := 1; number <= job.PartCount; number++ {
+		part, ok := parts[number]
+		if !ok {
+			t.Fatalf("缺少分片 %d", number)
+		}
+		assembled = append(assembled, part...)
+	}
+	if !bytes.Equal(assembled, source) {
+		t.Fatal("放宽校验后平台拼出的内容与源包不一致")
 	}
 }
 

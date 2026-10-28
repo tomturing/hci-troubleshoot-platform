@@ -211,6 +211,12 @@ func (b *Bridge) reapIdleSessions(ttl time.Duration) int {
 		if b.sessionRefs[key] > 0 {
 			continue
 		}
+		// 有长任务在跑时不得回收：浏览器早已关闭（refs=0）恰恰是大包交付的常态，
+		// 而回收一条正在拉取的连接等价于把作业打断到 needs_reauth。
+		// 长任务自己结束时会清掉计数，下一轮 reaper 自然回收。
+		if session := b.sessions[key]; session != nil && session.hasLongTask() {
+			continue
+		}
 		if now.Sub(idleAt) >= ttl {
 			victims = append(victims, key)
 		}

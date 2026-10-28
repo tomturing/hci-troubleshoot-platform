@@ -72,6 +72,12 @@ const (
 	// sshKeepAliveIntervalDefault 是应用层探测间隔（秒）。
 	// 可用 HCI_BRIDGE_SSH_KEEPALIVE_SECONDS 覆盖，<=0 表示关闭应用层探测。
 	sshKeepAliveIntervalDefault = 30
+	// shellHeartbeatInterval 是长任务期间向交互式 shell 注入保活输入的间隔。
+	//
+	// 必须显著小于 HCI 的 TMOUT=600：留出抖动余量，同时不能太频繁
+	// （每次注入都是一次 stdin 写，密集到秒级会干扰用户正在输入的命令）。
+	// 取 120s 表示"即使连续丢两次心跳，第 6 分钟仍会补上"。
+	shellHeartbeatInterval = 120 * time.Second
 )
 
 // portBindRetryAttempts 端口被短暂占用（如崩溃重启后的 TIME_WAIT）时的 bind 重试次数；
@@ -649,6 +655,49 @@ type SSHSession struct {
 	// 但走独立 channel，互不阻塞。由 sftpMu 保护，close() 时一并回收。
 	sftpMu sync.Mutex
 	sftp   sftpRemote
+	// longTasks 统计占用独立 exec 通道的长任务（交付拉取等）。
+	//
+	// 为什么必须单独计数：HCI 的交互式 shell 受 TMOUT=600 约束，10 分钟无输入
+	// 就退出；而交付拉取 12.8 GiB 需要 20 分钟以上。shell 退出只是**一个 channel**
+	// 结束，SSH 连接与 exec 通道其实都还活着——历史实现把它当成整条连接失效并
+	// destroySession，于是 24 次交付中断全部停在 duration_seconds=600 上。
+	longTasks atomic.Int32
+}
+
+// beginLongTask / endLongTask 成对包裹一个长任务，保护会话不被 shell 退出连坐。
+func (s *SSHSession) beginLongTask() { s.longTasks.Add(1) }
+
+func (s *SSHSession) endLongTask() { s.longTasks.Add(-1) }
+
+func (s *SSHSession) hasLongTask() bool { return s.longTasks.Load() > 0 }
+
+// startShellHeartbeat 周期向交互式 shell 注入一个无副作用的 NUL 字节，重置 TMOUT。
+//
+// 硬约束：不得 unset TMOUT（客户安全策略，清除会触发审计），也不得改用
+// `echo` 之类会污染终端回显的心跳——NUL（Ctrl-@）在 bash 里是 set-mark，
+// 不产生输出、不改变命令历史，仅用于证明"有人在敲键盘"。
+// 返回的 stop 必须由调用方 defer，避免拉取结束后仍持续注入。
+func (s *SSHSession) startShellHeartbeat(caseID string) func() {
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(shellHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-s.done:
+				return
+			case <-ticker.C:
+				s.sendSilent("\x00")
+			}
+		}
+	}()
+	blog("INFO", "delivery.shell_heartbeat", "拉取期间向交互式 shell 注入保活输入，避免 TMOUT 退出", "", caseID, "", "", map[string]any{
+		"interval_seconds": int(shellHeartbeatInterval.Seconds()),
+	})
+	return func() { once.Do(func() { close(done) }) }
 }
 
 func isSimulationLeaseCredential(msg InMessage) bool {
@@ -897,6 +946,18 @@ func (s *SSHSession) send(data string) {
 		if _, err := io.WriteString(s.stdin, data); err != nil {
 			log.Printf("[Bridge] SSH 输入写入失败: case=%s err=%v", s.caseID, err)
 		}
+	}
+}
+
+// sendSilent 与 send 相同，但不写日志。
+//
+// 用于后台心跳：shell 可能已经 TMOUT 退出（此时 stdin 已关闭），
+// 而心跳的正常使命就是"在 shell 还活着时别让它退出"，失败不是异常。
+func (s *SSHSession) sendSilent(data string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.stdin != nil {
+		_, _ = io.WriteString(s.stdin, data)
 	}
 }
 
@@ -1912,6 +1973,21 @@ func (s *SSHSession) on_output_start(
 			"exit_error":       exitErr,
 			"duration_seconds": int64(s.ageSeconds()),
 		})
+
+		// 主交互 shell 退出（HCI TMOUT=600）不等于整条 SSH 连接失效：
+		// 交付拉取走的是独立 exec 通道，连接与通道都还能用。
+		// 此时若照常 destroySession，正在跑的 12.8 GiB 拉取会被瞬间腰斩，
+		// 且作业只能停在 needs_reauth（现场 24 次交付中断全部如此）。
+		// 因此只要还有长任务占用 exec 通道，就只摘掉 shell，保留连接。
+		if reason == sessionReasonRemoteEOF && s.hasLongTask() {
+			blog("WARN", "session.shell_eof_detached", "交互式 shell 已退出，连接保留给进行中的长任务", "", caseID, "", "", map[string]any{
+				"duration_seconds": int64(s.ageSeconds()),
+				"long_tasks":       s.longTasks.Load(),
+			})
+			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
+			return
+		}
+
 		sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
 		onExit(reason)
 	}()

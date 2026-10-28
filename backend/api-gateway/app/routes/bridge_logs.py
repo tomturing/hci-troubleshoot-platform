@@ -9,6 +9,8 @@ api-gateway 代理路由：/api/bridge-logs -> conversation-service
   - 下游 conversation-service 据此做工单/会话归属校验（防 IDOR）。
 """
 
+import gzip
+import json
 import logging
 
 import httpx
@@ -33,6 +35,35 @@ def _signed_outbound_headers(passthrough: dict, client_id: str | None) -> dict:
     if client_id:
         merged.update(sign_client_identity(client_id, settings.INTERNAL_API_TOKEN))
     return merged
+
+
+async def _read_json_body(request: Request) -> dict:
+    """读取 JSON 请求体，并按 Content-Encoding 解压。
+
+    为什么必须在这里解压：terminal_bridge 的日志上报固定带
+    ``Content-Encoding: gzip``（弱网下 100 条一批压缩后通常 < 20KB），
+    而这里原先直接 ``await request.json()``——starlette 不会因为
+    Content-Encoding 自动解压，于是 JSON 解析必然失败，网关回 500，
+    桥侧表现为「日志直传失败 … 平台返回 HTTP 500」并一路退避到 32 秒
+    （2026-10-28：6 小时内 132 次请求 0 次成功、2169 条失败记录）。
+
+    解法只能在服务端：客户机上的 bridge 是独立二进制，平台发版不会更新它，
+    「让客户端别压缩」这个方向对存量桥永远无效。
+    """
+    raw = await request.body()
+    encoding = (request.headers.get("content-encoding") or "").strip().lower()
+    if encoding in {"gzip", "x-gzip"}:
+        try:
+            raw = gzip.decompress(raw)
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail="gzip 请求体解压失败") from exc
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="请求体不是合法 JSON") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="请求体必须是 JSON 对象")
+    return payload
 
 
 @router.post("")
@@ -154,7 +185,7 @@ async def proxy_bridge_logs_direct(request: Request):
         （HMAC + 过期 + 绑定工单/实例），网关只透传、不解析、不签发；
       - 因此这里**绝不能**注入或信任任何 `X-Client-ID` 头：客户端自报身份一律剥离。
     """
-    payload = await request.json()
+    payload = await _read_json_body(request)
     headers: dict[str, str] = {}
     if token := request.headers.get("X-Bridge-Upload-Token"):
         headers["X-Bridge-Upload-Token"] = token

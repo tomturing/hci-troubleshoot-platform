@@ -70,17 +70,5 @@ class LogCollectTaskRepository:
     async def flush(self) -> None:
         await self.session.flush()
 
-    async def commit(self) -> None:
-        """结束当前事务，把连接先还给连接池。
-
-        存在的理由只有一个：**长文件 IO 绝不能跨在事务中间**。
-        连接级参数 ``idle_in_transaction_session_timeout`` 只有 30s（见
-        shared/database/postgres.py），而合并一个日志包是纯磁盘/CPU 工作，
-        实测 3.6 GiB 约 50s、20 GiB 更久。事务若一直开着，PG 会在合并期间
-        直接 terminate 该连接，随后的 flush 必然 ``connection is closed``，
-        表现为 complete 返回 500、制品元数据永远落不了库。
-        """
-        await self.session.commit()
-
     async def refresh(self, task: LogCollectTask) -> None:
         await self.session.refresh(task)

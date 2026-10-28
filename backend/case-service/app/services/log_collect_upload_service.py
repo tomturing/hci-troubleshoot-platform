@@ -297,12 +297,12 @@ class LogCollectUploadService:
         case_id = task.case_id
         expected_sha256 = declared_sha256 or meta.get("expected_sha256")
 
-        # 硬约束：合并是一次**长文件 IO**（3.6 GiB 实测 ~50s，20 GiB 更久），
-        # 绝不能把 DB 事务跨在中间。连接级 idle_in_transaction_session_timeout
-        # 只有 30s，PG 会在合并期间 terminate 连接，随后 flush 报
-        # "connection is closed" → complete 返回 500，而包其实已经合并落盘。
-        # 现场 Q2026102800720 就是这样：平台 objects 下有完整的 3.6 GiB 包，
-        # 库里 archive_path 还是节点路径、archive_sha256 为空，代传因此永不触发。
+        # 硬约束：合并是一次**长文件 IO**（3.6 GiB 实测 ~50s，12.8 GiB 数分钟，
+        # 20 GiB 更久），绝不能把 DB 事务跨在中间。事务在 get_task 的 SELECT 时
+        # 就已开启，连接级 idle_in_transaction_session_timeout 只有 30s，PG 会在
+        # 合并期间 terminate 连接，随后 flush 报 "connection is closed" → 500。
+        # 实测：2026-10-28 单日 6 小时内 62 次该错误（Q2026102800720 等），
+        # 平台 objects 下有完整包、库里 archive_* 为空，代传因此永不触发。
         await self.repository.commit()
 
         try:
