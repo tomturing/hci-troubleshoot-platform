@@ -3014,8 +3014,9 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="acli">
             <span :title="acliTitle">{{ acliVersionText }}</span>
           </el-descriptions-item>
-          <el-descriptions-item label="交付路径">
-            <!-- 有任务时只认任务记录：探测推荐不能覆盖"这单实际走了哪条路" -->
+          <el-descriptions-item label="建议路径">
+            <!-- 这是探测建议，不是既定事实：有任务时只认任务记录（deliveryModeFact 在无任务时带「建议」二字），
+                 改名是为了和表单里的「交付路径」（用户决策）区分，避免被读成"已经定了 P1"。 -->
             <el-tag :type="deliveryModeFact.type" size="small">
               {{ deliveryModeFact.label }}
             </el-tag>

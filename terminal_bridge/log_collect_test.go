@@ -324,24 +324,24 @@ func TestParseLogCollectModuleCatalog(t *testing.T) {
 	help := `用法: acli log_collect create [命令参数]
 
 描述:
-  create                                创建日志收集任务
+create                                创建日志收集任务
 
 命令参数:
-  -s|--save-filename=STRING             必要参数，收集文件命名（无需文件后缀），使用icare单号，示例：Q2025052718316
-  -m|--modules=STRING                   日志收集专项，使用英文逗号拼接指定的专项，示例：-m vm_suspend,network
-                                        可供选择的专项，不设置则默认other，枚举值：
-                                          vm_suspend（虚拟机挂起专项）              vm_start（虚拟机开机失败专项）
-                                          host_offline（主机离线专项）              network（网络专项）
-                                          storage（虚拟存储专项）                    slowdisk（卡慢盘专项，单天收集时间约4min）
-                                          performance（性能专项）                    core（core文件专项）
-                                          system（中台专项）                          other（默认收集专项，不收集上述n个场景日志）
-  -d|--date-range=STRING                指定日期范围（使用英文逗号拼接起始日期，结束日期）
+-s|--save-filename=STRING             必要参数，收集文件命名（无需文件后缀），使用icare单号，示例：Q2025052718316
+-m|--modules=STRING                   日志收集专项，使用英文逗号拼接指定的专项，示例：-m vm_suspend,network
+可供选择的专项，不设置则默认other，枚举值：
+vm_suspend（虚拟机挂起专项）              vm_start（虚拟机开机失败专项）
+host_offline（主机离线专项）              network（网络专项）
+storage（虚拟存储专项）                    slowdisk（卡慢盘专项，单天收集时间约4min）
+performance（性能专项）                    core（core文件专项）
+system（中台专项）                          other（默认收集专项，不收集上述n个场景日志）
+-d|--date-range=STRING                指定日期范围（使用英文逗号拼接起始日期，结束日期）
 
 说明:
-  -s 为必要参数，后续Icare单号
+-s 为必要参数，后续Icare单号
 
 示例1: 收集网络专项
-  acli log_collect create -s Q2025052777777 -m network -i 1.1.1.1 -d 2025-06-25,2025-06-28
+acli log_collect create -s Q2025052777777 -m network -i 1.1.1.1 -d 2025-06-25,2025-06-28
 错误: 未定义参数: --help
 `
 	options := parseLogCollectModuleCatalog(help)
@@ -357,8 +357,18 @@ func TestParseLogCollectModuleCatalog(t *testing.T) {
 			t.Fatalf("场景 %s 缺少中文标签", want)
 		}
 	}
-	if options[5].Label != "卡慢盘专项，单天收集时间约4min" {
-		t.Fatalf("slowdisk 标签解析错误：%q", options[5].Label)
+	// 新契约：label 一律取自平台内置短名，不再透出 help 说明文字（"约4min"、""不收集上述n个场景"）。
+	if options[5].Label != "卡慢盘专项" {
+		t.Fatalf("slowdisk 标签应为内置短名，实际 %q", options[5].Label)
+	}
+	if options[7].Value != "core" || options[7].Label != "core 文件专项" {
+		t.Fatalf("core 必须保留且用内置短名，实际 %+v", options[7])
+	}
+	// 不得再出现 help 说明文字（实机 help 给 slowdisk 追加了"单天收集时间约4min"这类参数释义）。
+	for _, opt := range options {
+		if strings.Contains(opt.Label, "约") {
+			t.Fatalf("场景标签不得包含 help 说明文字：%q", opt.Label)
+		}
 	}
 }
 
