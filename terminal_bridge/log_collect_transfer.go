@@ -13,9 +13,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
@@ -41,6 +44,12 @@ const (
 
 // 插件产物固定落在该目录；HCI ≥6.12 的 progress 会把前缀改写为 /support，需还原。
 var logCollectArchivePathPattern = regexp.MustCompile(`^/sf/data/local/acli/tmp/data/log_collect/[A-Za-z0-9_.-]+\.zip$`)
+
+// errPullSizeMismatch 表示"拉到的字节数与源包不符"。
+//
+// 必须与网络中断区分：网络断了可以续传，源包被截断/同名覆盖则重试多少次都一样。
+// 用哨兵错误让调用方能判定"这是数据问题，不是链路问题"。
+var errPullSizeMismatch = errors.New("拉取字节数与源包不一致")
 
 // 平台数据面默认路径，与 case-service 路由保持一致。
 const logCollectDirectUploadPrefix = "/api/direct/log-collect-uploads"
@@ -151,19 +160,49 @@ func resolvePullStart(localSize, remoteSize int64) pullStart {
 	return pullStart{Offset: localSize}
 }
 
-// pullArchive 把 HCI 上的压缩包续传到本地。
+// hashFilePrefixStrict 把 path 的前 n 字节喂给 hasher。
+//
+// 续传时本地已有 offset 字节，必须先把它们重新摘要一遍，否则最终哈希只覆盖
+// 后半段——那比不提供哈希更糟：看起来"有校验"，实际永远对不上。
+//
+// 与 sftp.go 的同名逻辑分开：那边允许短读（下载场景 .part 可以没写完），
+// 这里短读就是残包失真，必须报错。
+func hashFilePrefixStrict(path string, n int64, hasher hash.Hash) error {
+	if n <= 0 {
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	written, err := io.Copy(hasher, io.LimitReader(file, n))
+	if err != nil {
+		return err
+	}
+	if written != n {
+		return fmt.Errorf("本地残包长度不足：期望 %d，实际 %d", n, written)
+	}
+	return nil
+}
+
+// pullArchive 把 HCI 上的压缩包续传到本地，同时返回整包 SHA-256。
 //
 // 断点依据是「本地文件已有大小」：HCI 侧用 `tail -c +offset+1` 从断点继续读，
 // 因此不需要 SFTP，也不依赖服务器端支持 range。
+//
+// 为什么边拉边算而不是拉完再读一遍：20 GiB 再读一次磁盘要数十秒到数分钟，
+// 且这段时间里文件仍可能被外部改写；流式摘要与写入在同一份字节上完成，
+// 才是"校验的就是传过去的"。
 func (s *SSHSession) pullArchive(
 	ctx context.Context,
 	remotePath string,
 	localPath string,
 	totalSize int64,
 	onProgress func(written, total int64),
-) (int64, error) {
+) (int64, string, error) {
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
 	var localSize int64
@@ -174,34 +213,43 @@ func (s *SSHSession) pullArchive(
 	if start.Discard {
 		os.Remove(localPath)
 	}
+
+	hasher := sha256.New()
+	if start.Offset > 0 {
+		if err := hashFilePrefixStrict(localPath, start.Offset, hasher); err != nil {
+			return 0, "", fmt.Errorf("重建本地摘要失败: %w", err)
+		}
+	}
 	if start.Complete {
 		onProgress(start.Offset, totalSize)
-		return start.Offset, nil
+		return start.Offset, hex.EncodeToString(hasher.Sum(nil)), nil
 	}
 	offset := start.Offset
 
 	session, err := s.client.NewSession()
 	if err != nil {
-		return offset, fmt.Errorf("创建下载会话失败: %w", err)
+		return offset, "", fmt.Errorf("创建下载会话失败: %w", err)
 	}
 	defer session.Close()
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		return offset, fmt.Errorf("获取下载管道失败: %w", err)
+		return offset, "", fmt.Errorf("获取下载管道失败: %w", err)
 	}
 	// tail -c +N 的 N 为 1-based 起始字节位置。
 	command := buildPullCommand(remotePath, offset)
 	if err := session.Start(command); err != nil {
-		return offset, fmt.Errorf("启动下载失败: %w", err)
+		return offset, "", fmt.Errorf("启动下载失败: %w", err)
 	}
 
 	file, err := os.OpenFile(localPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
-		return offset, fmt.Errorf("打开本地文件失败: %w", err)
+		return offset, "", fmt.Errorf("打开本地文件失败: %w", err)
 	}
 	defer file.Close()
 
+	// MultiWriter 保证 fwrite 与摘要吃的是同一段 buffer，不存在"文件写了、哈希没算"。
+	writer := io.MultiWriter(file, hasher)
 	written := offset
 	lastReport := offset
 	buffer := make([]byte, logCollectPullBlock)
@@ -209,13 +257,13 @@ func (s *SSHSession) pullArchive(
 	for {
 		if ctx.Err() != nil {
 			_ = session.Close()
-			return written, ctx.Err()
+			return written, "", ctx.Err()
 		}
 		n, readErr := stdout.Read(buffer)
 		if n > 0 {
-			if _, err := file.Write(buffer[:n]); err != nil {
+			if _, err := writer.Write(buffer[:n]); err != nil {
 				_ = session.Close()
-				return written, fmt.Errorf("写入本地文件失败: %w", err)
+				return written, "", fmt.Errorf("写入本地文件失败: %w", err)
 			}
 			written += int64(n)
 			if written-lastReport >= logCollectProgressEvery {
@@ -228,15 +276,20 @@ func (s *SSHSession) pullArchive(
 		}
 		if readErr != nil {
 			_ = session.Close()
-			return written, fmt.Errorf("拉取中断: %w", readErr)
+			return written, "", fmt.Errorf("拉取中断: %w", readErr)
 		}
 	}
 
 	if err := session.Wait(); err != nil {
-		return written, fmt.Errorf("拉取命令失败（源包可能已被清理）: %w", err)
+		return written, "", fmt.Errorf("拉取命令失败（源包可能已被清理）: %w", err)
+	}
+	// 字节数在拉取层就收敛：`tail` 被源包截断/被 TMOUT 打断时都会提前 EOF，
+	// 不在这里拦住，就会把一个短包当完整包继续上传。
+	if totalSize > 0 && written != totalSize {
+		return written, "", fmt.Errorf("%w：期望 %d，实际 %d", errPullSizeMismatch, totalSize, written)
 	}
 	onProgress(written, totalSize)
-	return written, nil
+	return written, hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // fileSHA256 计算整包校验和；20 GiB 约需数十秒磁盘读。
@@ -252,6 +305,26 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+// fileDigest 计算整文件摘要。algo 只认 md5 与 sha256；未知值按 sha256 处理，
+// 避免调用方传错算法时静默退回一个更弱的校验。
+func fileDigest(path, algo string) (string, error) {
+	var hasher hash.Hash
+	if algo == "md5" {
+		hasher = md5.New()
+	} else {
+		hasher = sha256.New()
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 // putPart 上传单个分片。4xx 视为不可重试的客户端错误，由调用方决定是否终止。
@@ -423,7 +496,7 @@ func (b *Bridge) handleLogCollectTransfer(
 	}
 	emit("ok", progress, "", "")
 
-	written, err := s.pullArchive(ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
+	written, sum, err := s.pullArchive(ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
 		progress.PulledBytes = done
 		progress.TotalSize = total
 		if total > 0 {
@@ -433,6 +506,11 @@ func (b *Bridge) handleLogCollectTransfer(
 	})
 	progress.PulledBytes = written
 	if err != nil {
+		// 字节数不符是完整性错误（LC-TRANSFER-002），不是传输失败：
+		// 错误码决定前端文案与是否自动重试，混用会让"包被截断"看起来像"网络抖动"。
+		if errors.Is(err, errPullSizeMismatch) {
+			return fail(ErrTransferChecksum, err.Error(), progress)
+		}
 		return fail(ErrTransferChunkFailed, err.Error(), progress)
 	}
 
@@ -444,11 +522,7 @@ func (b *Bridge) handleLogCollectTransfer(
 		return fail(ErrTransferChecksum, fmt.Sprintf("拉取后大小不一致：期望 %d，实际 %d", msg.TransferTotalSize, info.Size()), progress)
 	}
 	progress.Size = info.Size()
-
-	sum, err := fileSHA256(localPath)
-	if err != nil {
-		return fail(ErrTransferChecksum, "计算校验和失败: "+err.Error(), progress)
-	}
+	// 摘要已在拉取过程中流式计算，这里不再重读整包。
 	progress.Sha256 = sum
 
 	progress.Stage = "uploading"

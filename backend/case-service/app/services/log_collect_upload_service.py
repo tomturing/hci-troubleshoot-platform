@@ -295,7 +295,9 @@ class LogCollectUploadService:
 
         # 先把下面要用的字段取出来：commit 之后不再依赖 ORM 的惰性加载。
         case_id = task.case_id
-        expected_sha256 = declared_sha256 or meta.get("expected_sha256")
+        # 归一化：不同客户端可能发大写/带空白，直接比较会把"一致"误判成"不一致"，
+        # 进而删掉已经完整合并的制品——这是比不校验更糟的假阴性。
+        expected_sha256 = (declared_sha256 or meta.get("expected_sha256") or "").strip().lower() or None
 
         # 硬约束：合并是一次**长文件 IO**（3.6 GiB 实测 ~50s，12.8 GiB 数分钟，
         # 20 GiB 更久），绝不能把 DB 事务跨在中间。事务在 get_task 的 SELECT 时
@@ -338,6 +340,9 @@ class LogCollectUploadService:
         task.archive_path = object_key
         task.archive_size = size
         task.archive_sha256 = digest
+        # 只有"有外部声明且核对通过"才算 verified：平台自算的 digest 无法自证上游，
+        # 把它当成功证据会让整条链路的完整性声明变成循环论证。
+        task.integrity_state = "verified" if expected_sha256 else "unverified"
         # 平台对象单独留索引：archive_* 在 P1 是节点路径，不能用来判断"平台有没有留包"。
         task.object_key = object_key
         task.object_size = size
@@ -362,4 +367,7 @@ class LogCollectUploadService:
             "size": size,
             "sha256": digest,
             "part_count": part_count,
+            # 回执必须带结论：bridge 侧据此决定最终展示"已校验/未校验"，
+            # 而不是自己猜（真正做过整包比对的是服务端）。
+            "integrity_state": task.integrity_state,
         }

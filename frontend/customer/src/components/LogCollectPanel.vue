@@ -673,6 +673,21 @@ const resultArchiveText = computed(() => {
   return '未记录'
 })
 
+/**
+ * 完整性结论。
+ *
+ * 对抗性审查：这里最容易犯的错是把"没校验"渲染成一个看起来像成功的默认值。
+ * 只有 integrity_state === 'verified' 才允许说"已校验"；其余一律显性说明
+ * 没有源包基线，避免用户把"大小对上了"误当成"字节一致"。
+ */
+const resultIntegrityText = computed(() => {
+  const task = resultTask.value
+  if (!task) return ''
+  if (task.upload_mode === 'acli_direct') return '直传模式无摘要比对（平台不留副本）'
+  if (task.integrity_state === 'verified') return '已校验：源包摘要与平台副本一致'
+  return '未校验源包（仅传输层校验；节点未提供摘要或为历史任务）'
+})
+
 const resultArtifactText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
@@ -2974,6 +2989,7 @@ onBeforeUnmount(() => {
             <span :title="resultArtifactText">{{ resultArtifactText }}</span>
           </el-descriptions-item>
           <el-descriptions-item label="归档状态">{{ resultArchiveText }}</el-descriptions-item>
+          <el-descriptions-item label="完整性">{{ resultIntegrityText }}</el-descriptions-item>
           <!--
             failed / cancelled 才出现：失败原因是采集结论的一部分，不是可选调试信息。
             顶部提示条说"失败原因见下方错误信息"，就必须真的有这一行。
