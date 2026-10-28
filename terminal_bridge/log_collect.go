@@ -432,9 +432,11 @@ func (s *SSHSession) probeLogCollectCatalog(ctx context.Context, result *logColl
 		}
 	}
 	if len(result.Hosts) == 0 {
-		// 把主命令输出首行一并带出：前端要能区分"能力缺失/执行报错/真没节点"。
+		// 不给客户看 stderr 原文：实机会把 acli 的 JSON 运行日志、Go 栈、cgroup 路径
+		// 一起带出来，真因（节点清单拉取失败）反而被埋，还泄露实现细节。失败只在前端
+		// 提示"可手填 IP"，原始输出留在桥日志供排查。
 		result.CatalogNote = appendProbeNote(result.CatalogNote,
-			"节点清单获取失败，可手动填写 IP："+firstNonEmpty(logCollectFailureLine(nodeOut), "无输出"))
+			"节点清单获取失败，可手动填写 IP（详细错误见桥日志）")
 	}
 }
 
@@ -465,18 +467,26 @@ func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
 		block = block[:end]
 	}
 
-	seen := make(map[string]bool, len(logCollectModules))
-	options := make([]logCollectModuleOption, 0, len(logCollectModules))
-	for _, match := range logCollectModuleOptionRe.FindAllStringSubmatch(block, -1) {
-		value := match[1]
-		// 白名单之外的枚举不展示：否则前端可选、执行时却被 create 拒绝，体验更差。
-		if !logCollectModules[value] || seen[value] {
+	// 第一性原理：白名单 logCollectModules 是 -m 的合法枚举全集，目录只应从中取。
+	// help 只用来「确认集群确实支持枚举」，不用来生成展示文案：
+	//   - help 的说明文字（"约4min"、""不收与上述n个场景"）是参数释义，当选项名会不可读；
+	//   - help 会漏列合法枚举（实机 acli 1.0.1 未列出 core），漏列的专项用户永远看不到。
+	// 因此 label 一律取自平台内置短名 logCollectModuleLabels，并按固定顺序补齐白名单全集。
+	matches := logCollectModuleOptionRe.FindAllStringSubmatch(block, -1)
+	// 一个合法枚举都解析不到，说明 help 改版/乱码：交给调用方回退内置目录，
+	// 而不是拿全量白名单冒充"集群目录"（那样目录来源提示会谎称来自集群）。
+	if len(matches) == 0 {
+		return nil
+	}
+
+	options := make([]logCollectModuleOption, 0, len(logCollectModuleCatalogOrder))
+	for _, value := range logCollectModuleCatalogOrder {
+		if !logCollectModules[value] {
 			continue
 		}
-		seen[value] = true
 		options = append(options, logCollectModuleOption{
 			Value: value,
-			Label: strings.TrimSpace(match[2]),
+			Label: logCollectModuleLabels[value],
 		})
 	}
 	return options
