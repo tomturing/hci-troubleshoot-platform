@@ -316,6 +316,11 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	}
 
 	session := r.sessionFor(job)
+	if session != nil {
+		// 交付的每个需要节点的步骤都是"业务使用"：与日志采集一样没有显式包裹，
+		// 靠时间窗保护会话不被空闲租约回收（见 SSHSession.markBusy）。
+		session.markBusy()
+	}
 	if err := requireSessionForPhase(job.Phase, session); err != nil {
 		return err
 	}

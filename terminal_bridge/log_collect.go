@@ -899,6 +899,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	msg.TraceID = traceID
 
 	s, key, match := b.resolveLogCollectSession(msg)
+	// 业务活跃打戳：交互 shell 有 TMOUT=600，一次采集常常跑十几分钟且期间零键盘输入，
+	// shell 必然在 600s 被踢。没有这个戳，EOF 会被当成整条连接失效并 destroySession，
+	// 之后每次 progress 都是 session_missing——前端只能干等到 60s 超时，
+	// 报成"progress 超时（60s）"（2026-10-28 现场）。连接与 exec 通道其实都还活着。
+	s.markBusy()
 	// 精确命中是常态，只有回退才留痕：日志要能回答"这条命令为什么落到了这台机器"。
 	if s != nil && match != "exact" {
 		blog("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
