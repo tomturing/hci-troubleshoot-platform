@@ -307,7 +307,6 @@ async def test_complete_commits_before_merging(service, repo, storage, monkeypat
             claimed_sha256=None,
         )
 
-<<<<<<< HEAD
     observed: list[int] = []
     original_merge = storage.merge
 
@@ -322,7 +321,10 @@ async def test_complete_commits_before_merging(service, repo, storage, monkeypat
     assert observed == [1], "合并发生时事务必须已经提交（否则会被 30s 空闲超时杀掉）"
     # 两次提交：合并前清事务 + 落库后放行。第二次必须发生在 trigger 代传之前，
     # 否则 trigger（另一个 session 的 UPDATE）会与本事务的行锁互等成死锁
-    # （Q2026101500828：commit 报 InternalClientError 与"平台尚无制品"相隔 16ms）。
+    # （Q2026101500828：commit 报 InternalClientError 与"平台尚无制品"相隔 16ms；
+    # staging 同日实测复现：若拖到请求收尾才提交，trigger 等行锁、主协程等 trigger、
+    # 提交等路由返回，构成自死锁，只能靠 30s idle 超时"解死锁"，代价是写入整体
+    # 回滚而客户端拿到 200。）
     assert repo.commit.await_count == 2
 
 
