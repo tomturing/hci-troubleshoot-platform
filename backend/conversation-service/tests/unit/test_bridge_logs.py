@@ -699,9 +699,6 @@ class TestDirectIngestCompressedBody:
 
     @pytest.mark.asyncio
     async def test_broken_gzip_returns_400_not_500(self):
-        import pytest as _pytest
-        from fastapi import HTTPException
-
         from app.routes.bridge_logs import ingest_bridge_logs_direct
 
         request = self._request(b"\x1f\x8bnot-really-gzip", {"content-encoding": "gzip"})
@@ -711,7 +708,7 @@ class TestDirectIngestCompressedBody:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
             mock_settings.INTERNAL_API_TOKEN = "internal"
-            with _pytest.raises(HTTPException) as exc:
+            with pytest.raises(HTTPException) as exc:
                 await ingest_bridge_logs_direct(
                     request=request, x_bridge_upload_token=self._token()
                 )
