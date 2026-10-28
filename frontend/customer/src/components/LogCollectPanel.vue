@@ -610,8 +610,11 @@ const probeIssues = computed(() => {
  * 因此 P1 空值属预期，文案要说清原因，别让用户以为平台漏采。
  */
 const resultSizeText = computed(() => {
-  const size = resultTask.value?.archive_size
+  const task = resultTask.value
+  const size = task?.archive_size
   if (!size) {
+    // 失败任务从未走到上传：P1 的「直传后已删除」叙事对它是谎言，必须按终态说。
+    if (task?.status === 'failed') return '本次采集失败，未产出压缩包'
     return resultMode.value === 'acli_direct' ? '未记录（直传后压缩包已删除）' : '未记录'
   }
   const mb = size / 1024 / 1024
@@ -656,7 +659,10 @@ const resultArchiveText = computed(() => {
   // queued = 平台已登记一次交付尝试但没走到终态（提交阶段中断/失败）。
   // 不显式化的话，这里只会显示"采集完成，尚未交付"，用户无从知道已经试过一次、
   // 试到哪一步了（Q2026102701193 现场库里就有一条 queued 卡了两天）。
+  // 这一条排在「失败兜底」之前：采集失败但交付曾登记为 queued 时，仍以 queued 为准。
   if (task.delivery_status === 'queued') return '交付已登记但未完成（可点「上传到平台」重试）'
+  // 失败任务没有"归档/交付"可言：兜底显示未归档，避免落到「未记录」让人以为还在路上。
+  if (task.status === 'failed') return '采集失败，未归档'
   if (resultDelivered.value) {
     // P1 平台拿不到回执：文案必须说清"这是节点自报"，不能让用户以为平台核验过。
     return resultMode.value === 'acli_direct'
@@ -670,6 +676,8 @@ const resultArchiveText = computed(() => {
 const resultArtifactText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
+  // 失败即无产物：不能套用 P1 成功后的「自动清理」话术。
+  if (task.status === 'failed') return '采集未成功，无产物'
   if (task.archive_deleted) return 'HCI 上的压缩包已清理'
   if (task.archive_path) return task.archive_path
   return resultMode.value === 'acli_direct' ? '由插件上传后自动清理，路径未记录' : '未记录'
@@ -694,6 +702,8 @@ const resultFailureText = computed(() => {
 const resultCleanupTip = computed(() => {
   const task = resultTask.value
   if (!task || task.archive_deleted) return ''
+  // 失败任务不该讲 P1 成功后的清理路径：那是另一种结局，混淆只会让用户以为"其实传成功了"。
+  if (task.status === 'failed') return ''
   // 顶部提示条已经在说"包仍在节点、可点上传到平台"：再说一遍只会在固定区占两行，
   // 而且两条的措辞还会互相冲突（一条说仍在、一条说已删）。
   if (canUploadFromNode.value) return ''
@@ -1890,6 +1900,9 @@ async function syncNodeState(
             stage.value = 'done'
             if (viewMode.value === 'result') showResult(currentTask.value)
           } else {
+            // 必须在改 stage 之前取 stepActive：一旦看到 failed 它会返回 failedStep 本身，
+            // 顺序颠倒会让步骤条永远停在第一步「探测」，而本次失败发生在「采集」（对账在 collecting 阶段触发）。
+            failedStep.value = stepActive.value
             stage.value = 'failed'
             errorMessage.value = action.reason
           }
@@ -2800,7 +2813,7 @@ onBeforeUnmount(() => {
         用户不必再去 SSH 敲 acli log_collect cancel。
       -->
       <el-alert
-        v-if="nodeSyncHint"
+        v-if="nodeSyncHint && !(stage === 'failed' && !nodeAction)"
         :title="nodeSyncHint"
         :type="nodeAction ? 'warning' : 'info'"
         :closable="false"
