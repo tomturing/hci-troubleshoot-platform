@@ -356,10 +356,23 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	return nil
 }
 
-// sessionFor 按 case+node 解析会话；失败返回 nil（由调用方转成 needs_reauth）。
+// sessionFor 按 case+node 解析会话；会话掉线但桥持有该工单的认证信息时，
+// 后台自动重连并续传，把"需要人工回面板重连"变成自愈（见 reconnectDeliveryNode）。
+// 仅当本阶段确实需要节点时才尝试重连：上传/收尾只读本地副本与平台，不该为它们
+// 去敲一条 SSH 连接（否则会在不需要时开连接、甚至因节点不可达而误报 needs_reauth）。
+// 两个分支都落空才返回 nil（由调用方转成 needs_reauth）。
 func (r *deliveryRunner) sessionFor(job *deliveryJob) *SSHSession {
 	session, _, _ := r.bridge.resolveLogCollectSession(InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
-	return session
+	if session != nil {
+		return session
+	}
+	if !deliveryPhaseNeedsNode(job.Phase) {
+		return nil
+	}
+	if reconnected, err := r.bridge.reconnectDeliveryNode(job.CaseID, job.NodeIP, "delivery-auto"); err == nil {
+		return reconnected
+	}
+	return nil
 }
 
 // deliveryPhaseNeedsNode 判断该阶段是否必须访问节点（因此必须有 SSH 会话）。
