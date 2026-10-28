@@ -283,6 +283,38 @@ describe('LogCollectPanel', () => {
     expect(probe.node_ip).toBe('172.28.25.1')
   })
 
+  /**
+   * 现场回归（2026-10-28，8×/天 LC-ENV-006）：
+   * 桥侧 SSH 会话已销毁、但前端 sshConnectionState 仍显示 connected（面板这条 WS 未必是
+   * 会话属主，可能没收到 ssh_disconnected）。用户点开始收集会反复误发请求拿 session_missing。
+   * 契约：前端收到桥侧权威判定 LC-ENV-006 时，必须立即把 sshConnectionState 置否，
+   * 让按钮禁用、提示出现，避免重复误发。
+   */
+  it('收到桥侧 LC-ENV-006 时立即把 sshConnectionState 置为 disconnected（自愈陈旧状态）', async () => {
+    // 模拟 UI 仍显示已连接、但桥侧会话其实已销毁的陈旧状态
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+
+    mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await flushPromises()
+
+    // 桥权威判定：会话不存在
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'create',
+        status: 'error',
+        error_code: 'LC-ENV-006',
+        message: 'SSH 会话不存在',
+      }),
+    })
+    await flushPromises()
+
+    expect(mockStore.sshConnectionState).toBe('disconnected')
+  })
+
   // 面板化之后外壳（标题/收起/拖拽）由 PanelShell 负责，
   // 本组件只渲染内容——再出现 el-drawer 就说明有人把抽屉外壳加回来了。
   it('不再自带抽屉外壳，只渲染面板内容', async () => {

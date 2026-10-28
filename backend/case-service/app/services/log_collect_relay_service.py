@@ -114,12 +114,20 @@ class LogCollectRelayService:
         *,
         poll_interval: float = 5.0,
         archive_timeout: float = 1800.0,
+        max_attempts: int = 3,
+        retry_base_delay: float = 2.0,
+        retry_max_delay: float = 30.0,
     ):
         self.session_factory = session_factory
         self.storage = storage
         self.client = client
         self.poll_interval = poll_interval
         self.archive_timeout = archive_timeout
+        # 瞬时错误重试：采集已在节点侧成功（包已生成），中继/5888 仅因网络抖动或
+        # 服务端暂不可达失败时，应退避重试而非直接写 failed，让网络恢复后自动补传。
+        self.max_attempts = max(1, int(max_attempts))
+        self.retry_base_delay = float(retry_base_delay)
+        self.retry_max_delay = float(retry_max_delay)
 
     # ── 抢占 ────────────────────────────────────────────────────────────────
 
@@ -167,15 +175,55 @@ class LogCollectRelayService:
     # ── 主流程 ──────────────────────────────────────────────────────────────
 
     async def run(self, task_id: UUID) -> None:
-        try:
-            await self._run(task_id)
-        except Exception as exc:  # noqa: BLE001 - 任何异常都必须落到 failed，不能静默
-            # 错误码必须保留异常自己的分类：SangforRelayError 带有明确 code
-            # （如 LC-TRANSFER-001 平台尚无制品），统一改写成 LC-TRANSFER-003
-            # 会让前端只见"归档失败"、排障者无从定位是"没制品"还是"传输失败"。
-            code = getattr(exc, "code", None) or "LC-TRANSFER-003"
-            await self._finish(task_id, "failed", error=str(exc), error_code=code)
-            raise
+        """代传主入口：瞬时错误自动退避重试，永久错误立即落终态。
+
+        第一性原理：采集已在节点侧成功（包已生成），中继/5888 仅因瞬时网络抖动或
+        服务端暂不可达而失败。若不重试直接写 failed，用户会看到"已采到却交付失败"且
+        无法自愈——网络恢复后这包本应自动补传。但"无制品 / 空文件"属永久错误，
+        重试必然同样失败，直接落 failed，避免无谓等待与重复全量重传。
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                await self._run(task_id)
+                return
+            except Exception as exc:  # noqa: BLE001 - 异常要么落终态要么退避重试
+                last_exc = exc
+                # 永久错误：不重试，立即落终态（错误码保留异常自身分类）。
+                if not self._is_transient(exc):
+                    code = getattr(exc, "code", None) or "LC-TRANSFER-003"
+                    await self._finish(task_id, "failed", error=str(exc), error_code=code)
+                    raise
+                # 瞬时错误且仍有重试次数：退避后重试，relay_status 保持 running，
+                # 交付状态不落 failed；_run 会复用持久化的 upload_id 续传已完成分片。
+                if attempt >= self.max_attempts:
+                    code = getattr(exc, "code", None) or "LC-TRANSFER-003"
+                    await self._finish(task_id, "failed", error=str(exc), error_code=code)
+                    raise
+                await asyncio.sleep(
+                    min(self.retry_base_delay * (2 ** (attempt - 1)), self.retry_max_delay)
+                )
+        if last_exc is not None:  # 兜底（理论上不可达）
+            code = getattr(last_exc, "code", None) or "LC-TRANSFER-003"
+            await self._finish(task_id, "failed", error=str(last_exc), error_code=code)
+            raise last_exc
+
+    @staticmethod
+    def _is_transient(exc: Exception) -> bool:
+        """判断代传异常是否值得重试。
+
+        永久错误（无制品 LC-TRANSFER-001 / 空文件 LC-TRANSFER-002）重试必然失败，
+        直接落终态；其余（网络超时 / 连接失败 / 5888 5xx / 归档确认超时）视为瞬时，
+        退避重试，网络恢复后自动续传已上传分片。
+        """
+        if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.TransportError)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            # 5888 返回 5xx 视为服务端临时不可用；4xx（含 400 Invalid filename）视为永久。
+            return 500 <= int(getattr(exc.response, "status_code", 0) or 0) < 600
+        if isinstance(exc, SangforRelayError):
+            return exc.code not in ("LC-TRANSFER-001", "LC-TRANSFER-002")
+        return False
 
     async def _run(self, task_id: UUID) -> None:
         task = await self._load(task_id)
