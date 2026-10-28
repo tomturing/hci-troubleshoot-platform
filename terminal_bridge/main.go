@@ -1926,10 +1926,14 @@ func (s *SSHSession) on_output_start(
 					}
 
 					markerErrType := classifyExecFailure(exitCode, output)
-					sendMsg(ws, OutMessage{
-						Type: "exec_result", CaseID: caseID, ExecID: listener.ExecID,
-						Output: output, ExitCode: exitCode, ErrorType: markerErrType,
-					})
+					// ws 可能为 nil：交付后台作业重连节点时没有浏览器连接，
+					// 只需保留 exec 结果回环（runCommand 依赖它），不必回发终端。
+					if ws != nil {
+						sendMsg(ws, OutMessage{
+							Type: "exec_result", CaseID: caseID, ExecID: listener.ExecID,
+							Output: output, ExitCode: exitCode, ErrorType: markerErrType,
+						})
+					}
 					s.unregisterExecListener(listener.ExecID)
 					select {
 					case listener.ResultChan <- ExecResult{Output: output, ExitCode: exitCode, ErrorType: markerErrType}:
@@ -1937,7 +1941,9 @@ func (s *SSHSession) on_output_start(
 					}
 				}
 
-				sendMsg(ws, OutMessage{Type: "ssh_output", CaseID: caseID, Output: chunk})
+				if ws != nil {
+					sendMsg(ws, OutMessage{Type: "ssh_output", CaseID: caseID, Output: chunk})
+				}
 
 				// 缺陷 2: 回采 SSH 终端交互日志（用户手动输入/输出的关键信息）
 				// 只回采有意义的内容（过滤空行和控制序列）
@@ -1984,11 +1990,15 @@ func (s *SSHSession) on_output_start(
 				"duration_seconds": int64(s.ageSeconds()),
 				"long_tasks":       s.longTasks.Load(),
 			})
-			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
+			if ws != nil {
+				sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
+			}
 			return
 		}
 
-		sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
+		if ws != nil {
+			sendMsg(ws, OutMessage{Type: "ssh_disconnected", CaseID: caseID})
+		}
 		onExit(reason)
 	}()
 }
@@ -4556,6 +4566,63 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg InMessage, ownedSession
 		ownedSessions.remove(key)
 	})
 	return session
+}
+
+// reconnectDeliveryNode 用已保存的认证信息后台重建到节点的 SSH 会话，不依赖任何浏览器连接。
+//
+// 为什么需要：交付（pull + 上传到平台）常跑十几分钟，而节点 SSH 存在 10 分钟会话上限
+// （remote_eof），或面板 WebSocket 抖动也会导致会话随持有连接一起被释放。会话一旦消失，
+// 交付就停在 needs_reauth，只能由用户回面板手动重连再续传——Q2026102701403 现场正是
+// 传了 4/15 片后被打断，靠人工续传才收尾。桥本就持有 lastAuth（ssh_connect 的认证信息），
+// 完全能在会话掉线后自动重连并续传，无需人工介入。
+//
+// 与 autoConnectNode 的区别：后者要给终端面板回发 ssh_output / exec_result，必须持 ws；
+// 交付是后台作业，没有也不该绑定某个浏览器连接，所以输出监控走 nil ws（on_output_start
+// 已对 nil ws 做保护，只保留 exec 结果回环与 EOF 销毁）。
+func (b *Bridge) reconnectDeliveryNode(caseID, nodeIP, connID string) (*SSHSession, error) {
+	if strings.TrimSpace(nodeIP) == "" {
+		return nil, fmt.Errorf("nodeIP 为空，无法自动重连")
+	}
+	auth, ok := b.getLastAuth(caseID)
+	if !ok {
+		// 连认证都没存过：说明用户从未通过面板建立过该工单的 SSH 连接，
+		// 这种"裸"交付本就该要求人工重连，不能假装能自动恢复。
+		return nil, fmt.Errorf("缺少 SSH 认证信息（请先在面板建立 SSH 连接）")
+	}
+	connectMsg := auth
+	connectMsg.Type = "ssh_connect"
+	connectMsg.Host = nodeIP
+	connectMsg.NodeIP = nodeIP
+
+	session, err := newSSHSession(connectMsg)
+	if err != nil {
+		return nil, fmt.Errorf("自动重连节点失败: %w", err)
+	}
+	stdout, err := session.start()
+	if err != nil {
+		session.close()
+		return nil, fmt.Errorf("自动重连节点启动失败: %w", err)
+	}
+	key := sessionKey(caseID, nodeIP)
+	b.set(key, session)
+	atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
+	// 后台重连的会话同样要保活：它最容易在长跑期间撞上半开连接。
+	session.startKeepAlive(sshKeepAliveInterval())
+	logSessionCreated(session, key, connID, "delivery", "delivery_auto_reconnect")
+	blog("WARN", "delivery.session_reconnected", "交付期间节点会话掉线，已用已存认证自动重连", "", caseID, nodeIP, "", map[string]any{
+		"key":     key,
+		"conn_id": connID,
+	})
+	// 与 autoConnectNode 同构：远端 EOF 时销毁会话（下一轮 advance 会再次自动重连），
+	// 其余原因只摘键不销毁。
+	go session.on_output_start(nil, stdout, caseID, func(reason string) {
+		if reason == sessionReasonRemoteEOF {
+			b.destroySession(key, sessionReasonRemoteEOF, connID)
+		} else {
+			b.remove(key)
+		}
+	})
+	return session, nil
 }
 
 var websocketWriteLocks sync.Map
