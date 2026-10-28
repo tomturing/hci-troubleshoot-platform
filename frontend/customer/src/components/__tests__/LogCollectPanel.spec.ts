@@ -62,6 +62,11 @@ vi.mock('@/stores/chat', () => ({ useChatStore: () => mockStore }))
 vi.mock('@/api/terminal', () => ({
   resolveBridgeUrl: vi.fn().mockResolvedValue('ws://localhost:9999'),
   createBridgeSocket: vi.fn(() => {
+    // 真实 WebSocket 每次 new 都是一条**新**连接，不可能返回一个已 CLOSED 的实例。
+    // 这里复用单例，就必须在每次「建连」时把 readyState 复位：前一个用例 unmount
+    // 时 close() 会把它置成 3，残留的 3 会让后续挂载永远拿到一条已关闭的通道，
+    // 于是 sendAndWait 依通道不可用立即失败、探测根本发不出去，描述表也就无从渲染。
+    fakeSocket.readyState = 1
     // onopen 在构造之后才被赋值，必须延后一拍触发
     setTimeout(() => fakeSocket.onopen?.(), 0)
     return fakeSocket

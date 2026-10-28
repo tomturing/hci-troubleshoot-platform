@@ -187,6 +187,36 @@ SSH 会话是 Bridge 里唯一有生命周期的外部资源：`sessions` 只是
 > 注意：`keepalive@openssh.com` 不被服务端支持时回 `REQUEST_FAILURE`（`wantReply` 为 false、
 > `err` 为 `nil`），这是**链路活着**的证据，不算失败。
 
+### 交互 shell EOF ≠ 连接失效（HCI `TMOUT=600`）
+
+HCI 节点的交互式 shell 空闲 10 分钟就会自动登出，而日志采集常常跑十几分钟且期间零键盘输入、
+交付拉取 12.8 GiB 需要 20 分钟以上。shell 退出的只是**一个 channel**：SSH 连接本身与
+exec 通道都还活着（`runCommandPty` 每次 `client.NewSession()` 开新 channel）。
+
+因此 shell EOF 时是否销毁会话，取决于连接是否还在被使用，判据有两条（满足其一即保留连接，
+只记 `session.shell_eof_detached` 并向前端发 `ssh_disconnected`，**不摘表**）：
+
+| 判据 | 适用 | 失效方式 |
+|---|---|---|
+| `longTasks > 0` | 交付拉取等可显式成对包裹的长任务 | 任务结束调 `endLongTask()` |
+| 业务活跃窗口内（`markBusy()`） | 日志采集这类"一串短命令、结束时机未知"的场景 | 窗口到期自动失效（`sessionBusyGrace()`，默认 15 分钟，环境变量 `HCI_BRIDGE_SESSION_BUSY_GRACE_SECONDS`） |
+
+窗口是 lease 式的自我失效，不会像"计数忘了减"那样永久保护；空闲租约回收同样遵守这两条判据。
+键盘输入（`ssh_input`）也会打戳——用户刚敲过键就是最强的使用证据，
+于是"敲完命令去查资料"不再换来一次重新认证。
+
+更进一步：**受保护的会话会在同一条 SSH 连接上自动重建交互 shell**（`session.shell_respawned`）。
+终端不会断开，只是回到登录提示符，并在终端里留一行说明（当前目录与交互式菜单状态不保留）。
+不能 `unset TMOUT`（客户安全策略，清除会触发审计），所以只能"退出后重建"——
+同一条连接允许再开 channel，代价仅是 shell 内状态丢失。
+重建次数上限 `maxShellRespawns=3`，避免用户离开后在节点上无限续开登录 shell。
+被这两条判据保留下来的连接，在重连覆盖时也不会被腰斩：只摘表并记 `session.detached`，
+连接留给作业，作业在 `endLongTask()` 归零时自愈关闭。
+
+> 反例（2026-10-28 现场）：采集到 600s 时 shell 被 TMOUT 踢掉，旧实现直接 `destroySession`，
+> 于是后续 `progress` 全部 `session_missing`，前端干等到 60s 超时并报成
+> `progress 超时（60s）`——真因（会话已断）被这个文案彻底掩盖。
+
 会话消失的排查顺序（日志事件）：`bridge.disconnected`（浏览器断开连坐）→
 `ssh_disconnected`（远端 shell 退出）→ 重复的 `ssh.connected` 同键（重连覆盖）→ Pod 重启。
 `log_collect.session_missing` 事件现在带 `active_sessions`、`session_keys`、`requested_key`：
@@ -259,6 +289,9 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `session.created` | INFO | 会话建立：`key`/`conn_id`/`role`/`source(ssh_connect\|auto_connect)` |
 | `session.destroyed` | WARN | 会话销毁：`reason(ws_closed\|reconnect\|remote_eof\|client_disconnect)`/`by_conn`/`owner_conn`/`age_seconds`/`active_sessions` |
 | `session.destroy_miss` | WARN | 销毁落空（键已不存在），用于识别重复清理链路 |
+| `session.detached` | WARN | 会话已摘表但**保留连接**（长任务进行中，禁止被重连腰斩）；含 `long_tasks` |
+| `session.shell_eof_detached` | WARN | 交互 shell EOF，但连接保留给进行中的业务；含 `long_tasks`/`busy_age_seconds`/`busy_grace_seconds` |
+| `session.shell_respawned` | WARN | 交互 shell 被空闲超时踢出后，已在同一条连接上重建；含 `respawns`/`long_tasks`/`busy_age_seconds` |
 | `ssh.disconnected` | WARN | SSH 连接结束：`reason(remote_eof\|local_close)`/`exit_error`/`duration_seconds` |
 | `ssh.keepalive_failed` | WARN | SSH 保活探测失败，会话判定失效并主动关闭（含 `address`/`error`） |
 | `ssh.output` | INFO | 终端输出回采 |

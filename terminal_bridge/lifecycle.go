@@ -211,10 +211,17 @@ func (b *Bridge) reapIdleSessions(ttl time.Duration) int {
 		if b.sessionRefs[key] > 0 {
 			continue
 		}
-		// 有长任务在跑时不得回收：浏览器早已关闭（refs=0）恰恰是大包交付的常态，
-		// 而回收一条正在拉取的连接等价于把作业打断到 needs_reauth。
-		// 长任务自己结束时会清掉计数，下一轮 reaper 自然回收。
-		if session := b.sessions[key]; session != nil && session.hasLongTask() {
+		// 有长任务在跑或近期仍在被业务使用时不得回收：浏览器早已关闭（refs=0）
+		// 恰恰是大包交付/长时采集的常态，而回收一条正在拉取或正在被轮询的连接
+		// 等价于把作业打断到 needs_reauth / progress session_missing。
+		// 长任务自己结束时会清掉计数，业务窗口到期自动失效，下一轮 reaper 自然回收。
+		if session := b.sessions[key]; session != nil && (session.hasLongTask() || session.isBusy()) {
+			// 保护期内**不计空闲**：必须把 idleAt 推到当前时刻。
+			// 否则保护一解除（长任务归零 / 业务窗口到期）就会按"历史空闲时长"
+			// 立刻回收——2026-10-28 现场正是如此：10:18:11 终端断开进入空闲租约，
+			// 10:28:34 拉取完成 endLongTask，10:28:48 就被 idle_ttl 销毁，
+			// 交付卡在 uploading，重试时被判 needs_reauth。
+			b.sessionIdleAt[key] = now
 			continue
 		}
 		if now.Sub(idleAt) >= ttl {
@@ -234,6 +241,65 @@ func (b *Bridge) reapIdleSessions(ttl time.Duration) int {
 func sessionIdleTTL() time.Duration {
 	seconds := envIntOrDefault("HCI_BRIDGE_SESSION_IDLE_TTL_SECONDS", int(defaultSessionIdleTTL/time.Second))
 	return time.Duration(seconds) * time.Second
+}
+
+// defaultSessionBusyGrace 是"业务活跃"保护窗口。
+//
+// 必须远大于采集轮询间隔（5s），又要在用户真的离开后自动过期：取 15 分钟。
+// 它是 lease 式的自我失效，不像 longTasks 计数那样"忘减一次就永久保护"，
+// 因此用它覆盖"采集进行中但无法包裹"的场景是安全的（2026-10-28 现场的直接教训）。
+const defaultSessionBusyGrace = 15 * time.Minute
+
+// sessionBusyGrace 返回业务活跃窗口；<=0 表示关闭该保护（退回只看长任务计数）。
+func sessionBusyGrace() time.Duration {
+	seconds := envIntOrDefault("HCI_BRIDGE_SESSION_BUSY_GRACE_SECONDS", int(defaultSessionBusyGrace/time.Second))
+	return time.Duration(seconds) * time.Second
+}
+
+// detachSession 把会话摘出路由表，但**保留底层 SSH 连接**。
+//
+// 与 destroySession 的差别只有"是否 close"：重连覆盖时若旧会话正在跑长任务，
+// 关闭连接等于把作业腰斩；摘表后新会话可以正常入表，旧连接由
+// endLongTask 归零时自愈关闭（orphaned 标记）。
+func (b *Bridge) detachSession(key, reason, byConn string) bool {
+	session := b.get(key)
+	if session == nil {
+		blog("WARN", "session.destroy_miss", "会话摘表落空：键已不存在", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+			"key":             key,
+			"reason":          reason,
+			"by_conn":         byConn,
+			"mode":            "detach",
+			"active_sessions": b.sessionCount(),
+			"session_keys":    b.sessionKeyList(8),
+		})
+		return false
+	}
+	ownerConn, ageSeconds := session.ownerConn, int64(session.ageSeconds())
+	session.markOrphaned()
+	b.remove(key)
+	b.forgetLease(key)
+	blog("WARN", "session.detached", "会话已摘表但保留连接（长任务进行中，禁止腰斩）", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+		"key":             key,
+		"reason":          reason,
+		"by_conn":         byConn,
+		"owner_conn":      ownerConn,
+		"age_seconds":     ageSeconds,
+		"long_tasks":      session.longTasks.Load(),
+		"active_sessions": b.sessionCount(),
+		"session_keys":    b.sessionKeyList(8),
+	})
+	return true
+}
+
+// destroyOrDetachSession 是重连覆盖场景的统一入口：有长任务则摘表保留，否则正常销毁。
+//
+// 收敛到一个入口是为了让"重连有没有腰斩作业"这个问题在日志里可回答：
+// 两条路径分别记 session.detached 与 session.destroyed，按 reason=reconnect 一查即知。
+func (b *Bridge) destroyOrDetachSession(key, reason, byConn string) bool {
+	if session := b.get(key); session != nil && session.hasLongTask() {
+		return b.detachSession(key, reason, byConn)
+	}
+	return b.destroySession(key, reason, byConn)
 }
 
 // startSessionReaper 周期性回收空闲会话。
