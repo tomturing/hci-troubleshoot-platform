@@ -293,6 +293,17 @@ class LogCollectUploadService:
         if part_numbers != list(range(1, part_count + 1)):
             raise PartValidationError("parts 必须是从 1 到 part_count 的完整序列", status=400)
 
+        # 合并是纯文件 I/O，12.8 GiB 实测需要数分钟。而本请求的事务在
+        # `get_task` 的 SELECT 时就已经开启——如果让它一直持有，连接会以
+        # idle-in-transaction 状态超过 DatabaseManager 设定的 30 秒上限，
+        # 被 PostgreSQL 主动 kill，随后的 flush 必然抛
+        # `asyncpg InterfaceError: connection is closed` → HTTP 500。
+        # 2026-10-28 实测：6 小时内 62 次该错误，全部发生在 merge 之后落库时，
+        # 桥侧看到的是「平台收尾失败 HTTP 500」，而分片其实已经全部传完。
+        # 因此在合并前显式结束只读事务，合并结束后由 flush 自动开启新事务；
+        # 绝不允许多分钟的 I/O 跨在事务里。
+        await self.repository.session.commit()
+
         try:
             size, digest, object_key = await self.storage.merge(
                 upload_id=upload_id,

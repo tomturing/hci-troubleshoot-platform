@@ -587,3 +587,129 @@ class TestOutputPreview:
     @pytest.mark.parametrize("extra", [None, {}, {"output_preview": None}, {"output_preview": ""}])
     def test_missing_returns_none(self, extra):
         assert _preview_from_extra(extra) is None
+
+
+class TestDirectIngestCompressedBody:
+    """直传端点的请求体解码：bridge 固定发 gzip，服务端必须自己解。
+
+    现场事实（2026-10-28）：桥侧 log_uploader 每次上报都带
+    `Content-Encoding: gzip`，而端点用 Pydantic body 解析 → 400
+    `There was an error parsing the body`；经网关则 500。结果是 2169 条
+    `log_upload.failed`、队列退避到 32 秒、桥侧日志一条都进不来。
+    存量 bridge 不会随平台发版更新，所以兼容只能落在服务端。
+    """
+
+    SECRET = "unit-test-bridge-secret"
+
+    @staticmethod
+    def _request(body: bytes, headers: dict[str, str]):
+        from starlette.requests import Request
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        raw_headers = [(name.lower().encode(), value.encode()) for name, value in headers.items()]
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/bridge-logs/direct",
+                "headers": raw_headers,
+            },
+            receive,
+        )
+
+    @staticmethod
+    def _db_manager():
+        session = AsyncMock()
+        manager = MagicMock()
+
+        async def _gen():
+            yield session
+
+        manager.get_session.return_value = _gen()
+        return manager
+
+    def _token(self) -> str:
+        from app.security.bridge_token import issue_bridge_log_token
+
+        token, _ = issue_bridge_log_token(
+            client_id="client-1",
+            case_id="Q2026102801014",
+            bridge_instance_id="inst-1",
+            secret=self.SECRET,
+            ttl_seconds=600,
+        )
+        return token
+
+    @staticmethod
+    def _payload() -> dict:
+        return {
+            "logs": [
+                {
+                    "case_id": "Q2026102801014",
+                    "level": "INFO",
+                    "event": "bridge.startup",
+                    "message": "桥已启动",
+                }
+            ]
+        }
+
+    @pytest.mark.asyncio
+    async def test_gzip_body_is_decompressed(self):
+        import gzip
+        import json
+
+        from app.routes.bridge_logs import ingest_bridge_logs_direct
+
+        raw = gzip.compress(json.dumps(self._payload()).encode())
+        request = self._request(raw, {"content-encoding": "gzip"})
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager()),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
+            mock_settings.INTERNAL_API_TOKEN = "internal"
+            result = await ingest_bridge_logs_direct(
+                request=request, x_bridge_upload_token=self._token()
+            )
+
+        assert result["accepted"] == 1
+        assert result["forbidden"] == 0
+
+    @pytest.mark.asyncio
+    async def test_plain_json_body_still_accepted(self):
+        """兼容不带 Content-Encoding 的调用方（回归护栏，别为修 gzip 把明文路堵死）。"""
+        import json
+
+        from app.routes.bridge_logs import ingest_bridge_logs_direct
+
+        request = self._request(json.dumps(self._payload()).encode(), {})
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager()),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
+            mock_settings.INTERNAL_API_TOKEN = "internal"
+            result = await ingest_bridge_logs_direct(
+                request=request, x_bridge_upload_token=self._token()
+            )
+
+        assert result["accepted"] == 1
+
+    @pytest.mark.asyncio
+    async def test_broken_gzip_returns_400_not_500(self):
+        from app.routes.bridge_logs import ingest_bridge_logs_direct
+
+        request = self._request(b"\x1f\x8bnot-really-gzip", {"content-encoding": "gzip"})
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager()),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
+            mock_settings.INTERNAL_API_TOKEN = "internal"
+            with pytest.raises(HTTPException) as exc:
+                await ingest_bridge_logs_direct(
+                    request=request, x_bridge_upload_token=self._token()
+                )
+        assert exc.value.status_code == 400

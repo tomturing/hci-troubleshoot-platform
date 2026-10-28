@@ -38,6 +38,10 @@ const (
 	// 两边时钟不可能严格对齐；5 分钟既足以吸收常见 NTP 漂移，
 	// 又远小于一次真实采集的时长（十几分钟起），不会放过串味的旧包。
 	deliveryClockSkewTolerance = 5 * time.Minute
+	// 平台收尾（合并）的超时。合并 12.8 GiB 要在服务端读一遍、写一遍、算一遍
+	// SHA-256，慢盘上远超分片的 5 分钟；原来复用分片超时会让桥先断开，
+	// 服务端随后才写完——桥侧只看到 ClientDisconnect，分片全白传。
+	deliveryCompleteTimeout = 30 * time.Minute
 	// 非凭据类失败的最大尝试次数（含首次）。超过即终态失败，等人介入。
 	// 抽成常量是因为它同时出现在"判定"和"重排"两处，写死两遍必然漂移。
 	maxDeliveryAttempts = 5
@@ -524,6 +528,35 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 			}
 		}
 	}
+	// 拉取是唯一必须长期占用 SSH 的环节：12.8 GiB @ ~10 MB/s 需要 20 分钟以上，
+	// 远超 HCI 交互式 shell 的 TMOUT=600。两条防线同时上：
+	//   1) 周期性注入 NUL，让 shell 根本不会因空闲退出；
+	//   2) 标记长任务，即使 shell 真的退了也不让连接被连坐销毁/被空闲租约回收。
+	session.beginLongTask()
+	defer session.endLongTask()
+	stopHeartbeat := session.startShellHeartbeat(job.CaseID)
+	defer stopHeartbeat()
+
+	// 空间预检：12.8 GiB 要完整落地再分片上传，写满一半才失败的话
+	// 用户已经白等 20 分钟，而且报错会伪装成"拉取中断"。
+	if job.SourceSize > 0 {
+		if dir := filepath.Dir(job.LocalPath); dir != "" {
+			_ = os.MkdirAll(dir, 0o700)
+			var existing int64
+			if info, statErr := os.Stat(job.LocalPath); statErr == nil {
+				existing = info.Size()
+			}
+			if need := job.SourceSize - existing; need > 0 {
+				if free := freeDiskBytes(dir); free > 0 && free < need {
+					return fmt.Errorf(
+						"客户机磁盘空间不足：本地副本还需 %d 字节，目标目录可用 %d 字节（%s）",
+						need, free, dir,
+					)
+				}
+			}
+		}
+	}
+
 	written, err := session.pullArchive(ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
 		r.mu.Lock()
 		job.PulledBytes = done
@@ -643,6 +676,23 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 	_ = r.store.save(job)
 
 	if firstErr != nil {
+		// 自签证书不能靠"前端记得传 tls_insecure"来兜底：前端从未传过该字段，
+		// 于是客户内网自签平台上的每一次交付都停在「已传 0/N 片」。
+		// 与桥日志直传通道保持一致：命中证书不受信就自动放宽一次并留痕，
+		// 鉴权不放松（上传令牌仍绑定 task_id）。
+		if !job.TLSInsecure && isUntrustedCertificateError(firstErr) {
+			r.mu.Lock()
+			job.TLSInsecure = true
+			job.Phase = phaseUploading
+			job.LastError = "平台证书不受信，已放宽校验并重新上传"
+			r.mu.Unlock()
+			_ = r.store.save(job)
+			blog("WARN", "delivery.tls_relaxed", "平台证书不受信，交付通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
+			})
+			// 归为 transient：此刻不需要人，只需要下一轮用放宽后的 client 重传。
+			return &deliveryTransientError{reason: "平台证书不受信，已放宽校验，将自动重试"}
+		}
 		return fmt.Errorf("上传中断（已传 %d/%d 片）: %w", len(job.UploadedParts), job.PartCount, firstErr)
 	}
 	return nil
@@ -720,9 +770,20 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Upload-Token", job.UploadToken)
 
-	client := platformHTTPClient(job, logCollectPartTimeout)
+	client := platformHTTPClient(job, deliveryCompleteTimeout)
 	response, err := client.Do(request)
 	if err != nil {
+		if !job.TLSInsecure && isUntrustedCertificateError(err) {
+			r.mu.Lock()
+			job.TLSInsecure = true
+			job.Phase = phaseCompleting
+			r.mu.Unlock()
+			_ = r.store.save(job)
+			blog("WARN", "delivery.tls_relaxed", "平台证书不受信，收尾通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
+			})
+			return &deliveryTransientError{reason: "平台证书不受信，已放宽校验，将自动重试"}
+		}
 		return wrapTransientTransport(err)
 	}
 	defer response.Body.Close()
