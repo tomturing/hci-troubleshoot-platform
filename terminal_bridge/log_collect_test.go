@@ -321,7 +321,7 @@ func TestInMessageLogCollectFields(t *testing.T) {
 // TestParseLogCollectModuleCatalog 用实机 help 原文验证场景目录解析。
 // 对抗性审查要点：枚举值按两列排版（一行两个），且尾部带 "--help 未定义参数" 的报错行。
 func TestParseLogCollectModuleCatalog(t *testing.T) {
-help := `用法: acli log_collect create [命令参数]
+	help := `用法: acli log_collect create [命令参数]
 
 描述:
 create                                创建日志收集任务
@@ -344,32 +344,32 @@ system（中台专项）                          other（默认收集专项，�
 acli log_collect create -s Q2025052777777 -m network -i 1.1.1.1 -d 2025-06-25,2025-06-28
 错误: 未定义参数: --help
 `
-options := parseLogCollectModuleCatalog(help)
-if len(options) != 10 {
-	t.Fatalf("应解析出 10 个场景，实际 %d 个：%+v", len(options), options)
-}
-wantOrder := []string{"vm_suspend", "vm_start", "host_offline", "network", "storage", "slowdisk", "performance", "core", "system", "other"}
-for i, want := range wantOrder {
-	if options[i].Value != want {
-		t.Fatalf("第 %d 项应为 %s，实际 %s", i, want, options[i].Value)
+	options := parseLogCollectModuleCatalog(help)
+	if len(options) != 10 {
+		t.Fatalf("应解析出 10 个场景，实际 %d 个：%+v", len(options), options)
 	}
-	if options[i].Label == "" {
-		t.Fatalf("场景 %s 缺少中文标签", want)
+	wantOrder := []string{"vm_suspend", "vm_start", "host_offline", "network", "storage", "slowdisk", "performance", "core", "system", "other"}
+	for i, want := range wantOrder {
+		if options[i].Value != want {
+			t.Fatalf("第 %d 项应为 %s，实际 %s", i, want, options[i].Value)
+		}
+		if options[i].Label == "" {
+			t.Fatalf("场景 %s 缺少中文标签", want)
+		}
 	}
-}
-// 新契约：label 一律取自平台内置短名，不再透出 help 说明文字（"约4min"、""不收集上述n个场景"）。
-if options[5].Label != "卡慢盘专项" {
-	t.Fatalf("slowdisk 标签应为内置短名，实际 %q", options[5].Label)
-}
-if options[7].Value != "core" || options[7].Label != "core 文件专项" {
-	t.Fatalf("core 必须保留且用内置短名，实际 %+v", options[7])
-}
-// 不得再出现 help 说明文字（实机 help 给 slowdisk 追加了"单天收集时间约4min"这类参数释义）。
-for _, opt := range options {
-	if strings.Contains(opt.Label, "约") {
-		t.Fatalf("场景标签不得包含 help 说明文字：%q", opt.Label)
+	// 新契约：label 一律取自平台内置短名，不再透出 help 说明文字（"约4min"、""不收集上述n个场景"）。
+	if options[5].Label != "卡慢盘专项" {
+		t.Fatalf("slowdisk 标签应为内置短名，实际 %q", options[5].Label)
 	}
-}
+	if options[7].Value != "core" || options[7].Label != "core 文件专项" {
+		t.Fatalf("core 必须保留且用内置短名，实际 %+v", options[7])
+	}
+	// 不得再出现 help 说明文字（实机 help 给 slowdisk 追加了"单天收集时间约4min"这类参数释义）。
+	for _, opt := range options {
+		if strings.Contains(opt.Label, "约") {
+			t.Fatalf("场景标签不得包含 help 说明文字：%q", opt.Label)
+		}
+	}
 }
 
 // TestParseLogCollectModuleCatalogFallback 覆盖 help 改版/无枚举时的降级信号。
