@@ -896,6 +896,38 @@ const statusText = computed(() => {
 
 let socket: WebSocket | null = null
 const waiters = new Map<string, (data: any) => void>()
+// 等待器的失败通道：会话断开 / WS 通道关闭时必须能**立刻**结束等待。
+//
+// 只有 resolve 通道时，断开后 sendAndWait 只能等满 60s 超时，
+// 报成"progress 超时（60s）"——真正的原因（SSH 会话已被 TMOUT=600 踢掉）
+// 被这个文案彻底掩盖，用户据此只会去"重新采集"，而插件单任务互斥会直接拒绝
+// （2026-10-28 现场：正确处置是重连后接管）。
+const waiterRejectors = new Map<string, (error: Error) => void>()
+
+// 会话已断开的准确文案：必须点名真因，不能退化成"超时"。
+const SSH_LOST_MESSAGE =
+  'SSH 会话已断开（远端 shell 空闲 10 分钟自动退出，HCI TMOUT=600）。请先在 SSH 终端重新连接节点，再用「查看任务状态 / 接管」继续；不要重新下发采集（插件单任务互斥会拒绝）。'
+const BRIDGE_CHANNEL_LOST = '与 terminal_bridge 的连接已断开，节点操作未送达'
+
+// 本面板是否已知会话断开。它不能只看 chatStore：会话可能是面板这条连接
+// autoConnect 建的，ssh_disconnected 只会推给建会话的那条 WS。
+const sshSessionLost = ref(false)
+watch(sshConnected, (ok) => {
+  // 重连成功后立即解除告警态，后续对账才能重新驱动节点。
+  if (ok) sshSessionLost.value = false
+})
+
+function rejectWaiter(action: string, error: Error) {
+  const reject = waiterRejectors.get(action)
+  if (!reject) return
+  waiterRejectors.delete(action)
+  waiters.delete(action)
+  reject(error)
+}
+
+function rejectAllWaiters(error: Error) {
+  for (const action of Array.from(waiterRejectors.keys())) rejectWaiter(action, error)
+}
 
 function openSocket(): Promise<WebSocket> {
   if (socket && socket.readyState === WebSocket.OPEN) return Promise.resolve(socket)
@@ -916,6 +948,11 @@ function openSocket(): Promise<WebSocket> {
           clearTimeout(timer)
           reject(new Error('无法连接 terminal_bridge，请确认本地服务已启动'))
         }
+        ws.onclose = () => {
+          // 通道已关：此时发出去的请求永远等不到回包（ws.send 静默丢弃），
+          // 必须立刻失败，而不是让调用方空等 60s。
+          rejectAllWaiters(new Error(BRIDGE_CHANNEL_LOST))
+        }
         ws.onmessage = handleMessage
       }),
   )
@@ -934,6 +971,18 @@ function handleMessage(event: MessageEvent) {
   // 云端查不到 log_collect.session_missing 的直接原因之一就是这个分支缺失。
   if (data.type === 'bridge_log') {
     chatStore.forwardBridgeLog(data as Record<string, unknown>)
+    return
+  }
+  if (data.type === 'ssh_disconnected') {
+    // 远端 shell 退出（HCI TMOUT=600）**不等于** SSH 连接失效：bridge 侧会保留会话
+    // （session.shell_eof_detached），采集/进度走独立 exec 通道，照旧可用。
+    // 因此这里只标记 + 提示，绝不打断正在进行的轮询：一断就判失败，
+    // 等于把本来能跑完的采集判死（2026-10-28 现场正是这样丢掉一次已完成采集的）。
+    sshSessionLost.value = true
+    if (pollingBridgeProgress) {
+      nodeSyncHint.value =
+        '终端会话已被节点空闲超时断开（TMOUT=600），采集仍在节点上运行；进度查询继续走现有连接，无需重新采集。'
+    }
     return
   }
   if (data.type === 'delivery_result') {
@@ -1008,13 +1057,25 @@ function sendAndWait(
   timeoutMs = 60000,
 ): Promise<any> {
   return new Promise((resolve, reject) => {
+    // 通道不可用时不发请求：ws.send 在非 OPEN 状态下静默丢弃，
+    // 发出去只会换来一次 60s 空等，且报出来的"超时"与真因无关。
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      reject(new Error(BRIDGE_CHANNEL_LOST))
+      return
+    }
     const timer = setTimeout(() => {
       waiters.delete(action)
+      waiterRejectors.delete(action)
       reject(new Error(`${action} 超时（${Math.round(timeoutMs / 1000)}s）`))
     }, timeoutMs)
     waiters.set(action, (data) => {
       clearTimeout(timer)
+      waiterRejectors.delete(action)
       resolve(data)
+    })
+    waiterRejectors.set(action, (error) => {
+      clearTimeout(timer)
+      reject(error)
     })
     if (action === 'acli_sync') {
       // 与 log_collect 同一锚点：不带 node_ip 时 bridge 会去找键为 caseID 的会话，
@@ -2210,13 +2271,23 @@ async function pollUntilCollected(
   try {
     for (let attempt = 0; attempt < 720; attempt++) {
       if (token !== runToken) return null
+      // 通道守卫：WS 已关闭时继续轮询只会空等到 60s 超时，必须立刻失败。
+      // 这里刻意**不看** sshSessionLost / sshConnected：shell EOF 后 bridge 保留会话，
+      // 进度查询仍可用，此时终止轮询等于把能跑完的采集判死。
+      if (ws.readyState !== WebSocket.OPEN) throw new Error(BRIDGE_CHANNEL_LOST)
       const result = await sendAndWait(ws, 'progress', {}, 60000)
       // bridge 明确报错（如会话已断开）必须立刻上抛：
       // 早先这里只读 log_data，错误结果会被当成"还没有进度"，面板空转一小时仍显示 0%。
       if (result.status === 'error') {
         // 与 create 失败同样处理：先把规范码留住，再由 catch 统一写库。
         lastNodeErrorCode = String(result.error_code || '')
-        throw new Error(result.message || '节点侧进度查询失败')
+        // 会话缺失必须说出真因与正确处置（重连后接管），只回显 bridge 的简短 message
+        // 会把用户推向"重新采集"，而插件单任务互斥必然拒绝。
+        throw new Error(
+          lastNodeErrorCode === 'LC-ENV-006'
+            ? SSH_LOST_MESSAGE
+            : result.message || '节点侧进度查询失败',
+        )
       }
       const snapshot = result.log_data as ProgressSnapshot | null
       if (snapshot) {
@@ -2959,8 +3030,9 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="acli">
             <span :title="acliTitle">{{ acliVersionText }}</span>
           </el-descriptions-item>
-          <el-descriptions-item label="交付路径">
-            <!-- 有任务时只认任务记录：探测推荐不能覆盖"这单实际走了哪条路" -->
+          <el-descriptions-item label="建议路径">
+            <!-- 这是探测建议，不是既定事实：有任务时只认任务记录（deliveryModeFact 在无任务时带「建议」二字），
+                 改名是为了和表单里的「交付路径」（用户决策）区分，避免被读成"已经定了 P1"。 -->
             <el-tag :type="deliveryModeFact.type" size="small">
               {{ deliveryModeFact.label }}
             </el-tag>

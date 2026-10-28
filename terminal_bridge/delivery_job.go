@@ -83,9 +83,16 @@ func normalizeDeliveryPhase(job *deliveryJob) (deliveryPhase, error) {
 		return job.Phase, nil
 	case phaseRetrying:
 		// 重排入口不带"上次卡在哪"，按已产生的进度反推：有分片说明已进入上传，
-		// 有字节说明已开始拉取，否则从头再来。三个分支都可重入。
+		// 包已拉满说明不该再碰节点，有部分字节才是没拉完，否则从头再来。
+		// 四个分支都可重入。
 		switch {
 		case len(job.UploadedParts) > 0:
+			return phaseUploading, nil
+		case job.SourceSize > 0 && job.PulledBytes >= job.SourceSize:
+			// "有字节"不等于"没拉完"。把已拉满的作业归成 pulling，会让一次纯上传
+			// 失败的重试去要求 SSH 会话；会话一旦被空闲租约回收就变成 needs_reauth
+			// 终态（2026-10-28 现场：2,122,094,416 字节已拉满、0 片上传成功，
+			// 只因平台 502 重试就被判 pulling → 会话不存在 → failed，而本地副本完好）。
 			return phaseUploading, nil
 		case job.PulledBytes > 0:
 			return phasePulling, nil
