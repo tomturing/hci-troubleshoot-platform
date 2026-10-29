@@ -1,4 +1,14 @@
--- 056：日志收集「故障场景」字典初始数据
+-- 06：日志收集「故障场景」字典初始数据（seeds 通道，不是 data-migrations）
+--
+-- 为什么落在 seeds/ 而不是 data-migrations/：
+--   `scripts/db-migrate.sh` 的执行顺序是 Step 1 数据迁移 → Step 3 atlas schema apply。
+--   存量库路径下 data-migrations 跑在 DDL 之前，而本文件 INSERT 的 log_collect_scenario
+--   表恰恰由 Step 3 才创建，因此放进 data-migrations 必然失败：
+--     ERROR: relation "log_collect_scenario" does not exist
+--   `set -e` 会让整个 Job 中止，Atlas 也永远走不到建表那一步（2026-10-29 staging PreSync
+--   实测如此）。seeds/ 由 db-seed Job 在 PostSync（hook-weight 0，晚于 db-migrate 的 -5）
+--   执行，此时 Schema 已收敛，表一定存在。
+--   规则详见 database/README.md「新表 + 初始数据的落点」。
 --
 -- 背景（2026-10-29 客户反馈）：
 --   客户在日志收集面板看到「虚拟机挂起专项 / 卡慢盘专项 / 中台专项 / 默认收集专项（不收集上述场景日志）」
@@ -21,6 +31,8 @@
 --
 -- 唯一调用链标记：log_collect_scenario_seed_v1
 -- 幂等：ON CONFLICT (value) DO NOTHING —— 已存在的行（含运营已改过的文案）绝不被覆盖。
+-- 与 02_system_prompts.sql / 03_skill_definitions.sql 同一策略：种子只在首次铺底，
+-- 运营在管理台改过的文案/审核状态不会在每次 Sync 时被回滚。
 
 BEGIN;
 
