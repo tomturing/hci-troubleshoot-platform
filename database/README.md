@@ -108,8 +108,8 @@ git add database/desired_schema.sql
 
 | 场景 | 落点 |
 |---|---|
-| 给**新表**铺初始/参考数据 | `database/seeds/NN_xxx.sql`（`ON CONFLICT DO NOTHING`） |
-| 给**既有表**做数据搬迁/纠正 | `database/data-migrations/NNN_xxx.sql` |
+| 给**新表**铺初始/参考数据 | `database/seeds/`（`ON CONFLICT DO NOTHING`） |
+| 给**既有表**做数据搬迁/纠正 | `database/data-migrations/` |
 
 反例（真实事故，PR #1355）：`056_log_collect_scenario_seed.sql` 把 `log_collect_scenario`
 的 10 行种子放进了 data-migrations → staging PreSync 报
