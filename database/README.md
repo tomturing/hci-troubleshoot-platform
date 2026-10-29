@@ -38,11 +38,13 @@ database/
     002_yyy.sql
     review_required/           ← 需专家签字后手工应用的迁移（runner 不扫描）
   hci-sim-migrations/          ← hci_sim 独立库 Schema 入口（与主库互不扫描）
-  seeds/                       ← 业务种子数据（与迁移工具无关）
+  seeds/                       ← 业务种子数据（与迁移工具无关，PostSync 执行）
     01_tool_definitions.sql    ← 初始化 tool_definition 表
     02_system_prompts.sql      ← 初始化 system_prompt 表
     03_skill_definitions.sql   ← 初始化 skill_definition 表
     04_kbd_diagnosis_samples.sql ← 显式标记的诊断测试 KBD 草稿
+    05_authn_default_admin.sql ← 默认管理员账号
+    06_log_collect_scenarios.sql ← 日志收集「故障场景」字典（新建表的初始数据）
 
 docs/archive/db-migrations-history/
   migrations/                  ← 历史 dbmate 迁移文件（只读归档，v6.3 前）
@@ -97,12 +99,35 @@ git add database/desired_schema.sql
 > 命名错配）、`043`（vm009 分组折叠为叶子）、`044`（已发布 KBD 重新归类）。
 > 未执行不影响部署链路，但这些 KBD 的分类归属会保持现状。
 
+### 新表 + 初始数据的落点（2026-10-29 事故规则）
+
+存量库的执行顺序是 **Step 1 DML → Step 3 DDL**，因此 `data-migrations/*.sql` 只能操作
+**本次同步之前就已存在的表**。新增表（写进 `desired_schema.sql`）的初始数据必须放
+`database/seeds/`，由 `db-seed` Job 在 PostSync（hook-weight 0，晚于 db-migrate 的 -5）
+执行，那时 Atlas 已完成收敛，表一定存在。
+
+| 场景 | 落点 |
+|---|---|
+| 给**新表**铺初始/参考数据 | `database/seeds/NN_xxx.sql`（`ON CONFLICT DO NOTHING`） |
+| 给**既有表**做数据搬迁/纠正 | `database/data-migrations/NNN_xxx.sql` |
+
+反例（真实事故，PR #1355）：`056_log_collect_scenario_seed.sql` 把 `log_collect_scenario`
+的 10 行种子放进了 data-migrations → staging PreSync 报
+`relation "log_collect_scenario" does not exist`，`set -e` 中止，Step 3 永远走不到；
+ArgoCD 连试 5 次失败后放弃同步，各 Deployment 均停在旧镜像。修复动作是把该文件移到
+`seeds/06_log_collect_scenarios.sql`。
+
+> CI 对这版错误曾「假绿」：`db-migration-test.yml` 先 `atlas schema apply` 再跑
+data-migrations（空库路径），恰好掩盖了「存量库 DML 早于 DDL」的差异。现已在 CI 中
+补跑 `seeds/*.sql` 并断言字典内容，见下节。
+
 ### CI 自动验证（`db-migration-test.yml`）
 
 1. 空库 `atlas schema apply` 全量建表
 2. 按序执行 `data-migrations/*.sql`（验证 SQL 正确性）
-3. 断言核心业务表存在、废弃表不存在
-4. `atlas schema diff` 输出为空 → 幂等性通过
+3. 按序执行 `seeds/*.sql`（模拟 PostSync db-seed，Schema 就绪后才跑）
+4. 断言核心业务表存在、废弃表不存在，并对关键字典断言行数与取值
+5. `atlas schema diff` 输出为空 → 幂等性通过
 
 ## 幂等性规范（强制）
 
@@ -124,6 +149,7 @@ git add database/desired_schema.sql
 3. **data-migrations/ 已执行文件永不修改** — 变更走 Forward Fix，新增文件递增版本号
 4. **禁止新增 Schema 迁移版本目录** — 变更历史由 Git 承载，不再维护 `atlas-migrations/` 副本
 5. **数据库 migrations/ 目录只读归档** — 禁止新增 dbmate 文件
+6. **新表的初始数据进 seeds/，不进 data-migrations/** — 存量库执行顺序是 DML 早于 DDL，data-migrations 找不到本次才建的表
 
 ## 多环境说明
 
