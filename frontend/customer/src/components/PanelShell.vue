@@ -10,6 +10,7 @@
  */
 import { computed } from 'vue'
 import { ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
+import { RAIL_WIDTH } from '@/utils/workspaceLayout'
 
 const props = withDefaults(
   defineProps<{
@@ -30,8 +31,12 @@ defineEmits<{
   (e: 'resizeStart', ev: MouseEvent): void
 }>()
 
-/** 折叠态的固定宽度：够放一个 34px 图标按钮 */
-const RAIL_WIDTH = 48
+/**
+ * 折叠态宽度直接复用布局求解器的常量。
+ *
+ * 中央隐藏（日志收集 + 终端并排）时求解器按「视口 - RAIL_WIDTH」算展开侧宽度，
+ * 若这里另写一个 48，两侧一改就会持续多出/少掉一条图标条的缝。
+ */
 
 const style = computed(() => ({
   width: `${props.open ? props.width : RAIL_WIDTH}px`,

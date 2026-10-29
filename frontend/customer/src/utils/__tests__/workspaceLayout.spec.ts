@@ -9,6 +9,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  RAIL_WIDTH,
   WORKSPACE_CONSTRAINTS as C,
   defaultPanelWidth,
   leftWidthRange,
@@ -234,6 +235,105 @@ describe('resolveWorkspaceLayout', () => {
         expect(layout.centerMaxWidth).toBeGreaterThan(0)
       }
     })
+  })
+})
+
+describe('中央隐藏变体（日志收集 + SSH 终端并排）', () => {
+  it('单开左侧：左栏吃掉「视口 - 图标条」，允许突破 leftMax', () => {
+    const layout = resolveWorkspaceLayout({
+      viewport: 1920,
+      leftOpen: true,
+      rightOpen: false,
+      centerHidden: true,
+    })
+    expect(layout.mode).toBe('slide')
+    expect(layout.leftWidth).toBe(1920 - RAIL_WIDTH)
+    // 日志表格列数优先于常规的信息密度上限
+    expect(layout.leftWidth).toBeGreaterThan(C.leftMax)
+    expect(layout.centerMaxWidth).toBe(0)
+    expect(layout.leftOffset).toBe(layout.leftWidth)
+    expect(layout.rightOffset).toBe(0)
+  })
+
+  it('单开右侧：终端拿满剩余宽度，允许突破 rightMax', () => {
+    const layout = resolveWorkspaceLayout({
+      viewport: 1920,
+      leftOpen: false,
+      rightOpen: true,
+      centerHidden: true,
+    })
+    expect(layout.rightWidth).toBe(1920 - RAIL_WIDTH)
+    expect(layout.rightWidth).toBeGreaterThan(C.rightMax)
+    expect(layout.centerMaxWidth).toBe(0)
+    expect(layout.leftOffset).toBe(0)
+    expect(layout.rightOffset).toBe(layout.rightWidth)
+  })
+
+  it('1920px 双开：两栏之和等于视口，左栏不超上限，终端优先', () => {
+    const layout = resolveWorkspaceLayout({
+      viewport: 1920,
+      leftOpen: true,
+      rightOpen: true,
+      centerHidden: true,
+    })
+    expect(layout.mode).toBe('compressed')
+    expect(layout.centerMaxWidth).toBe(0)
+    // 中央记 0 后，两栏必须精确填满视口（否则右边缘会留一条背景色的缝）
+    expect(layout.leftWidth + layout.rightWidth).toBe(1920)
+    expect(layout.leftWidth).toBeLessThanOrEqual(C.leftMax)
+    expect(layout.rightWidth).toBeGreaterThanOrEqual(C.rightMin)
+    expect(layout.rightWidth).toBeGreaterThan(layout.leftWidth)
+  })
+
+  it.each([1920, 1440, 1100, 1024])('%ipx 双开：两侧都不得低于各自下限', (viewport) => {
+    const layout = resolveWorkspaceLayout({
+      viewport,
+      leftOpen: true,
+      rightOpen: true,
+      centerHidden: true,
+    })
+    expect(layout.leftWidth).toBeGreaterThanOrEqual(C.leftMin)
+    expect(layout.rightWidth).toBeGreaterThanOrEqual(C.rightMin)
+    expect(layout.leftWidth + layout.rightWidth).toBe(viewport)
+  })
+
+  it('覆盖态忽略 centerHidden：窄屏仍是一次看一块', () => {
+    const base = resolveWorkspaceLayout({ viewport: 900, leftOpen: true, rightOpen: true })
+    const hidden = resolveWorkspaceLayout({
+      viewport: 900,
+      leftOpen: true,
+      rightOpen: true,
+      centerHidden: true,
+    })
+    expect(base.mode).toBe('overlay')
+    expect(hidden).toEqual(base)
+  })
+
+  it('无面板打开时忽略 centerHidden：否则会得到一块空屏', () => {
+    const base = resolveWorkspaceLayout({ viewport: 1920, leftOpen: false, rightOpen: false })
+    const hidden = resolveWorkspaceLayout({
+      viewport: 1920,
+      leftOpen: false,
+      rightOpen: false,
+      centerHidden: true,
+    })
+    expect(hidden).toEqual(base)
+    expect(hidden.mode).toBe('expanded')
+  })
+
+  it('不传 centerHidden 与传 false 结果完全一致（旧行为回归）', () => {
+    for (const viewport of [1920, 1600, 1440, 1280, 1100, 1024, 900]) {
+      for (const [leftOpen, rightOpen] of [
+        [true, false],
+        [false, true],
+        [true, true],
+        [false, false],
+      ] as const) {
+        expect(resolveWorkspaceLayout({ viewport, leftOpen, rightOpen })).toEqual(
+          resolveWorkspaceLayout({ viewport, leftOpen, rightOpen, centerHidden: false }),
+        )
+      }
+    }
   })
 })
 

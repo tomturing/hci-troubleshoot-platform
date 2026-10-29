@@ -3922,3 +3922,45 @@ CREATE INDEX IF NOT EXISTS idx_log_collect_task_case
 CREATE UNIQUE INDEX IF NOT EXISTS uq_log_collect_task_active_case
     ON log_collect_task (case_id)
     WHERE ((status)::text <> ALL ((ARRAY['completed'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[]));
+
+-- ------------------------------------------------------------
+-- 表: log_collect_scenario  [模块: case-service]
+-- 说明: 日志收集"故障场景"字典。acli 只告诉我们 -m 支持哪些枚举值，不解释每个专项收什么；
+--       选项文案长期硬编码在 bridge 与客户前端两处，用户看到"中台专项 / 卡慢盘专项"无从判断该选哪个。
+--       本表是展示文案与互斥规则的唯一真源：能力边界仍由集群 acli 决定（probe 的 -m 枚举），
+--       字典只负责"这个枚举叫什么、收哪些日志、什么症状选它、大概多久"。
+-- 约束: value 是 acli 枚举，创建后不可修改（改值等于换场景）；停用（enabled=false）只影响客户端展示。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_scenario (
+    value varchar(32) NOT NULL,
+    label varchar(64) NOT NULL,
+    summary varchar(200),
+    collects text,
+    typical_symptoms text,
+    duration_hint varchar(100),
+    exclusive boolean NOT NULL DEFAULT false,
+    sort_order integer NOT NULL DEFAULT 100,
+    enabled boolean NOT NULL DEFAULT true,
+    review_state varchar(16) NOT NULL DEFAULT 'pending_review',
+    updated_by varchar(64),
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT log_collect_scenario_pkey PRIMARY KEY (value),
+    CONSTRAINT ck_log_collect_scenario_review_state CHECK ((review_state)::text = ANY ((ARRAY['pending_review'::character varying, 'approved'::character varying])::text[]))
+);
+
+COMMENT ON TABLE log_collect_scenario IS '日志收集故障场景字典 — 展示文案与互斥规则的唯一真源；可选范围仍由集群 acli 枚举决定';
+COMMENT ON COLUMN log_collect_scenario.value IS 'acli log_collect -m 的枚举值（如 vm_suspend），创建后不可修改';
+COMMENT ON COLUMN log_collect_scenario.label IS '客户端勾选项显示的中文短名';
+COMMENT ON COLUMN log_collect_scenario.summary IS '一句话释义，显示在勾选项第二行；空值时客户端只显示短名';
+COMMENT ON COLUMN log_collect_scenario.collects IS '该专项实际采集的内容/范围说明，供用户判断是否覆盖自己的故障';
+COMMENT ON COLUMN log_collect_scenario.typical_symptoms IS '典型症状，帮助用户按现象反选场景';
+COMMENT ON COLUMN log_collect_scenario.duration_hint IS '耗时提示（如单天约 4 分钟）；不同专项耗时差异大，缺少它用户无法预估';
+COMMENT ON COLUMN log_collect_scenario.exclusive IS '与其他场景互斥：true 表示选中它必须清空其它项（当前无场景启用；other 已实机确认为叠加语义）';
+COMMENT ON COLUMN log_collect_scenario.sort_order IS '客户端展示顺序，数值小的在前';
+COMMENT ON COLUMN log_collect_scenario.enabled IS '是否在客户端展示；停用不影响历史任务与结果态回显';
+COMMENT ON COLUMN log_collect_scenario.review_state IS '文案审核状态：pending_review=草稿待支持工程师审核；approved=已审核可对外';
+COMMENT ON COLUMN log_collect_scenario.updated_by IS '最近一次修改者（管理端登录账号）';
+
+CREATE INDEX IF NOT EXISTS idx_log_collect_scenario_order
+    ON log_collect_scenario (enabled, sort_order);
