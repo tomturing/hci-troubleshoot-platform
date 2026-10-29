@@ -19,4 +19,10 @@ metadata:
 data:
   migration_revision: {{ sha256sum $migrationPayload | quote }}
   migration_file_count: {{ len $migrationFiles | quote }}
+  # 凭据的存在性与轮换同样是 hook-only 变更（hci-sim-db-credentials 是 PreSync hook，
+  # 不参与漂移对比）。轮换密码时必须递增 hciSimDatabase.credentialsRevision，
+  # 使本 ConfigMap 变化 -> OutOfSync -> 自动 sync -> wave -10 重建 Secret。
+  # 刻意不写密码或其散列，避免在 ConfigMap 里留下可离线爆破的凭据指纹。
+  credentials_secret: {{ .Values.hciSimDatabase.credentialsSecretName | quote }}
+  credentials_revision: {{ .Values.hciSimDatabase.credentialsRevision | default "1" | quote }}
 {{- end }}

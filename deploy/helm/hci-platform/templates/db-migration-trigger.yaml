@@ -1,0 +1,32 @@
+{{- if .Values.dbMigrate.enabled }}
+{{- /* 普通资源（刻意不带任何 hook / sync-wave 注解）：把迁移输入的变化显式暴露给
+       ArgoCD 的漂移对比。ArgoCD 不比较 hook 资源，若只靠 db-migrate Job 的镜像 tag
+       承载变化，则"仅 DB 输入变化"的晋级提交会让 app 保持 Synced，PreSync Job 永远
+       不会重跑，迁移静默不落地而 CI 全绿（2026-10-29 事故）。 */}}
+{{- $seedFiles := .Files.Glob "seeds/*.sql" }}
+{{- $seedPayload := "" }}
+{{- range $path, $_ := $seedFiles }}
+{{- $seedPayload = printf "%s%s\n%s\n" $seedPayload $path ($.Files.Get $path) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: db-migration-trigger
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-migrate
+    hci-platform.dev/ordinary-sync-trigger: "true"
+  annotations:
+    # 该普通资源把迁移输入变化暴露给 ArgoCD；PreSync/PostSync Hook 只负责执行顺序。
+    hci-platform.dev/migration-trigger: "true"
+data:
+  # migrator_image 是三类迁移输入的聚合修订号：desired_schema.sql / desired_extras.sql /
+  # data-migrations/ / seeds/ / Dockerfile.migrations / 迁移脚本 任一变化都会重建镜像并
+  # 产生新 tag（见 scripts/ci/resolve_image_build_plan.py 的 DB_MIGRATE_PATHS）。
+  migrator_image: {{ printf "%s:%s" .Values.dbMigrate.image.repository .Values.dbMigrate.image.tag | quote }}
+  # 二次保险：即使将来白名单漏掉某个迁移目录，seeds 内容变化仍能触发一次 sync，
+  # 此时由 PostSync db-seed（挂载 db-seed-sql，本就是普通资源）应用新种子，不会空转。
+  seeds_revision: {{ sha256sum $seedPayload | quote }}
+  seed_file_count: {{ len $seedFiles | quote }}
+{{- end }}

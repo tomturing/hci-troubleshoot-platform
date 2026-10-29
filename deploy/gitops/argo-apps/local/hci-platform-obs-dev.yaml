@@ -53,6 +53,13 @@ spec:
     automated:
       prune: false      # 禁止自动删除资源，保护 Loki + Tempo PVC 中的观测数据
       selfHeal: true
+    retry:
+      # 失败自动重试：让与 hook 依赖/瞬态不可达相关的失败能够自动收敛
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m
     syncOptions:
       - CreateNamespace=true         # 如 namespace 尚未被本 Chart 创建，ArgoCD 兜底创建
       - RespectIgnoreDifferences=true  # sync 阶段同样跳过 ignoreDifferences 中声明的字段，防止 patch PVC 不可变字段报错

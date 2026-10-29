@@ -1,0 +1,49 @@
+suite: "db migration trigger (普通资源暴露迁移输入漂移)"
+templates:
+  - db-migration-trigger.yaml
+tests:
+  - it: "触发器是普通资源，且把 db-migrate 镜像 tag 暴露给 ArgoCD 漂移对比"
+    set:
+      dbMigrate.image.tag: "20261029-0748-aa9cb29"
+    asserts:
+      - isKind:
+          of: ConfigMap
+      - equal:
+          path: metadata.name
+          value: db-migration-trigger
+      # 一旦带上 hook / sync-wave 注解，ArgoCD 会把它排除出漂移对比，
+      # 于是"仅 DB 输入变化"的晋级提交又会让迁移静默不落地（2026-10-29 事故）。
+      - notExists:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+      - notExists:
+          path: metadata.annotations["argocd.argoproj.io/sync-wave"]
+      - equal:
+          path: metadata.labels["hci-platform.dev/ordinary-sync-trigger"]
+          value: "true"
+      - equal:
+          path: data.migrator_image
+          value: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate:20261029-0748-aa9cb29"
+
+  - it: "tag 变化必然改变 migrator_image，从而顶出 OutOfSync 触发 sync"
+    set:
+      dbMigrate.image.tag: "20261029-0718-07264ab"
+    asserts:
+      - equal:
+          path: data.migrator_image
+          value: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate:20261029-0718-07264ab"
+
+  - it: "seeds 内容摘要稳定为 sha256，且统计种子文件数"
+    asserts:
+      - matchRegex:
+          path: data.seeds_revision
+          pattern: "^[a-f0-9]{64}$"
+      - matchRegex:
+          path: data.seed_file_count
+          pattern: "^[1-9][0-9]*$"
+
+  - it: "dbMigrate.enabled=false 时不渲染触发器"
+    set:
+      dbMigrate.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

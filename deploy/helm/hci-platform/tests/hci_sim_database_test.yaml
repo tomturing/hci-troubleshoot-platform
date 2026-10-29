@@ -127,6 +127,27 @@ tests:
       - equal:
           path: data.migration_file_count
           value: "8"
+      # 凭证存在性与轮换也是 hook-only 变更：必须能在普通资源上看见，否则轮换密码
+      # 不会触发 sync，Secret 永远停在旧值。
+      - equal:
+          path: data.credentials_secret
+          value: hci-sim-db-credentials
+      - equal:
+          path: data.credentials_revision
+          value: "1"
+
+  - it: "递增 credentialsRevision 会让触发器变化，从而顶出 OutOfSync"
+    set:
+      hciSimDatabase.enabled: true
+      hciSimDatabase.migratorPassword: "migration-test-secret"
+      hciSimDatabase.runtimePassword: "runtime-test-secret"
+      hciSimDatabase.credentialsRevision: "2"
+    templates:
+      - hci-sim-db-migration-trigger.yaml
+    asserts:
+      - equal:
+          path: data.credentials_revision
+          value: "2"
 
   - it: "迁移 Job 在依赖之后以 wave -8 执行"
     set:
@@ -144,3 +165,11 @@ tests:
       - equal:
           path: metadata.annotations["argocd.argoproj.io/sync-wave"]
           value: "-8"
+      # 依赖缺失时 Pod 停在 CreateContainerConfigError，容器内前置校验来不及执行。
+      # 没有 activeDeadlineSeconds 时 Job 永不失败，整个 sync 永久挂起。
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+      - matchRegex:
+          path: metadata.annotations["argocd.argoproj.io/hook-delete-policy"]
+          pattern: "HookFailed"

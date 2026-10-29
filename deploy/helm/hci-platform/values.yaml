@@ -724,6 +724,9 @@ dbMigrate:
   image:
     repository: "ghcr.io/tomturing/hci-troubleshoot-platform/db-migrate"
     tag: "latest"
+  # 卡住必须收敛为失败：依赖缺失时 Pod 会停在 CreateContainerConfigError（Pending 而非
+  # Failed），Job 不失败 -> hook-delete-policy 的 HookFailed 永不触发 -> 整个 sync 永久挂起。
+  activeDeadlineSeconds: 900
 
 # ======================== hci-sim DB（独立控制面）===========================
 # 默认关闭，必须由环境仓库显式启用并提供两个独立密码。hci-sim 不得回退到
@@ -737,6 +740,11 @@ hciSimDatabase:
   credentialsSecretName: hci-sim-db-credentials
   migratorPassword: ""
   runtimePassword: ""
+  # 卡住必须收敛为失败（同 dbMigrate.activeDeadlineSeconds 的原因）
+  activeDeadlineSeconds: 600
+  # 凭证轮换/存在性属 hook-only 变更，ArgoCD 漂移对比看不见。轮换凭证时必须同步
+  # 递增此值，使 hci-sim-db-migration-trigger 变化 -> OutOfSync -> 自动 sync。
+  credentialsRevision: "1"
 
 # ======================== DB Seed（ArgoCD PostSync / Helm post-upgrade）===
 # 自动加载 database/seeds/*.sql 到 PostgreSQL，初始化工具/Prompt/技能及显式标记的诊断 KBD 草稿样例
@@ -744,6 +752,8 @@ hciSimDatabase:
 dbSeed:
   enabled: true
   image: "postgres:15-alpine"
+  # 卡住必须收敛为失败（同 dbMigrate.activeDeadlineSeconds 的原因）
+  activeDeadlineSeconds: 600
 
 # ======================== Smoke Test（ArgoCD PostSync）=====================
 smokeTest:

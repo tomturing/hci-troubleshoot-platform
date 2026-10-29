@@ -1,0 +1,74 @@
+suite: "hook Job 自愈不变式 - db-migrate"
+# 背景（2026-10-29）：依赖对象缺失时 Pod 停在 CreateContainerConfigError（Pending 而非
+# Failed），Job 永不失败 -> hook-delete-policy 的 HookFailed 永不触发 -> 整个 sync 永久挂起。
+# 因此每个 hook Job 必须同时具备 activeDeadlineSeconds 与含 HookFailed 的删除策略。
+templates:
+  - hooks/db-migrate-job.yaml
+tests:
+  - it: "具备超时收敛与 HookFailed 清理"
+    asserts:
+      - isKind:
+          of: Job
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 900
+      - matchRegex:
+          path: metadata.annotations["argocd.argoproj.io/hook-delete-policy"]
+          pattern: "HookFailed"
+
+  - it: "超时时间可由 values 覆盖（现场排障时无需改模板）"
+    set:
+      dbMigrate.activeDeadlineSeconds: 1200
+    asserts:
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 1200
+---
+suite: "hook Job 自愈不变式 - db-seed"
+templates:
+  - hooks/db-seed-job.yaml
+tests:
+  - it: "具备超时收敛与 HookFailed 清理"
+    asserts:
+      - isKind:
+          of: Job
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+      - matchRegex:
+          path: metadata.annotations["argocd.argoproj.io/hook-delete-policy"]
+          pattern: "HookFailed"
+---
+suite: "hook Job 自愈不变式 - smoke-test"
+templates:
+  - hooks/smoke-test-job.yaml
+tests:
+  - it: "具备超时收敛与 HookFailed 清理"
+    asserts:
+      - isKind:
+          of: Job
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 120
+      - matchRegex:
+          path: metadata.annotations["argocd.argoproj.io/hook-delete-policy"]
+          pattern: "HookFailed"
+---
+suite: "hook Job 自愈不变式 - hci-sim"
+templates:
+  - hooks/hci-sim-db-migrate-job.yaml
+tests:
+  - it: "具备超时收敛与 HookFailed 清理"
+    set:
+      hciSimDatabase.enabled: true
+      hciSimDatabase.migratorPassword: "migration-test-secret"
+      hciSimDatabase.runtimePassword: "runtime-test-secret"
+    asserts:
+      - isKind:
+          of: Job
+      - equal:
+          path: spec.activeDeadlineSeconds
+          value: 600
+      - matchRegex:
+          path: metadata.annotations["argocd.argoproj.io/hook-delete-policy"]
+          pattern: "HookFailed"

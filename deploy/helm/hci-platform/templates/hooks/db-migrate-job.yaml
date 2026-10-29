@@ -28,6 +28,10 @@ metadata:
     helm.sh/hook-weight: "-5"
 spec:
   backoffLimit: 0
+  # 注意：仅 backoffLimit 不够。依赖对象缺失时 Pod 会停在 CreateContainerConfigError，
+  # Job 不会失败，HookFailed 清理与后续重试都不会发生。activeDeadlineSeconds 把
+  # 「永久挂死」转成「超时失败」，自愈链才能启动。
+  activeDeadlineSeconds: {{ .Values.dbMigrate.activeDeadlineSeconds | default 900 }}
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
