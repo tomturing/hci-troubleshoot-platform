@@ -123,7 +123,15 @@ func validUploadedParts(raw []int, partCount int) map[int]bool {
 //
 // 路径仍走 shellQuote：命令进的是远端 shell，路径来自平台下发的 archive_path，
 // 不因为"平台可信"就放弃转义。
+//
+// offset==0 时改用 `cat`：`tail -c +1` 与 `cat` 逐字节等价，而 aSV 受限 shell 的
+// 命令白名单里确有 cat、未必有 tail（同源证据：Q2026102900165 现场 stat 就是
+// exit 127，而 ls/cat 可用）。首次交付必然从 0 开始，这条替换覆盖绝大多数路径，
+// 且不存在语义差异——不必等现场因为没有 tail 再挂一次。
 func buildPullCommand(remotePath string, offset int64) string {
+	if offset <= 0 {
+		return fmt.Sprintf("cat %s", shellQuote(remotePath))
+	}
 	return fmt.Sprintf("tail -c +%d %s", offset+1, shellQuote(remotePath))
 }
 

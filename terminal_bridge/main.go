@@ -3113,9 +3113,25 @@ const (
 )
 
 func (s *SSHSession) runQuickCommand(ctx context.Context, cmd string) (string, int, error) {
+	stdout, stderr, exitCode, err := s.runQuickCommandStreams(ctx, cmd)
+	// 历史契约：stdout 为空时用 stderr 兜底当输出，调用方只看一个字符串。
+	if stdout == "" {
+		stdout = stderr
+	}
+	return stdout, exitCode, err
+}
+
+// runQuickCommandStreams 与 runQuickCommand 同源，但把 stdout 与 stderr 分开返回。
+//
+// 为什么必须分开：压缩包存在性探测要能区分两种"都不成功"——
+// 「节点上没有这个命令」（exit 126/127，stderr 形如 "stat: not found"）与
+// 「节点上有命令但没有这个文件」（stderr 形如 "No such file or directory"）。
+// 二者的结论完全相反，合并成一条字符串后不可分辨，只能一律当成"包被删了"，
+// 这正是 Q2026102900165 现场"包在盘上却被判不存在"的根因。
+func (s *SSHSession) runQuickCommandStreams(ctx context.Context, cmd string) (string, string, int, error) {
 	session, err := s.client.NewSession()
 	if err != nil {
-		return "", -1, err
+		return "", "", -1, err
 	}
 	defer session.Close()
 
@@ -3131,7 +3147,7 @@ func (s *SSHSession) runQuickCommand(ctx context.Context, cmd string) (string, i
 	select {
 	case <-ctx.Done():
 		_ = session.Signal(ssh.SIGKILL)
-		return "", -1, ctx.Err()
+		return "", "", -1, ctx.Err()
 	case err := <-done:
 		exitCode := 0
 		if err != nil {
@@ -3142,11 +3158,7 @@ func (s *SSHSession) runQuickCommand(ctx context.Context, cmd string) (string, i
 				exitCode = -1
 			}
 		}
-		output := stdoutBuf.String()
-		if output == "" && stderrBuf.Len() > 0 {
-			output = stderrBuf.String()
-		}
-		return strings.TrimSpace(output), exitCode, err
+		return strings.TrimSpace(stdoutBuf.String()), strings.TrimSpace(stderrBuf.String()), exitCode, err
 	}
 }
 

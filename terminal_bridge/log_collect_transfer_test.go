@@ -16,13 +16,14 @@ import (
 //
 // 这是最容易错、且错了最难发现的一处：offset=0 传成 +0 会被 GNU tail 当成
 // "最后 0 字节"直接返回空，于是本地包永远长不起来，却没有任何报错。
+// offset=0 走 cat（与 tail -c +1 等价），避开受限 shell 没有 tail 的可能。
 func TestBuildPullCommandIsOneBased(t *testing.T) {
 	cases := []struct {
 		name   string
 		offset int64
 		want   string
 	}{
-		{"从头读", 0, "tail -c +1 "},
+		{"从头读", 0, "cat "},
 		{"续传一字节", 1, "tail -c +2 "},
 		{"续传整片", 1048576, "tail -c +1048577 "},
 	}
@@ -49,8 +50,8 @@ func TestBuildPullCommandQuotesPath(t *testing.T) {
 	evil := "/sf/data/a b;rm -rf /tmp/x`id`$(whoami).zip"
 	command := buildPullCommand(evil, 0)
 
-	// 只回放路径参数部分：buildPullCommand = "tail -c +N " + shellQuote(path)
-	quoted := strings.TrimPrefix(command, "tail -c +1 ")
+	// 只回放路径参数部分：buildPullCommand = "cat " + shellQuote(path)（offset=0）
+	quoted := strings.TrimPrefix(command, "cat ")
 	if quoted == command {
 		t.Fatalf("命令结构不符预期：%s", command)
 	}

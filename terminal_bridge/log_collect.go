@@ -751,51 +751,161 @@ func (s *SSHSession) probeSourceDigest(ctx context.Context, path string) (string
 	return algo, digest, nil
 }
 
-// probeLogCollectArchiveSize 量一次压缩包字节数。
+// archiveProbe 是「节点上这个压缩包此刻是什么状态」的唯一结论载体（三态）。
+//
+// 为什么必须是三态而不是 bool：Q2026102900165（2026-10-29）现场证明，
+// aSV 受限 shell 里根本没有 stat（exit 127，包却真在盘上、29.9 MB），
+// 而 ls -l 可用。旧实现把「命令跑不起来」与「文件真没了」压成同一个 exists=false，
+// 平台于是对着盘上的包断言「压缩包已被插件删除」。界面只能表达已知与未知，
+// 不能把未知伪装成已知，所以这里必须把「无法确定」单独留一个出口。
+type archiveProbe struct {
+	// Size 为 0 表示没量到（不代表 0 字节）；交付 init 需要它是正数。
+	Size int64
+	// Exists：true=确认在盘上；false=确认不在；nil=无法确定（命令不可用/通道异常）。
+	Exists *bool
+	// Level 记录结论由哪一级命令给出：stat / ls / missing / none。
+	Level string
+	// Diag 非空即表示有过失败尝试（走了兜底或全失败），必须随事件落库。
+	Diag string
+}
+
+// archiveProbeAttempt 是一次单命令探测的原始结果（stdout/stderr 必须分开）。
+type archiveProbeAttempt struct {
+	Stdout string
+	Stderr string
+	Code   int
+	Err    error
+}
+
+var (
+	// 工具不可用：命令不存在、被受限 shell 拒绝、或不吃这个参数。
+	archiveProbeToolMissingRe = regexp.MustCompile(`(?i)(command not found|: not found|unknown command|not supported|invalid option|illegal option|permission denied)`)
+	// 文件不存在：只有拿到这类明确证据才允许下「包已不在」的结论。
+	archiveProbeFileMissingRe = regexp.MustCompile(`(?i)(no such file|cannot access|cannot stat|does not exist|not exist)`)
+)
+
+func (a archiveProbeAttempt) succeeded() bool {
+	return a.Err == nil && a.Code == 0
+}
+
+// saidMissing 判断 stderr/stdout 是否明确说「没有这个文件」。
+func (a archiveProbeAttempt) saidMissing() bool {
+	return archiveProbeFileMissingRe.MatchString(a.Stdout + "\n" + a.Stderr)
+}
+
+// unavailable 判断失败是否属于「这个命令在这台节点上跑不了」。
+//
+// 126/127 是 shell 对「找到但不能执行 / 找不到」的固定约定，必须优先于文本匹配：
+// busybox 的 "stat: not found" 与 "No such file" 是两件完全不同的事。
+func (a archiveProbeAttempt) unavailable() bool {
+	if a.Code == 126 || a.Code == 127 {
+		return true
+	}
+	return archiveProbeToolMissingRe.MatchString(a.Stdout + "\n" + a.Stderr)
+}
+
+func (a archiveProbeAttempt) diag(name string) string {
+	detail := a.Stderr
+	if detail == "" {
+		detail = a.Stdout
+	}
+	detail = truncateForDiag(detail, 120)
+	if detail == "" {
+		return fmt.Sprintf("%s:exit=%d", name, a.Code)
+	}
+	return fmt.Sprintf("%s:exit=%d %s", name, a.Code, detail)
+}
+
+// decideArchiveProbe 把两级命令结果收敛成三态结论（纯函数，便于穷举测试）。
+//
+// 判据顺序经过对抗性审查：
+//  1. 任一级读取成功 => 文件确定存在（成功读盘本身就否证了“不存在”）；
+//  2. 读不到时，只有拿到“没有这个文件”的明确证据才判 false；
+//  3. 其余（命令不存在、权限、通道异常）一律 nil——宁可说“无法确认”，
+//     也不能把“我探测不了”就成了“包被删了”。
+func decideArchiveProbe(statA, lsA archiveProbeAttempt) archiveProbe {
+	var diags []string
+	if !statA.succeeded() {
+		diags = append(diags, statA.diag("stat"))
+	}
+	if !lsA.succeeded() {
+		diags = append(diags, lsA.diag("ls"))
+	}
+	probe := archiveProbe{Diag: strings.Join(diags, " | ")}
+	exists := true
+
+	if statA.succeeded() {
+		if size, ok := parseSizeText(statA.Stdout); ok && size > 0 {
+			probe.Size, probe.Level, probe.Exists = size, "stat", &exists
+			return probe
+		}
+	}
+	if lsA.succeeded() {
+		probe.Level = "ls"
+		if size, ok := parseLsFieldSize(lsA.Stdout); ok {
+			probe.Size = size
+		}
+		probe.Exists = &exists
+		return probe
+	}
+	if statA.succeeded() {
+		// stat 成功但大小解析不出：存在性是确定的，只是大小未知。
+		probe.Level, probe.Exists = "stat", &exists
+		return probe
+	}
+	// 只有「命令确实跑了、并且明确说没有这个文件」的那一级才有资格判不存在。
+	// 若把 exit 127 那级的 stderr 也算进来，受限 shell 的 "not found" 就又会
+	// 被误当成"文件没了"——这正是本缺陷的原始形态。
+	if saidMissingBy(statA) || saidMissingBy(lsA) {
+		absent := false
+		probe.Level, probe.Exists = "missing", &absent
+		return probe
+	}
+	// 其余（命令不可用、权限、通道异常、上下文取消）一律未知：
+	// 平台宁可显示「无法确认」，也不能替用户断言包已被删除。
+	probe.Level = "none"
+	return probe
+}
+
+// saidMissingBy 判断某一级是否给出了「文件不存在」的可靠证据。
+func saidMissingBy(a archiveProbeAttempt) bool {
+	return !a.succeeded() && !a.unavailable() && a.saidMissing()
+}
+
+// probeLogCollectArchive 量一次压缩包状态（大小 + 三态存在性）。
 //
 // 时机敏感：P1 直传成功后插件会立刻删除压缩包，只有上传窗口内的轮询能拿到值。
 // 量不到不报错、不阻断进度查询，返回 0 由前端显示「未记录」。
 //
-// 为什么要做两级降级：staging 实测（case Q2026101401683，85% 上传中、包必然存在）
-// 显示 stat 返回 0——说明在真实节点上 stat 不是"偶尔失败"而是"从来没成功"，
-// 而单命令实现失败时不留下任何可判读信息，只能再猜一轮、再发一版。
-// 所以这里改成「GNU stat → ls -l 解析」，并把每级的 exitCode/stderr 拼成 diag
-// 交给调用方写进 blog：下次现场直接看日志就能定位，不必改代码再发版。
-func probeLogCollectArchiveSize(ctx context.Context, s *SSHSession, rawPath string) (int64, bool, string) {
+// 两级降级的必要性见 decideArchiveProbe：aSV 受限 shell 只给了一份受控命令白名单，
+// stat 不在其中而 ls 在。两级结果与逐级诊断（含 exit 与 stderr）一并回给调用方，
+// 现场再遇到“面板说包没了”时能直接指出是哪一级、错在哪里。
+func probeLogCollectArchive(ctx context.Context, s *SSHSession, rawPath string) archiveProbe {
 	if s == nil {
-		return 0, false, "no-session"
+		return archiveProbe{Level: "none", Diag: "no-session"}
 	}
 	if strings.TrimSpace(rawPath) == "" {
-		return 0, false, "empty-path"
+		return archiveProbe{Level: "none", Diag: "empty-path"}
 	}
 	path, err := normalizeArchivePath(rawPath)
 	if err != nil {
-		return 0, false, "path-rejected: " + err.Error()
+		return archiveProbe{Level: "none", Diag: "path-rejected: " + err.Error()}
 	}
-	var diags []string
-	// ① GNU coreutils：HCI 节点是 Linux，正常情况走这条
-	if out, code, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path))); cmdErr == nil && code == 0 {
-		// exit 0 本身就是"文件存在"的证据：0 字节包同样存在，不能因 size==0 判不存在
-		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size >= 0 {
-			return size, true, ""
-		}
-		diags = append(diags, fmt.Sprintf("stat:unparsable %q", truncateForDiag(out, 60)))
-	} else {
-		diags = append(diags, fmt.Sprintf("stat:exit=%d err=%v", code, cmdErr))
+	statOut, statErr, statCode, statCmdErr := s.runQuickCommandStreams(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path)))
+	lsOut, lsErr, lsCode, lsCmdErr := s.runQuickCommandStreams(ctx, fmt.Sprintf("ls -l %s", shellQuote(path)))
+	return decideArchiveProbe(
+		archiveProbeAttempt{Stdout: statOut, Stderr: statErr, Code: statCode, Err: statCmdErr},
+		archiveProbeAttempt{Stdout: lsOut, Stderr: lsErr, Code: lsCode, Err: lsCmdErr},
+	)
+}
+
+// parseSizeText 解析 stat -c %s 的纯数字输出。
+func parseSizeText(output string) (int64, bool) {
+	size, err := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+	if err != nil || size < 0 {
+		return 0, false
 	}
-	// ② ls -l 兜底：受限 shell / 裁剪版 busybox 没有 stat 时，第 5 列就是字节数
-	if out, code, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("ls -l %s", shellQuote(path))); cmdErr == nil && code == 0 {
-		if size, ok := parseLsFieldSize(out); ok {
-			return size, true, ""
-		}
-		// ls 成功但解析不出大小：文件确实存在，只是大小未知
-		diags = append(diags, fmt.Sprintf("ls:unparsable %q", truncateForDiag(out, 80)))
-		return 0, true, strings.Join(diags, " | ")
-	} else {
-		diags = append(diags, fmt.Sprintf("ls:exit=%d err=%v", code, cmdErr))
-	}
-	// 两级都失败：明确"此刻不存在"，这正是 P1 发送成功后自删的表现
-	return 0, false, strings.Join(diags, " | ")
+	return size, true
 }
 
 // parseLsFieldSize 从 `ls -l` 的单行输出里取字节数（第 5 列）。
@@ -1137,12 +1247,13 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 判定任务已完成，回填一个未经验证的推导路径会让它在"任务被清理但包还在"时误判完成。
 		// 大小是纯展示字段，不参与状态机，因此只补 size。
 		// 诊断信息跟着进度事件一起落库：量不到时必须留下"为什么量不到"。
-		var archiveSizeDiag string
-		var archiveExists bool
-		progress.ArchiveSize, archiveExists, archiveSizeDiag = probeLogCollectArchiveSize(ctx, s, probePath)
+		archiveProbeResult := probeLogCollectArchive(ctx, s, probePath)
+		progress.ArchiveSize = archiveProbeResult.Size
 		// 存在性必须跟着进度一起回给前端：判断"能不能补交付"只认这个结论，
 		// 不认报告里的 archive_path（那个字段在包被删后仍然存在）。
-		progress.ArchiveExists = &archiveExists
+		// probeLogCollectArchive 返回三态指针：探测失败时保持 nil，前端据此显示
+		// 「无法确认」而不是把未知当成"已删除"。
+		progress.ArchiveExists = archiveProbeResult.Exists
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -1172,8 +1283,8 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
 			"node_state":  progress.NodeState,
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
-			"archive_exists": archiveExists, "archive_probe_path": probePath,
-			"archive_probe_source": probeSource,
+			"archive_exists": progress.ArchiveExists, "archive_probe_path": probePath,
+			"archive_probe_source": probeSource, "archive_probe_level": archiveProbeResult.Level,
 			// ticket_no 必须落事件：acli 是节点级单任务，同一节点可能同时挂着
 			// 别的工单的采集，事后只能靠它判断这份进度属于谁。
 			"ticket_no": msg.TicketNo, "task_id": msg.ExecID,
@@ -1181,21 +1292,30 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"error":     errString(err), "raw_len": len(output),
 		}
 		// diag 只在探测失败时非空：空值不写，避免每条进度都多一个无意义键。
-		if archiveSizeDiag != "" {
-			fields["archive_probe_diag"] = archiveSizeDiag
+		// 走兜底成功时 diag 里仍保留失败那一级的 exit/stderr（形如 stat:exit=127），
+		// 这是「就地止血但保留根因」的关键：Q2026102900165 现场正因为兜底成功
+		// 把 diag 清空，事后完全看不出 stat 从来跑不起来。
+		if archiveProbeResult.Diag != "" {
+			fields["archive_probe_diag"] = archiveProbeResult.Diag
 		}
 		blog("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, fields)
 		// stat 失败在采集早期是常态（包还没生成），只有进入上传窗口后的失败才值得留证：
 		// 否则每次轮询都多打一条，会把真正的现场信号淹掉。
-		if archiveSizeDiag != "" && progress.Percent >= 80 {
-			blog("WARN", "log_collect.archive_size_probe", "压缩包大小探测失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"path": probePath,
-				"diag": archiveSizeDiag,
+		if archiveProbeResult.Diag != "" && progress.Percent >= 80 {
+			blog("WARN", "log_collect.archive_size_probe", "压缩包大小探测降级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"path": probePath, "level": archiveProbeResult.Level,
+				"diag": archiveProbeResult.Diag,
 			})
 		}
 
 	case "stat":
-		// P3 编排需要先知道包大小才能 init 分片会话；只读单命令，走非 PTY 通道。
+		// P3 编排需要先知道包大小才能 init 分片会话。
+		//
+		// 这里必须与 progress 共用同一套两级探测（stat → ls -l）：Q2026102900165 现场
+		// stat 在 aSV 受限 shell 里 exit 127（命令不存在），包却真在盘上 29.9 MB。
+		// 旧实现只有单条 stat，失败即 exists=false，于是平台对着盘上的包断言
+		// 「压缩包已被插件删除」，且 Status 恒为 ok，把真诊断整个吞掉。
+		// 现在结论只有三种：在（ok）/ 明确不在（missing）/ 无法确认（error）。
 		path, pathErr := normalizeArchivePath(msg.TransferSourcePath)
 		if pathErr != nil {
 			sendMsg(ws, OutMessage{
@@ -1205,25 +1325,39 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			})
 			return
 		}
-		output, exitCode, cmdErr := s.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path)))
-		size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
-		// 文件不存在不是"动作失败"：它是补交付的合法结论（P1 发送成功后插件自删）。
-		// 以前这里把 exit 1 当 error 抛出去，用户看到的是 "Process exited with status 1"。
-		exists := cmdErr == nil && exitCode == 0
-		status, code := "ok", ""
-		if exists {
-			outcome = "ok"
-		} else {
+		probed := probeLogCollectArchive(ctx, s, path)
+		logData := map[string]any{
+			"path": path, "size": probed.Size,
+			"exists": probed.Exists, "probe_level": probed.Level,
+		}
+		if probed.Diag != "" {
+			logData["probe_diag"] = probed.Diag
+		}
+		status, code, errType, message := "ok", "", "", ""
+		switch {
+		case probed.Exists == nil:
+			// 探测本身失败：必须当失败上报，否则前端只能把"测不到"当"不存在"。
+			status, code, errType = "error", ErrTransferArchiveProbe, "archive_probe_unknown"
+			message = "无法确认压缩包状态（节点命令不可用或通道异常）"
+			if probed.Diag != "" {
+				message += "：" + probed.Diag
+			}
+		case !*probed.Exists:
+			// 文件不存在不是"动作失败"：它是补交付的合法结论（P1 发送成功后插件自删）。
 			code = ErrTransferArchiveMissing
+			message = "节点上已确认没有该压缩包"
+		default:
+			outcome = "ok"
 		}
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: status, ExitCode: exitCode, ErrorCode: code,
-			LogData: map[string]any{"path": path, "size": size, "exists": exists},
-			Message: firstNonEmpty(errString(cmdErr), errString(parseErr)), TraceID: traceID, CustomUI: cui,
+			Status: status, ErrorCode: code, ErrorType: errType,
+			LogData: logData, Message: message, TraceID: traceID, CustomUI: cui,
 		})
-		blog("INFO", "log_collect.stat", "日志包大小探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"path": path, "size": size, "exit_code": exitCode, "error": errString(cmdErr),
+		blog("INFO", "log_collect.stat", "日志包状态探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"path": path, "size": probed.Size, "exists": probed.Exists,
+			"probe_level": probed.Level, "probe_diag": probed.Diag,
+			"status": status, "error_code": code,
 		})
 
 	case "transfer":
