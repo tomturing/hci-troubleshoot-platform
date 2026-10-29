@@ -10,6 +10,8 @@ on:
       - "database/desired_extras.sql"
       # 数据迁移变更时触发（migration-runner 管理）
       - "database/data-migrations/**"
+      # 种子数据变更时触发（PostSync db-seed 管理；新表的初始数据只需走这里）
+      - "database/seeds/**"
       # 变量契约巡检脚本与其依赖的契约模型变更时触发
       - "scripts/verify/sop_variable_contract_check.py"
       - "backend/shared/models/sop_variable.py"
@@ -117,6 +119,58 @@ jobs:
             fi
           done
           echo "✅ 数据迁移执行成功"
+
+          # ── Step 2e: 执行种子数据（模拟 PostSync db-seed）────────────────────
+          # 与 db-seed Job 一致：按文件名顺序全量执行 seeds/*.sql。
+          # 关键：seeds 在 Schema 收敛之后跑，这正是「新表 + 初始数据」应有的落点；
+          # data-migrations（Step 2d）在存量库中跑在 Atlas 之前，不能碰本次新建的表。
+          echo ">>> Step 2e: 执行种子数据（database/seeds/*.sql）"
+          for SEED_FILE in $(ls database/seeds/*.sql | sort); do
+            echo "  执行: $SEED_FILE"
+            psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$SEED_FILE" || {
+              echo "❌ 种子数据失败: $SEED_FILE"
+              exit 1
+            }
+          done
+          echo "✅ 种子数据执行成功"
+
+      # ── Step 2f: 字典种子内容断言 ─────────────────────────────────────────
+      # 把「字典应有几项、哪项兜底、有无互斥项」锁进门禁，避免 seed 与
+      # desired_schema 注释 / 前端文案 / 设计文档四处漂移。
+      - name: 字典种子内容断言（log_collect_scenario）
+        run: |
+          psql -v ON_ERROR_STOP=1 "$DATABASE_URL" <<'SQL'
+          DO $$
+          DECLARE
+            n_total int;
+            n_exclusive int;
+            v_other_exclusive boolean;
+            v_other_rank int;
+          BEGIN
+            SELECT count(*) INTO n_total FROM log_collect_scenario;
+            IF n_total <> 10 THEN
+              RAISE EXCEPTION '场景字典应有 10 行，实际 %', n_total;
+            END IF;
+
+            SELECT count(*) INTO n_exclusive FROM log_collect_scenario WHERE exclusive;
+            IF n_exclusive <> 0 THEN
+              RAISE EXCEPTION '当前不应有互斥项（other 已确认叠加语义），实际 % 行为 true', n_exclusive;
+            END IF;
+
+            SELECT exclusive, sort_order INTO v_other_exclusive, v_other_rank
+              FROM log_collect_scenario WHERE value = 'other';
+            IF v_other_exclusive IS NULL THEN
+              RAISE EXCEPTION 'other 兜底项缺失';
+            END IF;
+            IF v_other_exclusive THEN
+              RAISE EXCEPTION 'other 的 exclusive 必须为 false';
+            END IF;
+            IF v_other_rank <> 100 THEN
+              RAISE EXCEPTION 'other 的 sort_order 应为 100，实际 %', v_other_rank;
+            END IF;
+          END $$;
+          SQL
+          echo "✅ 字典断言通过：10 行、无互斥项、other 为兜底且 ranked=100"
 
       # ── Step 3: Schema 完整性验证 ─────────────────────────────────────────
       # 验证核心业务表存在，废弃表未被创建
