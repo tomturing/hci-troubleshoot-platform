@@ -224,6 +224,33 @@ export interface ActiveTaskSummary {
   created_at: string | null
 }
 
+/**
+ * 「故障场景」字典项。
+ *
+ * 为什么要单独一层：acli 只告诉我们 `-m` 支持哪些枚举值，不解释每个专项到底收什么；
+ * 只靠短名（"中台专项"、"卡慢盘专项"），用户无法判断该选哪个也不了解多选含义。
+ * 字典只补展示层事实，**不改变能力边界**——能不能选，仍然取决于集群 acli 的枚举。
+ */
+export interface LogCollectScenarioItem {
+  value: string
+  label: string
+  /** 一句话释义，直接显示在勾选项第二行 */
+  summary?: string | null
+  /** 该专项实际采集的内容/范围 */
+  collects?: string | null
+  /** 典型症状，帮用户按现象反选 */
+  typical_symptoms?: string | null
+  /** 耗时提示（不同专项差异大） */
+  duration_hint?: string | null
+  /** 与其他场景互斥：选中它必须清空其它项（other 即此类） */
+  exclusive: boolean
+  sort_order: number
+  enabled: boolean
+  review_state?: 'pending_review' | 'approved'
+  updated_by?: string | null
+  updated_at?: string | null
+}
+
 export const logCollectApi = {
   /**
    * 按工单号解析日志收集的目标工单：已存在则复用，不存在则按该号建档。
@@ -237,6 +264,16 @@ export const logCollectApi = {
   async createTask(payload: LogCollectTaskCreate): Promise<LogCollectTask> {
     const { data } = await client.post('/log-collect/tasks', payload)
     return data
+  },
+
+  /**
+   * 拉取「故障场景」字典（只含已启用项）。
+   *
+   * 失败必须由调用方降级：字典挂了不影响探测与采集，面板回落到 bridge 短名。
+   */
+  async listScenarios(): Promise<LogCollectScenarioItem[]> {
+    const { data } = await client.get('/log-collect/scenarios')
+    return data?.scenarios ?? []
   },
 
   async listTasks(caseId: string, limit = 20): Promise<{ total: number; items: LogCollectTask[] }> {

@@ -848,6 +848,45 @@ export const useChatStore = defineStore('chat', () => {
   )
 
   /**
+   * 中央排障 Agent 是否应临时隐藏。
+   *
+   * 日志收集与 Agent **不联动**（Agent 收不了 acpi/acli 日志），两者并排会让用户
+   * 误以为可以“让 Agent 去收”。所以左栏日志收集 + 右栏终端同时可见时，把中央区收起，
+   * 把像素全给日志表格与终端；用 v-show 隐藏（不销毁），会话与滚动位置全部保留。
+   *
+   * 终端不可用（未连接 / bridge 未运行 / 右栏被文件下载占用）时不隐藏：
+   * 此时没有“替身”可看，藏了 Agent 就只剩一片空白，改为在中央标题栏挂一条提示。
+   */
+  const isAgentChatHidden = computed(() => logCollectVisible.value && isTerminalVisible.value)
+
+  /**
+   * 日志收集打开后自动把右栏切到 SSH 终端。
+   *
+   * 为什么用 watch 而不是改 openLogCollect()：日志面板有四条入口（顶栏按钮、左侧图标条、
+   * 建单引导卡、工单号弹框），逐个改迟早漏一条；盯状态则四条入口一次覆盖。
+   *
+   * 两条不抢的前提：
+   * - 覆盖态（窄屏）不动右栏：两块面板会各占 86% 叠在一起，且 openRightPanel
+   *   会反向把刚打开的日志面板关掉（enforceOverlayExclusive）。
+   * - 右栏正在文件下载时不抢：用户可能正在传文件，抢页签会让传输入口凭空消失。
+   */
+  watch(logCollectVisible, (visible) => {
+    if (!visible) return
+    if (sshConnectionState.value !== 'connected') return
+    if (showTerminalSidebar.value && rightPanelTab.value !== 'terminal') return
+    const bothOpen = resolveWorkspaceLayout({
+      viewport: viewportWidth.value,
+      leftOpen: true,
+      rightOpen: true,
+      leftPreferred: leftPanelPreferred.value ?? undefined,
+      rightPreferred: rightPanelPreferred.value ?? undefined,
+    })
+    if (bothOpen.mode === 'overlay') return
+    if (isTerminalVisible.value) return
+    openRightPanel('terminal')
+  })
+
+  /**
    * 左侧面板当前页签。
    *
    * 面板化之后左栏是一个常驻面板（折叠成图标条），页签决定展开后显示哪一块；
@@ -885,6 +924,8 @@ export const useChatStore = defineStore('chat', () => {
       rightOpen: isRightPanelOpen.value,
       leftPreferred: leftPanelPreferred.value ?? undefined,
       rightPreferred: rightPanelPreferred.value ?? undefined,
+      // 日志收集 + 终端并排时中央让位：求解器把中央宽度记为 0，App 外壳据此收合
+      centerHidden: isAgentChatHidden.value,
     }),
   )
 
@@ -4279,6 +4320,7 @@ export const useChatStore = defineStore('chat', () => {
     collapseLeftPanel,
     rightPanelTab,
     isTerminalVisible,
+    isAgentChatHidden,
     showTerminalReplay,
     terminalReplayCaseId,
     openTerminalReplay,

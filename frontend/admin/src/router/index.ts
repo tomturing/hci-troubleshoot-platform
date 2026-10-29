@@ -78,6 +78,14 @@ const router = createRouter({
       meta: { title: 'Catalog基线', icon: 'Collection', order: 5.5 },
     },
     {
+      // order 取 5.6：紧跟「Catalog 基线」(5.5)，因为它同属「平台内置文案/配置」类目，
+      // 与后面的 KBD 管理(6) 在语义上不是一回事
+      path: '/log-collect-scenarios',
+      name: 'LogCollectScenarios',
+      component: () => import('@/views/LogCollectScenarioView.vue'),
+      meta: { title: '日志收集场景', icon: 'Memo', order: 5.6 },
+    },
+    {
       path: '/knowledge/kbd-review',
       name: 'KbdReview',
       component: () => import('@/views/KbdReviewView.vue'),

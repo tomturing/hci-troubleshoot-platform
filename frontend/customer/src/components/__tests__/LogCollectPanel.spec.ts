@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { h } from 'vue'
+import { h, inject, provide } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
 import { logCollectApi, type LogCollectTask } from '@/api/logCollect'
@@ -94,6 +94,8 @@ vi.mock('@/api/logCollect', () => ({
     getTask: vi.fn(),
     cancelTask: vi.fn(),
     listTasks: vi.fn(),
+    // 场景字典：默认返回空数组（= 平台未维护），由各用例按需覆盖
+    listScenarios: vi.fn(),
     patchTask: vi.fn(),
     deliverTask: vi.fn(),
     getRelay: vi.fn(),
@@ -131,19 +133,49 @@ const ElAlert = {
 }
 
 // 只把结构相关的组件渲染成可断言的 DOM，其余保持透传
+//
+// 勾选框桩要真的能“点”：互斥规则（exclusive）的全部意义在于点了之后另一项被禁用，
+// 若桩子只渲染个 label，就只能断言初始态，等于什么都没锁住。
+// 因此这里用 provide/inject 复刻 Element Plus 的分组语义（选中集合 + 点击切换）。
+const CBX_GROUP_KEY = Symbol('cbx-group')
+
 const ElCheckboxGroup = {
   props: ['modelValue'],
   emits: ['update:modelValue'],
-  setup(_: any, { slots }: any) {
+  setup(props: any, { slots, emit }: any) {
+    provide(CBX_GROUP_KEY, {
+      isChecked: (value: unknown) => (props.modelValue ?? []).includes(value),
+      toggle: (value: unknown) => {
+        const next = [...(props.modelValue ?? [])]
+        const index = next.indexOf(value)
+        if (index >= 0) next.splice(index, 1)
+        else next.push(value)
+        emit('update:modelValue', next)
+      },
+    })
     return () => h('div', { class: 'cbx-group' }, slots.default?.())
   },
 }
 
 const ElCheckbox = {
-  props: ['value', 'label', 'modelValue'],
+  props: ['value', 'label', 'modelValue', 'disabled'],
   setup(props: any, { slots }: any) {
+    const group: any = inject(CBX_GROUP_KEY, null)
     return () =>
-      h('label', { class: 'cbx', 'data-value': props.value ?? props.label }, slots.default?.())
+      h(
+        'label',
+        {
+          class: ['cbx', { 'is-disabled': props.disabled === true }],
+          'data-value': props.value ?? props.label,
+          'data-checked': group?.isChecked(props.value) ? '1' : '0',
+          'data-disabled': props.disabled ? '1' : '0',
+          onClick: () => {
+            if (props.disabled) return
+            group?.toggle(props.value)
+          },
+        },
+        slots.default?.(),
+      )
   },
 }
 
@@ -213,9 +245,12 @@ describe('LogCollectPanel', () => {
     mockStore.sshCurrentConfig = null
     // 抽屉宽度用例会改写，逐例复位，避免用例间互相污染
     mockStore.leftPanelWidth = 520
-    // 默认"该工单没有任何历史任务"，需要历史的任务用例自行 mock
+    // 默认“该工单没有任何历史任务”，需要历史的任务用例自行 mock
     vi.mocked(logCollectApi.listTasks).mockReset()
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 0, items: [] })
+    // 默认“平台字典为空”：未维护时界面应回落 bridge 短名 + 给出降级提示
+    vi.mocked(logCollectApi.listScenarios).mockReset()
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue([])
     vi.mocked(logCollectApi.getTask).mockReset()
   })
 
@@ -390,6 +425,187 @@ describe('LogCollectPanel', () => {
     // 内置目录至少 8 项，且必须一次全部渲染出来
     expect(moduleGroup.findAll('.cbx').length).toBeGreaterThanOrEqual(8)
     expect(wrapper.html()).not.toContain('el-select')
+  })
+
+  // ── 故障场景字典（平台维护的文案）────────────────────────────────────────
+  // 这一组锁的是「能力边界在集群、展示文案在平台」这个分层：
+  // 早期界面写着“目录来自集群 acli”，让客户以为连场景说明也是集群给的。
+
+  const scenarioDictFixture = [
+    {
+      value: 'other',
+      label: '默认收集专项',
+      summary: '不收集上述场景日志',
+      collects: '基础系统日志',
+      typical_symptoms: '尚未定位到具体方向',
+      duration_hint: null,
+      exclusive: true,
+      sort_order: 10,
+      enabled: true,
+      review_state: 'approved' as const,
+      updated_by: null,
+      updated_at: null,
+    },
+    {
+      value: 'vm_suspend',
+      label: '虚拟机挂起恢复专项',
+      summary: '挂起失败或恢复失败的专项日志',
+      collects: 'VMS 进程日志、虚拟机配置',
+      typical_symptoms: '虚拟机卡在挂起中',
+      duration_hint: '单天约 4 分钟',
+      exclusive: false,
+      sort_order: 20,
+      enabled: true,
+      review_state: 'approved' as const,
+      updated_by: null,
+      updated_at: null,
+    },
+  ]
+
+  async function mountAndProbe({
+    modules,
+    catalogSource = 'acli_help',
+  }: {
+    modules: Array<{ value: string; label: string }>
+    catalogSource?: string
+  }) {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 20480,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: catalogSource,
+          modules,
+          hosts: [],
+        },
+      }),
+    })
+    await flushPromises()
+    return wrapper
+  }
+
+  it('字典合并：能力边界取 probe，文案与顺序取字典，未维护项追加在尾部', async () => {
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue(scenarioDictFixture)
+    const wrapper = await mountAndProbe({
+      modules: [
+        { value: 'vm_suspend', label: '虚拟机挂起专项' },
+        { value: 'network', label: '网络专项' },
+        { value: 'other', label: '默认收集专项（不收集上述场景日志）' },
+      ],
+    })
+
+    const items = wrapper.find('.lc-module-group').findAll('.cbx')
+    // 顺序取字典 sort_order（other=10 先于 vm_suspend=20），字典缺失项按 probe 原序排尾
+    expect(items.map((item) => item.attributes('data-value'))).toEqual([
+      'other',
+      'vm_suspend',
+      'network',
+    ])
+    // 文案取字典（不再是 bridge 的短名）
+    expect(wrapper.text()).toContain('虚拟机挂起恢复专项')
+    expect(wrapper.text()).toContain('挂起失败或恢复失败的专项日志')
+    // 字典没维护的枚举必须被点名，不能默默显示一个无说明的短名
+    expect(wrapper.text()).toContain('1 个场景平台尚未维护说明')
+  })
+
+  it('能力边界只认 probe：字典有、集群没返回的枚举不得展示', async () => {
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue(scenarioDictFixture)
+    const wrapper = await mountAndProbe({
+      modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+    })
+
+    const values = wrapper
+      .find('.lc-module-group')
+      .findAll('.cbx')
+      .map((item) => item.attributes('data-value'))
+    // other 只在字典里、不在集群目录里 ⇒ 展示它等于承诺一个 create 必然失败的选项
+    expect(values).toEqual(['vm_suspend'])
+  })
+
+  it('exclusive 双向互斥：选中普通项时互斥项禁用，选中互斥项时其它项全禁用', async () => {
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue(scenarioDictFixture)
+    const wrapper = await mountAndProbe({
+      modules: [
+        { value: 'vm_suspend', label: '虚拟机挂起专项' },
+        { value: 'other', label: '默认收集专项' },
+      ],
+    })
+
+    const group = wrapper.find('.lc-module-group')
+    const other = group.find('.cbx[data-value="other"]')
+    const suspend = group.find('.cbx[data-value="vm_suspend"]')
+
+    // 默认勾选 vm_suspend（首个非互斥项）⇒ other 必须禁用
+    expect(suspend.attributes('data-checked')).toBe('1')
+    expect(other.attributes('data-disabled')).toBe('1')
+
+    // 取消勾选全部具体专项后，互斥项才重新可选（空选语义）
+    await suspend.trigger('click')
+    await flushPromises()
+    expect(group.find('.cbx[data-value="other"]').attributes('data-disabled')).toBe('0')
+
+    // 勾上 other ⇒ 具体专项反过来被禁用，两个方向都不能同时成立
+    await group.find('.cbx[data-value="other"]').trigger('click')
+    await flushPromises()
+    expect(group.find('.cbx[data-value="other"]').attributes('data-checked')).toBe('1')
+    expect(group.find('.cbx[data-value="vm_suspend"]').attributes('data-disabled')).toBe('1')
+  })
+
+  it('字典为空时回落 bridge 短名，并说明平台暂未维护', async () => {
+    const wrapper = await mountAndProbe({
+      modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+    })
+
+    expect(wrapper.find('.lc-module-group').text()).toContain('虚拟机挂起专项')
+    expect(wrapper.text()).toContain('平台场景字典暂未维护')
+  })
+
+  it('字典接口失败不阻塞探测：仍能完成探测并给出降级说明', async () => {
+    vi.mocked(logCollectApi.listScenarios).mockRejectedValue(new Error('503'))
+    const wrapper = await mountAndProbe({
+      modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+    })
+
+    // 探测结论仍然落地（右侧“环境探测”区），只是说明文案退化
+    expect(wrapper.find('.lc-probe').text()).toContain('1.0.1')
+    expect(wrapper.text()).toContain('场景说明暂不可用')
+    expect(wrapper.find('.lc-module-group').findAll('.cbx').length).toBe(1)
+  })
+
+  it('来源文案拆成能力与文案两句，不再出现“目录来自集群 acli”', async () => {
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue(scenarioDictFixture)
+    const wrapper = await mountAndProbe({
+      modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+    })
+
+    const text = wrapper.text()
+    expect(text).not.toContain('目录来自集群')
+    expect(text).toContain('可选场景由集群 acli 提供')
+    expect(text).toContain('场景说明来自平台字典')
+  })
+
+  it('空选时提示按默认收集专项下发', async () => {
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue(scenarioDictFixture)
+    const wrapper = await mountAndProbe({
+      modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+    })
+
+    const suspend = wrapper.find('.lc-module-group .cbx[data-value="vm_suspend"]')
+    expect(suspend.attributes('data-checked')).toBe('1')
+    await suspend.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('未选择场景时按「默认收集专项」下发')
   })
 
   it('探测返回节点清单后，目标主机以勾选框展示全部节点及主控标记', async () => {

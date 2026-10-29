@@ -17,7 +17,7 @@ from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 
 from app.config import settings
-from app.routes import cases, environments, log_collect
+from app.routes import cases, environments, log_collect, log_collect_scenarios
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     cases.set_database_manager(database_manager)
     environments.set_database_manager(database_manager)
     log_collect.set_database_manager(database_manager)
+    log_collect_scenarios.set_database_manager(database_manager)
 
     yield
 
@@ -63,6 +64,9 @@ app.include_router(environments.router)
 app.include_router(log_collect.router)
 # 数据面直连：/api/direct/log-collect-uploads 必须绕过 API Gateway（1 MiB 限制）。
 app.include_router(log_collect.upload_router)
+# 故障场景字典：客户读（/api/log-collect/scenarios）+ 管理端读写（/internal/log-collect/scenarios）
+app.include_router(log_collect_scenarios.router)
+app.include_router(log_collect_scenarios.admin_router)
 
 
 @app.get("/metrics")

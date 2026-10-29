@@ -133,6 +133,8 @@ jobs:
             "kbd_image" "sop_execution" "skill_definition"
             "migration_history" "terminal_operation" "prompt_slot"
             "fact" "claim_evidence_link"
+            # 2026-10-29（数据库设计 v7.54）：日志收集「故障场景」字典，客户面板勾选项文案来源
+            "log_collect_scenario"
           )
           DEPRECATED_TABLES=(
             "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"

@@ -107,3 +107,38 @@ async def proxy_log_collect(
 
     response_headers = {name: upstream.headers[name] for name in FORWARDED_RESPONSE_HEADERS if name in upstream.headers}
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
+
+
+@router.get("/scenarios")
+async def proxy_log_collect_scenarios(
+    request: Request,
+    client_id: str = Depends(require_user),
+) -> Response:
+    """代理客户端的「故障场景」字典读取。
+
+    为什么不走 ``/tasks{path}``：任务路由按工单归属做 BOLA 校验，而场景字典是平台级
+    配置、与工单无关。混在任务前缀里会让权限判断含糊（“一个客户能不能读别人的字典”
+    这种问题根本不该存在）。仍要求客户身份，避免匿名枚举平台能力。
+
+    下游失败一律不降级成空字典：宁可让前端拿到错误后回落到 bridge 短名并重试，
+    也不能让“平台字典丢了”被误读成“平台没有维护过任何场景”。
+    """
+    url = f"{settings.CASE_SERVICE_URL.rstrip('/')}/api/log-collect/scenarios"
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
+            upstream = await client.request(
+                "GET",
+                url,
+                headers=_signed_headers(request, client_id),
+            )
+    except httpx.RequestError as exc:
+        logger.error(
+            event="log_collect_scenario_proxy_error",
+            message=str(exc),
+            path="/scenarios",
+            method="GET",
+        )
+        raise HTTPException(status_code=503, detail="Case Service unavailable") from exc
+
+    response_headers = {name: upstream.headers[name] for name in FORWARDED_RESPONSE_HEADERS if name in upstream.headers}
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)

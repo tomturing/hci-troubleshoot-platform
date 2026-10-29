@@ -20,6 +20,7 @@ import {
   logCollectApi,
   type DeliveryStatus,
   type LogCollectModule,
+  type LogCollectScenarioItem,
   type LogCollectTask,
   type ProbeHistoryItem,
   type RelayStatus,
@@ -82,6 +83,17 @@ let lastNodeErrorCode = ''
 interface ModuleOption {
   value: LogCollectModule
   label: string
+  /** 以下字段来自平台场景字典；缺失表示该枚举尚未维护文案 */
+  summary?: string
+  collects?: string
+  typicalSymptoms?: string
+  durationHint?: string
+  /** 与其他场景互斥（other 即此类）：选中它必须清空其它项 */
+  exclusive?: boolean
+  /** 字典里的展示顺序；未维护时排在已维护项之后 */
+  sortOrder?: number
+  /** 是否命中字典（决定是否显示"平台未维护说明"提醒） */
+  documented?: boolean
 }
 
 interface HostOption {
@@ -90,9 +102,9 @@ interface HostOption {
   master?: boolean
 }
 
-// 内置场景目录：文案与 acli 1.0.1 帮助一致。
-// 第一性原理：目录真源在集群（acli help），这里只是「探测失败也要能用」的兜底，
-// 正常路径会被 probe 返回的 modules 覆盖。
+// 内置场景目录：只在**探测失败时**兜底使用。
+// 第一性原理：能力边界在集群（acli help 的 -m 枚举），展示文案在平台字典（log_collect_scenario）。
+// 这里的短名是两层都拿不到时的最后一道兜底，不得再当作选项的权威来源。
 const BUILTIN_MODULES: ModuleOption[] = [
   { value: 'vm_suspend', label: '虚拟机挂起专项' },
   { value: 'vm_start', label: '虚拟机开机失败专项' },
@@ -265,7 +277,21 @@ const sessionHost = computed(() => {
 const nodeIp = computed(() => (sessionHost.value || props.nodeIp || '').trim())
 
 // ── 准备阶段（打开面板即探测，避免用户填完表单才发现环境不可用）────────────
-const moduleOptions = ref<ModuleOption[]>([...BUILTIN_MODULES])
+// 集群返回的能力边界（bridge probe 的 -m 枚举）；字典只叠加文案，不参与“能不能选”。
+const probeModules = ref<ModuleOption[]>([...BUILTIN_MODULES])
+/**
+ * 平台场景字典快照。
+ *
+ * 空数组有三种含义（未拉到 / 未维护 / 已停用），对界面而言是同一种降级：
+ * 回落到 bridge 短名 + 标记“平台未维护说明”。字典失败绝不能拦住探测与采集。
+ */
+const scenarioDict = ref<LogCollectScenarioItem[]>([])
+const scenarioDictLoaded = ref(false)
+/** 字典不可用时的说明（区分“未维护”与“读取失败”，不拼成一句含混提示） */
+const scenarioDictNote = ref('')
+const moduleOptions = computed<ModuleOption[]>(() =>
+  mergeModuleOptions(probeModules.value, scenarioDict.value),
+)
 const hostOptions = ref<HostOption[]>([])
 const prepareState = ref<PrepareState>('idle')
 const prepareError = ref('')
@@ -394,12 +420,27 @@ const probedAtText = computed(() =>
   probedAt.value ? new Date(probedAt.value).toLocaleTimeString('zh-CN', { hour12: false }) : '',
 )
 
+/**
+ * 场景目录的**来源**说明。
+ *
+ * 旧文案写的是“目录来自集群 acli”，但它只代表集群返回过枚举：bridge 只拿 help 确认枚举存在，
+ * 展示的短名与顺序始终来自平台内置表。客户看到这句会以为“选项和说明都是集群给的”，
+ * 这正好是本次要消除的误解，所以两件事分开说：能力范围来自集群，文案来自平台字典。
+ */
 const catalogSourceText = computed(() => {
-  if (prepareState.value === 'probing') return '正在从集群读取场景目录…'
-  if (!probeResult.value) return '尚未读取集群目录，当前展示平台内置项'
+  if (prepareState.value === 'probing') return '正在从集群读取可选场景…'
+  if (!probeResult.value) return '尚未读取集群能力，当前展示平台内置项'
   return probeResult.value.catalog_source === 'acli_help'
-    ? '目录来自集群 acli'
-    : '平台内置目录（集群未返回目录）'
+    ? '可选场景由集群 acli 提供'
+    : '平台内置场景列表（集群未返回枚举）'
+})
+
+/** 文案来源：与能力来源分开显示，各自都能解释“为何看到这些字”。 */
+const scenarioDictSourceText = computed(() => {
+  if (prepareState.value === 'probing') return '正在读取平台场景字典…'
+  if (scenarioDictNote.value) return scenarioDictNote.value
+  if (!scenarioDictLoaded.value) return '尚未读取平台场景字典'
+  return '场景说明来自平台字典'
 })
 
 // ── 结果态文案（全部由平台任务记录派生，不做本地推断）──────────────────────
@@ -758,18 +799,121 @@ function hostLabel(host: HostOption): string {
   return host.master ? `${base} · 主控` : base
 }
 
+/**
+ * 合并「集群能力」与「平台字典」。
+ *
+ * 三条规则，顺序不能换：
+ *  1. 能力边界只认 probe：字典有、集群没返回的枚举**不展示**——展示就等于承诺了一个
+ *     create 必然失败的选项；
+ *  2. 文案以字典为准，字典没维护的保留 bridge 短名并标记 documented=false（界面会提示“平台未维护”）；
+ *  3. 顺序以字典 sort_order 为准，未维护项按 bridge 原顺序追加在尾部，顺序变化才能解释。
+ */
+function mergeModuleOptions(
+  capability: ModuleOption[],
+  dict: LogCollectScenarioItem[],
+): ModuleOption[] {
+  if (!dict.length) return capability.map((item) => ({ ...item, documented: false }))
+
+  const byValue = new Map(dict.map((item) => [item.value, item]))
+  const documented: ModuleOption[] = []
+  const undocumented: ModuleOption[] = []
+  for (const item of capability) {
+    const hit = byValue.get(item.value)
+    if (!hit) {
+      undocumented.push({ ...item, documented: false })
+      continue
+    }
+    documented.push({
+      value: item.value,
+      label: hit.label?.trim() || item.label,
+      summary: hit.summary?.trim() || undefined,
+      collects: hit.collects?.trim() || undefined,
+      typicalSymptoms: hit.typical_symptoms?.trim() || undefined,
+      durationHint: hit.duration_hint?.trim() || undefined,
+      exclusive: hit.exclusive,
+      sortOrder: hit.sort_order,
+      documented: true,
+    })
+  }
+  documented.sort((a, b) => (a.sortOrder ?? 100) - (b.sortOrder ?? 100))
+  return [...documented, ...undocumented]
+}
+
+/**
+ * 拉取场景字典（失败不抛）。
+ *
+ * 字典是**展示增强**，不是采集前置条件：拿不到时只影响“这一项收什么”能不能显示，
+ * 不影响探测、下发与进度。把失败向外抛会让一个后台配置问题变成“日志收集不可用”。
+ */
+async function loadScenarioDict(): Promise<void> {
+  try {
+    scenarioDict.value = await logCollectApi.listScenarios()
+    scenarioDictNote.value = scenarioDict.value.length
+      ? ''
+      : '平台场景字典暂未维护，当前只显示场景名称'
+  } catch (error: any) {
+    scenarioDict.value = []
+    scenarioDictNote.value = '场景说明暂不可用（平台字典读取失败）'
+    console.warn('[log-collect] 场景字典读取失败', error?.message || error)
+  } finally {
+    scenarioDictLoaded.value = true
+  }
+}
+
 /** 用探测结果覆盖目录与节点清单；场景目录以集群为准，内置目录只做兜底。 */
 function applyCatalog(data: ProbeResult) {
-  moduleOptions.value = data.modules?.length ? data.modules : [...BUILTIN_MODULES]
+  probeModules.value = data.modules?.length ? data.modules : [...BUILTIN_MODULES]
   hostOptions.value = data.hosts ?? []
   // 目录收敛后清掉已不存在的场景，否则提交时会被 create 判为非法枚举
   const valid = new Set(moduleOptions.value.map((item) => item.value))
   form.modules = form.modules.filter((value) => valid.has(value))
-  // 收敛后为空会让用户误以为"没有可选项"，回落到目录首项（集群目录首项即最常用专项）
+  // 收敛后为空会让用户误以为"没有可选项"，回落到目录首项。
+  // 跳过互斥项（other）：默认勾一个“不收集上述场景日志”的项，会让其余选项全被禁用。
   if (!form.modules.length && moduleOptions.value.length > 0) {
-    form.modules = [moduleOptions.value[0].value]
+    const preferred = moduleOptions.value.find((item) => !item.exclusive) ?? moduleOptions.value[0]
+    form.modules = [preferred.value]
   }
 }
+
+// ── 场景互斥（字典 exclusive）────────────────────────────────────────────
+
+/**
+ * 互斥项（目前只有 other）。
+ *
+ * 为什么不靠“后选清前者”的 diff 实现：acli 的 other 语义是“不收集上述场景日志”，
+ * 与任何具体专项同选都自相矛盾。直接**禁用**冲突项比“选完再默默清掉一个”更可解释，
+ * 也不会在回填历史任务时把用户已选的东西改掉。
+ */
+const exclusiveModules = computed(
+  () => new Set(moduleOptions.value.filter((item) => item.exclusive).map((item) => item.value)),
+)
+const exclusiveSelected = computed(() => form.modules.some((value) => exclusiveModules.value.has(value)))
+/** 历史任务可能存过互斥项与具体专项同时存在的组合：只提示，不改写历史事实。 */
+const hasModuleConflict = computed(
+  () => exclusiveSelected.value && form.modules.some((value) => !exclusiveModules.value.has(value)),
+)
+
+function moduleDisabled(value: LogCollectModule): boolean {
+  if (running.value) return true
+  if (exclusiveSelected.value) return !exclusiveModules.value.has(value)
+  if (form.modules.length > 0) return exclusiveModules.value.has(value)
+  return false
+}
+
+/** 平台字典尚未维护的枚举数：用一句汇总量提醒，不给每个选项贴“未维护”标签。 */
+const undocumentedCount = computed(() => moduleOptions.value.filter((item) => !item.documented).length)
+
+/** 已选场景的详细说明：直接回答“这次到底会收什么、典型症状对不对得上”。 */
+const selectedScenarioDocs = computed(() =>
+  moduleOptions.value.filter(
+    (item) =>
+      form.modules.includes(item.value) &&
+      Boolean(item.collects || item.typicalSymptoms || item.durationHint),
+  ),
+)
+const emptyModulesHint = computed(() =>
+  form.modules.length ? '' : '未选择场景时按「默认收集专项」下发',
+)
 
 /**
  * 准备阶段：读取架构、acli、可用空间、日志服务器连通性，以及场景目录与节点清单。
@@ -789,6 +933,9 @@ async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
   prepareState.value = 'probing'
   prepareError.value = ''
   try {
+    // 字典与探测并行：字典是 HTTP、探测走 bridge WS，串行会让面板多等一个往返。
+    // 字典失败已在 loadScenarioDict 内部吞掉，不会影响这里的探测结果。
+    const dictPromise = loadScenarioDict()
     const ws = await openSocket()
     const probe = await sendAndWait(
       ws,
@@ -802,6 +949,9 @@ async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
     }
     const data = probe.log_data as ProbeResult
     probeResult.value = data
+    // 字典先落地再合并目录：否则用户会先看到一批无说明的短名，再整排换一次文案（闪变）。
+    await dictPromise
+    if (token !== prepareToken) return false
     applyCatalog(data)
     // 交付路径的默认值只在「用户从未选过」且探测**成功**时给一次。
     // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定
@@ -3173,15 +3323,40 @@ onBeforeUnmount(() => {
                 v-for="item in moduleOptions"
                 :key="item.value"
                 :value="item.value"
+                :disabled="moduleDisabled(item.value)"
                 border
                 size="small"
+                class="lc-module-item"
               >
-                {{ item.label }}
+                <span class="lc-module-name">{{ item.label }}</span>
+                <span v-if="item.summary" class="lc-module-summary">{{ item.summary }}</span>
               </el-checkbox>
             </el-checkbox-group>
             <div class="lc-hint">
-              {{ catalogSourceText }}
+              {{ catalogSourceText }}；{{ scenarioDictSourceText }}
               <span v-if="probeResult?.catalog_note">；{{ probeResult.catalog_note }}</span>
+            </div>
+            <div v-if="undocumentedCount" class="lc-hint lc-hint-warn">
+              其中 {{ undocumentedCount }} 个场景平台尚未维护说明，当前只显示名称
+            </div>
+            <div v-if="hasModuleConflict" class="lc-hint lc-hint-warn">
+              当前选择同时包含「不收集上述场景」与其他专项（沿历史任务回填），建议只保留其中一类
+            </div>
+            <div v-if="emptyModulesHint" class="lc-hint">{{ emptyModulesHint }}</div>
+            <!-- 已选场景的详细说明：用户最关心的是"这次到底会收什么"，而不是选项叫什么 -->
+            <div v-if="selectedScenarioDocs.length" class="lc-scenario-docs">
+              <div v-for="item in selectedScenarioDocs" :key="item.value" class="lc-scenario-doc">
+                <div class="lc-scenario-doc-head">
+                  <span class="lc-scenario-doc-name">{{ item.label }}</span>
+                  <span v-if="item.durationHint" class="lc-scenario-doc-duration">
+                    {{ item.durationHint }}
+                  </span>
+                </div>
+                <div v-if="item.collects" class="lc-scenario-doc-line">采集：{{ item.collects }}</div>
+                <div v-if="item.typicalSymptoms" class="lc-scenario-doc-line">
+                  典型症状：{{ item.typicalSymptoms }}
+                </div>
+              </div>
             </div>
           </el-form-item>
           <el-form-item label="时间范围">
@@ -3564,6 +3739,63 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.5;
   white-space: normal;
+  word-break: break-all;
+}
+/*
+ * 场景项两行布局：第一行短名、第二行一句话释义。
+ * 释义必须换行而不是挤在同一行——十个选项横排时，单行会在抽屉窄宽度下
+ * 变成“短名 + 半句被截断的说明”，比不显示更让人困惑。
+ */
+.lc-module-group {
+  align-items: stretch;
+}
+.lc-module-group :deep(.lc-module-item) {
+  max-width: 100%;
+}
+.lc-module-group :deep(.lc-module-item .el-checkbox__label) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.lc-module-name {
+  font-weight: 500;
+  white-space: normal;
+}
+.lc-module-summary {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+  white-space: normal;
+}
+/* 已选场景的采集范围：浅底框与表单控件区分，不抢主流程视线 */
+.lc-scenario-docs {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--el-fill-color-lighter);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lc-scenario-doc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+}
+.lc-scenario-doc-duration {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--el-color-warning-dark-2);
+}
+.lc-scenario-doc-line {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-regular);
   word-break: break-all;
 }
 .lc-host-head {

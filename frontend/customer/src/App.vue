@@ -320,7 +320,7 @@ function handleDownloadBridge() {
         />
       </PanelShell>
 
-      <main class="app-main">
+      <main class="app-main" :class="{ 'is-center-hidden': chatStore.isAgentChatHidden }">
         <!--
           中央会话的标题栏：高度与两侧面板的 panel-head 一致（48px），
           三栏顶部形成一条贯通的分隔线。之前中央没有这一条，
@@ -334,9 +334,27 @@ function handleDownloadBridge() {
             <span v-if="chatStore.currentCase?.title" class="main-head-sub">
               {{ chatStore.currentCase.title }}
             </span>
+            <!--
+              日志收集与 Agent 不联动：终端就绪时中央区直接收起（无需提示）；
+              终端未就绪（未连接 / bridge 未运行 / 右栏被文件下载占用）时中央区仍在，
+              必须在这里把“不联动”说清楚，否则用户会以为 Agent 正在配合采集日志。
+            -->
+            <el-tooltip
+              v-if="chatStore.logCollectVisible && !chatStore.isAgentChatHidden"
+              content="日志采集由 SSH 终端里的 acli 完成，排障 Agent 不参与采集。连接 SSH 终端后中央会话会自动收起。"
+              placement="bottom"
+            >
+              <el-tag class="main-head-tag" type="warning" size="small" effect="light">
+                日志收集进行中 · 与排障 Agent 不联动
+              </el-tag>
+            </el-tooltip>
           </div>
         </div>
-        <ChatWindow />
+        <!--
+          v-show 而不是 v-if：会话消息、滚动位置、输入框里的草稿都要保留。
+          中央隐藏只是“此刻不需要看”，不是“关掉会话”。
+        -->
+        <ChatWindow v-show="!chatStore.isAgentChatHidden" />
       </main>
 
       <PanelShell
@@ -493,6 +511,25 @@ body {
   padding: 0 16px;
   background: #fff;
   border-bottom: 1px solid #e4e7ed;
+}
+
+/*
+ * 中央隐藏（日志收集 + SSH 终端并排）。
+ *
+ * 宽度归 0 而不是 display:none：display:none 会让 flex 子项从布局里消失、
+ * 两侧面板不会重新分配空间（它们本来就只是 flex:0 0 auto），
+ * 页面右侧会凭空多出一条与背景同色的空白。
+ */
+.app-main.is-center-hidden {
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.main-head-tag {
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 /* 标题栏同属框架条：通栏左对齐，不再跟着内容列在中间'飘' */

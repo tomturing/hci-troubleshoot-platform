@@ -11,6 +11,14 @@
 
 export type WorkspaceMode = 'expanded' | 'slide' | 'compressed' | 'overlay'
 
+/**
+ * 面板折叠后剩下的图标条宽度（与 PanelShell 的渲染宽度同源）。
+ *
+ * 导出而不是在两处各写一个 48：中央隐藏时"另一侧还剩多少像素"直接取它，
+ * 一旦两处改了不同步，单开就会多出/少掉 48px 的缝。
+ */
+export const RAIL_WIDTH = 48
+
 export interface WorkspaceLayoutInput {
   /** 视口宽度（window.innerWidth） */
   viewport: number
@@ -22,6 +30,13 @@ export interface WorkspaceLayoutInput {
   leftPreferred?: number
   /** 用户拖拽后的右侧偏好宽度，未拖拽时用默认值 */
   rightPreferred?: number
+  /**
+   * 中央会话区是否需要临时让位（日志收集与 SSH 终端并排看时）。
+   *
+   * 语义只有一条：把中央当成「此刻不需要看的块」，把它的像素让给两栏。
+   * 覆盖态（窄屏）忽略该参数：覆盖态本来就是一次看一块。
+   */
+  centerHidden?: boolean
 }
 
 export interface WorkspaceLayout {
@@ -116,6 +131,57 @@ function standaloneWidth(
   return Math.round(clamp(preferred ?? defaultPanelWidth(viewport, 'right'), c.rightMin, max))
 }
 
+/**
+ * 中央隐藏时的布局：把中央的像素全部让给两栏。
+ *
+ * 两条与常规解不同的规则，都是为了"一屏看完日志表格 + 终端"：
+ * 1. 单开时展开侧可以突破 leftMax/rightMax（列数优先于"信息密度上限"）；
+ * 2. 双开时左栏按偏好比例但有上限，右栏吃掉全部剩余（终端列数是主要瓶颈）。
+ * 中央宽度记 0，由 App 外壳据此把主区收到 0 宽。
+ */
+function centerHiddenLayout(input: WorkspaceLayoutInput, viewport: number): WorkspaceLayout {
+  const c = WORKSPACE_CONSTRAINTS
+  const { leftOpen, rightOpen } = input
+
+  if (leftOpen && rightOpen) {
+    // 两侧都展开 ⇒ 没有图标条占位，两栏之和就是视口宽度。
+    const leftPreferred = input.leftPreferred ?? defaultPanelWidth(viewport, 'left')
+    let left = Math.round(clamp(leftPreferred, c.leftMin, c.leftMax))
+    // 左栏封顶后再收一次：必须给终端留够 rightMin，否则会出现 0 列可用的终端。
+    left = Math.min(left, Math.max(c.leftMin, viewport - c.rightMin))
+    const right = Math.max(c.rightMin, viewport - left)
+    return {
+      mode: 'compressed',
+      leftWidth: left,
+      rightWidth: right,
+      centerMaxWidth: 0,
+      leftOffset: left,
+      rightOffset: right,
+    }
+  }
+
+  // 单开：另一侧折叠成 48px 图标条，展开侧直接取「视口 - 图标条」。
+  const width = Math.max(0, viewport - RAIL_WIDTH)
+  if (leftOpen) {
+    return {
+      mode: 'slide',
+      leftWidth: width,
+      rightWidth: RAIL_WIDTH,
+      centerMaxWidth: 0,
+      leftOffset: width,
+      rightOffset: 0,
+    }
+  }
+  return {
+    mode: 'slide',
+    leftWidth: RAIL_WIDTH,
+    rightWidth: width,
+    centerMaxWidth: 0,
+    leftOffset: 0,
+    rightOffset: width,
+  }
+}
+
 function overlayLayout(viewport: number): WorkspaceLayout {
   const { overlayRatio, centerMax } = WORKSPACE_CONSTRAINTS
   // 覆盖式抽屉仍要能看清单列表格：下限 320，上限 560，避免窄屏只剩一条缝
@@ -138,6 +204,9 @@ function overlayLayout(viewport: number): WorkspaceLayout {
  * - slide：单抽屉，抽屉推挤占位，中央在剩余空间内居中；
  * - compressed：双抽屉，中央被压缩但有下限，两侧按权重分配；
  * - overlay：窄屏降级，抽屉覆盖在中央之上并带遮罩，不再强行挤压。
+ *
+ * `centerHidden` 是一个变体而不是第五种 mode：它只改变「中央占多少像素」
+ * （从 centerMaxWidth 变 0），松手/关闭后必须回到原算法，所以不把它做成独立状态。
  */
 export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLayout {
   const c = WORKSPACE_CONSTRAINTS
@@ -156,12 +225,18 @@ export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLa
     }
   }
 
-  // 1. 窄屏：三栏与「推挤单侧」都放不下，统一降级为覆盖式
+  // 1. 窄屏：三栏与「推挤单侧」都放不下，统一降级为覆盖式。
+  // 覆盖态忽略 centerHidden：它本来就是「一次看一块」，没有"中央让位"这回事。
   if (viewport < c.narrowViewport) {
     return overlayLayout(viewport)
   }
 
-  // 2. 双开：先按 CENTER_PREF 保留会话宽度，剩余按两侧偏好比例分配。
+  // 2. 中央临时让位：把像素全给两栏，中央宽度记 0（App 外壳据此收合）
+  if (input.centerHidden) {
+    return centerHiddenLayout(input, viewport)
+  }
+
+  // 3. 双开：先按 CENTER_PREF 保留会话宽度，剩余按两侧偏好比例分配。
   // 用偏好比例而不是固定权重：用户拖拽过的宽度在单开/双开之间保持连贯，
   // 默认偏好（520 / 720）算出来的比例恰好等于 0.42，与设计权重一致。
   if (leftOpen && rightOpen) {
@@ -197,7 +272,7 @@ export function resolveWorkspaceLayout(input: WorkspaceLayoutInput): WorkspaceLa
     }
   }
 
-  // 3. 单开：抽屉尽量取偏好宽度，但不许吃掉中央的 CENTER_PREF
+  // 4. 单开：抽屉尽量取偏好宽度，但不许吃掉中央的 CENTER_PREF
   if (leftOpen) {
     const width = standaloneWidth(viewport, 'left', input.leftPreferred)
     return {
