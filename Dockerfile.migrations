@@ -5,11 +5,19 @@
 #   2. psql 应用函数（desired_extras.sql）— CREATE OR REPLACE，幂等
 #   3. atlas schema apply（desired_schema.sql）— 最终声明式差量收敛
 #   4. psql 应用触发器（desired_extras.sql）— DROP+CREATE，幂等
+#   5. psql 按文件名执行种子数据（seeds/）— ON CONFLICT DO NOTHING，幂等
+#
+# 为什么种子也在镜像里（2026-10-29 事故根治）：
+#   种子只靠 Helm 的 PostSync db-seed 下发时，它**不在任何镜像里**，只改
+#   database/seeds/ 不会产生新 tag → 不重建镜像 → 不晋级 → ArgoCD 不 sync
+#   → 种子永远落不到集群，CI 却全绿。把 seeds 纳入镜像后，三类输入
+#   （Schema/函数触发器/种子）同源同镜像，且都在 PreSync 内按顺序收敛。
 #
 # 文件职责：
 #   database/desired_schema.sql  → Atlas 管理（ENUM/表/索引/外键）
 #   database/desired_extras.sql  → psql 管理（函数/触发器）
 #   database/data-migrations/    → migration-runner 管理（数据迁移）
+#   database/seeds/              → psql 按序执行（初始/参考数据）
 #
 # 本地构建测试：
 #   docker build -f Dockerfile.migrations -t hci-db-migrate:local .
@@ -38,6 +46,9 @@ COPY database/desired_extras.sql /desired_extras.sql
 
 # 复制数据迁移文件
 COPY database/data-migrations/ /data-migrations/
+
+# 复制种子数据（Step 5 在 Atlas 收敛之后执行；见脚本头部说明）
+COPY database/seeds/ /seeds/
 
 # 复制入口脚本
 COPY scripts/migration-runner.sh /migration-runner.sh

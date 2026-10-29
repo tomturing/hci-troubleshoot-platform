@@ -91,7 +91,9 @@ def test_push_uses_event_before_for_current_changes(monkeypatch):
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
     assert module.changed_files() == ["frontend/admin/src/router/index.ts"]
-    assert captured["command"][3] == "b" * 40
+    assert captured["command"][-2] == "b" * 40
+    # 关闭重命名识别：否则「移出白名单目录」的删除路径会被 git 从清单里抹掉。
+    assert "--no-renames" in captured["command"]
 
 
 def test_manual_dispatch_uses_force_all_without_event_before(monkeypatch):
@@ -183,7 +185,8 @@ def test_promotion_push_does_not_rebuild_released_hci_sim(monkeypatch, tmp_path)
             self.stdout = stdout
 
     def fake_run(command, **_kwargs):
-        base = command[3]
+        # git diff 的参数尾部固定为 <base> <head>，不依赖 --no-renames 的插入位置。
+        base = command[-2]
         if base == release_base:
             return Result(f"hci_sim/internal/telemetry/telemetry.go\n{promotion_file}\n")
         assert base == event_before
@@ -224,3 +227,56 @@ def test_every_registered_service_dockerfile_exists():
         if not (repo_root / dockerfile).is_file()
     ]
     assert not missing, f"注册的 Dockerfile 不存在: {missing}"
+
+
+def test_seeds_change_triggers_db_migrate_rebuild():
+    """database/seeds/ 改动必须重建 db-migrate 镜像。
+
+    种子被 Dockerfile.migrations COPY 进镜像，并由 PreSync 的 Step 5 执行。
+    2026-10-29 事故：种子只放在 Helm PostSync hook 里、不在任何镜像里，于是
+    只改 seeds 不产生新 tag → 不重建 → 不晋级 → ArgoCD 不 sync → 种子永远
+    落不到集群，而 CI 全绿。
+    """
+    module = _load_module()
+    _, db_migrate = module.select_services(["database/seeds/06_log_collect_scenarios.sql"], force_all=False)
+    assert db_migrate is True
+
+
+def test_rename_out_of_watched_dir_is_visible(monkeypatch, tmp_path):
+    """把文件重命名出白名单目录时，源路径也必须出现在变更清单里。
+
+    真实事故形态：`git mv database/data-migrations/056_x.sql database/seeds/06_x.sql`
+    在开启重命名识别时 `--name-only` 只输出目标路径，`database/data-migrations/`
+    的删除不可见，db-migrate 因而被判为无需重建。这里用一次性 git 仓库重现。
+    """
+    import subprocess
+
+    module = _load_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init", "-q")
+    (repo / "data-migrations").mkdir()
+    source = repo / "data-migrations" / "056_x.sql"
+    source.write_text("SELECT 1;\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD").stdout.strip()
+
+    (repo / "seeds").mkdir()
+    git("mv", "data-migrations/056_x.sql", "seeds/06_x.sql")
+    git("commit", "-qm", "move")
+    head = git("rev-parse", "HEAD").stdout.strip()
+
+    monkeypatch.chdir(repo)
+    changed = module.changed_files_between(base, head)
+    assert "data-migrations/056_x.sql" in changed, f"重命名的源路径丢失: {changed}"
+    assert "seeds/06_x.sql" in changed
