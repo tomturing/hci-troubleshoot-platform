@@ -70,6 +70,7 @@ const ticketInput = ref('')
 const activeTicket = ref('')
 const job = ref<SyncJob | null>(null)
 const artifacts = ref<SyncArtifact[]>([])
+const artifactQuery = ref('')
 const syncBusy = ref(false)
 const syncTip = ref('')
 let pollTimer: number | null = null
@@ -77,6 +78,11 @@ let artifactPollTimer: number | null = null
 
 const running = computed(() => isRunning(job.value?.phase))
 const percent = computed(() => (job.value ? fetchPercent(job.value) : 0))
+const filteredArtifacts = computed(() => {
+  const query = artifactQuery.value.trim().toLowerCase()
+  if (!query) return artifacts.value
+  return artifacts.value.filter((artifact) => artifact.ticketId.toLowerCase().includes(query))
+})
 const tagType = computed(() => {
   const phase = job.value?.phase
   if (phase === 'ready') return 'success'
@@ -282,12 +288,24 @@ onUnmounted(() => {
         <div class="artifact-panel-header">
           <span class="artifact-panel-title">本地工单目录</span>
           <span class="artifact-panel-tip">自动同步每 30 秒检查，页面每 2 秒刷新状态</span>
+          <el-input
+            v-model="artifactQuery"
+            class="artifact-search"
+            size="small"
+            clearable
+            placeholder="搜索工单号"
+          />
           <el-button text type="primary" size="small" @click="refreshArtifacts">刷新</el-button>
         </div>
 
         <el-empty v-if="artifacts.length === 0" :image-size="56" description="暂无已同步或进行中的工单" />
+        <el-empty
+          v-else-if="filteredArtifacts.length === 0"
+          :image-size="56"
+          description="没有匹配的工单"
+        />
         <div v-else class="artifact-list">
-          <div v-for="artifact in artifacts" :key="artifact.ticketId" class="artifact-item">
+          <div v-for="artifact in filteredArtifacts" :key="artifact.ticketId" class="artifact-item">
             <div class="artifact-item-header">
               <div class="artifact-item-title">
                 <el-tag :type="artifactTagType(artifact)" size="small">{{ PHASE_TEXT[artifact.phase] }}</el-tag>
@@ -476,6 +494,10 @@ onUnmounted(() => {
   flex: 1;
   font-size: 12px;
   color: #909399;
+}
+
+.artifact-search {
+  width: 220px;
 }
 
 .artifact-list {
