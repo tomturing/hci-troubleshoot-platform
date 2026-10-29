@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.33.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.32.0...v2.33.0) (2026-10-29)
+
+
+### ✨ 新功能
+
+* **customer-ui:** 文件下载提为右栏独立页签并复用统一 SSH 登录门禁 ([#1335](https://github.com/tomturing/hci-troubleshoot-platform/issues/1335)) ([cfec6ef](https://github.com/tomturing/hci-troubleshoot-platform/commit/cfec6ef28a21696862a510d38478cfd0054cde48))
+* **log-collect:** P2 交付增加端到端完整性校验（节点基线 → 拉取 → 平台 → 代传） ([#1352](https://github.com/tomturing/hci-troubleshoot-platform/issues/1352)) ([29eca6c](https://github.com/tomturing/hci-troubleshoot-platform/commit/29eca6cdb113be54d376141f6e1ef94a079fbc63))
+* **log-collect:** 故障场景字典入库 + 采集期间收起中央 Agent ([#1355](https://github.com/tomturing/hci-troubleshoot-platform/issues/1355)) ([cfc2cc2](https://github.com/tomturing/hci-troubleshoot-platform/commit/cfc2cc2c97d4e30f28e2f90ae606887904c93d76))
+* 增加 DSH 工单目录搜索 ([f3b3946](https://github.com/tomturing/hci-troubleshoot-platform/commit/f3b39461f873669bd7f27bafdbae4c4629a3cffc))
+* 增强 ticket-sync 自动巡检与 DSH 工单状态展示 ([153e829](https://github.com/tomturing/hci-troubleshoot-platform/commit/153e829a38e03a6996ff2750adaa2752245eadf3))
+* 完善 DSH 双仓部署与 Compose 运行链路 ([31903e3](https://github.com/tomturing/hci-troubleshoot-platform/commit/31903e3e9cc7a9190769b75fd5811bb13d67ac17))
+
+
+### 🐛 Bug 修复
+
+* **customer-ui:** 修复弹框遮罩被内容列限宽裁成 860px（半屏阴影） ([#1337](https://github.com/tomturing/hci-troubleshoot-platform/issues/1337)) ([713ad2a](https://github.com/tomturing/hci-troubleshoot-platform/commit/713ad2a5d310191d61ff7e810cce6ccc25b1fad8))
+* **db:** 场景字典种子改走 seeds 通道，修复 staging PreSync 失败 ([#1358](https://github.com/tomturing/hci-troubleshoot-platform/issues/1358)) ([178171c](https://github.com/tomturing/hci-troubleshoot-platform/commit/178171cd184de31eb79060a08fc602948d33e943))
+* **db:** 种子打进 db-migrate 镜像并由 Step 5 执行，修复「seed 改动到不了集群」 ([#1359](https://github.com/tomturing/hci-troubleshoot-platform/issues/1359)) ([2af5615](https://github.com/tomturing/hci-troubleshoot-platform/commit/2af56151d23e6f26ada00a09b61b8ba015807678))
+* **deploy:** 补齐 DB 迁移触发链路的漂移可见性与 hook 自愈链 ([#1362](https://github.com/tomturing/hci-troubleshoot-platform/issues/1362)) ([58d62e0](https://github.com/tomturing/hci-troubleshoot-platform/commit/58d62e02809041982ff0753ae794f0e647630d87))
+* **log-collect:** 交付期间 SSH 会话掉线自动重连节点并续传 ([#1346](https://github.com/tomturing/hci-troubleshoot-platform/issues/1346)) ([4b540d3](https://github.com/tomturing/hci-troubleshoot-platform/commit/4b540d30321241964d803e7b2d11f6eef8726460))
+* **log-collect:** 包存在性判定可自证，不再把「未探测」说成「已删除」 ([#1341](https://github.com/tomturing/hci-troubleshoot-platform/issues/1341)) ([8d86cb9](https://github.com/tomturing/hci-troubleshoot-platform/commit/8d86cb9380666528101f564d9cbae10827590bf5))
+* **log-collect:** 压缩包存在性探测三态化，受限 shell 无 stat 不再误判包已删除 ([#1356](https://github.com/tomturing/hci-troubleshoot-platform/issues/1356)) ([28d8163](https://github.com/tomturing/hci-troubleshoot-platform/commit/28d81631e66c908fc32ca61c14d87a151fc952ed))
+* **log-collect:** 合并成品幂等复用，交付重试不再被 SSH 断连否决 ([#1343](https://github.com/tomturing/hci-troubleshoot-platform/issues/1343)) ([85441ea](https://github.com/tomturing/hci-troubleshoot-platform/commit/85441ea44f72da96eb0c047dd2ba7a1b0937a2c9))
+* **log-collect:** 失败任务结果卡按终态展示，收敛双状态源 ([#1348](https://github.com/tomturing/hci-troubleshoot-platform/issues/1348)) ([f7de2ab](https://github.com/tomturing/hci-troubleshoot-platform/commit/f7de2abafbc311c063c7ffcf841fff2118554461))
+* **log-collect:** 彻底修复大包交付与桥日志直传失败 ([#1339](https://github.com/tomturing/hci-troubleshoot-platform/issues/1339)) ([ee182de](https://github.com/tomturing/hci-troubleshoot-platform/commit/ee182de109781a2ea04fb9b8ed066d847238b2d1))
+* **log-collect:** 探测准确性加固与下发事实留痕 + 收尾长事务/幂等修复 ([#1338](https://github.com/tomturing/hci-troubleshoot-platform/issues/1338)) ([d09b486](https://github.com/tomturing/hci-troubleshoot-platform/commit/d09b486d6f3db69dfdbbf1d6529da8fd8bc0c344))
+* **log-collect:** 探测卡可读性修复（场景短名/漏项/catalog JSON/建议路径） ([#1350](https://github.com/tomturing/hci-troubleshoot-platform/issues/1350)) ([aaf5c74](https://github.com/tomturing/hci-troubleshoot-platform/commit/aaf5c742b29ac5e07915f24385d90bd512a2d46f))
+* **log-collect:** 落库后立即提交，消除代传触发的行锁自死锁 ([#1342](https://github.com/tomturing/hci-troubleshoot-platform/issues/1342)) ([6f5d7c7](https://github.com/tomturing/hci-troubleshoot-platform/commit/6f5d7c7830b156e8dde7a6d6279dac16508258a6))
+* **terminal_bridge:** 交互 shell 空闲退出不再连坐会话，并在同一连接上自动重建 ([#1349](https://github.com/tomturing/hci-troubleshoot-platform/issues/1349)) ([df36842](https://github.com/tomturing/hci-troubleshoot-platform/commit/df36842e54b0de93e155ca36ff12345e9430e84e))
+* 日志收集面板会话状态自愈与中继瞬时失败退避重试 ([#1354](https://github.com/tomturing/hci-troubleshoot-platform/issues/1354)) ([50ec5a6](https://github.com/tomturing/hci-troubleshoot-platform/commit/50ec5a62ebf12ba2387a43a2f43fcc041ecb1891))
+
+
+### 📝 文档
+
+* **deploy:** 回写触发链路的合并后实测数据与仍未闭合项 ([#1365](https://github.com/tomturing/hci-troubleshoot-platform/issues/1365)) ([7520620](https://github.com/tomturing/hci-troubleshoot-platform/commit/75206204a9d5906610577b6322964368ac853841))
+* **ticket-sync:** 新增服务 README（服务介绍/部署方式/脚本用法） ([#1366](https://github.com/tomturing/hci-troubleshoot-platform/issues/1366)) ([801cb04](https://github.com/tomturing/hci-troubleshoot-platform/commit/801cb04302aac3515960a42e6f79065fa5f19deb))
+
 ## [2.32.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.31.0...v2.32.0) (2026-10-27)
 
 
