@@ -180,4 +180,33 @@ describe('DshDiagnosisView 工单同步', () => {
     expect(wrapper.text()).toContain('sp_10.0.0.1/logs.tar.gz')
     expect(wrapper.text()).toContain('已同步并解压')
   })
+
+  it('按工单号过滤本地目录列表', async () => {
+    ticketApi.fetchSyncArtifacts.mockResolvedValue([
+      {
+        ticketId: 'Q2026102900001',
+        phase: 'ready',
+        directoryReady: true,
+        directoryUpdatedAt: null,
+        job: null,
+      },
+      {
+        ticketId: 'Q2026102900002',
+        phase: 'ready',
+        directoryReady: true,
+        directoryUpdatedAt: null,
+        job: null,
+      },
+    ])
+
+    const wrapper = await mountView()
+    wrappers.push(wrapper)
+    const search = wrapper.find('input[placeholder="搜索工单号"]')
+
+    await search.setValue('0002')
+
+    expect(wrapper.text()).toContain('Q2026102900002')
+    expect(wrapper.text()).not.toContain('Q2026102900001')
+    expect(wrapper.text()).not.toContain('没有匹配的工单')
+  })
 })
