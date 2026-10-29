@@ -46,5 +46,12 @@ spec:
     automated:
       prune: true           # ops 资源无状态，允许自动删除已移除的资源
       selfHeal: true        # 防止运维配置被手动修改后漂移
+    retry:
+      # 失败自动重试：让与 hook 依赖/瞬态不可达相关的失败能够自动收敛
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m
     syncOptions:
       - CreateNamespace=false   # argocd namespace 已存在

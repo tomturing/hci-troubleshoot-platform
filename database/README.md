@@ -148,6 +148,21 @@ data-migrations（空库路径），恰好掩盖了「存量库 DML 早于 DDL�
 4. 断言核心业务表存在、废弃表不存在，并对关键字典断言行数与取值
 5. `atlas schema diff` 输出为空 → 幂等性通过
 
+### 变更是否真的会到达集群
+
+CI 全绿只证明「SQL 在空库里能跑通」，不证明「改动会落到集群」。本仓的触发链固定为：
+
+```
+database/** 改动 → resolve_image_build_plan.py 判定重建 db-migrate → 晋级写新 tag
+→ db-migration-trigger 的 migrator_image/seeds_revision 变化 → ArgoCD OutOfSync
+→ automated sync 执行 PreSync Step 5（迁移与种子）→ PostSync db-seed 兜底
+```
+
+关键点：`deploy/helm/hci-platform/templates/db-migration-trigger.yaml` 是**普通资源**，
+它把「迁移输入的聚合修订号」暴露给 ArgoCD 漂移对比。没有它，仅 DB 侧变化的晋级提交
+（只改 `dbMigrate.image.tag`，该值只被 hook 模板引用）会让 app 保持 `Synced`，
+PreSync Job 永不重跑——数据不对而 CI 全绿。详见[部署设计 §9.6](../docs/deploy/部署设计.md)。
+
 ## 幂等性规范（强制）
 
 `desired_extras.sql` 与 `data-migrations/*.sql` **必须可安全重复执行**：
@@ -169,7 +184,8 @@ data-migrations（空库路径），恰好掩盖了「存量库 DML 早于 DDL�
 4. **禁止新增 Schema 迁移版本目录** — 变更历史由 Git 承载，不再维护 `atlas-migrations/` 副本
 5. **数据库 migrations/ 目录只读归档** — 禁止新增 dbmate 文件
 6. **新表的初始数据进 seeds/，不进 data-migrations/** — 存量库执行顺序是 DML 早于 DDL，data-migrations 找不到本次才建的表
-7. **seeds/ 必须留在 db-migrate 镜像的构建白名单里** — 种子打包进该镜像并由 Step 5 执行；`database/seeds/` 掉出 `DB_MIGRATE_PATHS` 就不会重建、不会晋级、不会同步，种子静默不落地
+7. **seeds/ 必须留在 db-migrate 镜像的构建白名单里** — 种子打包进该镜像并由 Step 5 执行；`database/seeds/` 掉出 `DB_MIGRATE_PATHS` 就不会重建、不会晋级、不 会同步，种子静默不落地
+8. **迁移输入的变更必须能在普通资源上留下差异** — `db-migration-trigger` 必须保持无 hook/sync-wave 注解；一旦被改成 hook，它会退出漂移对比，整条触发链断掉（详见部署设计 §9.6）
 
 ## 多环境说明
 

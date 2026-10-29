@@ -871,6 +871,13 @@ jobs:
           helm unittest deploy/helm/hci-platform --strict
           echo "✅ Helm Unit Tests 通过"
 
+      # E-3: ArgoCD Application 同步不变式
+      # 规则：带 automated.selfHeal 的 Application 必须显式声明 syncPolicy.retry。
+      # 原因见 docs/deploy/部署设计.md §9.6：selfHeal 不重试失败操作，缺少 retry 时
+      # hook Job 的瞬态失败（如依赖 Secret 缺失）会永久挂起，只能人工介入。
+      - name: 校验 ArgoCD Application 同步不变式
+        run: python3 scripts/ci/check_argocd_app_sync_invariants.py
+
       - name: 上传 Helm 渲染产物
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

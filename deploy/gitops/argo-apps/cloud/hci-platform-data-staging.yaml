@@ -39,6 +39,13 @@ spec:
     automated:
       prune: false      # 禁止自动删除数据层资源，PVC 安全第一
       selfHeal: true
+    retry:
+      # 失败自动重试：让与 hook 依赖/瞬态不可达相关的失败能够自动收敛
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m
     syncOptions:
       - CreateNamespace=true
       - RespectIgnoreDifferences=true

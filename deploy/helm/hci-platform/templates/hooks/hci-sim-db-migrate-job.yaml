@@ -15,6 +15,10 @@ metadata:
     argocd.argoproj.io/sync-wave: "-8"
 spec:
   backoffLimit: 0
+  # 卡住必须收敛为失败：依赖缺失时 Pod 停在 CreateContainerConfigError（不是 Failed），
+  # 容器内的前置校验根本来不及执行，HookFailed 也不会触发。超时后 Job 转 Failed，
+  # 自愈链（删除 -> 重试 -> wave -10/-9 重建依赖）才能启动。
+  activeDeadlineSeconds: {{ .Values.hciSimDatabase.activeDeadlineSeconds | default 600 }}
   ttlSecondsAfterFinished: 3600
   template:
     metadata:
