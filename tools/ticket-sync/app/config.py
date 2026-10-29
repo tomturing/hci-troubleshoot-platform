@@ -22,6 +22,8 @@ DEFAULT_MAX_FILES = 50_000
 DEFAULT_MAX_DEPTH = 4
 # 单块磁盘上并发更高只会互相拖慢，2 是吞吐与响应性的折中。
 DEFAULT_CONCURRENCY = 2
+DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 30
+DEFAULT_RETENTION_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,9 @@ class Config:
     max_files: int
     max_depth: int
     concurrency: int
+    auto_sync_enabled: bool
+    auto_sync_interval_seconds: int
+    retention_days: int
 
     @property
     def source(self) -> str:
@@ -89,6 +94,11 @@ class Config:
             max_files=int(optional("TICKET_MAX_FILES", str(DEFAULT_MAX_FILES))),
             max_depth=int(optional("TICKET_MAX_DEPTH", str(DEFAULT_MAX_DEPTH))),
             concurrency=int(optional("TICKET_CONCURRENCY", str(DEFAULT_CONCURRENCY))),
+            auto_sync_enabled=_as_bool(optional("TICKET_AUTO_SYNC_ENABLED", "true")),
+            auto_sync_interval_seconds=int(
+                optional("TICKET_AUTO_SYNC_INTERVAL_SECONDS", str(DEFAULT_AUTO_SYNC_INTERVAL_SECONDS))
+            ),
+            retention_days=int(optional("TICKET_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))),
         )
 
 
@@ -105,3 +115,8 @@ def _parse_env_file(path: Path) -> dict[str, str]:
         key, _, value = line.partition("=")
         result[key.strip()] = value.strip().strip('"').strip("'")
     return result
+
+
+def _as_bool(value: str) -> bool:
+    """解析布尔配置，非法值按关闭处理并交给启动日志暴露。"""
+    return value.strip().lower() in {"1", "true", "yes", "on"}

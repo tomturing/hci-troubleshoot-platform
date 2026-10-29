@@ -27,9 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config
 from .extractor import extract
-from .fetcher import fetch
+from .fetcher import RemoteArchive, fetch, list_today_archives
+from .maintenance import cleanup_expired
 from .models import (
     RUNNING_PHASES,
+    TICKET_RE,
     ErrorCode,
     ExtractStats,
     Phase,
@@ -100,30 +102,63 @@ class JobRegistry:
 
     async def create(self, ticket_id: str, request_id: str = "-") -> Job:
         async with self._lock:
-            existing = self.jobs.get(ticket_id)
+            job = self._create_locked(ticket_id)
+        self._start(job, request_id)
+        return job
+
+    async def create_auto(self, archive: RemoteArchive) -> Job | None:
+        """为尚未同步或远端已更新的归档创建自动任务。
+
+        检查本地产物和注册任务与创建动作共用同一把锁，扫描轮询与手动按钮不会
+        在检查与入队之间产生竞态。返回 None 表示当前无需创建任务。
+        """
+        async with self._lock:
+            existing = self.jobs.get(archive.ticket_id)
             if existing is not None and existing.phase in RUNNING_PHASES:
-                raise JobConflict
+                return None
 
-            now = _now()
-            job = Job(
-                ticket_id=ticket_id,
-                job_id=uuid.uuid4().hex[:8],
-                phase=Phase.QUEUED,
-                accepted_at=now,
-                updated_at=now,
-            )
-            self.jobs[ticket_id] = job
+            final_dir = self.cfg.root / archive.ticket_id
+            if final_dir.is_dir():
+                return None
 
+            job = self._create_locked(archive.ticket_id)
+        self._start(job, "auto")
+        logger.info(
+            "ticket=%s job=%s 自动发现待同步归档 path=%s size=%d mtime=%.3f",
+            archive.ticket_id,
+            job.job_id,
+            archive.path,
+            archive.size,
+            archive.mtime,
+        )
+        return job
+
+    def _create_locked(self, ticket_id: str) -> Job:
+        existing = self.jobs.get(ticket_id)
+        if existing is not None and existing.phase in RUNNING_PHASES:
+            raise JobConflict
+
+        now = _now()
+        job = Job(
+            ticket_id=ticket_id,
+            job_id=uuid.uuid4().hex[:8],
+            phase=Phase.QUEUED,
+            accepted_at=now,
+            updated_at=now,
+        )
+        self.jobs[ticket_id] = job
+        return job
+
+    def _start(self, job: Job, request_id: str) -> None:
         # request_id 一路带进任务日志，一次点击就能串起受理与执行两段。
         logger.info(
             "request_id=%s ticket=%s job=%s 受理 排队中 当前任务数=%d",
             request_id,
-            ticket_id,
+            job.ticket_id,
             job.job_id,
             len(self.jobs),
         )
-        job.task = asyncio.create_task(self._run(job), name=f"ticket-sync:{ticket_id}")
-        return job
+        job.task = asyncio.create_task(self._run(job), name=f"ticket-sync:{job.ticket_id}")
 
     def get(self, ticket_id: str) -> Job | None:
         return self.jobs.get(ticket_id)
@@ -151,6 +186,46 @@ class JobRegistry:
 
     def active_count(self) -> int:
         return sum(1 for job in self.jobs.values() if job.phase in RUNNING_PHASES)
+
+    def active_ticket_ids(self) -> set[str]:
+        return {job.ticket_id for job in self.jobs.values() if job.phase in RUNNING_PHASES}
+
+    async def prune_expired(self, now: datetime) -> int:
+        """在任务注册表锁内执行清理，避免与手动入队同时删除产物目录。"""
+        async with self._lock:
+            return cleanup_expired(
+                self.cfg.root,
+                now,
+                self.cfg.retention_days,
+                self.active_ticket_ids(),
+            )
+
+    async def list_artifacts(self) -> list[dict[str, Any]]:
+        """合并本地已发布目录与内存任务，供 DSH 控制台展示。"""
+        async with self._lock:
+            local: dict[str, datetime] = {}
+            for entry in self.cfg.root.iterdir():
+                if not entry.is_dir() or entry.is_symlink() or TICKET_RE.fullmatch(entry.name) is None:
+                    continue
+                try:
+                    local[entry.name] = datetime.fromtimestamp(entry.stat().st_mtime, TZ)
+                except OSError:
+                    logger.warning("读取本地工单目录状态失败 ticket=%s", entry.name)
+
+            ticket_ids = set(local) | set(self.jobs)
+            result: list[dict[str, Any]] = []
+            for ticket_id in sorted(ticket_ids, reverse=True):
+                job = self.jobs.get(ticket_id)
+                result.append(
+                    {
+                        "ticketId": ticket_id,
+                        "phase": job.phase.value if job else Phase.READY.value,
+                        "directoryReady": ticket_id in local,
+                        "directoryUpdatedAt": local[ticket_id].isoformat() if ticket_id in local else None,
+                        "job": job.to_payload() if job else None,
+                    }
+                )
+            return result
 
     async def _run(self, job: Job) -> None:
         ticket_id = job.ticket_id
@@ -277,6 +352,10 @@ async def lifespan(app: FastAPI):
 
     app.state.cfg = cfg
     app.state.registry = registry
+    maintenance_task = asyncio.create_task(
+        _maintenance_loop(cfg, registry),
+        name="ticket-sync:maintenance",
+    )
 
     logger.info(
         "服务启动 version=%s root=%s concurrency=%d listen=%s:%d",
@@ -290,10 +369,10 @@ async def lifespan(app: FastAPI):
     yield
 
     pending = [
-        job.task
-        for job in list(registry.jobs.values())
-        if job.task is not None and not job.task.done()
+        job.task for job in list(registry.jobs.values()) if job.task is not None and not job.task.done()
     ]
+    maintenance_task.cancel()
+    pending.append(maintenance_task)
     for task in pending:
         task.cancel()
     if pending:
@@ -301,6 +380,37 @@ async def lifespan(app: FastAPI):
         # 不等就直接关事件循环，会留下仍在写盘的 rsync/unzip 孤儿进程。
         await asyncio.wait(pending, timeout=10)
     logger.info("服务退出 已终止任务数=%d", len(pending))
+
+
+async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
+    """每 30 秒扫描远端归档，并按本地时间每日执行保留期清理。"""
+    last_cleanup_date = None
+    # 首次等待一个周期，避免服务刚启动时与网络/挂载初始化同时争抢资源。
+    await asyncio.sleep(max(1, cfg.auto_sync_interval_seconds))
+    while True:
+        try:
+            now = _now()
+            if last_cleanup_date != now.date():
+                removed = await registry.prune_expired(now)
+                logger.info("本地保留期检查完成 retention_days=%d removed=%d", cfg.retention_days, removed)
+                last_cleanup_date = now.date()
+
+            if cfg.auto_sync_enabled:
+                archives = await list_today_archives(cfg, now)
+                for archive in archives:
+                    try:
+                        await registry.create_auto(archive)
+                    except JobConflict:
+                        # 手动按钮刚好先入队时，自动扫描只需跳过本轮。
+                        continue
+        except asyncio.CancelledError:
+            raise
+        except TicketError as error:
+            logger.error("自动维护失败 code=%s message=%s detail=%s", error.code, error.message, error.detail)
+        except Exception as error:  # noqa: BLE001 - 后台循环不能因一次扫描异常退出
+            logger.exception("自动维护出现未预期异常 error=%s", error)
+
+        await asyncio.sleep(max(1, cfg.auto_sync_interval_seconds))
 
 
 app = FastAPI(title="HCI 工单日志同步", version=VERSION, lifespan=lifespan)
@@ -368,6 +478,13 @@ async def get_job(ticket_id: str, request: Request):
             content={"error": "not-found", "message": "没有该工单的同步任务"},
         )
     return job.to_payload()
+
+
+@app.get("/artifacts")
+async def list_artifacts(request: Request) -> dict[str, Any]:
+    """返回已同步目录和仍在运行/最近结束的任务，目录路径不暴露宿主机绝对路径。"""
+    registry: JobRegistry = request.app.state.registry
+    return {"items": await registry.list_artifacts()}
 
 
 @app.delete("/jobs/{ticket_id}", status_code=204)

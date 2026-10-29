@@ -32,6 +32,14 @@ export interface SyncJob {
   updatedAt: string
 }
 
+export interface SyncArtifact {
+  ticketId: string
+  phase: SyncPhase
+  directoryReady: boolean
+  directoryUpdatedAt: string | null
+  job: SyncJob | null
+}
+
 export const PHASE_TEXT: Record<SyncPhase, string> = {
   queued: '排队中',
   fetching: '拉取中',
@@ -90,6 +98,12 @@ export async function fetchSyncJob(ticketId: string): Promise<SyncJob | null> {
     if (error?.response?.status === 404) return null
     throw error
   }
+}
+
+/** 查询本地已同步工单目录及自动/手动任务状态。 */
+export async function fetchSyncArtifacts(): Promise<SyncArtifact[]> {
+  const res = await client.get('/artifacts')
+  return (res.data?.items ?? []) as SyncArtifact[]
 }
 
 /** 取消任务。已结束的任务服务端幂等返回 204。 */
