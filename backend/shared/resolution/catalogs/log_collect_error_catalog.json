@@ -424,6 +424,17 @@
       "ops_hint": "分块上传需放宽单请求体积，避免 413。"
     },
     {
+      "code": "LC-TRANSFER-006",
+      "layer": "TRANSFER",
+      "stage": "package",
+      "title_zh": "压缩包状态无法确认",
+      "owner": "customer",
+      "retryable": true,
+      "http_status": 503,
+      "user_hint": "节点暂时无法执行文件探测命令，无法确认日志包是否还在；请稍后重试。",
+      "ops_hint": "aSV 受限 shell 可能没有 stat（exit 127），必须走 ls -l 兜底；各级 exit/stderr 写入 archive_probe_diag。"
+    },
+    {
       "code": "LC-PLATFORM-001",
       "layer": "PLATFORM",
       "stage": "api",

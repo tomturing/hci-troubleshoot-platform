@@ -58,6 +58,9 @@ const (
 	ErrTransferChunkFailed    = "LC-TRANSFER-003"
 	ErrTransferResumeFailed   = "LC-TRANSFER-004"
 	ErrTransferTooLarge       = "LC-TRANSFER-005"
+	// 探测命令本身跑不了（命令不存在/通道异常）：不能说包没了，只能说无法确认。
+	// 与 001（包确定不存在）严格区分：混用会让平台对着盘上的包报“已被删除”。
+	ErrTransferArchiveProbe = "LC-TRANSFER-006"
 
 	ErrPlatUnauthorized = "LC-PLATFORM-001"
 	ErrPlatForbidden    = "LC-PLATFORM-002"
@@ -127,6 +130,7 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrTransferChunkFailed:    {"TRANSFER", "customer", "true", "upload"},
 	ErrTransferResumeFailed:   {"TRANSFER", "platform", "manual", "upload"},
 	ErrTransferTooLarge:       {"TRANSFER", "platform", "false", "upload"},
+	ErrTransferArchiveProbe:   {"TRANSFER", "customer", "true", "package"},
 
 	ErrPlatUnauthorized: {"PLATFORM", "platform", "true", "api"},
 	ErrPlatForbidden:    {"PLATFORM", "platform", "false", "api"},

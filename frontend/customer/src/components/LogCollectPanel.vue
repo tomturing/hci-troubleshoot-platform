@@ -43,6 +43,7 @@ import {
   decideNodeSync,
   fallbackNodeState,
   hashReport,
+  interpretArchiveProbe,
   type NodeState,
   type SyncAction,
 } from '@/services/logCollectSync'
@@ -164,11 +165,11 @@ interface ProgressSnapshot {
    */
   archive_size?: number
   /**
-   * 压缩包此刻是否真的在节点上（bridge 的 stat 结论）。
+   * 压缩包此刻是否真的在节点上（bridge 的 stat 结论，三态）。
    *
    * 与 `archive_path` 的区别是决定性的：路径只说明"曾经生成过"，
    * P1 发送成功后插件会立刻删除文件，报告里却仍带路径。
-   * 缺省（旧版 bridge）时必须当作"未确认"，不能当作"存在"。
+   * 缺省（旧版 bridge / 探测命令不可用）时必须当作"未确认"，不能当作"不存在"。
    */
   archive_exists?: boolean
   upload_state: string
@@ -2233,7 +2234,14 @@ async function resumeTaskFlow(
   if (!collected) throw new Error('采集未完成')
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
   if (!isDirect) {
-    await runP2(ws, task, token)
+    // 把「已量到的证据」一起交给 runP2：完成那份快照里的 archive_size 是同一份包的
+    // 物理事实，能省一次探测往返；量为 0 时 runP2 自己会走 stat（现已带 ls -l 兜底）。
+    // 路径必须用 collected 的，不能用 progress.value——那可能是上一轮的报告。
+    await runP2(ws, task, token, {
+      mode: 'collect',
+      sourcePath: collected.archive_path || undefined,
+      totalSize: collected.archive_size || undefined,
+    })
     return
   }
   try {
@@ -2261,9 +2269,11 @@ async function fallbackToP2(
 ): Promise<boolean> {
   const archivePath = progress.value?.archive_path || ''
   if (!archivePath) return false
-  // stat 失败说明包已被插件删除（多半是"其实传成功了"），不能降级
-  const statResult = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000).catch(() => null)
-  if (!statResult || statResult.status !== 'ok') return false
+  // stat 探测不到时不能降级：失败可能是"设备已删包"（多半是"其实传成功了"），
+  // 也可能是"命令不可用"，两者都不该把用户引向一次注定失败的搬运。
+  // probeArchiveOnNode 已把三态收拢：只有确认在盘上才返回，探测失败直接抛错，此处按 false 处理。
+  const probed = await probeArchiveOnNode(ws, archivePath).catch(() => null)
+  if (!probed) return false
 
   const reason = cause instanceof Error ? cause.message : String(cause)
   ElMessage.warning(`直传日志服务器失败（${reason}），已自动切换平台中转续传`)
@@ -2539,6 +2549,36 @@ async function markCompleted(taskId: string, extra: Partial<LogCollectTask> = {}
 }
 
 /**
+ * 探测节点上压缩包此刻的真实状态（交付链路上「包在不在」的唯一判据出口）。
+ *
+ * 为什么必须只留一个出口：``runP2`` 与「上传到平台」各判一次，判据一漂就分叉——
+ * Q2026102900165（2026-10-29）现场就是这样：节点 aSV 受限 shell 里 stat 不存在（exit 127），
+ * 包却真在盘上 29.9 MB，界面却断言「压缩包已不在节点上（P1 发送成功后插件会自动删除）」，
+ * 把用户直接推向「重新采集」（而重采只会把旧包挪进 archive/ 目录）。
+ *
+ * 三态语义（bridge 已改为 stat → ls -l 两级探测）：
+ * - true：确认在盘上；
+ * - false：确认不在（只有探测命令真的跑通且明确报 missing 才会出现）；
+ * - null：无法确认（命令不可用 / 通道异常 / 旧版 bridge 不下发该字段）。
+ * 只有 false 才允许说「已不在」；null 必须如实说「无法确认」。
+ */
+async function probeArchiveOnNode(
+  ws: WebSocket,
+  archivePath: string,
+): Promise<{ size: number; exists: boolean | null }> {
+  const outcome = interpretArchiveProbe(
+    await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000),
+  )
+  if (outcome.failure) {
+    // 探测失败绝不能翻译成「包已删除」：把桥的原话（含 stat:exit=127 这类诊断）抛出去，
+    // 让用户知道该等一等、还是该去节点确认，而不是白重采一遍。
+    if (outcome.failure.errorCode) lastNodeErrorCode = outcome.failure.errorCode
+    throw new Error(outcome.failure.message)
+  }
+  return { size: outcome.size, exists: outcome.exists }
+}
+
+/**
  * P2 中转交付。
  *
  * `mode` 决定 bridge 侧怎么起作业：
@@ -2561,14 +2601,9 @@ async function runP2(
   //    调用方已经量过时（补交付入口先探存在性）直接复用，省一次 30s 预算的往返。
   let totalSize = options.totalSize ?? 0
   if (totalSize <= 0) {
-    const statResult = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000)
-    if (statResult.status !== 'ok') throw new Error(statResult.message || '读取压缩包大小失败')
-    if (statResult.log_data?.exists === false) {
-      throw new Error('压缩包已不在节点上（P1 发送成功后插件会自动删除），无法补交付；如需产物请重新采集')
-    }
-    totalSize = Number(statResult.log_data?.size || 0)
+    totalSize = (await probeArchiveOnNode(ws, archivePath)).size
   }
-  if (totalSize <= 0) throw new Error('压缩包大小异常')
+  if (totalSize <= 0) throw new Error('压缩包大小异常（节点报告 0 字节），无法中转')
 
   // 2) 平台签发分片会话：走 /deliver 而非 /uploads。
   //    /deliver 由服务端负责"会话大小不一致"的自愈与会话记账；
@@ -2648,10 +2683,8 @@ async function uploadExistingPackage(ws: WebSocket, task: LogCollectTask, token:
 
   // 先确认包真的还在，再动平台状态：否则 status 被改成 collecting 之后才发现传无可传，
   // 平台就被留在"采集中"的假态里，只能靠下一轮对账再纠回来。
-  const probe = await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000)
-  if (probe.status === 'ok' && probe.log_data?.exists === false) {
-    throw new Error('压缩包已不在节点上（P1 发送成功后插件会自动删除），无法补交付；如需产物请重新采集')
-  }
+  // 判据只认 probeArchiveOnNode 的三态结论：探测失败会直接抛出真因，不再冒充"包已不在"。
+  const probe = await probeArchiveOnNode(ws, archivePath)
 
   // failed / cancelled → completed 在状态机里没有直连边，唯一合法出口是回到 collecting。
   // 这里走它只是为了"能落完成后态"，与重新采集无关：不发 create、不轮询 progress。
@@ -2662,7 +2695,7 @@ async function uploadExistingPackage(ws: WebSocket, task: LogCollectTask, token:
   await runP2(ws, task, token, {
     mode: 'direct',
     sourcePath: archivePath,
-    totalSize: Number(probe.log_data?.size || 0),
+    totalSize: probe.size,
   })
 }
 

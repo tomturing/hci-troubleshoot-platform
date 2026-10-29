@@ -477,23 +477,46 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 // 只 stat 大小会把半截包传上去，用户下载时才发现打不开——那时已经白跑一趟
 // 460MB~20GB 的传输。EOCD（PK\x05\x06）在 zip 写完时必然出现在尾部，
 // zip64 同样保留该标记（只是字段填 0xFFFF/0xFFFFFFFF），因此判据对所有尺寸都成立。
+//
+// 大小探测必须与 progress/stat 动作共用 probeLogCollectArchive：Q2026102900165
+// （2026-10-29）现场证明 aSV 受限 shell 没有 stat（exit 127），只写单条 stat 的实现
+// 会把盘上 29.9 MB 的包报成"源包不可读"，让补交付在最后一步永远走不通。
 func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession, job *deliveryJob) error {
 	sourcePath := strings.TrimSpace(job.SourcePath)
 	if sourcePath == "" {
 		return fmt.Errorf("缺少源包路径，无法交付")
 	}
 
-	output, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(sourcePath)))
-	if err != nil {
-		return fmt.Errorf("源包不可读（%s）：%w", sourcePath, err)
+	probed := probeLogCollectArchive(ctx, session, sourcePath)
+	if probed.Exists == nil {
+		// 探测不出来 ≠ 包没了：返回普通错误交给重试，不得写成 fatal。
+		return fmt.Errorf(
+			"无法确认源包状态（%s）：%s；若节点 shell 缺少 stat，需确认 ls -l 可用",
+			sourcePath, firstNonEmpty(probed.Diag, "探测命令不可用"),
+		)
 	}
-	size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
-	if parseErr != nil || size <= 0 {
-		return fmt.Errorf("源包大小异常（stat=%q，路径 %s）", strings.TrimSpace(output), sourcePath)
+	if !*probed.Exists {
+		return &deliveryFatalError{reason: fmt.Sprintf(
+			"节点上已确认没有源包（%s）：%s；重试无意义，请重新采集后再交付",
+			sourcePath, firstNonEmpty(probed.Diag, "命令已执行且明确报文件不存在"),
+		)}
 	}
+	if probed.Size <= 0 {
+		return fmt.Errorf(
+			"源包大小无法确认（探测级 %s，诊断 %s，路径 %s）；零字节包无法分片上传",
+			probed.Level, firstNonEmpty(probed.Diag, "无"), sourcePath,
+		)
+	}
+	size := probed.Size
 
 	if err := verifyArchiveComplete(ctx, session, sourcePath); err != nil {
-		return err
+		if !errors.Is(err, errArchiveCompleteUnverifiable) {
+			return err
+		}
+		// 校验手段缺失不是包坏了：只能降级为"未校验"并留痕，不能因此阻断交付。
+		blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，跳过完整性预检", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "source_path": sourcePath, "reason": err.Error(),
+		})
 	}
 
 	r.mu.Lock()
@@ -556,19 +579,34 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *SSHSes
 	})
 }
 
+// errArchiveCompleteUnverifiable 表示节点缺少校验 zip 结束标记所需的命令。
+// 它必须与"包不完整"严格区分：前者只是少了一个可观测手段，后者是数据真的坏了。
+var errArchiveCompleteUnverifiable = errors.New("节点缺少 tail/od/tr/grep，无法校验 zip 结束标记")
+
 // verifyArchiveComplete 通过 zip 尾部的 EOCD 标记判断包是否写完。
 // 只看尾部 64KiB：EOCD 在最末尾（含最大 65535 字节注释），无需读全文件。
+//
+// 失败必须分两类：命令不可用（126/127 或 stderr 报 not found）返回
+// errArchiveCompleteUnverifiable，由调用方降级放行；只有命令真跑了且没找到标记，
+// 才说明包还在写入中。混在一起会让没有 tail 的受限 shell 永远交付不上去。
 func verifyArchiveComplete(ctx context.Context, session *SSHSession, path string) error {
 	command := fmt.Sprintf(
 		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
 		shellQuote(path),
 	)
-	output, exitCode, err := session.runQuickCommand(ctx, command)
-	if err != nil {
-		return fmt.Errorf("校验压缩包完整性失败：%w", err)
+	stdout, stderr, exitCode, err := session.runQuickCommandStreams(ctx, command)
+	combined := stdout + "\n" + stderr
+	// 注意：runQuickCommandStreams 在非零退出时也会返回 ssh.ExitError，
+	// 因此不能用 err != nil 判“命令不可用”——grep 未命中（exit 1）同样是 err != nil，
+	// 那是“包不完整”的正面证据，不能当成“没法校验”放行。
+	if exitCode < 0 {
+		return fmt.Errorf("%w（通道异常 %s）", errArchiveCompleteUnverifiable, errString(err))
+	}
+	if exitCode == 126 || exitCode == 127 || archiveProbeToolMissingRe.MatchString(combined) {
+		return fmt.Errorf("%w（exit=%d %s）", errArchiveCompleteUnverifiable, exitCode, truncateForDiag(combined, 120))
 	}
 	// grep -c 命中返回 0；未命中返回 1（此时 exitCode != 0）
-	if strings.TrimSpace(output) == "0" || exitCode != 0 {
+	if strings.TrimSpace(stdout) == "0" || exitCode != 0 {
 		return fmt.Errorf("压缩包不完整（尾部无 zip 结束标记），可能仍在采集写入中：%s", path)
 	}
 	return nil

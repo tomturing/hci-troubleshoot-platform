@@ -411,6 +411,82 @@ export function blocksCreate(action: SyncAction | null | undefined): boolean {
   return action.action === 'adopt' && action.adoptMode !== 'deliver'
 }
 
+/** bridge `log_collect` 的 stat 回包（只取交付链路关心的字段）。 */
+export interface ArchiveProbeReply {
+  status?: string
+  error_code?: string
+  message?: string
+  log_data?: {
+    exists?: boolean | null
+    size?: number
+    probe_level?: string
+    probe_diag?: string
+  } | null
+}
+
+export interface ArchiveProbeOutcome {
+  /** 节点量到的字节数；0 表示没量到（不代表可交付）。 */
+  size: number
+  /** 三态存在性：true/false 为确认结论，null 为无法确认。 */
+  exists: boolean | null
+  /** 非空表示不可继续交付，直接把它抛给用户/写库。 */
+  failure: { message: string; errorCode: string } | null
+}
+
+/**
+ * 把 bridge 的 stat 回包翻译成交付链路唯一需要的三态结论。
+ *
+ * 第一性原理：界面只能说出三种话——「在」「确定不在」「无法确认」。旧代码把
+ * 「status !== 'ok'」与「exists === false」当两个分支各判一次，而 bridge 又把
+ * 探测失败一律报成 status=ok + exists=false，两者一叠加就无法表达「未知」。
+ * Q2026102900165（2026-10-29）现场：aSV 受限 shell 没有 stat（exit 127），
+ * 29.9 MB 的包就在盘上，面板却断言「压缩包已不在节点上（P1 发送成功后插件会自删）」，
+ * 把用户直接推向一次必然白跑的重新采集。
+ *
+ * 判据必须收拢到一个纯函数里：只有它被穷举测试，下一处调用点才不会又写错。
+ *
+ * 错误码与文案的对应关系：
+ * - `LC-TRANSFER-006`（探测失败）：说「无法确认」并带上节点给的诊断；
+ * - `LC-TRANSFER-001`（确认不存在）：说「已不在」，并指向重新采集；
+ * - 其余错误：原样回显桥的 message。
+ */
+export function interpretArchiveProbe(reply: ArchiveProbeReply | null | undefined): ArchiveProbeOutcome {
+  const rawExists = reply?.log_data?.exists
+  // 三态归一：只有严格的 true/false 才是结论，其余（undefined/null）一律是未知。
+  const exists = rawExists === true ? true : rawExists === false ? false : null
+  const size = Number(reply?.log_data?.size || 0)
+  const diag = String(reply?.log_data?.probe_diag || '')
+  const errorCode = String(reply?.error_code || '')
+
+  // 探测失败优先：此时桥根本没给出结论，不得拿缺省的 exists 去猜。
+  if (reply?.status === 'error') {
+    if (errorCode === 'LC-TRANSFER-006') {
+      return {
+        size: 0,
+        exists: null,
+        failure: {
+          message: `无法确认节点上的压缩包状态（${diag || reply.message || '探测命令不可用'}），请稍后重试`,
+          errorCode,
+        },
+      }
+    }
+    return { size: 0, exists: null, failure: { message: reply.message || '读取压缩包状态失败', errorCode } }
+  }
+
+  if (exists === false) {
+    return {
+      size: 0,
+      exists: false,
+      failure: {
+        message: '压缩包已不在节点上（P1 发送成功后插件会自动删除），无法补交付；如需产物请重新采集',
+        errorCode: errorCode || 'LC-TRANSFER-001',
+      },
+    }
+  }
+
+  return { size, exists, failure: null }
+}
+
 /** 对账结论 → 用户可读提示（含下一步动作） */
 export function buildSyncNotice(action: SyncAction): string {
   switch (action.action) {

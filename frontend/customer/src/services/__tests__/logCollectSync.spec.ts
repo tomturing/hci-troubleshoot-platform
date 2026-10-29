@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { blocksCreate, buildSyncNotice, decideNodeSync, hashReport, resolveOwnership } from '../logCollectSync'
+import {
+  blocksCreate,
+  buildSyncNotice,
+  decideNodeSync,
+  hashReport,
+  interpretArchiveProbe,
+  resolveOwnership,
+} from '../logCollectSync'
 
 const STALE_REPORT = '状态：收集任务已完成！\n总进度：100% - 2/2\n归档状态：发送成功'
 const FRESH_REPORT = '状态：收集任务进行中！\n总进度：0% - 0/2'
@@ -320,5 +327,67 @@ describe('blocksCreate：新建任务守卫的边界', () => {
     expect(blocksCreate(null)).toBe(false)
     expect(blocksCreate({ action: 'none', reason: '' })).toBe(false)
     expect(blocksCreate({ action: 'patch_delivered', reason: '' })).toBe(false)
+  })
+})
+
+// 现场回归（Q2026102900165，2026-10-29）：aSV 受限 shell 没有 stat（exit 127），
+// 29.9 MB 的压缩包就在盘上，面板却报「压缩包已不在节点上」。
+// 交付链路只能把「探测失败」说成「无法确认」，绝不得译成「已删除」。
+describe('interpretArchiveProbe：探测回包的三态判据', () => {
+  it('stat → ls 兜底成功时给出可交付的大小', () => {
+    const outcome = interpretArchiveProbe({
+      status: 'ok',
+      log_data: { exists: true, size: 29900423, probe_level: 'ls', probe_diag: 'stat:exit=127 stat: not found' },
+    })
+    expect(outcome.failure).toBeNull()
+    expect(outcome.exists).toBe(true)
+    expect(outcome.size).toBe(29900423)
+  })
+
+  it('旧版 bridge 只回 size 不回 exists：不得当成不存在', () => {
+    const outcome = interpretArchiveProbe({ status: 'ok', log_data: { size: 1024 } })
+    expect(outcome.failure).toBeNull()
+    expect(outcome.exists).toBeNull()
+    expect(outcome.size).toBe(1024)
+  })
+
+  it('探测失败（LC-TRANSFER-006）→ 说无法确认并带出节点诊断', () => {
+    const outcome = interpretArchiveProbe({
+      status: 'error',
+      error_code: 'LC-TRANSFER-006',
+      message: '无法确认压缩包状态（节点命令不可用或通道异常）',
+      log_data: { exists: null, size: 0, probe_diag: 'stat:exit=127 stat: not found | ls:exit=127' },
+    })
+    expect(outcome.failure?.errorCode).toBe('LC-TRANSFER-006')
+    expect(outcome.failure?.message).toContain('无法确认')
+    expect(outcome.failure?.message).toContain('stat:exit=127')
+    // 关键断言：绝不能出现那句把用户推向重采的话。
+    expect(outcome.failure?.message).not.toContain('压缩包已不在节点上')
+  })
+
+  it('确认不存在（LC-TRANSFER-001）→ 才允许说已不在并指向重新采集', () => {
+    const outcome = interpretArchiveProbe({
+      status: 'ok',
+      error_code: 'LC-TRANSFER-001',
+      message: '节点上已确认没有该压缩包',
+      log_data: { exists: false, size: 0, probe_level: 'missing' },
+    })
+    expect(outcome.failure?.errorCode).toBe('LC-TRANSFER-001')
+    expect(outcome.failure?.message).toContain('压缩包已不在节点上')
+    expect(outcome.failure?.message).toContain('重新采集')
+  })
+
+  it('error 且无错误码时原样回显桥的 message，不丢失真因', () => {
+    const outcome = interpretArchiveProbe({ status: 'error', message: 'SSH 会话已断开' })
+    expect(outcome.failure?.message).toBe('SSH 会话已断开')
+    expect(outcome.exists).toBeNull()
+  })
+
+  it('空回包 / 缺 log_data 一律是未知，不得当 false', () => {
+    for (const reply of [null, undefined, {}, { status: 'ok' }]) {
+      const outcome = interpretArchiveProbe(reply)
+      expect(outcome.exists).toBeNull()
+      expect(outcome.failure).toBeNull()
+    }
   })
 })
