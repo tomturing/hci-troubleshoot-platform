@@ -54,6 +54,10 @@ DB_MIGRATE_PATHS = (
     "database/desired_schema.sql",
     "database/desired_extras.sql",
     "database/data-migrations/",
+    # 种子数据由 Dockerfile.migrations COPY 进镜像，并在 PreSync 的 Step 5 执行。
+    # 不列在这里的后果（2026-10-29 事故）：种子变更不重建镜像 → 不产生新 tag →
+    # 不晋级 → ArgoCD 不 sync → PostSync db-seed 永远不会跑，种子静默不落地而 CI 全绿。
+    "database/seeds/",
     "Dockerfile.migrations",
     "scripts/db-migrate.sh",
     "scripts/migration-runner.sh",
@@ -86,9 +90,17 @@ def changed_files() -> list[str]:
 
 
 def changed_files_between(base: str, head: str) -> list[str]:
-    """返回两个已知提交之间的变更文件。"""
+    """返回两个已知提交之间的变更文件。
+
+    故意传 ``--no-renames``：开启重命名识别时，``--name-only`` 对 R 项只输出
+    目标路径，源路径（也就是「被移出」的那个目录）会消失。2026-10-29 的教训：
+    把 ``database/data-migrations/056_x.sql`` 重命名为 ``database/seeds/06_x.sql``
+    后，变更清单里只剩 seeds 路径，``database/data-migrations/`` 的删除完全不可见，
+    db-migrate 镜像因此没重建、没晋级、集群也没同步。同一盲区对任何白名单
+    （如从 ``backend/`` 移到 ``docs/``）都存在，故在公共取得处修正。
+    """
     result = subprocess.run(
-        ["git", "diff", "--name-only", base, head],
+        ["git", "diff", "--no-renames", "--name-only", base, head],
         check=True,
         capture_output=True,
         text=True,
