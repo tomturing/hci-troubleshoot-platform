@@ -6,6 +6,14 @@
 #   2. psql 应用函数（desired_extras.sql，幂等：CREATE OR REPLACE FUNCTION）
 #   3. atlas schema apply（最终声明式差量收敛）
 #   4. psql 应用触发器（需要表已存在，幂等：DROP TRIGGER IF EXISTS + CREATE TRIGGER）
+#   5. psql 按文件名顺序执行种子数据（seeds/，幂等：ON CONFLICT DO NOTHING）
+#
+# 为什么 Step 5 不能提前、也不能只靠 Helm 的 PostSync db-seed：
+#   - 种子描述的是「本次 Schema 收敛后的初始/参考数据」，必须晚于 Step 3；
+#   - data-migrations 在存量库跑在 Step 3 **之前**，所以新表的种子不能放那里
+#     （2026-10-29 staging 事故：056 报 relation does not exist）；
+#   - PostSync db-seed 仍然保留（Helm 直装与兼容路径），两边重复执行一次，
+#     所有种子均幂等（02/03/06 DO NOTHING 保护运营改动，01 DO UPDATE 是代码强约束）。
 #
 # 前置条件：
 #   - 数据库用户拥有安装 vector/pgcrypto/uuid-ossp/pg_trgm extensions 的权限
@@ -99,6 +107,22 @@ echo ""
 echo ">>> Step 4: 重建触发器（DROP TRIGGER IF EXISTS + CREATE TRIGGER）"
 psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f /desired_extras.sql
 echo "✅ Step 4 完成（触发器已重建）"
+
+# ── Step 5: 应用种子数据 ──────────────────────────────────────────────────
+# 必须晚于 Step 3（Atlas 建表）：种子里的 INSERT 直接依赖本次新建的表。
+# 按文件名排序执行，与 db-seed Job / CI 的顺序保持一致。
+echo ""
+echo ">>> Step 5: 应用种子数据（/seeds/*.sql，按文件名顺序）"
+if [ -d /seeds ]; then
+  for SEED_FILE in $(ls /seeds/*.sql 2>/dev/null | sort); do
+    echo "  执行: $SEED_FILE"
+    psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f "$SEED_FILE"
+  done
+  echo "✅ Step 5 完成（种子数据已对齐）"
+else
+  # 旧镜像或自定义构建可能没有 /seeds：降到兼容模式，由 PostSync db-seed 兜底。
+  echo "⏭️ 跳过：镜像内无 /seeds 目录"
+fi
 
 echo ""
 echo "====== 迁移完成 ======"

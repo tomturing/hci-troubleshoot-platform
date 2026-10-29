@@ -38,7 +38,7 @@ database/
     002_yyy.sql
     review_required/           ← 需专家签字后手工应用的迁移（runner 不扫描）
   hci-sim-migrations/          ← hci_sim 独立库 Schema 入口（与主库互不扫描）
-  seeds/                       ← 业务种子数据（与迁移工具无关，PostSync 执行）
+  seeds/                       ← 业务种子数据（PreSync Step 5 + PostSync db-seed 双通道）
     01_tool_definitions.sql    ← 初始化 tool_definition 表
     02_system_prompts.sql      ← 初始化 system_prompt 表
     03_skill_definitions.sql   ← 初始化 skill_definition 表
@@ -87,8 +87,13 @@ git add database/desired_schema.sql
 | Step 2 | 应用函数 | `desired_extras.sql` |
 | Step 3 | 声明式 Schema 收敛 | `desired_schema.sql` |
 | Step 4 | 重建触发器 | `desired_extras.sql`（再次全量） |
+| Step 5 | 应用种子数据（按文件名顺序） | `seeds/*.sql` |
 
-`Dockerfile.migrations` 只 COPY 上述四个输入 + 两个脚本，**不打包任何迁移版本目录**。
+`Dockerfile.migrations` COPY 上述五个输入 + 两个脚本，**不打包任何迁移版本目录**。
+
+> Step 5 必须晚于 Step 3：种子里的 `INSERT` 直接依赖本次新建的表。它和 Helm 的
+> `db-seed`（PostSync）是**同一份数据的两条执行通道**，都幂等；Step 5 保证「镜像里
+> 有什么种子就一定会被应用」，`db-seed` 兼容 Helm 直装与旧镜像。
 
 > **`data-migrations/review_required/` 不会被自动执行**：`migration-runner.sh` 只匹配
 > `/data-migrations/*.sql` 顶层 glob，子目录不在扫描范围内。该目录存放**不可自动回退**
@@ -103,8 +108,9 @@ git add database/desired_schema.sql
 
 存量库的执行顺序是 **Step 1 DML → Step 3 DDL**，因此 `data-migrations/*.sql` 只能操作
 **本次同步之前就已存在的表**。新增表（写进 `desired_schema.sql`）的初始数据必须放
-`database/seeds/`，由 `db-seed` Job 在 PostSync（hook-weight 0，晚于 db-migrate 的 -5）
-执行，那时 Atlas 已完成收敛，表一定存在。
+`database/seeds/`：它会在同一个 PreSync Job 的 **Step 5**（Atlas 收敛之后）与
+`db-seed` Job 的 **PostSync**（hook-weight 0，晚于 db-migrate 的 -5）各执行一次，
+两条通道都在建表之后，且种子全部幂等，重复执行无副作用。
 
 | 场景 | 落点 |
 |---|---|
@@ -120,6 +126,19 @@ ArgoCD 连试 5 次失败后放弃同步，各 Deployment 均停在旧镜像。�
 > CI 对这版错误曾「假绿」：`db-migration-test.yml` 先 `atlas schema apply` 再跑
 data-migrations（空库路径），恰好掩盖了「存量库 DML 早于 DDL」的差异。现已在 CI 中
 补跑 `seeds/*.sql` 并断言字典内容，见下节。
+
+**第二层缺口（2026-10-29 合并后发现）**：seeds 原本只活在 Helm 的 PostSync ConfigMap
+里，**不在任何镜像里**。只改 `database/seeds/` 不会产生新 tag → db-migrate 不重建 →
+不晋级 → ArgoCD 不 sync → PostSync 永远不触发，种子静默不落地，而 main 的 CI 全绿。
+更隐蔽的是：`056 → seeds/06` 被 git 识别成**纯重命名**，`git diff --name-only` 只输出
+目标路径，`database/data-migrations/` 的删除完全不可见，白名单自然不命中。现在：
+
+1. seeds 被 `COPY` 进 `db-migrate` 镜像，由脚本 **Step 5** 在 PreSync 内执行；
+2. `database/seeds/` 列入 `scripts/ci/resolve_image_build_plan.py` 的 `DB_MIGRATE_PATHS`；
+3. 变更清单采集改为 `git diff --no-renames`，把「移出白名单目录」的源路径还原回清单。
+
+回归测试见 `scripts/ci/test_resolve_image_build_plan.py` 的
+`test_seeds_change_triggers_db_migrate_rebuild` 与 `test_rename_out_of_watched_dir_is_visible`。
 
 ### CI 自动验证（`db-migration-test.yml`）
 
@@ -150,6 +169,7 @@ data-migrations（空库路径），恰好掩盖了「存量库 DML 早于 DDL�
 4. **禁止新增 Schema 迁移版本目录** — 变更历史由 Git 承载，不再维护 `atlas-migrations/` 副本
 5. **数据库 migrations/ 目录只读归档** — 禁止新增 dbmate 文件
 6. **新表的初始数据进 seeds/，不进 data-migrations/** — 存量库执行顺序是 DML 早于 DDL，data-migrations 找不到本次才建的表
+7. **seeds/ 必须留在 db-migrate 镜像的构建白名单里** — 种子打包进该镜像并由 Step 5 执行；`database/seeds/` 掉出 `DB_MIGRATE_PATHS` 就不会重建、不会晋级、不会同步，种子静默不落地
 
 ## 多环境说明
 
@@ -170,7 +190,7 @@ data-migrations（空库路径），恰好掩盖了「存量库 DML 早于 DDL�
 
 ## 业务种子数据说明（Seeds）
 
-业务种子数据存放在 `database/seeds/` 目录中，用于在 Admin UI 中初始化工具管理、Prompt管理和技能管理页面，并提供显式标记的诊断测试 KBD 草稿。通过 Helm 部署时，`db-seed-job` 会作为 PostSync Hook 在数据库迁移完成后自动加载这些 SQL 文件。
+业务种子数据存放在 `database/seeds/` 目录中，用于在 Admin UI 中初始化工具管理、Prompt管理和技能管理页面，并提供显式标记的诊断测试 KBD 草稿。加载有两条通道：`db-migrate` 镜像的 **Step 5**（PreSync，Schema 收敛之后）与 Helm `db-seed-job` 的 **PostSync Hook**（兼容 Helm 直装与旧镜像），两者都按文件名顺序逐个 `psql -f`，且种子全部幂等。
 
 ### 1. 幂等性与覆盖策略
 
