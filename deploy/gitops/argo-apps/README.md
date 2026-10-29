@@ -78,6 +78,27 @@ bash scripts/ops/argocd-apply-apps.sh --scope cloud --yes
 - `cloud/` 目录的 Application **禁止** `kubectl apply` 到本地集群
 - prod Application 均关闭 `automated` 自动同步，所有变更需人工 `argocd app sync`
 
+## 自动同步的强制不变式（2026-10-29 起）
+
+凡开启 `syncPolicy.automated.selfHeal` 的 Application **必须**显式声明 `syncPolicy.retry`：
+
+```yaml
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m
+```
+
+原因：`selfHeal` 只恢复漂移，**不重试失败的操作**。迁移 hook Job 因依赖对象缺失、API 抖动等
+瞬态原因失败时，没有 retry 的 Application 会停在失败态等人手工介入；本仓 2026-10-29 就出现过
+PreSync 卡在 `CreateContainerConfigError` 8 分钟以上无任何进展的情况。显式声明还避免依赖
+ArgoCD 版本默认重试次数这种隐式契约。
+
+该规则由 `scripts/ci/check_argocd_app_sync_invariants.py` 在 CI（Helm 校验 job）强制，
+与本文件同一 PR 修改。配套的迁移触发与 hook 自愈约束见[部署设计 §9.6](../../../docs/deploy/部署设计.md)。
+
 ## 统一入口脚本
 
 `scripts/ops/argocd-apply-apps.sh` 会在执行前校验设备角色：
