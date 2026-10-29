@@ -81,7 +81,7 @@ compose-network:
 		|| docker network create hci-troubleshoot-platform_default
 
 compose-build-services:
-	@for service in api-gateway case-service diagnosis-service diagnosis-worker conversation-service scheduler-service kb-service agent-service customer-ui admin-ui; do \
+	@for service in api-gateway auth-service case-service diagnosis-service diagnosis-worker conversation-service scheduler-service kb-service agent-service dsh customer-ui admin-ui; do \
 		echo "Building $$service..."; \
 		$(COMPOSE) --env-file .env -f deploy/docker/docker-compose.yml build $$service || exit $$?; \
 	done

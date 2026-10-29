@@ -47,6 +47,7 @@ RUN rm -f /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
 ENV ADMIN_API_AUTHORIZATION=\$http_authorization \
     API_GATEWAY_UPSTREAM=http://api-gateway:8000 \
     DIAGNOSIS_SERVICE_UPSTREAM=http://diagnosis-service:8008 \
+    DSH_UPSTREAM=http://127.0.0.1:9998 \
     TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999 \
     TICKET_SYNC_UPSTREAM=http://192.168.0.4:18080
 

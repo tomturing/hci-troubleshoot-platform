@@ -21,6 +21,10 @@ spec:
         checksum/proxy-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/llm-config: {{ include (print $.Template.BasePath "/configmap-llm.yaml") . | sha256sum }}
     spec:
+      {{- with .Values.dsh.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # DSH 具备命令执行能力，Pod 不需要访问 kube-apiserver，
       # 挂上 ServiceAccount token 只会平白增加一个可被窃取的高价值凭据。
       automountServiceAccountToken: false
@@ -37,40 +41,6 @@ spec:
         # 刻意不设置 fsGroup。原因见 values.yaml 的 customerLogs 说明：
         # /sf/log 是客户日志回收链路的共享目录，一旦 kubelet 对其误改属主，
         # 会直接破坏其他消费者。风险对称性上不值得为了便利去赌。
-      {{- if .Values.dsh.llm.enabled }}
-      initContainers:
-        # 把 GitOps 声明的 cordis.patch.yml 播种到可写的家目录卷。
-        #
-        # 为什么不直接以只读方式挂载 ConfigMap：DSH 的「设置 → 模型」页也会
-        # 写这份文件，只读挂载会让页面保存失败。用 initContainer 拷贝可兼顾两头——
-        # GitOps 是基线，运行时可改，Pod 重建后回到基线。
-        - name: seed-dsh-llm-config
-          image: "{{ .Values.global.imageRegistry }}{{ .Values.dsh.image.repository }}:{{ .Values.dsh.image.tag }}"
-          imagePullPolicy: {{ .Values.dsh.image.pullPolicy }}
-          # profile 名必须与镜像 entrypoint 里的 `dsh --profile web` 一致，
-          # 因此这里固定为 web，不做成可配项以免两处漂移。
-          command:
-            - sh
-            - -c
-            - |
-              set -eu
-              mkdir -p /home/dsh/.dsh/profiles/web
-              cp /seed/cordis.patch.yml /home/dsh/.dsh/profiles/web/cordis.patch.yml
-              echo "[seed] 已播种 LLM 配置到 /home/dsh/.dsh/profiles/web/cordis.patch.yml"
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsUser: 1000
-            runAsGroup: 1000
-            capabilities:
-              drop: ["ALL"]
-          volumeMounts:
-            - name: home
-              mountPath: /home/dsh
-            - name: llm-config
-              mountPath: /seed
-              readOnly: true
-      {{- end }}
       containers:
         # ── 主容器：DSH ──────────────────────────────────────────────
         - name: dsh
@@ -93,17 +63,37 @@ spec:
             {{- end }}
             - name: HOME
               value: /home/dsh
-          {{- if and .Values.dsh.llm.enabled .Values.secrets.llmApiKey }}
+            - name: DSH_PROFILE
+              value: web
+            - name: DSH_PLUGIN_PACKAGES
+              value: {{ join " " .Values.dsh.plugins.packages | quote }}
+            {{- range $name, $value := .Values.dsh.pluginEnv }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if or .Values.dsh.llm.enabled (gt (len .Values.dsh.plugins.entries) 0) }}
+            - name: DSH_PROFILE_PATCH_SOURCE
+              value: /seed/cordis.patch.yml
+            {{- end }}
+          {{- if or (and .Values.dsh.llm.enabled .Values.secrets.dshLlmApiKey) .Values.dsh.llmSecretName .Values.dsh.pluginSecretName .Values.secrets.dshPluginEnv }}
+          envFrom:
+          {{- if and .Values.dsh.llm.enabled .Values.secrets.dshLlmApiKey }}
           # LLM 凭证：Secret 的键名即 dsh.llm.apiKeyEnv，
           # cordis.patch.yml 通过 apiKeyEnv 引用它，密钥本身不进入配置文件。
-          envFrom:
             - secretRef:
                 name: dsh-llm-credentials
           {{- else if .Values.dsh.llmSecretName }}
           # 预建的外部 LLM 凭证 Secret（本 Chart 不内置任何凭据）
-          envFrom:
             - secretRef:
                 name: {{ .Values.dsh.llmSecretName }}
+          {{- end }}
+          {{- if .Values.dsh.pluginSecretName }}
+            - secretRef:
+                name: {{ .Values.dsh.pluginSecretName }}
+          {{- else if .Values.secrets.dshPluginEnv }}
+            - secretRef:
+                name: dsh-plugin-credentials
+          {{- end }}
           {{- end }}
           # token 是否落盘是 DSH 真正可用的标志：entrypoint 只在抓到
           # 上游就绪行后才写入，因此它比 TCP 探活更能反映真实可用状态。
@@ -155,6 +145,11 @@ spec:
               mountPath: /run/dsh
             - name: tmp
               mountPath: /tmp
+            {{- if or .Values.dsh.llm.enabled (gt (len .Values.dsh.plugins.entries) 0) }}
+            - name: llm-config
+              mountPath: /seed
+              readOnly: true
+            {{- end }}
 
         # ── sidecar：nginx 反代 ──────────────────────────────────────
         - name: dsh-proxy
@@ -224,8 +219,9 @@ spec:
         - name: proxy-config
           configMap:
             name: dsh-proxy
-        {{- if .Values.dsh.llm.enabled }}
-        # 只交给 initContainer 读取一次，再播种到家目录卷
+        {{- if or .Values.dsh.llm.enabled (gt (len .Values.dsh.plugins.entries) 0) }}
+        # 入口脚本把只读 patch 复制到可写 profile 目录；DSH 设置页仍可更新它
+        #，Pod 重建后再回到 GitOps 基线。
         - name: llm-config
           configMap:
             name: dsh-llm-config

@@ -20,24 +20,48 @@
 
 BEGIN;
 
-ALTER TABLE log_collect_task
-    ADD COLUMN IF NOT EXISTS object_key text,
-    ADD COLUMN IF NOT EXISTS object_size bigint,
-    ADD COLUMN IF NOT EXISTS object_sha256 char(64);
+DO $migration$
+BEGIN
+    -- 存量旧库可能已经有 tool_definition，但尚未创建后续新增的日志收集表。
+    -- 该表会在本次 db-migrate 的 Step 3 由 desired_schema.sql 创建；此处必须
+    -- 先安全跳过，不能让数据迁移抢在声明式 Schema 收敛之前失败。
+    IF to_regclass('public.log_collect_task') IS NULL THEN
+        RAISE NOTICE 'log_collect_task 不存在，跳过 055；由后续 Atlas Schema apply 创建完整表结构';
+        RETURN;
+    END IF;
 
-COMMENT ON COLUMN log_collect_task.object_key IS
-    '平台对象存储内的相对 key（P2：<case_id>/<upload_id>.zip）；P1 为 NULL，表示平台不留副本';
-COMMENT ON COLUMN log_collect_task.object_size IS '平台对象字节数（与 archive_size 区分：后者可能是节点侧包大小）';
-COMMENT ON COLUMN log_collect_task.object_sha256 IS '平台对象 SHA-256，用于事后校验对象是否被改写';
+    EXECUTE $sql$
+        ALTER TABLE public.log_collect_task
+            ADD COLUMN IF NOT EXISTS object_key text,
+            ADD COLUMN IF NOT EXISTS object_size bigint,
+            ADD COLUMN IF NOT EXISTS object_sha256 char(64)
+    $sql$;
 
--- 回填：archive_path 不以 / 开头的是对象 key（P1 的节点路径一定是绝对路径）
-UPDATE log_collect_task
-SET object_key = archive_path,
-    object_size = archive_size,
-    object_sha256 = archive_sha256
-WHERE object_key IS NULL
-  AND upload_mode = 'bridge_relay'
-  AND archive_path IS NOT NULL
-  AND archive_path NOT LIKE '/%';
+    EXECUTE $sql$
+        COMMENT ON COLUMN public.log_collect_task.object_key IS
+            '平台对象存储内的相对 key（P2：<case_id>/<upload_id>.zip）；P1 为 NULL，表示平台不留副本'
+    $sql$;
+    EXECUTE $sql$
+        COMMENT ON COLUMN public.log_collect_task.object_size IS
+            '平台对象字节数（与 archive_size 区分：后者可能是节点侧包大小）'
+    $sql$;
+    EXECUTE $sql$
+        COMMENT ON COLUMN public.log_collect_task.object_sha256 IS
+            '平台对象 SHA-256，用于事后校验对象是否被改写'
+    $sql$;
+
+    -- 回填：archive_path 不以 / 开头的是对象 key（P1 的节点路径一定是绝对路径）
+    EXECUTE $sql$
+        UPDATE public.log_collect_task
+        SET object_key = archive_path,
+            object_size = archive_size,
+            object_sha256 = archive_sha256
+        WHERE object_key IS NULL
+          AND upload_mode = 'bridge_relay'
+          AND archive_path IS NOT NULL
+          AND archive_path NOT LIKE '/%'
+    $sql$;
+END
+$migration$;
 
 COMMIT;

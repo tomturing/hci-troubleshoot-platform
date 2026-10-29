@@ -3,6 +3,8 @@
 # 部署目标：namespace hci-dsh（由本 Chart 自行创建）
 #
 # 上手前必读：docs/solution/events/2026-10-22-DSH诊断集成.md
+# 实际环境参数由 hci-platform-env/environments/<env>/values.yaml 覆盖；
+# 本文件只提供 Chart 结构和安全默认值，不承载环境级模型、插件或密钥配置。
 # 该文档记录了三条不可违背的上游契约，以及本 Chart 为何采用
 # 「dsh 绑 loopback + nginx sidecar 反代」的双容器形态。
 # =============================================================================
@@ -31,10 +33,13 @@ global:
 # hci-dsh 命名空间内的 ghcr 拉取凭证，不内置任何默认值。
 secrets:
   ghcrToken: ""
-  # LLM API Key，由环境仓库注入（与环境内其他服务共用同一个 MaaS 凭证）。
+  # DSH 专用 LLM API Key，由环境仓库注入；不复用主平台 secrets.llmApiKey。
   # 本 Chart 用它渲染 hci-dsh 命名空间内的 dsh-llm-credentials，
   # 容器以 dsh.llm.apiKeyEnv 指定的变量名读取。
-  llmApiKey: ""
+  dshLlmApiKey: ""
+  # 插件所需的敏感环境变量，由环境仓库注入并单独渲染为 Secret。
+  # 例如：WECOM_BOT_ID、WECOM_BOT_SECRET。
+  dshPluginEnv: {}
 
 # ======================== Ingress (Traefik) ==================================
 ingress:
@@ -67,6 +72,9 @@ networkPolicy:
 # ======================== DSH 主容器 =========================================
 dsh:
   replicaCount: 1
+  # DSH 当前版本包含 ARM64 不完整的 Node 原生 binding；实际环境由环境仓
+  # 显式选择 amd64 节点，避免 Pod 被调度到 ARM64 后启动即退出。
+  nodeSelector: {}
   image:
     # ⚠️ 短名，必须与 CI 构建矩阵的服务名一致（无 hci- 前缀）。
     # 完整地址为 <global.imageRegistry><repository>:<tag>。
@@ -90,23 +98,39 @@ dsh:
   #      pi-ai 对声明了推理能力的模型默认用 developer 角色发系统提示词；
   #   3. max_completion_tokens 端点实测接受，故**不要**覆写 maxTokensField。
   llm:
-    enabled: true
+    # 独立 Chart 的默认安装不启用 LLM；dev/staging/prod 由环境仓库显式开启。
+    enabled: false
     # Provider ID 一旦确定就永久生效（请求、已保存会话、凭据引用都用它），
     # 改名只能新增再删除。
-    providerId: aliyun-maas
+    providerId: ""
     # 凭证通过环境变量注入，密钥不落配置文件
-    apiKeyEnv: DSH_QWEN_API_KEY
-    api: openai-completions
+    apiKeyEnv: ""
+    api: ""
     baseUrl: ""
     model: ""
     # 关闭思维链。qwen3.8-flash 默认思考会让单次调用达到 70s 级，
     # Agent 多轮调用会不可用（环境仓库既有服务也因此统一关闭思维链）。
     # DSH 内置 qwen 思维链格式，off 会下发 enable_thinking=false（已实测端点接受）。
-    disableThinking: true
+    disableThinking: false
+
+  # ======================== DSH 插件 ========================================
+  # packages 是需要安装到 web profile 的 npm bundle 包。入口脚本启动前执行
+  # `dsh plugin --profile web add <package>`，因此包必须声明 dsh.bundle。
+  # 例：['@deepseek-ai/dsh-experimental-terminal-bundle@0.2.1-rc.2']
+  # 包名使用精确版本，避免 Pod 重建时解析到不同的插件代码。
+  plugins:
+    packages: []
+    # entries 是对已安装/内置 Cordis 行的 profile patch。它适合启用或配置
+    # DSH 镜像已经携带的插件；外部 npm bundle 仍需先放入 packages。
+    entries: []
+  # 非敏感插件运行参数，直接渲染为 dsh 容器环境变量。
+  pluginEnv: {}
 
   # 外部 LLM 凭据 Secret 名称（可选）。
-  # 本 Chart 已能用 secrets.llmApiKey 自动渲染 dsh-llm-credentials，通常无需设置。
+  # 仅在需要引用外部预创建 Secret 时使用；通常由 secrets.dshLlmApiKey 自动渲染。
   llmSecretName: ""
+  # WeCom 等插件凭据使用环境仓外部预创建 Secret 时填写 Secret 名称。
+  pluginSecretName: ""
   resources:
     requests:
       cpu: 200m
