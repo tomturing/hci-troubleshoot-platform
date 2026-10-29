@@ -125,7 +125,7 @@ queued ──► fetching ──► extracting ──► ready
 | `TICKET_AUTO_SYNC_INTERVAL_SECONDS` | `30` | 自动扫描间隔 |
 | `TICKET_RETENTION_DAYS` | `7` | 本地工单目录保留天数 |
 
-配置模板见 `deploy/ticket-sync.env.example`。**密码只存在宿主机 env 文件，不入库、
+配置模板见 `tools/ticket-sync/deploy/ticket-sync.env.example`。**密码只存在宿主机 env 文件，不入库、
 不进集群 Secret、不进镜像。**
 
 ## 2. 部署方式
@@ -140,7 +140,7 @@ queued ──► fetching ──► extracting ──► ready
 | unit | `~/.config/systemd/user/hci-ticket-sync.service` | `/etc/systemd/system/hci-ticket-sync.service` |
 | 管理 | `systemctl --user` | `systemctl` |
 | 日志 | `journalctl --user -u hci-ticket-sync` | `journalctl -u hci-ticket-sync` |
-| 一键脚本 | ✅ `deploy/install-user.sh` | ❌ 手动安装 |
+| 一键脚本 | ✅ `tools/ticket-sync/deploy/install-user.sh` | ❌ 手动安装 |
 
 ### 2.1 前置条件
 
@@ -205,7 +205,7 @@ systemctl --user daemon-reload
 
 ## 3. 部署脚本使用方法
 
-### 3.1 `deploy/install-user.sh` —— 一键安装 / 一键升级
+### 3.1 `tools/ticket-sync/deploy/install-user.sh` —— 一键安装 / 一键升级
 
 以当前登录用户（`node`）安装并常驻，**不需要 root**，**幂等可反复执行**：
 
