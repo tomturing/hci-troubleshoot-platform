@@ -152,12 +152,19 @@ def main() -> int:
     compose_build_args = set(contract.get("compose_build_args") or [])
     compose_names = compose_refs - compose_build_args
     non_compose = set(contract.get("non_compose") or [])
+    compose_only = set(contract.get("compose_only") or [])
     missing_from_env = compose_names - env_names
     if missing_from_env:
         errors.append("Compose 引用但 .env.example 未声明: " + ", ".join(sorted(missing_from_env)))
     invalid_non_compose = non_compose & compose_names
     if invalid_non_compose:
         errors.append("non_compose 却被 Compose 使用: " + ", ".join(sorted(invalid_non_compose)))
+    invalid_compose_only = compose_only - compose_names
+    if invalid_compose_only:
+        errors.append("compose_only 未被 Compose 使用: " + ", ".join(sorted(invalid_compose_only)))
+    overlap = non_compose & compose_only
+    if overlap:
+        errors.append("变量不能同时登记为 non_compose 和 compose_only: " + ", ".join(sorted(overlap)))
     unclassified = env_names - compose_names - non_compose
     if unclassified:
         errors.append(".env.example 变量既非 Compose 使用也未登记为 non_compose: " + ", ".join(sorted(unclassified)))
@@ -184,10 +191,10 @@ def main() -> int:
     overlap = set(equivalents) & helm_only
     if overlap:
         errors.append("变量不能同时登记为 Helm 等价配置和 Helm 内部变量: " + ", ".join(sorted(overlap)))
-    missing_equivalents = env_names - set(equivalents)
+    missing_equivalents = env_names - compose_only - set(equivalents)
     if missing_equivalents:
         errors.append(".env.example 的每项配置必须登记 Helm values 等价映射: " + ", ".join(sorted(missing_equivalents)))
-    missing_compose_equivalents = compose_names - set(equivalents)
+    missing_compose_equivalents = compose_names - compose_only - set(equivalents)
     if missing_compose_equivalents:
         errors.append("Compose 变量必须登记 Helm values 等价映射: " + ", ".join(sorted(missing_compose_equivalents)))
     allowed_helm_names = set(equivalents) | helm_only

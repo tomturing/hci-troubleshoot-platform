@@ -11,7 +11,7 @@ DSH 的 LLM 提供商配置，渲染为 $DSH_HOME/profiles/web/cordis.patch.yml�
 注意 'off' 必须加引号：YAML 1.1 会把裸 off 解析成布尔 false，
 而这里需要的是字符串键名。
 */}}
-{{- if .Values.dsh.llm.enabled }}
+{{- if or .Values.dsh.llm.enabled (gt (len .Values.dsh.plugins.entries) 0) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,6 +23,7 @@ data:
   cordis.patch.yml: |
     # 由 Helm 渲染，请勿在集群内直接修改。
     # 真实来源：deploy/helm/hci-platform-dsh/values.yaml 的 dsh.llm
+    {{- if .Values.dsh.llm.enabled }}
     - id: llm-pi-ai
       config:
         providers:
@@ -51,7 +52,7 @@ data:
                   'off':
                   'high': 'high'
                 {{- end }}
-    {{- if and .Values.dsh.llm.providerId .Values.dsh.llm.model }}
+    {{- if and .Values.dsh.llm.enabled .Values.dsh.llm.providerId .Values.dsh.llm.model }}
     # 新会话的默认模型路由。
     #
     # 上游 @deepseek-ai/dsh-base 把 agent-default-model 固定为
@@ -67,5 +68,11 @@ data:
       config:
         provider: {{ .Values.dsh.llm.providerId }}
         model: {{ .Values.dsh.llm.model }}
+    {{- end }}
+    {{- end }}
+    {{- with .Values.dsh.plugins.entries }}
+    # 额外的 Cordis profile patch。每个 entry 必须包含 id/name；config 按
+    # 上游插件契约填写，patch 会替换同 id 行的完整 config。
+    {{ toYaml . | nindent 4 }}
     {{- end }}
 {{- end }}

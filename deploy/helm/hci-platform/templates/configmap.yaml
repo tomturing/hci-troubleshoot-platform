@@ -16,6 +16,8 @@ data:
   CONVERSATION_SERVICE_URL: "http://conversation-service:{{ .Values.conversationService.port }}"
   SCHEDULER_SERVICE_URL: "http://scheduler-service:{{ .Values.schedulerService.port }}"
   DIAGNOSIS_SERVICE_URL: {{ .Values.config.diagnosisServiceUrl | default "http://diagnosis-service:8008" | quote }}
+  DSH_SERVICE_URL: {{ .Values.apiGateway.dshServiceUrl | quote }}
+  DSH_PUBLIC_PATH: {{ .Values.apiGateway.dshPublicPath | quote }}
   AGENT_SERVICE_URL: {{ .Values.config.agentServiceUrl | default "http://agent-service:8005" | quote }}
   ALLOWED_ORIGINS: {{ .Values.config.allowedOrigins | quote }}
   # Gateway 与 Diagnosis Service 必须使用相同身份模式，避免一侧校验内部 Token、另一侧校验 OIDC。

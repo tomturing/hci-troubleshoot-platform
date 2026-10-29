@@ -40,6 +40,8 @@ spec:
               value: "http://api-gateway.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.apiGateway.port }}"
             - name: DIAGNOSIS_SERVICE_UPSTREAM
               value: "http://diagnosis-service.{{ include "hci.namespace" . }}.svc.{{ .Values.global.clusterDomain }}:{{ .Values.diagnosisService.port }}"
+            - name: DSH_UPSTREAM
+              value: {{ .Values.adminUI.dshUpstream | quote }}
             # Admin UI 始终使用集群中的 terminal-bridge Pod（仿真测试）
             - name: TERMINAL_BRIDGE_URL
               value: "/terminal-bridge"

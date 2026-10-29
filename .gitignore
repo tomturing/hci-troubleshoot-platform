@@ -130,3 +130,9 @@ backend/conversation-service/data/vm-console-artifacts/
 
 # 本地 worktree 副本（用于比对上游代码），不入库。
 .wt/
+
+# Compose DSH 本地客户日志/工单产物，可能包含敏感信息；仅保留目录占位文件。
+dsh/data/customer-logs/*
+!dsh/data/customer-logs/.gitkeep
+dsh/data/tickets/*
+!dsh/data/tickets/.gitkeep

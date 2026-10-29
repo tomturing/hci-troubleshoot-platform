@@ -15,12 +15,21 @@
 #      /__internal/token 接口读取。
 #   3. 就绪信号：该启动行由上游在 Loader 树就绪后才打印，是官方的
 #      readiness 信号，因此可作为抓取 token 的同步点。
-FROM node:22-alpine
+FROM node:22-bookworm-slim
 
 ARG DSH_VERSION=0.2.1-rc.2
+# DSH plugin manager 通过 pnpm 管理 profile bundle，版本固定避免 CLI 行为漂移。
+ARG PNPM_VERSION=10.33.4
+# Compose 本地通过 build args 覆盖为 npmmirror；CI/直接 docker build 默认使用官方源。
+ARG NPM_REGISTRY=https://registry.npmjs.org
 
-# 上游为纯 ESM 包且无 install 脚本，不需要 build-base / python3 等原生编译工具链
-RUN npm install -g "@deepseek-ai/dsh@${DSH_VERSION}" \
+# 使用 Debian/glibc 支持 Linux x86_64/amd64 运行；当前 DSH 版本还包含 ARM64
+# 不完整的原生 binding，生产目标固定为 Linux x86/amd64；npm registry 由 Compose 控制。
+RUN npm install -g --registry="${NPM_REGISTRY}" "@deepseek-ai/dsh@${DSH_VERSION}" \
+    && npm cache clean --force
+
+# 单独成层：DSH 版本不变时，安装 pnpm 的调整不会重新下载 DSH 的完整依赖树。
+RUN npm install -g --registry="${NPM_REGISTRY}" "pnpm@${PNPM_VERSION}" \
     && npm cache clean --force
 
 # 预建可写目录；运行时由 emptyDir / PVC 覆盖挂载
@@ -30,7 +39,11 @@ RUN mkdir -p /work /home/dsh /run/dsh \
 # 注意：CI 的构建上下文是仓库根目录（matrix.context = "."），
 # 不是本文件所在目录，因此路径必须带 dsh/ 前缀。
 COPY dsh/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh
+COPY dsh/docker-compose-entrypoint.sh /usr/local/bin/docker-compose-entrypoint.sh
+# 本地 bundle 不需要发布到 npm：构建上下文中的 dsh/plugins 会原样带入镜像，
+# 环境 values 用 /opt/dsh-plugins/<目录名> 作为 dsh.plugins.packages。
+COPY dsh/plugins /opt/dsh-plugins
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-compose-entrypoint.sh
 
 # 固定以非 root 身份运行（node 官方镜像自带 node:node = 1000:1000）
 USER 1000:1000
@@ -39,6 +52,9 @@ ENV HOME=/home/dsh
 ENV DSH_PORT=3080
 ENV DSH_PUBLIC_URL=http://127.0.0.1:3080/
 ENV DSH_TRUSTED_HOST=localhost
+# 原生 addon 缓存可能跨架构/Node ABI 复用旧文件；容器启动时禁用该缓存，
+# 避免 ARM/AMD64 或镜像升级后的旧 binding 被误加载。
+ENV NARB_DISABLE_NATIVE_CACHE=1
 
 WORKDIR /work
 

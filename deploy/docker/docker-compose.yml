@@ -96,6 +96,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/api-gateway/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-api-gateway
     environment:
       PYTHONPATH: /app
@@ -107,6 +109,8 @@ services:
       KB_SERVICE_URL: ${KB_SERVICE_URL:-http://kb-service:8004}
       AGENT_SERVICE_URL: ${AGENT_SERVICE_URL:-http://agent-service:8005}
       DIAGNOSIS_SERVICE_URL: ${DIAGNOSIS_SERVICE_URL:-http://diagnosis-service:8008}
+      DSH_SERVICE_URL: ${DSH_SERVICE_URL:-http://dsh:8080}
+      DSH_PUBLIC_PATH: ${DSH_PUBLIC_PATH:-/dsh/}
       DIAGNOSIS_IDENTITY_MODE: ${DIAGNOSIS_IDENTITY_MODE:-internal}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
@@ -128,6 +132,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/auth-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-auth-service
     environment:
       PYTHONPATH: /app
@@ -150,6 +156,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/case-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-case-service
     environment:
       PYTHONPATH: /app
@@ -175,6 +183,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/diagnosis-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-diagnosis-service
     environment:
       PYTHONPATH: /app
@@ -231,6 +241,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/diagnosis-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-diagnosis-worker
     environment:
       PYTHONPATH: /app
@@ -261,6 +273,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/conversation-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-conversation-service
     environment:
       PYTHONPATH: /app
@@ -295,6 +309,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/scheduler-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-scheduler-service
     environment:
       PYTHONPATH: /app
@@ -321,6 +337,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/kb-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-kb-service
     environment:
       PYTHONPATH: /app
@@ -382,6 +400,8 @@ services:
     build:
       context: ../..
       dockerfile: backend/agent-service/Dockerfile
+      args:
+        MIRROR_MODE: ${MIRROR_MODE:-on}
     container_name: hci-agent-service
     environment:
       PYTHONPATH: /app
@@ -424,6 +444,64 @@ services:
     networks:
       - hci-troubleshoot-platform_default
 
+  # ============ DSH（DeepSeek Harness）====================================
+  # dsh 仍只监听共享网络命名空间内的 127.0.0.1:3080；nginx sidecar 使用
+  # network_mode: service:dsh 共享该 loopback，外部只暴露 sidecar 的 8080。
+  dsh:
+    # 当前 DSH 0.2.1-rc.2 的 ARM64 原生 binding 不完整，生产目标固定 Linux x86。
+    platform: linux/amd64
+    build:
+      context: ../..
+      dockerfile: dsh/Dockerfile
+      args:
+        DSH_VERSION: ${DSH_VERSION:-0.2.1-rc.2}
+        # 本地开发使用国内 npm 镜像；CI 不经过 Compose，Dockerfile 默认走官方源。
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    container_name: hci-dsh
+    entrypoint: ["/usr/local/bin/docker-compose-entrypoint.sh"]
+    environment:
+      DSH_PORT: 3080
+      DSH_PROFILE: ${DSH_PROFILE:-web}
+      DSH_PUBLIC_URL: ${DSH_PUBLIC_URL:-http://localhost:3002/dsh/}
+      DSH_TRUSTED_HOST: ${DSH_TRUSTED_HOST:-localhost}
+      DSH_QWEN_API_KEY: ${DSH_QWEN_API_KEY:-}
+      DSH_LLM_PROVIDER_ID: ${DSH_LLM_PROVIDER_ID:-aliyun-maas}
+      DSH_LLM_API: ${DSH_LLM_API:-openai-completions}
+      DSH_LLM_BASE_URL: ${DSH_LLM_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
+      DSH_LLM_MODEL: ${DSH_LLM_MODEL:-qwen3.8-flash}
+      DSH_PLUGIN_PACKAGES: ${DSH_PLUGIN_PACKAGES:-/opt/dsh-plugins/deepseek-harness-wecom-offline-0.1.22.tgz}
+      WECOM_BOT_ID: ${WECOM_BOT_ID:-}
+      WECOM_BOT_SECRET: ${WECOM_BOT_SECRET:-}
+      WECOM_WORKSPACE_ROOT: ${WECOM_WORKSPACE_ROOT:-/work/wecom}
+    ports:
+      - "3080:8080"
+    volumes:
+      - dsh_home:/home/dsh
+      - dsh_workspace:/work
+      - dsh_token:/run/dsh
+      # 本地插件源码直接覆盖镜像内目录，不需要发布 npm；DSH_PLUGIN_PACKAGES
+      # 使用 /opt/dsh-plugins/<插件目录> 指向这里的子目录。
+      - ../../dsh/plugins:/opt/dsh-plugins:ro
+      - ${DSH_CUSTOMER_LOGS_PATH:-../../dsh/data/customer-logs}:/data/customer-logs:ro
+      - ${DSH_TICKETS_PATH:-../../dsh/data/tickets}:/data/tickets:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - hci-troubleshoot-platform_default
+
+  dsh-proxy:
+    platform: linux/amd64
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: hci-dsh-proxy
+    network_mode: service:dsh
+    depends_on:
+      dsh:
+        condition: service_started
+    volumes:
+      - ../../dsh/docker-compose-nginx.conf:/etc/nginx/nginx.conf:ro
+      - dsh_token:/run/dsh:ro
+
   # ============ 前端服务 ============
 
   customer-ui:
@@ -447,6 +525,7 @@ services:
   admin-ui:
     environment:
       - DNS_RESOLVER=127.0.0.11
+      - DSH_UPSTREAM=${DSH_UPSTREAM:-http://host.docker.internal:3080}
       # Admin 仿真页面固定使用同源 /terminal-bridge；Nginx 在本地转发到桌面 Bridge。
       - TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999
       # 本地管理入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。
@@ -470,6 +549,9 @@ volumes:
   postgres_data:
   redis_data:
   diagnosis_data:
+  dsh_home:
+  dsh_workspace:
+  dsh_token:
 
 networks:
   hci-troubleshoot-platform_default:
