@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import DshDiagnosisView from '../DshDiagnosisView.vue'
 import type { SyncJob } from '@/api/ticketSync'
@@ -12,6 +12,7 @@ vi.mock('@hci/shared', () => ({ createApiClient: () => ({ get: shared.launch }) 
 
 const ticketApi = vi.hoisted(() => ({
   createSyncJob: vi.fn(),
+  fetchSyncArtifacts: vi.fn(),
   fetchSyncJob: vi.fn(),
   cancelSyncJob: vi.fn(),
 }))
@@ -53,15 +54,23 @@ function buttonByText(wrapper: ReturnType<typeof mount>, text: string) {
 }
 
 describe('DshDiagnosisView 工单同步', () => {
+  const wrappers: Array<ReturnType<typeof mount>> = []
+
   beforeEach(() => {
     vi.clearAllMocks()
     shared.launch.mockResolvedValue({ data: { url: 'http://dsh.local/session' } })
     ticketApi.createSyncJob.mockResolvedValue(undefined)
+    ticketApi.fetchSyncArtifacts.mockResolvedValue([])
     ticketApi.cancelSyncJob.mockResolvedValue(undefined)
+  })
+
+  afterEach(() => {
+    for (const wrapper of wrappers.splice(0)) wrapper.unmount()
   })
 
   it('工单号格式不合法时只提示，不发请求', async () => {
     const wrapper = await mountView()
+    wrappers.push(wrapper)
     await wrapper.find('input').setValue('Q2026')
 
     await buttonByText(wrapper, '同步日志').trigger('click')
@@ -77,6 +86,7 @@ describe('DshDiagnosisView 工单同步', () => {
     )
 
     const wrapper = await mountView()
+    wrappers.push(wrapper)
     await wrapper.find('input').setValue('Q2026052801304')
     await buttonByText(wrapper, '同步日志').trigger('click')
     await flushPromises()
@@ -93,6 +103,7 @@ describe('DshDiagnosisView 工单同步', () => {
     )
 
     const wrapper = await mountView()
+    wrappers.push(wrapper)
     await wrapper.find('input').setValue('Q2026052801304')
     await buttonByText(wrapper, '同步日志').trigger('click')
     await flushPromises()
@@ -112,6 +123,7 @@ describe('DshDiagnosisView 工单同步', () => {
       .mockResolvedValueOnce(makeJob('cancelled'))
 
     const wrapper = await mountView()
+    wrappers.push(wrapper)
     await wrapper.find('input').setValue('Q2026052801304')
     await buttonByText(wrapper, '同步日志').trigger('click')
     await flushPromises()
@@ -125,6 +137,47 @@ describe('DshDiagnosisView 工单同步', () => {
     expect(ticketApi.cancelSyncJob).toHaveBeenCalledWith('Q2026052801304')
     expect(wrapper.text()).toContain('已取消')
 
-    wrapper.unmount()
+  })
+
+  it('目录列表展示已同步工单以及同步中和解压中的状态', async () => {
+    ticketApi.fetchSyncArtifacts.mockResolvedValue([
+      {
+        ticketId: 'Q2026102900001',
+        phase: 'ready',
+        directoryReady: true,
+        directoryUpdatedAt: '2026-10-29T10:00:00+08:00',
+        job: null,
+      },
+      {
+        ticketId: 'Q2026102900002',
+        phase: 'fetching',
+        directoryReady: false,
+        directoryUpdatedAt: null,
+        job: makeJob('fetching', { ticketId: 'Q2026102900002', receivedBytes: 50, totalBytes: 100 }),
+      },
+      {
+        ticketId: 'Q2026102900003',
+        phase: 'extracting',
+        directoryReady: false,
+        directoryUpdatedAt: null,
+        job: makeJob('extracting', {
+          ticketId: 'Q2026102900003',
+          extractedBytes: 1048576,
+          fileCount: 12,
+          currentArchive: 'sp_10.0.0.1/logs.tar.gz',
+        }),
+      },
+    ])
+
+    const wrapper = await mountView()
+    wrappers.push(wrapper)
+
+    expect(wrapper.text()).toContain('本地工单目录')
+    expect(wrapper.text()).toContain('目录：/data/tickets/Q2026102900001')
+    expect(wrapper.text()).toContain('Q2026102900002')
+    expect(wrapper.text()).toContain('同步中')
+    expect(wrapper.text()).toContain('Q2026102900003')
+    expect(wrapper.text()).toContain('sp_10.0.0.1/logs.tar.gz')
+    expect(wrapper.text()).toContain('已同步并解压')
   })
 })

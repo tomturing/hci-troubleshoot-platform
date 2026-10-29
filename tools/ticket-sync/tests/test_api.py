@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
@@ -49,6 +50,18 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["status"], "ok")
         self.assertGreater(body["diskFreeBytes"], 0)
         self.assertEqual(body["activeJobs"], 0)
+
+    async def test_list_artifacts_returns_local_ticket_directory(self) -> None:
+        ticket_dir = Path(self.root) / "Q2026010100001"
+        ticket_dir.mkdir()
+        (ticket_dir / "log_list.json").write_text("{}", encoding="utf-8")
+
+        response = await self.client.get("/artifacts")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["items"][0]["ticketId"], "Q2026010100001")
+        self.assertEqual(response.json()["items"][0]["phase"], "ready")
+        self.assertTrue(response.json()["items"][0]["directoryReady"])
 
     async def test_invalid_ticket_id_rejected(self) -> None:
         response = await self.client.post("/jobs", json={"ticketId": "../etc/passwd"})

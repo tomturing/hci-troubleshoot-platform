@@ -10,9 +10,11 @@ import {
   createSyncJob,
   errorText,
   fetchPercent,
+  fetchSyncArtifacts,
   fetchSyncJob,
   isRunning,
   mib,
+  type SyncArtifact,
   type SyncJob,
 } from '@/api/ticketSync'
 
@@ -67,9 +69,11 @@ const POLL_INTERVAL_MS = 2000
 const ticketInput = ref('')
 const activeTicket = ref('')
 const job = ref<SyncJob | null>(null)
+const artifacts = ref<SyncArtifact[]>([])
 const syncBusy = ref(false)
 const syncTip = ref('')
 let pollTimer: number | null = null
+let artifactPollTimer: number | null = null
 
 const running = computed(() => isRunning(job.value?.phase))
 const percent = computed(() => (job.value ? fetchPercent(job.value) : 0))
@@ -91,6 +95,42 @@ function stopPolling() {
 function startPolling() {
   stopPolling()
   pollTimer = window.setInterval(refresh, POLL_INTERVAL_MS)
+}
+
+function artifactTagType(artifact: SyncArtifact) {
+  if (artifact.phase === 'ready') return 'success'
+  if (artifact.phase === 'failed') return 'danger'
+  if (artifact.phase === 'cancelled') return 'info'
+  return 'warning'
+}
+
+function artifactPercent(artifact: SyncArtifact) {
+  return artifact.job ? fetchPercent(artifact.job) : 0
+}
+
+function stopArtifactPolling() {
+  if (artifactPollTimer !== null) {
+    window.clearInterval(artifactPollTimer)
+    artifactPollTimer = null
+  }
+}
+
+function startArtifactPolling() {
+  stopArtifactPolling()
+  artifactPollTimer = window.setInterval(refreshArtifacts, POLL_INTERVAL_MS)
+}
+
+async function refreshArtifacts() {
+  try {
+    const latest = await fetchSyncArtifacts()
+    artifacts.value = latest
+    const selected = latest.find((item) => item.ticketId === activeTicket.value)
+    if (selected?.job && activeTicket.value === selected.ticketId) {
+      job.value = selected.job
+    }
+  } catch {
+    // DSH 页面仍可使用；单次目录查询失败由下一次轮询恢复。
+  }
 }
 
 async function refresh() {
@@ -138,6 +178,7 @@ async function startSync() {
     await createSyncJob(ticketId)
     // 受理后立即取一次状态，不必先等满一个轮询周期
     await refresh()
+    await refreshArtifacts()
     if (running.value) startPolling()
   } catch (error: any) {
     handleApiError(error)
@@ -153,6 +194,7 @@ async function cancelSync() {
   try {
     await cancelSyncJob(ticketId)
     await refresh()
+    await refreshArtifacts()
   } catch (error: any) {
     handleApiError(error)
   } finally {
@@ -160,7 +202,30 @@ async function cancelSync() {
   }
 }
 
-onUnmounted(stopPolling)
+async function cancelArtifact(artifact: SyncArtifact) {
+  if (!isRunning(artifact.phase)) return
+  syncBusy.value = true
+  try {
+    await cancelSyncJob(artifact.ticketId)
+    await refreshArtifacts()
+    if (activeTicket.value === artifact.ticketId) await refresh()
+  } catch (error: any) {
+    handleApiError(error)
+  } finally {
+    syncBusy.value = false
+  }
+}
+
+onMounted(() => {
+  loadDshUrl()
+  refreshArtifacts()
+  startArtifactPolling()
+})
+
+onUnmounted(() => {
+  stopPolling()
+  stopArtifactPolling()
+})
 </script>
 
 <template>
@@ -211,6 +276,71 @@ onUnmounted(stopPolling)
         <span v-else-if="job.phase === 'failed'" class="sync-error">
           {{ errorText(job.errorCode, job.message) }}
         </span>
+      </div>
+
+      <div class="artifact-panel">
+        <div class="artifact-panel-header">
+          <span class="artifact-panel-title">本地工单目录</span>
+          <span class="artifact-panel-tip">自动同步每 30 秒检查，页面每 2 秒刷新状态</span>
+          <el-button text type="primary" size="small" @click="refreshArtifacts">刷新</el-button>
+        </div>
+
+        <el-empty v-if="artifacts.length === 0" :image-size="56" description="暂无已同步或进行中的工单" />
+        <div v-else class="artifact-list">
+          <div v-for="artifact in artifacts" :key="artifact.ticketId" class="artifact-item">
+            <div class="artifact-item-header">
+              <div class="artifact-item-title">
+                <el-tag :type="artifactTagType(artifact)" size="small">{{ PHASE_TEXT[artifact.phase] }}</el-tag>
+                <span>工单 {{ artifact.ticketId }}</span>
+              </div>
+              <el-button
+                v-if="isRunning(artifact.phase)"
+                type="danger"
+                link
+                size="small"
+                :loading="syncBusy && activeTicket === artifact.ticketId"
+                @click="cancelArtifact(artifact)"
+              >
+                取消
+              </el-button>
+            </div>
+
+            <div v-if="artifact.directoryReady" class="artifact-path">
+              目录：/data/tickets/{{ artifact.ticketId }}
+            </div>
+
+            <div v-if="artifact.phase === 'queued'" class="artifact-detail">等待同步任务执行</div>
+            <div v-else-if="artifact.phase === 'fetching'" class="artifact-detail artifact-progress-row">
+              <el-progress
+                v-if="artifact.job && artifact.job.totalBytes > 0"
+                :percentage="artifactPercent(artifact)"
+                :stroke-width="8"
+                class="artifact-progress"
+              />
+              <span v-if="artifact.job" class="artifact-detail">
+                同步中 {{ mib(artifact.job.receivedBytes) }}
+                <template v-if="artifact.job.totalBytes > 0"> / {{ mib(artifact.job.totalBytes) }}</template>
+              </span>
+            </div>
+            <div v-else-if="artifact.phase === 'extracting'" class="artifact-detail">
+              解压中
+              <template v-if="artifact.job">
+                · {{ mib(artifact.job.extractedBytes) }} · {{ artifact.job.fileCount }} 个文件
+                <span v-if="artifact.job.currentArchive" class="artifact-archive">
+                  {{ artifact.job.currentArchive }}
+                </span>
+              </template>
+            </div>
+            <div v-else-if="artifact.phase === 'ready'" class="artifact-detail artifact-success">
+              已同步并解压，可在下方 DSH 文件选择器中使用
+            </div>
+            <div v-else-if="artifact.phase === 'failed'" class="artifact-detail artifact-error">
+              {{ errorText(artifact.job?.errorCode ?? null, artifact.job?.message ?? null) }}
+              <span v-if="artifact.directoryReady">，本地已有目录仍可使用</span>
+            </div>
+            <div v-else class="artifact-detail">任务已取消</div>
+          </div>
+        </div>
       </div>
 
       <el-alert
@@ -321,6 +451,101 @@ onUnmounted(stopPolling)
 
 .sync-error {
   font-size: 13px;
+  color: #f56c6c;
+}
+
+.artifact-panel {
+  margin-top: 16px;
+  border-top: 1px solid #ebeef5;
+  padding-top: 12px;
+}
+
+.artifact-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.artifact-panel-title {
+  font-size: 13px;
+  color: #303133;
+  font-weight: 600;
+}
+
+.artifact-panel-tip {
+  flex: 1;
+  font-size: 12px;
+  color: #909399;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.artifact-item {
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.artifact-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.artifact-item-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #303133;
+  font-weight: 500;
+}
+
+.artifact-path,
+.artifact-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.artifact-path {
+  color: #909399;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.artifact-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.artifact-progress {
+  width: 180px;
+}
+
+.artifact-archive {
+  display: block;
+  margin-top: 4px;
+  color: #909399;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 680px;
+}
+
+.artifact-success {
+  color: #67c23a;
+}
+
+.artifact-error {
   color: #f56c6c;
 }
 

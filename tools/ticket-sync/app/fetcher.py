@@ -15,12 +15,16 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from .config import Config
 from .models import ErrorCode, TicketError
 
 logger = logging.getLogger(__name__)
+TZ = ZoneInfo("Asia/Shanghai")
 
 # rsync --info=progress2 的单行格式：`  12,345,678  45%  1.23MB/s  0:00:01`
 _PROGRESS_RE = re.compile(r"([\d,]+)\s+(\d+)%")
@@ -39,6 +43,103 @@ _EXIT_CODES = {
     35: ErrorCode.SSH_FAILED,  # 连接超时
     255: ErrorCode.SSH_FAILED,  # ssh 本身失败
 }
+
+
+@dataclass(frozen=True)
+class RemoteArchive:
+    """远端当天生成的顶层工单归档元数据。"""
+
+    ticket_id: str
+    path: str
+    size: int
+    mtime: float
+
+
+async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[RemoteArchive]:
+    """列出日志源服务器当天生成的顶层工单 zip。
+
+    只接受固定的 `/sf/log/<ticket>/<ticket>.zip` 形态，避免远端目录中其他 zip
+    被误当成工单任务。日期边界由本地 Asia/Shanghai 计算，与服务接口时间口径一致。
+    """
+    current = (now or datetime.now(TZ)).astimezone(TZ)
+    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    command = (
+        "LC_ALL=C find /sf/log -mindepth 2 -maxdepth 2 -type f -name '*.zip' "
+        f"-newermt '{start:%Y-%m-%d %H:%M:%S}' "
+        f"! -newermt '{end:%Y-%m-%d %H:%M:%S}' "
+        "-printf '%p\\t%s\\t%T@\\n'"
+    )
+    ssh_command = [
+        "ssh",
+        "-p",
+        str(cfg.source_port),
+        "-i",
+        str(cfg.ssh_key),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        cfg.source,
+        command,
+    ]
+
+    logger.info("自动扫描日志源服务器当天归档 source=%s", cfg.source)
+    proc = await asyncio.create_subprocess_exec(
+        *ssh_command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        raise
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise TicketError(
+            ErrorCode.SSH_FAILED,
+            "扫描日志源服务器超时",
+            "remote archive scan timeout",
+        ) from exc
+
+    code = proc.returncode or 0
+    if code != 0:
+        detail = stderr.decode("utf-8", errors="replace")[:800]
+        raise TicketError(ErrorCode.SSH_FAILED, "无法扫描日志源服务器", f"ssh exit={code} stderr={detail}")
+
+    archives = _parse_remote_archives(stdout.decode("utf-8", errors="replace"))
+    logger.info("自动扫描完成 当天归档数=%d", len(archives))
+    return archives
+
+
+def _parse_remote_archives(output: str) -> list[RemoteArchive]:
+    """解析 find 的固定三列输出，并丢弃不符合工单目录契约的文件。"""
+    result: list[RemoteArchive] = []
+    pattern = re.compile(r"^/sf/log/(Q\d{13})/\1\.zip$")
+    for raw in output.splitlines():
+        path, separator, rest = raw.partition("\t")
+        if not separator:
+            continue
+        size_text, separator, mtime_text = rest.partition("\t")
+        if not separator:
+            continue
+        match = pattern.fullmatch(path)
+        if match is None:
+            continue
+        try:
+            size = int(size_text)
+            mtime = float(mtime_text)
+        except ValueError:
+            continue
+        if size < 0 or mtime <= 0:
+            continue
+        result.append(RemoteArchive(match.group(1), path, size, mtime))
+    return sorted(result, key=lambda item: item.ticket_id)
 
 
 async def fetch(
