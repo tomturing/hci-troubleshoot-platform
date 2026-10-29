@@ -88,7 +88,7 @@ interface ModuleOption {
   collects?: string
   typicalSymptoms?: string
   durationHint?: string
-  /** 与其他场景互斥（other 即此类）：选中它必须清空其它项 */
+  /** 与其他场景互斥（字典能力，当前无项启用）：选中它时其余选项置灰不可勾 */
   exclusive?: boolean
   /** 字典里的展示顺序；未维护时排在已维护项之后 */
   sortOrder?: number
@@ -868,7 +868,7 @@ function applyCatalog(data: ProbeResult) {
   const valid = new Set(moduleOptions.value.map((item) => item.value))
   form.modules = form.modules.filter((value) => valid.has(value))
   // 收敛后为空会让用户误以为"没有可选项"，回落到目录首项。
-  // 跳过互斥项（other）：默认勾一个“不收集上述场景日志”的项，会让其余选项全被禁用。
+  // 跳过互斥项：默认勾一个互斥项会让其余选项全被禁用（当前字典无互斥项，纯防御）。
   if (!form.modules.length && moduleOptions.value.length > 0) {
     const preferred = moduleOptions.value.find((item) => !item.exclusive) ?? moduleOptions.value[0]
     form.modules = [preferred.value]
@@ -878,10 +878,13 @@ function applyCatalog(data: ProbeResult) {
 // ── 场景互斥（字典 exclusive）────────────────────────────────────────────
 
 /**
- * 互斥项（目前只有 other）。
+ * 互斥项（按字典 `exclusive` 数据驱动，**当前一项都没有**）。
  *
- * 为什么不靠“后选清前者”的 diff 实现：acli 的 other 语义是“不收集上述场景日志”，
- * 与任何具体专项同选都自相矛盾。直接**禁用**冲突项比“选完再默默清掉一个”更可解释，
+ * 为什么保留这段：`exclusive` 是字典能力而非硬编码策略——将来真出现“选了它就不能
+ * 选别人”的场景，管理台打开开关即生效。注意 `other` **不属此类**：支持工程师 2026-10-29
+ * 实机确认 `-m other,vm_suspend` 是叠加语义（两类日志一起收），故 `other.exclusive = false`。
+ *
+ * 为什么不靠“后选清前者”的 diff 实现：直接**禁用**冲突项比“选完再默默清掉一个”更可解释，
  * 也不会在回填历史任务时把用户已选的东西改掉。
  */
 const exclusiveModules = computed(

@@ -431,6 +431,8 @@ describe('LogCollectPanel', () => {
   // 这一组锁的是「能力边界在集群、展示文案在平台」这个分层：
   // 早期界面写着“目录来自集群 acli”，让客户以为连场景说明也是集群给的。
 
+  // 合成字典：线上 seed 里**没有任何互斥项**（other 已确认为叠加语义），
+  // 这里故意把 other 置 exclusive 只为锁住“互斥机制按字典数据驱动”这条能力。
   const scenarioDictFixture = [
     {
       value: 'other',

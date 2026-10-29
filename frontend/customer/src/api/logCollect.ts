@@ -242,7 +242,7 @@ export interface LogCollectScenarioItem {
   typical_symptoms?: string | null
   /** 耗时提示（不同专项差异大） */
   duration_hint?: string | null
-  /** 与其他场景互斥：选中它必须清空其它项（other 即此类） */
+  /** 与其他场景互斥（字典能力，当前无项启用）：true 时客户端把其余选项双向置灰 */
   exclusive: boolean
   sort_order: number
   enabled: boolean

@@ -371,7 +371,7 @@ function formatTime(value: string | null): string {
 
         <el-table-column label="互斥" width="80">
           <template #default="{ row }">
-            <el-tooltip content="勾选后与其它场景互斥（如「不收集上述场景日志」）" placement="top">
+            <el-tooltip content="勾选后与其它场景互斥（当前场景均不需要；other 已确认为叠加语义）" placement="top">
               <el-switch
                 v-model="row.exclusive"
                 size="small"

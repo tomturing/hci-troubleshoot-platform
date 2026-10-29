@@ -14,8 +14,10 @@
 --   2. collects / typical_symptoms 是**平台侧按专项名的中文起草**，acli 没有对应字段，
 --      因此 review_state 一律为 pending_review，需支持工程师审核后由管理端改为 approved 再对外；
 --   3. duration_hint 只有 slowdisk 有 acli 原文依据（「单天收集时间约4min」），其余留空，不编造；
---   4. exclusive：other 的 help 原文是「不收集上述n个场景日志」，与具体专项同选语义自相矛盾，
---      故置 true 由客户端强制互斥。若实机确认 -m other,vm_suspend 为叠加语义，改这一列即可，无需改代码。
+--   4. exclusive：本列保留为字典能力（true = 选中它必须清空其它项），但当前**无一项启用**。
+--      原因：支持工程师 2026-10-29 实机确认 `-m other,vm_suspend` 是**叠加**语义（两类日志
+--      一起收），而不是互斥；若当初按 help 文字“不收集上述场景日志”强制互斥，会把客户合法的
+--      叠加诉求挡掉。将来真出现互斥场景，在管理台把该项打开即可，不需要改代码。
 --
 -- 唯一调用链标记：log_collect_scenario_seed_v1
 -- 幂等：ON CONFLICT (value) DO NOTHING —— 已存在的行（含运营已改过的文案）绝不被覆盖。
@@ -80,10 +82,10 @@ VALUES
      NULL, false, 90, true, 'pending_review'),
 
     ('other', '默认收集专项（不收集上述场景日志）',
-     '不属于以上任何场景时的兜底采集',
+     '不属于以上任何场景时的兜底采集，可与具体专项叠加',
      '只采集默认日志集合，不包含上述各专项对应的场景日志',
      '故障类别尚不明确、需要先拿一份通用日志',
-     NULL, true, 100, true, 'pending_review')
+     NULL, false, 100, true, 'pending_review')
 ON CONFLICT (value) DO NOTHING;
 
 COMMIT;

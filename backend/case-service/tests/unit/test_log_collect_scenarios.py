@@ -112,6 +112,7 @@ async def _client_with(stub: _StubService) -> AsyncClient:
 async def test_client_list_only_returns_enabled_items():
     stub = _StubService(
         [
+            # 桩数据：只为覆盖 `exclusive=True` 的透传；线上 other 已确认为叠加语义（seed 里为 false）。
             _row("other", label="不收集上述场景日志", exclusive=True, sort_order=10),
             _row("vm_suspend", label="虚拟机挂起专项", sort_order=20),
             _row("retired", label="已下线场景", enabled=False, sort_order=30),
@@ -327,7 +328,7 @@ class _FakeSession:
         return _FakeResult(self._rows)
 
 
-def _mapping_row(value: str, label: str, *, enabled: bool = True) -> dict:
+def _mapping_row(value: str, label: str, *, enabled: bool = True, exclusive: bool = False) -> dict:
     now = datetime(2026, 10, 29, 10, 0, 0, tzinfo=UTC)
     return {
         "value": value,
@@ -336,7 +337,7 @@ def _mapping_row(value: str, label: str, *, enabled: bool = True) -> dict:
         "collects": None,
         "typical_symptoms": None,
         "duration_hint": None,
-        "exclusive": value == "other",
+        "exclusive": exclusive,
         "sort_order": 10,
         "enabled": enabled,
         "review_state": "pending_review",

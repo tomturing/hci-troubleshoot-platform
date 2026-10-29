@@ -3956,7 +3956,7 @@ COMMENT ON COLUMN log_collect_scenario.summary IS '一句话释义，显示在�
 COMMENT ON COLUMN log_collect_scenario.collects IS '该专项实际采集的内容/范围说明，供用户判断是否覆盖自己的故障';
 COMMENT ON COLUMN log_collect_scenario.typical_symptoms IS '典型症状，帮助用户按现象反选场景';
 COMMENT ON COLUMN log_collect_scenario.duration_hint IS '耗时提示（如单天约 4 分钟）；不同专项耗时差异大，缺少它用户无法预估';
-COMMENT ON COLUMN log_collect_scenario.exclusive IS '与其他场景互斥：true 表示选中它必须清空其它项（other 即此类）';
+COMMENT ON COLUMN log_collect_scenario.exclusive IS '与其他场景互斥：true 表示选中它必须清空其它项（当前无场景启用；other 已实机确认为叠加语义）';
 COMMENT ON COLUMN log_collect_scenario.sort_order IS '客户端展示顺序，数值小的在前';
 COMMENT ON COLUMN log_collect_scenario.enabled IS '是否在客户端展示；停用不影响历史任务与结果态回显';
 COMMENT ON COLUMN log_collect_scenario.review_state IS '文案审核状态：pending_review=草稿待支持工程师审核；approved=已审核可对外';
