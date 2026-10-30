@@ -494,6 +494,10 @@ terminalBridge:
       k8s-app: kube-dns
     tempoSelector:
       app.kubernetes.io/name: tempo
+    # 指标抓取来源。只放行这一个 Pod label：Prometheus 按 Pod IP 直连
+    # /metrics，不经过 Traefik，所以要单独开一条入站。
+    prometheusSelector:
+      app.kubernetes.io/name: prometheus
   persistence:
     enabled: true
     storageClass: local-path

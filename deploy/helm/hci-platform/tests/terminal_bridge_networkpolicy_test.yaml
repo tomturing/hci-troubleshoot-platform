@@ -32,6 +32,20 @@ tests:
           path: spec.egress[2].to[0].podSelector.matchLabels["app.kubernetes.io/name"]
           value: tempo
 
+  - it: "允许 Prometheus 抓取 /metrics（否则目标永远 down）"
+    set:
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.ingress[1].from[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"]
+          value: hci-observability
+      - equal:
+          path: spec.ingress[1].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: prometheus
+      - equal:
+          path: spec.ingress[1].ports[0].port
+          value: 9999
+
   - it: "网络策略可显式关闭以支持迁移期诊断"
     set:
       terminalBridge.enabled: true
