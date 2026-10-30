@@ -204,6 +204,11 @@ export interface RelaySnapshot {
   relay_chunk_index?: number | null
   relay_chunk_total?: number | null
   relay_restarts: number
+  /** 当前（或最近一次）整轮尝试序号；>1 表示已经重试过。 */
+  relay_attempt?: number | null
+  /** 最近一次失败原因（含瞬时失败）；成功后后端会清空。 */
+  relay_last_error?: string | null
+  relay_last_error_at?: string | null
   relay_updated_at?: string | null
   /** running 且心跳过期：说明执行进程已死（发布/重启），可强制续跑。 */
   stale?: boolean

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
+  describeRelayProgress,
   formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
@@ -217,5 +218,47 @@ describe('formatFailureReason', () => {
 
   it('原因两端空白会被裁掉，避免展示出多余空行', () => {
     expect(formatFailureReason({ error_message: '  归档超时  ' }, FALLBACK)).toBe('归档超时')
+  })
+})
+
+describe('describeRelayProgress', () => {
+  it('正常进度只显示片号，不显示「第 1 次尝试」这类噪声', () => {
+    expect(describeRelayProgress({ relay_chunk_index: 2, relay_chunk_total: 10, relay_attempt: 1 })).toBe(
+      '第 3/10 片',
+    )
+  })
+
+  it('重试过的轮次要显式写出来', () => {
+    expect(describeRelayProgress({ relay_chunk_index: 2, relay_chunk_total: 10, relay_attempt: 3 })).toBe(
+      '第 3/10 片 · 第 3 次尝试',
+    )
+  })
+
+  // 这条对应 Q2026102801062 的体感：单片 300s 超时期间 chunk_index 不动，
+  // 界面与"已卡死"同形，必须给出上一轮的失败原因。
+  it('带上上一轮失败原因', () => {
+    expect(
+      describeRelayProgress({
+        relay_chunk_index: 0,
+        relay_chunk_total: 409,
+        relay_attempt: 2,
+        relay_last_error: '5888 返回 503',
+      }),
+    ).toBe('第 1/409 片 · 第 2 次尝试 · 上次失败：5888 返回 503')
+  })
+
+  it('只有总片数（还没开始传）时说明准备中', () => {
+    expect(describeRelayProgress({ relay_chunk_total: 409 })).toBe('共 409 片，准备中')
+  })
+
+  it('什么都不知道时不能说谎，只能写准备中', () => {
+    expect(describeRelayProgress(null)).toBe('准备中')
+    expect(describeRelayProgress({})).toBe('准备中')
+  })
+
+  it('超长错误截断，避免把单行进度挤没', () => {
+    const text = describeRelayProgress({ relay_chunk_total: 1, relay_last_error: 'x'.repeat(300) })
+    expect(text).toContain('…')
+    expect(text.length).toBeLessThan(200)
   })
 })
