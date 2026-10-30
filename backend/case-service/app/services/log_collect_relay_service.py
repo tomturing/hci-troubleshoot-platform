@@ -294,6 +294,11 @@ class LogCollectRelayService:
                 "relay_chunk_index": task.relay_chunk_index,
                 "relay_chunk_total": task.relay_chunk_total,
                 "relay_restarts": task.relay_restarts,
+                # 让"卡住"与"在传"可区分：单片超时期间 index 不动，只有 attempt /
+                # last_error / updated_at 能说明进程还活着、上一轮为什么失败。
+                "relay_attempt": task.relay_attempt or 0,
+                "relay_last_error": task.relay_last_error,
+                "relay_last_error_at": task.relay_last_error_at,
                 "relay_updated_at": task.relay_updated_at,
                 # 前端据此判断「归档卡住」并自动强制续跑，而不是干等 2 小时。
                 "stale": self.lease_expired(task.relay_status, task.relay_updated_at),
@@ -323,11 +328,18 @@ class LogCollectRelayService:
         """
         last_exc: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
+            # 每轮开始先落 attempt。单片上传超时是 300s，这期间 relay_chunk_index 不会变，
+            # 界面只能看到"running 且进度不动"——把 attempt 落库后，用户至少能看出
+            # "已经第几轮了、进程还活着"，而不是干等。
+            await self._save(task_id, attempt=attempt)
             try:
                 await self._run(task_id)
                 return
             except Exception as exc:  # noqa: BLE001 - 异常要么落终态要么退避重试
                 last_exc = exc
+                # 原因先落库再决定要不要重试：瞬时失败随后成功后，用户仍需要知道
+                # "刚才那一轮为什么慢"；只写终态的话，成功任务的这段历史会彻底消失。
+                await self._save(task_id, last_error=str(exc)[:2000])
                 # 永久错误：不重试，立即落终态（错误码保留异常自身分类）。
                 if not self._is_transient(exc):
                     code = getattr(exc, "code", None) or "LC-TRANSFER-003"
@@ -506,6 +518,12 @@ class LogCollectRelayService:
             payload["relay_chunk_index"] = values["chunk_index"]
         if "restarts" in values:
             payload["relay_restarts"] = values["restarts"]
+        if "attempt" in values:
+            payload["relay_attempt"] = values["attempt"]
+        if "last_error" in values:
+            # 传 null 表示"清除"（成功时清），传文本表示记录本次失败。
+            payload["relay_last_error"] = values["last_error"]
+            payload["relay_last_error_at"] = func.now() if values["last_error"] else None
 
         async with self.session_factory() as session:
             await session.execute(update(LogCollectTask).where(LogCollectTask.task_id == task_id).values(**payload))
@@ -527,6 +545,10 @@ class LogCollectRelayService:
         if status == "success":
             payload["delivery_status"] = "delivered"
             payload["delivery_error"] = None
+            # 成功即清掉"最近一次失败"：留着只会让已交付的任务在界面上挂着一条历史错误，
+            # 现场第一反应是"是不是又坏了"。失败任务则保留，供重试前判断。
+            payload["relay_last_error"] = None
+            payload["relay_last_error_at"] = None
         else:
             payload["delivery_status"] = "failed"
             payload["delivery_error"] = (error or "归档到日志服务器失败")[:2000]
