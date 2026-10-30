@@ -25,6 +25,20 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.terminalBridge.port }}
+    # 指标抓取：Prometheus 在 observability 命名空间里按 Pod IP 直连 /metrics。
+    # 缺这一条时，目标会被发现、但永远 down（k3s 的 netpol 拒绝表现为
+    # connection refused，看起来像「服务没监听」，很难定位）。
+    # 只放行 Prometheus 一个 Pod label，不放行整个命名空间。
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.terminalBridge.networkPolicy.observabilityNamespace | quote }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.terminalBridge.networkPolicy.prometheusSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalBridge.port }}
   egress:
     # 集群 DNS（hci-sim 的 Service 解析与 SSH 连接依赖）。
     - to:
