@@ -156,6 +156,7 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 30
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "agentService") | nindent 10 }}
           resources:
             {{- toYaml .Values.agentService.resources | nindent 12 }}
           {{- if and .Values.kbService.enabled .Values.kbService.persistence.enabled }}

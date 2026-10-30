@@ -107,6 +107,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "terminalBridge") | nindent 10 }}
           resources:
             {{- toYaml .Values.terminalBridge.resources | nindent 12 }}
 {{- end }}

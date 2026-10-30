@@ -149,6 +149,7 @@ spec:
             # 对应 OPS_AGENT_TRAJECTORY_DIR 环境变量
             - name: trajectory-data
               mountPath: /data/ops-agent-trajectories
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "opsAgent") | nindent 10 }}
           resources:
             {{- (.Values.opsAgent.resources | default (dict "requests" (dict "cpu" "100m" "memory" "128Mi") "limits" (dict "cpu" "500m" "memory" "512Mi"))) | toYaml | nindent 12 }}
           livenessProbe:

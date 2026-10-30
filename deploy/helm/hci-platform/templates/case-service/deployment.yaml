@@ -109,6 +109,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "caseService") | nindent 10 }}
           resources:
             {{- toYaml .Values.caseService.resources | nindent 12 }}
           {{- if .Values.caseService.logCollectStorage.enabled }}

@@ -8,6 +8,17 @@ global:
   # Kubernetes DNS 集群域；UI Nginx 动态解析内部 Service 时必须使用完整 FQDN。
   clusterDomain: cluster.local
 
+  # 所有服务统一的停止监听前等待（秒），由 _helpers.tpl 的 hci.preStopLifecycle 渲染。
+  #
+  # 解决的问题：Pod 被删后，从 EndpointSlice 消失并经 Traefik / kube-proxy
+  # 传播需要时间（staging 实测约 2s），而进程收到 SIGTERM 是毫秒级停掉监听，
+  # 两者的差集就是发布时的 502 窗口。
+  # 2026-10-30 staging 实测（无 preStop，经 Traefik 施压 2338 次）：旧 Pod 被
+  # Killing 的同一秒起连续 3 秒出现 28 个 502，而 endpoints 全程非空。
+  # 10s 对实测 2s 留 5 倍余量，代价只是发布多花 10s（新 Pod 早已接管）。
+  # 单个服务可用 <serviceKey>.preStopSleepSeconds 覆盖，置 0 即关闭。
+  preStopSleepSeconds: 10
+
   # ⚠️  路由模式 — 必须与 DNS 环境匹配，改错会导致所有服务 404
   # --------------------------------------------------------------------
   # "path"      路径路由（推荐，单 IP / 单域名场景）

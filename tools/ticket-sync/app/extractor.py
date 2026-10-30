@@ -25,8 +25,8 @@ from .models import ErrorCode, ExtractStats, TicketError
 logger = logging.getLogger(__name__)
 
 # 顺序必须长后缀在前：.tar.gz 先于 .gz 判断，否则会得到错误的去后缀结果。
-# .rar 来自客户现场自行打包的转储（实测 Q2026102700323 是 RAR5），
-# 宿主机 p7zip 23.01 自带 Rar/Rar5 解码器，因此纳入解压范围。
+# .rar 来自客户现场自行打包的转储（实测 Q2026102700323 是 RAR5）。
+# 解压优先用 rarlab 的 unrar（RAR5 全方法），回退 p7zip 的 Rar5 解码器。
 ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar", ".zip", ".rar")
 
 # 占位包阈值：合法 zip 的最小体积是空归档的 22 字节（EOCD 记录），
@@ -80,12 +80,20 @@ async def extract(
         if not pending:
             break
         if depth >= cfg.max_depth:
+            # 深度上限是「停止下钻」的护栏，不是「整单失败」的判据：
+            # 主体日志在浅层已经解出，为几个深层附件丢掉全部产物并不划算
+            # （实测最深 7 层，而历史阈值只有 4 层，会把正常包判死）。
             names = ", ".join(p.name for p in pending[:5])
-            raise TicketError(
-                ErrorCode.DEPTH_EXCEEDED,
-                f"归档嵌套超过 {cfg.max_depth} 层",
-                f"depth={depth} remaining={names}",
+            stats.depth_truncated += len(pending)
+            logger.warning(
+                "ticket=%s job=%s 达到嵌套层数上限 depth=%d 停止下钻 未解=%d 前几个=%s",
+                ticket_id,
+                job_id,
+                depth,
+                len(pending),
+                names,
             )
+            break
 
         depth += 1
         for nested in pending:
@@ -306,7 +314,66 @@ async def _unzip(archive: Path, target: Path, password: str) -> None:
 
 
 async def _unrar(archive: Path, target: Path, password: str) -> None:
-    """用 7z 解 RAR（宿主唯一能读 RAR5 的工具，p7zip 内置解码器）。
+    """解 RAR：优先 unrar，不可用时回退 7z。
+
+    宿主机没有 root，装不了发行版包，因此 rarlab 的静态 unrar 由
+    deploy/install-user.sh 放到 ~/.local/bin/unrar。两者对 RAR5 的方法覆盖
+    并不相同：实测 1.dump（v50 -m3）p7zip 23.01 报 Unsupported Method，
+    而 unrar 7.23 能正常读。所以 unrar 失败时仍给 7z 一次机会；
+    只有密码错才直接放弃——那是归档本身的问题，换工具没用。
+    """
+    unrar = shutil.which("unrar")
+    if unrar:
+        try:
+            await _unrar_binary(unrar, archive, target, password)
+            return
+        except TicketError as error:
+            if error.code is ErrorCode.BAD_PASSWORD:
+                raise
+            logger.warning(
+                "归档 unrar 解压失败，回退 7z archive=%s detail=%s",
+                archive.name,
+                error.detail,
+            )
+    await _unrar_7z(archive, target, password)
+
+
+async def _unrar_binary(unrar: str, archive: Path, target: Path, password: str) -> None:
+    """rarlab unrar：退出码 0 成功、1 警告、3 CRC 错、10 密码错，其余致命。"""
+    # 无密码时必须传 -p- 明确「不给密码」，否则 unrar 会交互式询问并挂住。
+    cmd = [unrar, "x", "-o+", "-y", "-idq"]
+    cmd.append(f"-p{password}" if password else "-p-")
+    cmd.extend([str(archive), f"{target}/"])
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await _communicate(proc)
+    code = proc.returncode or 0
+    if code in (0, 1):
+        return
+
+    text = (stdout + b"\n" + stderr).decode("utf-8", errors="replace")
+    lowered = text.lower()
+    if code == 10 or "wrong password" in lowered:
+        error_code = ErrorCode.BAD_PASSWORD
+    elif code == 3 or "checksum error" in lowered:
+        error_code = ErrorCode.ARCHIVE_CORRUPT
+    elif "no space left" in lowered:
+        error_code = ErrorCode.NO_SPACE
+    else:
+        error_code = ErrorCode.EXTRACT_FAILED
+    raise TicketError(
+        error_code,
+        _unzip_message(error_code),
+        f"unrar exit={code} archive={archive.name} stderr={text[:800]}",
+    )
+
+
+async def _unrar_7z(archive: Path, target: Path, password: str) -> None:
+    """回退路径：用 7z 解 RAR（p7zip 内置 RAR5 解码器）。
 
     注意 -o 与路径之间不能有空格，-p 同理；密码走 argv 的既有风险与 unzip 一致。
     """

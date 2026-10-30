@@ -17,15 +17,22 @@ DEFAULT_MAX_ARCHIVE_BYTES = 20 * 1024**3
 DEFAULT_MAX_EXTRACT_BYTES = 400 * 1024**3
 # 剩余红线 60 GiB：低于此值拒绝新任务，避免把宿主机写满。
 DEFAULT_MIN_FREE_BYTES = 60 * 1024**3
-DEFAULT_MAX_FILES = 50_000
-# 实测最深 3 层，留一层余量。
-DEFAULT_MAX_DEPTH = 4
+# 实测单工单最多 176,562 个文件（Q2026103000409），旧值 5 万会误杀正常包。
+# 取 50 万给「节点更多、日志轮转更频繁」的集群留 2.8 倍余量，同时仍是有限值：
+# 它防的是恶意归档打爆 inode，不是用来判断包是否正常。
+DEFAULT_MAX_FILES = 500_000
+# 实测最深 7 层：zip → sp tgz → cmd-output tar.gz → host log_N.tar.gz → 叶子包。
+# 旧值 4 层（注释还写「实测最深 3 层」）与生产实际完全脱节。
+# 该值是「归档嵌套轮次」，不是文件系统目录深度（实测目录可达 18 层）。
+# 超限只停止继续下钻并保留已解产物，不整单失败，故 12 层余量足够。
+DEFAULT_MAX_DEPTH = 12
 # 单块磁盘上并发更高只会互相拖慢，2 是吞吐与响应性的折中。
 DEFAULT_CONCURRENCY = 2
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 30
 DEFAULT_RETENTION_DAYS = 7
-# 产物总量上限 400 GiB：宿主机盘 1.2T，需给系统、镜像与 .tmp 留余量。
-DEFAULT_MAX_TOTAL_BYTES = 400 * 1024**3
+# 产物总量上限 1 TiB：宿主机盘已扩到 2.1T，需给系统、镜像与 .tmp 留余量。
+# 旧值 400 GiB 在单机 500+ GiB 产物时就会触发淘汰，与实盘容量不匹配。
+DEFAULT_MAX_TOTAL_BYTES = 1024 * 1024**3
 # 容量淘汰的最短保留天数，避免"刚同步完就被容量逻辑删掉"。
 DEFAULT_MIN_KEEP_DAYS = 3
 
