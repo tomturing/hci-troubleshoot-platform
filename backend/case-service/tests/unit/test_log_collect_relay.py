@@ -299,6 +299,78 @@ async def test_run_uses_ticket_number_as_archive_filename(storage, monkeypatch):
     assert case_id.encode() + b".zip" in captured["chunk_body"]
 
 
+async def test_await_archive_fails_fast_when_server_reports_failed(storage):
+    """5888 合片失败会把 status=failed + error 写回会话。
+
+    这条锁的是"不要干等"：过去平台只能等到 archive_timeout（默认 1800s）才失败，
+    期间界面一直是 running，用户无法判断到底发生了什么。
+    """
+    task, _ = _make_task(storage, "Q2026102700001")
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        poll_interval=0.01,
+        archive_timeout=30.0,
+    )
+
+    async def fake_status(_client, _upload_id):
+        return {"status": "failed", "error": "合片大小不符: 声明 999 字节，实际 10 字节"}
+
+    service.client.upload_status = fake_status  # type: ignore[method-assign]
+
+    with pytest.raises(SangforRelayError) as excinfo:
+        await service._await_archive(None, "u-1")
+
+    assert "合片大小不符" in str(excinfo.value)
+    assert excinfo.value.code == "LC-TRANSFER-003"
+
+
+async def test_run_reinitializes_session_when_server_reported_failed(storage, monkeypatch):
+    """服务端已判失败时不能续传：失败路径会清理分片，只能重建会话重传。"""
+
+    case_id = "Q2026102700002"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    # 旧会话声称已传完 2 片 —— 若照旧逻辑续传，会从 index=2 开始、永远不派发合片
+    task.relay_upload_id = "u-old"
+    task.relay_chunk_size = CHUNK
+    task.relay_chunk_total = 2
+    task.relay_chunk_index = 1
+
+    calls = {"init": 0, "chunk_body": b""}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/upload_status/u-old":
+            return httpx.Response(200, json={"status": "failed", "error": "合片大小不符"})
+        if path.startswith("/upload_status/"):
+            # 新会话归档完成后被服务端删除
+            return httpx.Response(404, json={"error": "Invalid or expired upload ID"})
+        if path == "/init_upload":
+            calls["init"] += 1
+            return httpx.Response(200, json={"upload_id": "u-new", "chunk_size": CHUNK})
+        if path == "/upload_chunk":
+            calls["chunk_body"] = request.content
+            return httpx.Response(200, json={"status": "complete"})
+        return httpx.Response(500)
+
+    _patch_http_transport(monkeypatch, handler)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    finished = {}
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None: finished.update(status=status, error=error)
+    )
+
+    await service.run(task.task_id)
+
+    assert calls["init"] == 1, "必须重建会话，而不是沿用已失败的旧会话"
+    assert b"u-new" in calls["chunk_body"]
+    assert b"u-old" not in calls["chunk_body"]
+    assert finished["status"] == "success"
+
+
 async def test_run_rejects_non_ticket_case_id_before_upload(storage, monkeypatch):
     task, _ = _make_task(storage, "Q1", b"01234567")
     called = []

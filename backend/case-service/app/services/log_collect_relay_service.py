@@ -423,6 +423,13 @@ class LogCollectRelayService:
                 status = await self.client.upload_status(client, upload_id)
                 if status is None:
                     upload_id = ""
+                elif str(status.get("status") or "") == "failed":
+                    # 5888 把合片失败原因写回了会话，并**刻意保留**会话（删掉会被调用方
+                    # 读成 404 而误判成功）。但失败时服务端已清理该次上传的分片文件，
+                    # 续传不可能成功 —— 只能丢弃会话、重建后重传。
+                    reason = str(status.get("error") or "").strip() or "服务端未记录原因"
+                    await self._save(task_id, last_error=f"服务端判定失败，重建会话重传：{reason}"[:2000])
+                    upload_id = ""
                 else:
                     start_index = int(task.relay_chunk_index or -1) + 1
 
@@ -494,8 +501,14 @@ class LogCollectRelayService:
 
         deadline = time.monotonic() + self.archive_timeout
         while time.monotonic() < deadline:
-            if await self.client.upload_status(client, upload_id) is None:
+            status = await self.client.upload_status(client, upload_id)
+            if status is None:
                 return
+            # 5888 合片失败时把 status=failed + error 写回会话。读到就当场失败，
+            # 不必干等 archive_timeout（默认 1800s）——那段时间里界面只能显示 running。
+            if str(status.get("status") or "") == "failed":
+                reason = str(status.get("error") or "").strip() or "服务端未记录原因"
+                raise SangforRelayError(f"日志服务器归档失败：{reason}", "LC-TRANSFER-003")
             await asyncio.sleep(self.poll_interval)
         raise SangforRelayError("归档确认超时：服务端会话仍存在，归档可能失败")
 
