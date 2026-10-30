@@ -109,28 +109,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
-          {{- with .Values.caseService.preStopSleepSeconds }}
-          # 停止监听之前的强制等待。
-          #
-          # 第一性原理：请求会不会打到「正在死的 Pod」取决于两个独立时钟——
-          #   时钟 A：Pod 收到 deletionTimestamp 后，从 EndpointSlice 消失、
-          #           再经 Traefik / kube-proxy 各自的速度传播到每一条转发路径；
-          #   时钟 B：进程收到 SIGTERM 后停止 accept 的速度（uvicorn 是毫秒级）。
-          # 只有「A < B」才没有 502。maxUnavailable=0 管的是「有没有别的 Pod 在服务」，
-          # 管不到「流量有没有打到已经闭眼的那个」——这两件事经常被混为一谈。
-          # 2026-10-30 staging 实测：没有 preStop 时，旧 Pod 被 Killing 的同一秒起
-          # 连续 2s 出现 502（2338 次施压中 28 次），endpoints 却全程非空。
-          # preStop 睡在这里不会降低可用性：新 Pod 早已 Ready 并接管流量。
-          # 上限受 terminationGracePeriodSeconds 约束，必须明显小于它（下面直接 fail 掉）。
-          {{- $grace := $.Values.caseService.terminationGracePeriodSeconds | default 30 | int }}
-          {{- if ge (int .) $grace }}
-          {{- fail (printf "caseService.preStopSleepSeconds=%v 必须小于 terminationGracePeriodSeconds=%v：preStop 会先吃掉优雅期，超时后 kubelet 直接 SIGKILL，在途请求照样丢" (int .) $grace) }}
-          {{- end }}
-          lifecycle:
-            preStop:
-              exec:
-                command: ["/bin/sh", "-c", "sleep {{ . }}"]
-          {{- end }}
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "caseService") | nindent 10 }}
           resources:
             {{- toYaml .Values.caseService.resources | nindent 12 }}
           {{- if .Values.caseService.logCollectStorage.enabled }}

@@ -87,6 +87,7 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 30
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "authService") | nindent 10 }}
           resources:
             {{- toYaml .Values.authService.resources | nindent 12 }}
 {{- end }}

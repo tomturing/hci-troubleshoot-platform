@@ -240,3 +240,42 @@ ops-agent 和 pai-agent 为内部服务，base_url 固定不变。
   }
 }
 {{- end -}}
+
+{{/*
+停止监听前的强制等待（preStop），供所有 Deployment 的容器共用。
+
+第一性原理：请求会不会打到「正在死的 Pod」，取决于两个互相独立的时钟——
+  时钟 A：Pod 拿到 deletionTimestamp → 从 EndpointSlice 消失 → 经 Traefik /
+          kube-proxy 各自的速度传播到每一条转发路径（staging 实测约 2s）；
+  时钟 B：进程收到 SIGTERM → 停止 accept（uvicorn 是毫秒级）。
+只有 A < B 才没有 502。maxUnavailable=0 回答的是「还有没有别的 Pod 在服务」，
+回答不了「流量是不是正好打在已经闭眼的那个上」，这两件事经常被混为一谈。
+
+2026-10-30 staging 实测（无 preStop，经 Traefik 施压 2338 次）：旧 Pod 被
+Killing 的同一秒起连续 3 秒出现 28 个 502，而 endpoints 全程非空。
+
+取值：默认读 global.preStopSleepSeconds（10s，对实测 2s 留 5 倍余量）；
+单个服务可用 <serviceKey>.preStopSleepSeconds 覆盖，置 0 即关闭。
+必须小于 terminationGracePeriodSeconds，否则 preStop 先吃掉优雅期、超时后
+kubelet 直接 SIGKILL，在途请求照样丢——所以这里直接 fail 掉而不是交给人工检查。
+
+用法：{{- include "hci.preStopLifecycle" (dict "root" . "key" "adminUI") | nindent 10 }}
+*/}}
+{{- define "hci.preStopLifecycle" -}}
+{{- $svc := index .root.Values .key | default dict -}}
+{{- $sleep := .root.Values.global.preStopSleepSeconds | default 0 | int -}}
+{{- if hasKey $svc "preStopSleepSeconds" -}}
+{{- $sleep = get $svc "preStopSleepSeconds" | int -}}
+{{- end -}}
+{{- $grace := get $svc "terminationGracePeriodSeconds" | default 30 | int -}}
+{{- if gt $sleep 0 -}}
+{{- if ge $sleep $grace -}}
+{{- fail (printf "preStopSleepSeconds=%d 必须小于 terminationGracePeriodSeconds=%d：preStop 会先吃掉优雅期，超时后 kubelet 直接 SIGKILL，在途请求照样丢" $sleep $grace) -}}
+{{- end -}}
+# 等负载均衡视图更新完再停止监听（详见 _helpers.tpl 的 hci.preStopLifecycle）
+lifecycle:
+  preStop:
+    exec:
+      command: ["/bin/sh", "-c", "sleep {{ $sleep }}"]
+{{- end -}}
+{{- end -}}
