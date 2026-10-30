@@ -61,6 +61,11 @@ export const PHASE_TEXT: Record<SyncPhase, string> = {
   interrupted: '已中断',
 }
 
+/** 阶段文案。未知阶段回退为原始值，避免后端新增阶段时页面出现空白标签。 */
+export function phaseText(phase: SyncPhase): string {
+  return PHASE_TEXT[phase] ?? phase
+}
+
 // 错误码到用户可读文案的映射，与服务端文档第 8 章一一对应。
 // quota/depth 两码此前写作"体积异常""层级异常"，把服务自身的阈值说成了
 // 数据问题，用户会误以为包坏了。这里改为"超出服务上限"，具体数值由
