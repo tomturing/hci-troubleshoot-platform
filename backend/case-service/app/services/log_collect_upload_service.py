@@ -119,14 +119,26 @@ class LogCollectUploadService:
 
     # ── 会话 ────────────────────────────────────────────────────────────────
 
-    def part_count_for(self, total_size: int) -> int:
-        return max(1, math.ceil(total_size / self.chunk_size))
+    def part_count_for(self, total_size: int, chunk_size: int | None = None) -> int:
+        # 分片**几何**（片数、每片大小）必须由「会话」决定，不能由「当前进程默认值」决定。
+        #
+        # 2026-10-30 现场事故（Q2026102801062）：默认分片从 32 MiB 调到 8 MiB 后，
+        # 一个已存在 72 片（32 MiB/片）的旧会话被重新拿起来续传 —— meta 里的
+        # chunk_size 仍是 32 MiB，但这里用 self.chunk_size（8 MiB）算片数，
+        # 于是同一个响应里 chunk_size=32MiB 与 part_count=409 自相矛盾：
+        # 桥按 32 MiB 切片、服务端按 8 MiB 校验，每一片都报
+        # "分片 N 超过允许大小 8388608 字节"，续传永久卡死。
+        size = chunk_size or self.chunk_size
+        return max(1, math.ceil(total_size / size))
 
-    def expected_part_size(self, part_number: int, total_size: int) -> int:
+    def expected_part_size(
+        self, part_number: int, total_size: int, chunk_size: int | None = None
+    ) -> int:
         """非末片必须等于 chunk_size；末片为剩余字节。"""
 
-        consumed = (part_number - 1) * self.chunk_size
-        return min(self.chunk_size, total_size - consumed)
+        size = chunk_size or self.chunk_size
+        consumed = (part_number - 1) * size
+        return min(size, total_size - consumed)
 
     async def init(
         self, task: LogCollectTask, *, total_size: int, expected_sha256: str | None
@@ -176,14 +188,15 @@ class LogCollectUploadService:
             )
 
         parts = self.storage.existing_parts(upload_id)
+        part_count = self.part_count_for(total_size, chunk_size)
         return {
             "upload_id": upload_id,
             "upload_token": self.issue_token(upload_id),
             "chunk_size": chunk_size,
-            "part_count": self.part_count_for(total_size),
+            "part_count": part_count,
             "total_size": total_size,
             "uploaded_parts": parts,
-            "missing_parts": self._missing(parts, self.part_count_for(total_size)),
+            "missing_parts": self._missing(parts, part_count),
         }
 
     async def status(self, task_id: UUID) -> dict[str, Any]:
@@ -192,12 +205,14 @@ class LogCollectUploadService:
         if meta is None:
             raise UploadSessionNotFoundError(f"上传会话不存在或已过期：{upload_id}")
         total_size = int(meta["total_size"])
-        part_count = self.part_count_for(total_size)
+        # 片数必须按会话记录的 chunk_size 算，不能按进程默认值算（见 part_count_for 注释）。
+        chunk_size = int(meta.get("chunk_size", self.chunk_size))
+        part_count = self.part_count_for(total_size, chunk_size)
         parts = self.storage.existing_parts(upload_id)
         return {
             "upload_id": upload_id,
             "upload_token": self.issue_token(upload_id),
-            "chunk_size": int(meta["chunk_size"]),
+            "chunk_size": chunk_size,
             "part_count": part_count,
             "total_size": total_size,
             "uploaded_parts": parts,
@@ -228,13 +243,15 @@ class LogCollectUploadService:
             raise UploadSessionNotFoundError(f"上传会话不存在或已过期：{upload_id}")
 
         total_size = int(meta["total_size"])
-        part_count = self.part_count_for(total_size)
+        # 与 init/status 同源：几何来自会话 meta，实例默认值只在新建会话时使用。
+        chunk_size = int(meta.get("chunk_size", self.chunk_size))
+        part_count = self.part_count_for(total_size, chunk_size)
         if part_number < 1 or part_number > part_count:
             raise PartValidationError(
                 f"分片序号越界：{part_number} ∉ [1, {part_count}]", status=400
             )
 
-        expected = self.expected_part_size(part_number, total_size)
+        expected = self.expected_part_size(part_number, total_size, chunk_size)
         try:
             size, digest = await self.storage.write_part(
                 upload_id=upload_id,
@@ -279,7 +296,8 @@ class LogCollectUploadService:
             raise UploadSessionNotFoundError(f"上传会话不存在或已过期：{upload_id}")
 
         total_size = int(meta["total_size"])
-        part_count = self.part_count_for(total_size)
+        chunk_size = int(meta.get("chunk_size", self.chunk_size))
+        part_count = self.part_count_for(total_size, chunk_size)
         uploaded = self.storage.existing_parts(upload_id)
         missing = self._missing(uploaded, part_count)
         if missing:
