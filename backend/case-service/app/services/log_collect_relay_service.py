@@ -16,17 +16,23 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
 import re
 import time
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import httpx
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 
+from ..config import settings
 from ..models.log_collect import LogCollectTask
 from .log_collect_storage import LocalLogCollectStorage
+
+logger = logging.getLogger(__name__)
 
 RELAY_STATUS_VALUES = ("none", "pending", "running", "success", "failed")
 
@@ -55,9 +61,7 @@ class SangforRelayClient:
         self.base_url = base_url.rstrip("/")
         self.chunk_timeout = chunk_timeout
 
-    async def init_upload(
-        self, client: httpx.AsyncClient, filename: str, file_size: int
-    ) -> tuple[str, int]:
+    async def init_upload(self, client: httpx.AsyncClient, filename: str, file_size: int) -> tuple[str, int]:
         response = await client.post(
             f"{self.base_url}/init_upload",
             files={"filename": (None, filename), "file_size": (None, str(file_size))},
@@ -117,6 +121,8 @@ class LogCollectRelayService:
         max_attempts: int = 3,
         retry_base_delay: float = 2.0,
         retry_max_delay: float = 30.0,
+        stale_after: float | None = None,
+        heartbeat_interval: float | None = None,
     ):
         self.session_factory = session_factory
         self.storage = storage
@@ -128,35 +134,155 @@ class LogCollectRelayService:
         self.max_attempts = max(1, int(max_attempts))
         self.retry_base_delay = float(retry_base_delay)
         self.retry_max_delay = float(retry_max_delay)
+        # 租约：``relay_status=running`` 只是「有人正在跑」的声明，靠 relay_updated_at
+        # 续租才成立。发布/重启/OOM 杀掉的进程不可能自己写终态，租约过期即视为执行者
+        # 已死，任何实例都可抢占重跑——这是「代传卡死 running」的唯一通用兜底。
+        self.stale_after = float(stale_after or settings.LOG_COLLECT_RELAY_STALE_SECONDS)
+        derived = max(5.0, self.stale_after / 4)
+        # 心跳必须明显密于租约，且不允许被外部调大到超过租约一半，否则会自我过期。
+        self.heartbeat_interval = float(min(heartbeat_interval or derived, self.stale_after / 2))
 
     # ── 抢占 ────────────────────────────────────────────────────────────────
 
     async def trigger(self, task_id: UUID, *, force: bool = False) -> bool:
         """抢占式启动：只有把 relay_status 从非 running 改成 running 的调用者才执行。
 
-        `force` 用于手动重试（上一进程崩溃导致状态卡在 running 时）。
+        ``force`` 用于人工重试。**不带 force 也允许抢占租约已过期的 running**：
+        发布/重启杀掉的进程不可能自己写终态，如果只认 force，任务会永远停在
+        running，前端只能等到 2 小时轮询超时才敢说「结果未知」，而用户点
+        「上传到平台」又会重传整包、且代传依旧不会启动。
         """
 
-        allowed = ["none", "pending", "failed"]
-        if force:
-            allowed.append("running")
         async with self.session_factory() as session:
             result = await session.execute(
                 update(LogCollectTask)
-                .where(
-                    LogCollectTask.task_id == task_id,
-                    LogCollectTask.relay_status.in_(allowed),
-                )
+                .where(LogCollectTask.task_id == task_id, self._claimable(force))
                 .values(relay_status="running", relay_updated_at=func.now())
             )
             await session.commit()
             return (result.rowcount or 0) > 0
 
-    async def snapshot(self, task_id: UUID) -> dict[str, Any] | None:
+    def _stale_cutoff(self) -> datetime:
+        return datetime.now(UTC) - timedelta(seconds=self.stale_after)
+
+    def _expired(self, updated_at: datetime | None) -> bool:
+        """租约是否已过期。``NULL`` 视为过期：老记录没有心跳，不能因此永久占位。"""
+
+        if updated_at is None:
+            return True
+        moment = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=UTC)
+        return moment < self._stale_cutoff()
+
+    def lease_expired(self, status: str | None, updated_at: datetime | None) -> bool:
+        """对外暴露的租约判定（快照与测试共用同一口径）。"""
+
+        return status == "running" and self._expired(updated_at)
+
+    def _claimable(self, force: bool):
+        """可被本次调用抢占的条件：初次执行 / 上次失败 / 租约过期（或 force 的 running）。"""
+
+        claimable = [LogCollectTask.relay_status.in_(["none", "pending", "failed"])]
+        if force:
+            claimable.append(LogCollectTask.relay_status == "running")
+        else:
+            claimable.append(
+                and_(
+                    LogCollectTask.relay_status == "running",
+                    or_(
+                        LogCollectTask.relay_updated_at.is_(None),
+                        LogCollectTask.relay_updated_at < self._stale_cutoff(),
+                    ),
+                )
+            )
+        return or_(*claimable)
+
+    async def heartbeat(self, task_id: UUID) -> bool:
+        """续租：只在仍为 running 时刷新 relay_updated_at，不碰任何终态。"""
+
         async with self.session_factory() as session:
             result = await session.execute(
-                select(LogCollectTask).where(LogCollectTask.task_id == task_id)
+                update(LogCollectTask)
+                .where(
+                    LogCollectTask.task_id == task_id,
+                    LogCollectTask.relay_status == "running",
+                )
+                .values(relay_updated_at=func.now())
             )
+            await session.commit()
+            return (result.rowcount or 0) > 0
+
+    async def _heartbeat_loop(self, task_id: UUID) -> None:
+        """独立协程续租：单分片 300s 超时、合并等长阻塞期间也不能让租约过期。"""
+
+        while True:
+            await asyncio.sleep(self.heartbeat_interval)
+            try:
+                if not await self.heartbeat(task_id):
+                    # 状态已被终态或别的实例接管：停止续租，不能替别人维持租约。
+                    return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - 心跳失败不能把业务打成失败
+                logger.warning("日志包代传心跳失败 task=%s", task_id, exc_info=True)
+
+    async def claim_stale(self, *, limit: int = 20) -> list[UUID]:
+        """接管「待跑」与「租约失效」的代传任务，返回本次真正归本方执行的 task_id。
+
+        只看有制品的任务：没有 archive_path 的中间态抢过来只会以 LC-TRANSFER-001
+        立即落 failed，那不是自愈而是自毁。
+        """
+
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(LogCollectTask.task_id)
+                .where(
+                    LogCollectTask.archive_path.isnot(None),
+                    or_(
+                        LogCollectTask.relay_status == "pending",
+                        and_(
+                            LogCollectTask.relay_status == "running",
+                            or_(
+                                LogCollectTask.relay_updated_at.is_(None),
+                                LogCollectTask.relay_updated_at < self._stale_cutoff(),
+                            ),
+                        ),
+                    ),
+                )
+                .order_by(LogCollectTask.relay_updated_at.asc().nullsfirst())
+                .limit(limit)
+            )
+            candidates = [row[0] for row in result.all()]
+
+        claimed: list[UUID] = []
+        for task_id in candidates:
+            if await self.trigger(task_id):
+                claimed.append(task_id)
+        return claimed
+
+    async def release(self, task_ids: list[UUID]) -> int:
+        """优雅退出时交还租约：把仍在 running 的置回 pending，交给下一个实例。
+
+        写 pending 而不是 failed：任务并没有得出「归档失败」这个结论（5888 侧会话
+        还有 24h 有效期），判死会让用户看到假失败并触发整包重传。
+        """
+
+        if not task_ids:
+            return 0
+        async with self.session_factory() as session:
+            result = await session.execute(
+                update(LogCollectTask)
+                .where(
+                    LogCollectTask.task_id.in_(task_ids),
+                    LogCollectTask.relay_status == "running",
+                )
+                .values(relay_status="pending", relay_updated_at=func.now())
+            )
+            await session.commit()
+            return result.rowcount or 0
+
+    async def snapshot(self, task_id: UUID) -> dict[str, Any] | None:
+        async with self.session_factory() as session:
+            result = await session.execute(select(LogCollectTask).where(LogCollectTask.task_id == task_id))
             task = result.scalar_one_or_none()
             if task is None:
                 return None
@@ -169,12 +295,25 @@ class LogCollectRelayService:
                 "relay_chunk_total": task.relay_chunk_total,
                 "relay_restarts": task.relay_restarts,
                 "relay_updated_at": task.relay_updated_at,
+                # 前端据此判断「归档卡住」并自动强制续跑，而不是干等 2 小时。
+                "stale": self.lease_expired(task.relay_status, task.relay_updated_at),
                 "archive_path": task.archive_path,
             }
 
     # ── 主流程 ──────────────────────────────────────────────────────────────
 
     async def run(self, task_id: UUID) -> None:
+        """代传入口：租约续期与重试编排在这一层，``_run_with_retry`` 只管业务。"""
+
+        heartbeat = asyncio.create_task(self._heartbeat_loop(task_id), name=f"relay-heartbeat-{task_id}")
+        try:
+            await self._run_with_retry(task_id)
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+
+    async def _run_with_retry(self, task_id: UUID) -> None:
         """代传主入口：瞬时错误自动退避重试，永久错误立即落终态。
 
         第一性原理：采集已在节点侧成功（包已生成），中继/5888 仅因瞬时网络抖动或
@@ -200,9 +339,7 @@ class LogCollectRelayService:
                     code = getattr(exc, "code", None) or "LC-TRANSFER-003"
                     await self._finish(task_id, "failed", error=str(exc), error_code=code)
                     raise
-                await asyncio.sleep(
-                    min(self.retry_base_delay * (2 ** (attempt - 1)), self.retry_max_delay)
-                )
+                await asyncio.sleep(min(self.retry_base_delay * (2 ** (attempt - 1)), self.retry_max_delay))
         if last_exc is not None:  # 兜底（理论上不可达）
             code = getattr(last_exc, "code", None) or "LC-TRANSFER-003"
             await self._finish(task_id, "failed", error=str(last_exc), error_code=code)
@@ -317,9 +454,7 @@ class LogCollectRelayService:
 
         value = (case_id or "").strip()
         if not SANGFOR_ARCHIVE_NAME_RE.fullmatch(value):
-            raise SangforRelayError(
-                f"工单号不合法，无法确定归档文件名：{value or '<空>'}", "LC-TRANSFER-001"
-            )
+            raise SangforRelayError(f"工单号不合法，无法确定归档文件名：{value or '<空>'}", "LC-TRANSFER-001")
         return f"{value}.zip"
 
     @staticmethod
@@ -356,9 +491,7 @@ class LogCollectRelayService:
 
     async def _load(self, task_id: UUID) -> LogCollectTask | None:
         async with self.session_factory() as session:
-            result = await session.execute(
-                select(LogCollectTask).where(LogCollectTask.task_id == task_id)
-            )
+            result = await session.execute(select(LogCollectTask).where(LogCollectTask.task_id == task_id))
             return result.scalar_one_or_none()
 
     async def _save(self, task_id: UUID, **values) -> None:
@@ -375,9 +508,7 @@ class LogCollectRelayService:
             payload["relay_restarts"] = values["restarts"]
 
         async with self.session_factory() as session:
-            await session.execute(
-                update(LogCollectTask).where(LogCollectTask.task_id == task_id).values(**payload)
-            )
+            await session.execute(update(LogCollectTask).where(LogCollectTask.task_id == task_id).values(**payload))
             await session.commit()
 
     async def _finish(
@@ -403,7 +534,5 @@ class LogCollectRelayService:
             payload["error_code"] = error_code
             payload["error_message"] = error[:2000]
         async with self.session_factory() as session:
-            await session.execute(
-                update(LogCollectTask).where(LogCollectTask.task_id == task_id).values(**payload)
-            )
+            await session.execute(update(LogCollectTask).where(LogCollectTask.task_id == task_id).values(**payload))
             await session.commit()
