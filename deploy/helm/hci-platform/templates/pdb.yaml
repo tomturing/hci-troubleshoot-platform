@@ -1,91 +1,58 @@
+{{- /*
+PDB 覆盖面：本文件由「手工复制 6 个服务」改成列表驱动，原因不是美观——
+2026-10-30 实测现网 PDB 数为 0：复制式模板漏了 7 个服务，而留下的 6 个条件都是
+`gt replicaCount 1`，staging 全部 replicaCount=1，于是 13 个服务没有一个有 PDB。
+「节点维护 / 驱逐」这条**非发布路径**因此完全没有保护（同一天实测并发删 Pod
+产生 503×1971 + 502×187）。
+
+两条不变量，缺一不可：
+  1) 只有副本数 ≥2 的服务才渲染 PDB。minAvailable=1 配单副本 Deployment 会让
+     `kubectl drain` 永久卡在「voluntary disruption 会让 available 低于 1」上，
+     保护变成故障。
+  2) 新增服务必须往下面的 $targets 加一行。漏加的后果由 CI 兜住：
+     scripts/ci/check_pdb_coverage.py 比对渲染结果里「replicas≥2 的 Deployment」
+     与「PDB 的 selector」，缺一即 fail。列表会漏，渲染结果不会说谎。
+
+replicaCount 一律直接引用各服务自己的 values 键，不再另建一份副本数配置——
+两处真相迟早不一致，那时 PDB 的 gate 就变成了「看起来有保护其实没有」。
+*/ -}}
 {{- if .Values.workloadDefaults.pdb.enabled }}
-{{- if gt (int .Values.apiGateway.replicaCount) 1 }}
+{{- $targets := list
+  (dict "name" "admin-ui" "replicas" (int .Values.adminUI.replicaCount))
+  (dict "name" "agent-service" "replicas" (int .Values.agentService.replicaCount))
+  (dict "name" "api-gateway" "replicas" (int .Values.apiGateway.replicaCount))
+  (dict "name" "auth-service" "replicas" (int .Values.authService.replicaCount))
+  (dict "name" "case-service" "replicas" (int .Values.caseService.replicaCount))
+  (dict "name" "conversation-service" "replicas" (int .Values.conversationService.replicaCount))
+  (dict "name" "customer-ui" "replicas" (int .Values.customerUI.replicaCount))
+  (dict "name" "diagnosis-service" "replicas" (int .Values.diagnosisService.replicaCount) "enabled" .Values.diagnosisService.enabled)
+  (dict "name" "diagnosis-worker" "replicas" (int .Values.diagnosisService.worker.replicaCount) "enabled" .Values.diagnosisService.enabled)
+  (dict "name" "kb-service" "replicas" (int .Values.kbService.replicaCount) "enabled" .Values.kbService.enabled)
+  (dict "name" "scheduler-service" "replicas" (int .Values.schedulerService.replicaCount))
+  (dict "name" "terminal-bridge" "replicas" (int .Values.terminalBridge.replicaCount) "enabled" .Values.terminalBridge.enabled)
+-}}
+{{- range $t := $targets }}
+{{- /* range 会把 . 重新绑定成当前元素，而 hci.namespace / hci.podLabels 需要的
+     是根上下文；这里一律用 $。写错的表现是「只在真的渲染出 PDB 时（副本≥2）才报错」，
+     默认 values 全单副本渲染不出 PDB，CI 一片绿，到 staging 把副本改成 2 才炸。 */}}
+{{- $enabled := true }}
+{{- if hasKey $t "enabled" }}{{- $enabled = $t.enabled }}{{- end }}
+{{- if and $enabled (ge $t.replicas 2) }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: api-gateway-pdb
-  namespace: {{ include "hci.namespace" . }}
+  name: {{ $t.name }}-pdb
+  namespace: {{ include "hci.namespace" $ }}
   labels:
-    {{- include "hci.podLabels" (dict "name" "api-gateway" "Release" .Release "Chart" .Chart) | nindent 4 }}
+    {{- include "hci.podLabels" (dict "name" $t.name "Release" $.Release "Chart" $.Chart) | nindent 4 }}
 spec:
-  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
+  # minAvailable 由 workloadDefaults.pdb 统一给：单点改，全部服务跟着改，
+  # 不会出现「三个服务的 PDB 阈值各自漂移」
+  minAvailable: {{ $.Values.workloadDefaults.pdb.minAvailable }}
   selector:
     matchLabels:
-      {{- include "hci.selectorLabels" (dict "name" "api-gateway" "Release" .Release) | nindent 6 }}
+      {{- include "hci.selectorLabels" (dict "name" $t.name "Release" $.Release) | nindent 6 }}
 ---
 {{- end }}
-{{- if gt (int .Values.caseService.replicaCount) 1 }}
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: case-service-pdb
-  namespace: {{ include "hci.namespace" . }}
-  labels:
-    {{- include "hci.podLabels" (dict "name" "case-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
-spec:
-  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
-  selector:
-    matchLabels:
-      {{- include "hci.selectorLabels" (dict "name" "case-service" "Release" .Release) | nindent 6 }}
----
-{{- end }}
-{{- if gt (int .Values.conversationService.replicaCount) 1 }}
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: conversation-service-pdb
-  namespace: {{ include "hci.namespace" . }}
-  labels:
-    {{- include "hci.podLabels" (dict "name" "conversation-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
-spec:
-  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
-  selector:
-    matchLabels:
-      {{- include "hci.selectorLabels" (dict "name" "conversation-service" "Release" .Release) | nindent 6 }}
----
-{{- end }}
-{{- if gt (int .Values.schedulerService.replicaCount) 1 }}
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: scheduler-service-pdb
-  namespace: {{ include "hci.namespace" . }}
-  labels:
-    {{- include "hci.podLabels" (dict "name" "scheduler-service" "Release" .Release "Chart" .Chart) | nindent 4 }}
-spec:
-  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
-  selector:
-    matchLabels:
-      {{- include "hci.selectorLabels" (dict "name" "scheduler-service" "Release" .Release) | nindent 6 }}
----
-{{- end }}
-{{- if gt (int .Values.customerUI.replicaCount) 1 }}
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: customer-ui-pdb
-  namespace: {{ include "hci.namespace" . }}
-  labels:
-    {{- include "hci.podLabels" (dict "name" "customer-ui" "Release" .Release "Chart" .Chart) | nindent 4 }}
-spec:
-  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
-  selector:
-    matchLabels:
-      {{- include "hci.selectorLabels" (dict "name" "customer-ui" "Release" .Release) | nindent 6 }}
----
-{{- end }}
-{{- if gt (int .Values.adminUI.replicaCount) 1 }}
-apiVersion: policy/v1
-kind: PodDisruptionBudget
-metadata:
-  name: admin-ui-pdb
-  namespace: {{ include "hci.namespace" . }}
-  labels:
-    {{- include "hci.podLabels" (dict "name" "admin-ui" "Release" .Release "Chart" .Chart) | nindent 4 }}
-spec:
-  minAvailable: {{ .Values.workloadDefaults.pdb.minAvailable }}
-  selector:
-    matchLabels:
-      {{- include "hci.selectorLabels" (dict "name" "admin-ui" "Release" .Release) | nindent 6 }}
 {{- end }}
 {{- end }}

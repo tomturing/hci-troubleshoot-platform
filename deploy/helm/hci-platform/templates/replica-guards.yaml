@@ -1,0 +1,36 @@
+{{- /*
+不可多副本服务的渲染期守卫。
+
+为什么放在渲染期而不是靠文档约定：这几个服务的会话/池状态就在进程内存里，
+values 里把 replicaCount 改成 2 之后，K8s 层面一切正常（Pod Running、readiness
+通过、指标健康），故障只出现在具体交互上——第二个副本起来后流量按轮询分到两个
+进程，跨进程的 session 一律查不到。这类「部署成功但行为错乱」在 CI 与告警上都
+不像故障，等人在业务侧发现时已经污染了数据。所以直接 fail 在渲染阶段。
+
+每条守卫都必须写清「证据」和「解除条件」，否则它会变成下一代人不敢删的化石。
+现存的证据都在 backend/ 源码里，改代码时就地更新本文件。
+
+不在本文件里的两个：
+  - terminal-bridge：守卫在 _helpers.tpl 的 hci.terminalBridgeGuard 里（它与
+    allowedOrigins / wildcard Origin 检查同属一个服务的配置约束，一起渲染才不
+    会出现「Origin 查了、副本数没查」的空档）。
+  - ops-agent-service：deployment.yaml 里 replicas 写死为 1，没有 values 开关；
+    它的 ACP 会话上下文跨轮次保存在单进程内（见 agent-service 侧
+    ops_agent_adapter.py 的注释「ops-agent 侧在跨轮次对话中保持会话上下文」）。
+    要扩副本先把它改成 values 驱动，并同步加一条本文件的守卫。
+
+反例（不要照抄这里的模式）：diagnosis-service / diagnosis-worker 看起来也像
+「有后台任务所以不能多副本」，但 worker 取任务用的是
+`SELECT ... FOR UPDATE SKIP LOCKED` + 租约（worker_lease_expired），本身就是为
+多个消费者竞争同一张队列表设计的——给它们加单副本守卫是错的。守卫必须以源码
+证据为准，不能以「听起来有状态」为准。
+*/ -}}
+{{- if gt (int .Values.apiGateway.replicaCount) 1 }}
+{{- fail "apiGateway.replicaCount 必须为 1：api-gateway 的 terminal 会话把 SSH 连接、stdout/stderr 读取任务和 WebSocket 句柄都存在进程内字典里（backend/api-gateway/app/services/terminal.py 的 _connections/_tasks/_websockets + _cleanup_loop），多副本会让 execute/attach/resume 落到没有该 session 的副本上。解除条件：会话状态外置（redis/DB）或经实测的 ingress 粘性会话" -}}
+{{- end }}
+{{- if gt (int .Values.schedulerService.replicaCount) 1 }}
+{{- fail "schedulerService.replicaCount 必须为 1：warm-pool 的 idle_pods/active_pods 计数与 ensure_warm_pool 循环都在进程内（backend/scheduler-service/app/services/pod_pool.py），main.py 启动时还会 create_task 一份初始化循环；多副本等于每个副本各建一池，预热 Pod 数量按副本数翻倍且互相看不见。解除条件：池状态改为集中式（DB/redis 记账 + 单领导者）" -}}
+{{- end }}
+{{- if and .Values.kbService.enabled (gt (int .Values.kbService.replicaCount) 1) }}
+{{- fail "kbService.replicaCount 必须为 1：SignalJobManager/VisionJobManager 是进程内存储，代码里自带警告「多 worker/多副本部署下 POST 与 GET /status 可能落到不同进程而 404」（backend/kb-service/app/services/signal_job_manager.py、vision_job_manager.py）。解除条件：job 状态迁到 redis/DB（代码注释里已列为演进方向）" -}}
+{{- end }}

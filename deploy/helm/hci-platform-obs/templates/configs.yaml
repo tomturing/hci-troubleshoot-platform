@@ -114,6 +114,14 @@ data:
 
     loki.process "pod_logs" {
       stage.cri {}
+      // trace_id / span_id 提为 structured metadata 是**必需的**：全局规则要求
+      // 「所有请求日志使用唯一调用链，可追踪完整调用路径」，而 metadata 是唯一
+      // 能把 trace_id 变成可过滤条件、又不撑爆 label 索引的机制（机制取证见
+      // loki.process "ingress_logs" 里的注释）。
+      // 代价已实测并登记：metadata 参与查询结果的分组，2026-10-30 对
+      // {namespace="hci-staging"} |= "trace_id" 近 2h 抽样 50 行 → 分成 18 条返回流。
+      // 这是「按 trace_id 查日志」这个能力本身的价格，不是配置错误；
+      // 若将来要压掉，方向是给 trace 查询改走 Tempo，而不是删掉这里的 metadata。
       stage.json {
         expressions = {
           event    = "event",
@@ -187,24 +195,51 @@ data:
 
     loki.process "ingress_logs" {
       stage.cri {}
-      // Traefik accesslog 是 JSON（PascalCase 键）；可检索字段提为 structured
-      // metadata，既不增 label 基数，又能直接按 service_name 过滤出「谁在 502」。
+      // 只提「值域有界」的字段。这里连踩两个坑，结论以现网实测为准：
+      //   坑 1（改动前的旧注释）：「structured_metadata 不增 label 基数」——这句
+      //     在 label 索引层面**是对的**（见下面坑 2 的实测），但被人读成「随便提
+      //     什么字段都免费」，于是 duration（每请求唯一）+ request_path（用户可控）
+      //     一起进了 metadata 表。
+      //   坑 2（我上一轮订正时写下的）：断言「structured_metadata 就是把值写成
+      //     Loki label」——**这句是错的**。2026-10-30 在 Loki 3.4.2 上实测：
+      //       /loki/api/v1/labels 全集只有 7 个（app/container/filename/namespace/
+      //       pod/service_name/stream），既查不到 duration 也查不到 downstream_status；
+      //       标签选择器 {duration="90270"} 返回空；只有行过滤语法
+      //       {app="traefik"} | duration="90270" 能命中——即原生 structured metadata，
+      //       不进 label 索引，所以旧注释那句「不增 label 基数」本身没写错。
+      //   但它仍然不是免费的：metadata 参与**查询结果的 stream 分组**。实测
+      //     {app="traefik"} 近 24h 返回 6 条流，其中 3 条各只装 1 行、彼此的差异
+      //     就是 duration；发布窗口一次 1971 个 503 会把 Explore 的流列表刷成上千条。
+      //   所以判据是「有没有对应的索引收益」而不是「会不会增 label 基数」：
+      //     duration / request_path 原始 JSON 行里本来就有，LogQL 用
+      //     `| json | Duration > 60000000000` 一样可查，再存一份 metadata 副本只换来
+      //     分组膨胀，零收益 → 不提。状态码 / 路由名 / 后端服务名的取值个数有上限，
+      //     提出来能直接过滤 → 提。
+      //
+      // 后端服务名故意叫 backend_service，不复用 service_name：
+      //   - service_name 已经是 stream 标签（上面 pod_logs 的 discovery.relabel
+      //     把 __meta_kubernetes_pod_label_app_kubernetes_io_name 写成了它），
+      //     在现网对 kube-system/traefik 的 5xx 行实测带着 service_name="traefik"，
+      //     而那条 Traefik JSON 行里**根本没有 ServiceName 这个键**——也就是说这个值
+      //     是从采集链继承来的，不是从日志里抽的；
+      //   - Traefik 对网关自身产生的 5xx（503 no available server、入口无后端）
+      //     不写 ServiceName，只对「已经转发到某个 Service 之后」的 5xx 才写。
+      // 两者同名但语义不同（一个是「网关自己」，一个是「哪个后端」），查询时会给出
+      // 自信但错误的答案，所以这里另起一个不会混淆的名字。
       stage.json {
         expressions = {
-          downstream_status = "DownstreamStatus",
-          service_name      = "ServiceName",
-          router_name       = "RouterName",
-          request_path      = "RequestPath",
-          duration           = "Duration",
+          downstream_status = "DownstreamStatus"
+          origin_status     = "OriginStatus"
+          router_name       = "RouterName"
+          backend_service   = "ServiceName"
         }
       }
       stage.structured_metadata {
         values = {
-          downstream_status = "",
-          service_name      = "",
-          router_name       = "",
-          request_path      = "",
-          duration           = "",
+          downstream_status = ""
+          origin_status     = ""
+          router_name       = ""
+          backend_service   = ""
         }
       }
       forward_to = [loki.write.default.receiver]

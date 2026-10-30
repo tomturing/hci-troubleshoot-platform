@@ -18,6 +18,19 @@ checksum/rules 重启后 TSDB 全清，15:51:22 首次评估把发布前早已�
 {{- if not (contains "traefik_service_requests_total offset 10m) > 0" $firstSeen) -}}
 {{- fail "GatewayServerErrorFirstSeen 的门控必须依据指标族自身在 offset 时刻是否有数据，不能用全局 up：job hci-services 有 18 个 target，只要有一个健康 up 就非空，单 Traefik 抓取中断时照样误报" -}}
 {{- end -}}
+{{- /*
+TSDB 持久化守卫：上面三条守卫挡的是「表达式被改坏」，这一条挡的是「存储被改坏」。
+数据目录一旦回到 emptyDir，本实例重启后 offset 窗口内就没数据，门控会一直关着——
+表现为「告警再也不响」，比误报更难发现，所以必须在渲染期就 fail。
+*/ -}}
+{{- if .Values.prometheus.enabled -}}
+  {{- if not .Values.prometheus.storage -}}
+    {{- fail "prometheus.storage 不得为空：TSDB 必须落在 PVC 上。emptyDir 会让 Pod 重建即丢全部历史，GatewayServerErrorFirstSeen 的门控从此恒为关（告警静默失效比误报更危险）" -}}
+  {{- end -}}
+  {{- if not .Values.prometheus.storageClass -}}
+    {{- fail "prometheus.storageClass 不得为空：留空会落到集群默认 StorageClass，PVC 创建后 storageClassName 不可更改，事后改 values 只会让 upgrade 失败" -}}
+  {{- end -}}
+{{- end -}}
 {{- if .Values.prometheus.enabled }}
 ---
 # Prometheus Deployment（prometheus-config ConfigMap 在 configs.yaml，这样
@@ -32,6 +45,12 @@ metadata:
     app.kubernetes.io/name: prometheus
 spec:
   replicas: 1
+  # 单副本 + ReadWriteOnce PVC：必须 Recreate。默认的 RollingUpdate 会先起新 Pod
+  # 再停旧 Pod，两个实例同时挂同一个 TSDB 目录时 Prometheus 会因已锁定的 WAL 直接
+  # 启动失败——同 chart 里 loki/tempo 已踩过，仓库先例见部署设计.md v1.54（clickhouse
+  # exit 76 CrashLoopBackOff）。
+  strategy:
+    type: Recreate
   revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
   selector:
     matchLabels:
@@ -92,7 +111,26 @@ spec:
           configMap:
             name: prometheus-alert-rules
         - name: storage
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: prometheus-data
+---
+# Prometheus TSDB PVC：与 loki/tempo 同策略（ReadWriteOnce + 显式 storageClass）。
+# 名字叫 prometheus-data 而不是 <release>-xxx，是为了让 Grafana 数据源与运维脚本
+# 里对 PVC 的引用保持稳定。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/name: prometheus
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ .Values.prometheus.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.prometheus.storage }}
 ---
 # Prometheus 告警规则 ConfigMap（H-4 改进）
 apiVersion: v1

@@ -15,9 +15,13 @@
 #   ./scripts/ops/traefik-entrypoint-timeouts.sh [--dry-run]
 #
 # 验证：
-#   kubectl get deploy traefik -n kube-system \
-#     -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep websecure
-#   kubectl exec -n kube-system deploy/traefik -- traefik version
+#   期望参数不再写死在本脚本里，而是从清单的 additionalArguments 逐条抽取（见 expected_args）。
+#   写死断言列表会在新增参数时退化成「旧参数已在 → 立即报成功」的假绿灯：
+#   本次新增 accesslog 时，原等待条件查的是早已存在的 readTimeout=600，
+#   rollout status 会在未变化的旧 ReplicaSet 上直接返回成功。
+# 人工核对可用：
+#   kubectl get deploy traefik -n kube-system -o jsonpath='{.spec.template.spec.containers[0].args}' \
+#     | tr ',' '\n' | grep -i accesslog
 # =============================================================================
 
 set -euo pipefail
@@ -83,8 +87,30 @@ args_now() {
         | jq -r '(.spec.template.spec.containers[0].args // [])[]' 2>/dev/null || true
 }
 
-for _ in $(seq 1 60); do
-    if args_now | grep -q -- "--entryPoints.websecure.transport.respondingTimeouts.readTimeout=600"; then
+# 从清单本身派生「应生效的参数全集」：新增一条 additionalArguments 就自动多一条
+# 断言，不需要同步改本脚本（本脚本与清单不一致就是假绿灯的源头）。
+expected_args() {
+    grep -oE '^ *- "--[^"]+"' "$MANIFEST" | sed -e 's/^ *- //' -e 's/"//g'
+}
+
+EXPECTED="$(expected_args)"
+# 写临时文件后用 -f 比对：多行字符串当 -e 参数传给 grep 时行为不直观，
+# 而被测目标恰恰是「逐条精确匹配」，不能让匹配语义本身变成不确定项。
+EXPECTED_FILE="$(mktemp)"
+trap 'rm -f "$EXPECTED_FILE"' EXIT
+printf '%s\n' "$EXPECTED" > "$EXPECTED_FILE"
+EXPECTED_COUNT="$(grep -c . "$EXPECTED_FILE" || true)"
+if [[ -z "$EXPECTED" || "$EXPECTED_COUNT" -eq 0 ]]; then
+    echo "错误：从清单里一条 additionalArguments 也没抽到——格式变了，不能默认通过"
+    exit 1
+fi
+echo "待生效参数 $EXPECTED_COUNT 条（逐条来自 $MANIFEST）"
+
+# HelmChartConfig 不是即时生效：helm-install Job 跑完才轮到 Deployment 滚动。
+# 因此直接轮询「目标参数是否全进了 args」，不看 rollout status。
+for _ in $(seq 1 100); do
+    live_count="$(args_now | grep -cxF -f "$EXPECTED_FILE" || true)"
+    if [[ "${live_count:-0}" -ge "$EXPECTED_COUNT" ]]; then
         break
     fi
     sleep 3
@@ -99,21 +125,23 @@ ARGS="$(kubectl get deployment "$DEPLOYMENT" -n "$NAMESPACE" -o json \
     | jq -r '(.spec.template.spec.containers[0].args // [])[]')"
 
 fail=0
-for expect in \
-    "entryPoints.websecure.transport.respondingTimeouts.readTimeout=600" \
-    "entryPoints.websecure.transport.respondingTimeouts.writeTimeout=600" \
-    "entryPoints.web.transport.respondingTimeouts.readTimeout=120" \
-    "entryPoints.web.http.tls=true"; do
-    if grep -q -- "--$expect" <<< "$ARGS"; then
-        echo "✅ --$expect"
+# 逐条比对清单声明的每一个参数：不加一条参数就少一条断言这种交易。
+# 注意 `-- "$want"`：参数值本身以 `--` 开头，少了这个分隔符 grep 会把
+# `--entryPoints...` 当成自己的选项报错，逐条断言全部失败，脚本反而输出
+# 「配置未生效」——一个只会误报、不会漏报的失败方向，但足以让人误判现网状态。
+while IFS= read -r want; do
+    [[ -z "$want" ]] && continue
+    if grep -qxF -- "$want" <<< "$ARGS"; then
+        echo "✅ $want"
     else
-        echo "❌ 缺少 --$expect"
+        echo "❌ 缺少 $want"
         fail=1
     fi
-done
+done < "$EXPECTED_FILE"
 
-# 反向校验：valuesContent 整体替换 Helm user values，漏写即回退。
-# admin-ui 走 web 入口，丢掉 http.tls=true 会让管理后台退回明文 HTTP。
+# 重点提醒：valuesContent 整体替换 Helm user values，漏写即回退。
+# admin-ui 走 web 入口，丢掉 --entryPoints.web.http.tls=true 会让管理后台退回明文 HTTP，
+# 所以这一条必须出现在清单的 additionalArguments 里（由上面的逐条比对兼底）。
 
 if [[ "$fail" -ne 0 ]]; then
     echo ""
