@@ -37,6 +37,7 @@ import {
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { pickDisplayTask } from '@/services/logCollectHistory'
+import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
 import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
@@ -243,7 +244,28 @@ const nodeArchivePath = ref('')
 const nodeAction = ref<'' | 'cancel_retry' | 'adopt' | 'correct'>('')
 // 接管按钮语义：resume=节点还在跑，接上进度；deliver=节点已采完，接着交付
 const nodeAdoptMode = ref<'resume' | 'deliver'>('resume')
-const transfer = reactive({ stage: '', percent: 0, pulled: 0, uploadedParts: 0, partCount: 0, sha256: '' })
+const transfer = reactive({
+  // bridge 交付作业的原始阶段（waiting_collect / pulling / uploading / …）：
+  // 文案要区分「还没开始传输」与「正在拉取 0 字节」，只有它能分辨。
+  stage: '',
+  percent: 0,
+  pulled: 0,
+  // 源包大小（job 的 source_size）：没有分母的「已拉 N 字节」无法判断还要多久。
+  totalSize: 0,
+  uploadedParts: 0,
+  partCount: 0,
+  sha256: '',
+})
+/** 交付进度整组归零：新任务不得继承上一轮的分母、阶段与摘要。 */
+function resetTransfer() {
+  transfer.stage = ''
+  transfer.percent = 0
+  transfer.pulled = 0
+  transfer.totalSize = 0
+  transfer.uploadedParts = 0
+  transfer.partCount = 0
+  transfer.sha256 = ''
+}
 const relayStatus = ref<RelayStatus>('none')
 const cleanupTip = ref('')
 const errorMessage = ref('')
@@ -982,27 +1004,6 @@ const running = computed(() =>
   ['probing', 'installing', 'creating', 'collecting', 'pulling', 'uploading', 'relaying'].includes(stage.value),
 )
 
-/**
- * 进度百分比只有一个来源：节点报告。
- *
- * 旧实现对「接管态」读 `currentTask.progress`（平台快照）、对「自己发起的任务」
- * 读 `progress.percent`（节点），于是同屏出现「已完成 2/2 + 进度 0%」。
- * 平台 progress 只是投影，接管态下它可能整场都没被写过。
- */
-const percent = computed(() => {
-  if (stage.value === 'done') return 100
-  const nodePercent = Math.min(100, Math.max(0, progress.value?.percent ?? 0))
-  if (stage.value === 'relaying') {
-    return Math.max(nodePercent, 95 + Math.min(4, relayStatus.value === 'running' ? 2 : 0))
-  }
-  if (stage.value === 'uploading' || stage.value === 'pulling') {
-    // P1 直传没有分片进度，只能用节点自己的百分比，避免出现 60% 起跳的假进度
-    if (isDirectDelivery.value && stage.value === 'uploading') return nodePercent
-    return Math.max(nodePercent, 60 + Math.round(transfer.percent * 0.3))
-  }
-  return nodePercent
-})
-
 const progressStatus = computed(() =>
   stage.value === 'failed' ? 'exception' : stage.value === 'done' ? 'success' : undefined,
 )
@@ -1027,6 +1028,24 @@ const isDirectDelivery = computed(
   () => currentTask.value?.upload_mode === 'acli_direct' || Boolean(currentTask.value?.remote_url),
 )
 
+/**
+ * 进度条 = 整条链路的进度，不是节点采集的进度。
+ *
+ * 旧实现读节点 `percent` 再与交付百分比取 `Math.max`，而节点在采集结束时就报 100，
+ * 于是从「开始拉包」到「归档完成」全程都显示 100%（2026-10-30 现场 Q2026102901049：
+ * 进度条 100% 与「正在从 HCI 拉取：0 字节」同屏）。分段规则见 services/logCollectProgress.ts。
+ */
+const percent = computed(() =>
+  computeOverallPercent({
+    stage: stage.value,
+    nodePercent: progress.value?.percent ?? 0,
+    deliveryPercent: transfer.percent,
+    // 拿到分片进度就一定是平台中转：P1 直传由节点插件发送，平台侧根本没有分片。
+    // 这条判据同时覆盖「P1 失败自动降级 P2」——那时 upload_mode 已被改写、remote_url 仍在。
+    direct: isDirectDelivery.value && transfer.partCount === 0,
+  }),
+)
+
 const statusText = computed(() => {
   if (stage.value === 'failed') return errorMessage.value || currentTask.value?.error_message || '任务失败'
   if (stage.value === 'done') return '日志已归档到日志服务器'
@@ -1034,7 +1053,13 @@ const statusText = computed(() => {
     const p = progress.value
     return p ? `${p.status}（${p.done}/${p.total}）` : '采集进行中'
   }
-  if (stage.value === 'pulling') return `正在从 HCI 拉取：${transfer.pulled} 字节`
+  if (stage.value === 'pulling') {
+    // 作业刚提交时 bridge 还在等节点把包写完（waiting_collect），此刻一个字节都还没拉。
+    // 直接说「正在拉取 0 字节」会把「还没开始」说成「传输卡住了」。
+    if (transfer.stage === 'waiting_collect') return '节点采集已收尾，等待压缩包写入完成（尚未开始传输）'
+    const total = transfer.totalSize > 0 ? ` / ${formatByteCount(transfer.totalSize)}` : ''
+    return `正在从 HCI 拉取：${formatByteCount(transfer.pulled)}${total}`
+  }
   if (stage.value === 'uploading') {
     if (isDirectDelivery.value) {
       const p = progress.value
@@ -1172,6 +1197,7 @@ function handleMessage(event: MessageEvent) {
     transfer.stage = payload.stage || ''
     transfer.percent = payload.percent || 0
     transfer.pulled = payload.pulled_bytes || 0
+    if (payload.total_size > 0) transfer.totalSize = payload.total_size
     transfer.uploadedParts = payload.uploaded_parts || 0
     transfer.partCount = payload.part_count || 0
     transfer.sha256 = payload.sha256 || transfer.sha256
@@ -1555,6 +1581,7 @@ function startRecollect() {
   lastRefreshAt.value = null
   stopAutoSync()
   relayStatus.value = 'none'
+  resetTransfer()
   cleanupTip.value = ''
   errorMessage.value = ''
   if (last) applyTaskToForm(last)
@@ -1594,7 +1621,9 @@ async function handleStart() {
   cleanupTip.value = ''
   errorMessage.value = ''
   failedStep.value = 0
-  transfer.sha256 = ''
+  // 交付进度必须整组归零：上一轮的 totalSize 会成为新任务的假分母，
+  // 上一轮的 phase 会让新任务刚下发就显示「等待压缩包写入」。
+  resetTransfer()
   currentTask.value = null
   progress.value = null
   // 新任务从 0 开始记：不继承上一次的峰值
@@ -2704,6 +2733,7 @@ interface DeliveryJobView {
   job_id?: string
   phase?: string
   progress?: number
+  source_size?: number
   pulled_bytes?: number
   uploaded_parts?: number
   part_count?: number
@@ -2742,8 +2772,10 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
     if (view.phase === 'uploading' || view.phase === 'completing' || view.phase === 'retrying') {
       stage.value = 'uploading'
     }
+    transfer.stage = String(view.phase || '')
     transfer.percent = view.progress || 0
     transfer.pulled = view.pulled_bytes || 0
+    if (view.source_size && view.source_size > 0) transfer.totalSize = view.source_size
     transfer.uploadedParts = view.uploaded_parts || 0
     transfer.partCount = view.part_count || 0
 
