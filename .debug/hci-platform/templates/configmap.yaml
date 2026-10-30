@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hci-common-config
+  namespace: hci-troubleshoot
+  labels:
+    helm.sh/chart: hci-platform-0.1.0
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: hci-platform
+data:
+  # 数据库（非敏感）
+  POSTGRES_DB: "hci_troubleshoot"
+  POSTGRES_USER: "hci_admin"
+  # Redis
+  REDIS_URL: "redis://redis:6379/0"
+  # 服务间通信（K8s 内部 DNS）
+  CASE_SERVICE_URL: "http://case-service:8001"
+  CONVERSATION_SERVICE_URL: "http://conversation-service:8002"
+  SCHEDULER_SERVICE_URL: "http://scheduler-service:8003"
+  DIAGNOSIS_SERVICE_URL: "http://diagnosis-service:8008"
+  DSH_SERVICE_URL: "http://dsh.hci-dsh.svc.cluster.local:8080"
+  DSH_PUBLIC_PATH: "/dsh/"
+  AGENT_SERVICE_URL: "http://agent-service:8005"
+  ALLOWED_ORIGINS: ""
+  # Gateway 与 Diagnosis Service 必须使用相同身份模式，避免一侧校验内部 Token、另一侧校验 OIDC。
+  DIAGNOSIS_IDENTITY_MODE: "internal"
+  # LLM 配置（从顶级 llm.* 配置读取，assistantRegistryJson 由模板自动生成）
+  LLM_BASE_URL: "https://coding.dashscope.aliyuncs.com/v1"
+  # 多模态专属 Vision 独立端点，默认为空时自动回退到 llm.baseUrl
+  LLM_VISION_BASE_URL: "https://coding.dashscope.aliyuncs.com/v1"
+  LLM_DEFAULT_MODEL: "glm-5"
+  AI_COMPLETIONS_PATH: "/chat/completions"
+  # KBD 分类与识图模型（可按环境覆盖，均已验证支持多模态）
+  CLASSIFY_MODEL: "kimi-k2.5"
+  CLASSIFY_BASE_URL: ""
+  CLASSIFY_MAX_TOKENS: "2048"
+  VISION_MODEL: "kimi-k2.5"
+  # 长文本截图需要足够预算完成 FULL_TEXT；可按模型上下文窗口覆盖。
+  VISION_MAX_TOKENS: "8192"
+  EXTRACT_SIGNALS_MODEL: "kimi-k2.5"
+  EXTRACT_SIGNALS_BASE_URL: ""
+  # KBD Embedding 模型（向量召回使用，与 LLM_DEFAULT_MODEL 解耦，避免 chat 模型与 embedding 模型混用）
+  # values.yaml kbService.llmEmbeddingModel 默认 "embedding-3"，按实际 LLM 网关支持的模型名覆盖
+  LLM_EMBEDDING_MODEL: "embedding-3"
+  KBD_MIN_SIMILARITY: "0.3"
+  # Vision LLM 单次调用超时（秒）。默认 120s；生产环境请按 LLM 服务 SLA 调整。
+  # 注意：SDK max_retries=2，实际最大等待时间 = LLM_VISION_TIMEOUT × 3
+  LLM_VISION_TIMEOUT: "120.0"
+  # Classify LLM 单次调用超时（秒）。默认 120s；需小于 data-pipeline API_TIMEOUT（90s）以预留重试时间。
+  # 注意：SDK max_retries=2，实际最大等待时间 = LLM_CLASSIFY_TIMEOUT × 3
+  LLM_CLASSIFY_TIMEOUT: "120.0"
+  # 通用 LLM 超时（秒）。作为默认回退值，优先使用上述专用超时配置。
+  LLM_TIMEOUT: "120.0"
+  # Vision 业务层总尝试次数（包含首次调用）；SDK 内部不再额外重试。
+  VISION_LLM_MAX_ATTEMPTS: "2"
+  # 是否启用 LLM 思维链（thinking）。默认关闭；开启时隐藏思考 token 会大幅拉长 Vision 调用延迟。
+  # 单一开关同时作用于 vision_processor（识图）与 classify（分类）两个 LLM 调用点。
+  LLM_ENABLE_THINKING: "false"
+  # Vision LLM 全局并发数（全局信号量上限）。设为 1 即串行执行，避免打爆 DashScope QPM/并发上限。
+  VISION_GLOBAL_CONCURRENCY: "3"
+  # VISION/CLASSIFY/EXTRACT 共用 Provider 的总并发舱壁；阶段并行时这是唯一总量边界。
+  LLM_GLOBAL_CONCURRENCY: "3"
+  KBD_BATCH_STALE_AFTER_SECONDS: "600"
+  EXTRACT_SIGNALS_MAX_TOKENS: "16384"
+  EXTRACT_SIGNALS_FORMAT_MAX_ATTEMPTS: "2"
+  # 信号抽取 LLM 单次调用超时（秒），独立于全局 LLM_TIMEOUT。
+  # 设计约束：api-gateway 超时=240s，LLM Governor 默认重试 3 次，单次超时必须小于 80s（240÷3=80）。
+  # 默认 70s → 3×70=210s < 240s，确保 kb-service 先于 api-gateway 超时并返回有意义错误。
+  EXTRACT_SIGNALS_LLM_TIMEOUT: "70.0"
+  # ── 根因信号抽取（第二抽取轨，与关键信号 Prompt/门禁完全解耦）──
+  # 均为空时回退 EXTRACT_SIGNALS_* / LLM_*，保证两轨默认共用同一 LLM 网关。
+  ROOT_SIGNAL_MODEL: "kimi-k2.5"
+  ROOT_SIGNAL_BASE_URL: ""
+  # 根因输出为多信号 JSON 数组；预算与超时独立于关键信号（max_retries=0，不叠加重试）。
+  ROOT_SIGNAL_MAX_TOKENS: "8192"
+  ROOT_SIGNAL_LLM_TIMEOUT: "60.0"
+  # 冲突度现场语料缓存 TTL（秒）；仅影响 /root-signal-conflicts 只读回算。
+  ROOT_SIGNAL_CORPUS_TTL: "300"
+  # 可观测性
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo.hci-observability.svc.cluster.local:4317"
+  LOG_LEVEL: "INFO"
+  # Scheduler
+  K8S_NAMESPACE: "hci-troubleshoot"
+  K8S_IMAGE_PULL_SECRET: ""
+  # Scheduler 可选配置（未设置时不渲染空字段）
+  # AI 客户端超时（秒）
+  AI_CLIENT_READ_TIMEOUT_SEC: "120"
+  # 服务地址
+  KB_SERVICE_URL: "http://kb-service:8004"
+  KB_ENABLED: "true"
+  # 多助手注册表（3 个助手：htp-agent、ops-agent、pai-agent）
+  ASSISTANT_REGISTRY_JSON: "{\n  \"htp-agent\": {\n    \"base_url\": \"https://coding.dashscope.aliyuncs.com/v1\",\n    \"model\": \"glm-5\",\n    \"warm_pool_size\": 0,\n    \"max_pool_size\": 0,\n    \"display_name\": \"HTP Agent\",\n    \"description\": \"HCI智能排障平台核心助手\",\n    \"is_default\": true,\n    \"enabled\": true\n  },\n  \"ops-agent\": {\n    \"warm_pool_size\": 0,\n    \"max_pool_size\": 0,\n    \"base_url\": \"http://ops-agent-service:8006\",\n    \"display_name\": \"OPS Agent\",\n    \"description\": \"基于SOP知识库的智能排障助手\",\n    \"enabled\": true\n  },\n  \"pai-agent\": {\n    \"base_url\": \"http://conversation-service:8002\",\n    \"warm_pool_size\": 0,\n    \"max_pool_size\": 0,\n    \"display_name\": \"PAI Agent\",\n    \"description\": \"基于pydantic-ai框架的排障助手\",\n    \"enabled\": true,\n    \"is_default\": false,\n    \"capabilities\": [\"troubleshooting\", \"tool-calling\"]\n  }\n}"
+  # 助手选择器显示控制（auto/true/false）
+  ASSISTANT_SHOW_SELECTOR: "auto"
+  AI_DEFAULT_ASSISTANT_TYPE: "htp-agent"
+  # 双链路运行模式（agent-service）：dual（默认，双链路融合）/ process_only（只跑关键链路，根因一键回滚）。
+  # 旧值 shadow / root_only 已于 2026-10-21 删除，配旧值会回落 dual 并打 signal_track_mode_unknown 告警日志。
+  KB_SIGNAL_TRACK_MODE: "dual"
+  LLM_TEMPERATURE: "0.1"
+  LLM_TEMPERATURE_S0: "0.3"
+  LLM_TEMPERATURE_REACT: "0.0"
+  LLM_TOP_P: "0.3"
+  LLM_LOGPROBS: "false"
+  LLM_TOP_LOGPROBS: "0"
