@@ -105,6 +105,10 @@ jobs:
               # DSH 是独立 chart，由 ArgoCD 以 selfHeal 直推集群；一旦渲染坏了
               # 没有人工拦截的机会，必须在 CI 里先渲一遍。
               - 'deploy/helm/hci-platform-dsh/**'
+              # 观测栈同样由 ArgoCD selfHeal 直推 hci-observability：渲染坏了
+              # 等于监控/日志整体缺失，而且不会报错。不纳入过滤器的话，
+              # 本 job 里针对 obs 的断言永远跑不到（就是死代码）。
+              - 'deploy/helm/hci-platform-obs/**'
             # `config-contract-check` 读取的全部输入：契约文件、环境变量样例、
             # Compose、Helm Chart 与校验器自身。deploy/** 不在 backend filter 内，
             # 因此 PR 上这类变更此前既跳过 Lint 也跳过 unit-tests（零校验）。
