@@ -222,6 +222,16 @@ caseService:
   # 接管），比多等几百秒更贵。uvicorn 收到 SIGTERM 会先停接新连接、再等在途
   # 请求结束，所以 300s 只是上限，不会拖慢正常发布。
   terminationGracePeriodSeconds: 300
+  # 收到 SIGTERM 之前的强制等待（preStop）。
+  #
+  # 解决的是「请求打到已经停止监听的旧 Pod」：Pod 被删后，从 EndpointSlice
+  # 消失并经 Traefik/kube-proxy 传播需要时间，而 uvicorn 收到 SIGTERM 是
+  # 毫秒级停掉监听——两者的差集就是发布时的 502 窗口。
+  # 2026-10-30 staging 实测（无 preStop，2338 次施压）：旧 Pod 被 Killing 的
+  # 同一秒起连续 2s 出现 502，共 28 次；同期 endpoints 从未为空。
+  # 10s 相对实测的 2s 留 5 倍余量，代价只是发布多花 10s（新 Pod 已在服务）。
+  # 必须明显小于 terminationGracePeriodSeconds，否则 = 直接 SIGKILL 在途请求。
+  preStopSleepSeconds: 10
   image:
     repository: hci-case-service
     tag: latest
