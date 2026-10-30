@@ -122,7 +122,7 @@ def _upload_problem(exc: LogCollectUploadError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=problem)
 
 
-async def get_relay_service() -> LogCollectRelayService:
+def _build_relay_service() -> LogCollectRelayService:
     """代传服务依赖：长任务自行开 session，因此注入 session 工厂而不是单个 session。"""
     if not database_manager:
         raise _problem("LC-PLATFORM-006", "Database not initialized")
@@ -135,17 +135,68 @@ async def get_relay_service() -> LogCollectRelayService:
     )
 
 
-_relay_tasks: set[asyncio.Task] = set()
+async def get_relay_service() -> LogCollectRelayService:
+    return _build_relay_service()
+
+
+# task → task_id：优雅退出时必须知道该把哪些「在飞」代传交还给下一个实例。
+_running_relays: dict[asyncio.Task, UUID] = {}
 
 
 def _on_relay_done(task: asyncio.Task) -> None:
     """后台任务必须取走异常，否则 Python 只打印 'never retrieved' 且无业务上下文。"""
-    _relay_tasks.discard(task)
+    _running_relays.pop(task, None)
     if task.cancelled():
         return
     exc = task.exception()
     if exc is not None:
         logger.error("日志包代传失败 task=%s error=%s", task.get_name(), exc)
+
+
+def _spawn_relay(relay_service: LogCollectRelayService, task_id: UUID) -> None:
+    background = asyncio.create_task(relay_service.run(task_id))
+    _running_relays[background] = task_id
+    background.add_done_callback(_on_relay_done)
+
+
+async def reconcile_relays_on_startup() -> None:
+    """启动即接管：上一个进程（发布/重启/OOM）留下的代传不会自己跑完。
+
+    两类都要收：租约过期仍标 running 的（进程被 SIGKILL），以及优雅退出时
+    交还成 pending 的。没这一步，「发布」就是代传状态永久卡 running 的触发器。
+    """
+    if database_manager is None or not settings.LOG_COLLECT_RELAY_ENABLED:
+        return
+    try:
+        relay_service = _build_relay_service()
+        task_ids = await relay_service.claim_stale()
+        for task_id in task_ids:
+            _spawn_relay(relay_service, task_id)
+        if task_ids:
+            logger.info("日志包代传启动接管 count=%s tasks=%s", len(task_ids), task_ids)
+    except Exception:  # noqa: BLE001 - 接管失败不能阻断服务启动
+        logger.exception("日志包代传启动接管失败")
+
+
+async def shutdown_relays() -> None:
+    """优雅退出：取消在飞代传并把租约交还成 pending（必须在关闭 DB 之前调用）。"""
+    pairs = list(_running_relays.items())
+    if not pairs:
+        return
+    for task, _task_id in pairs:
+        task.cancel()
+    await asyncio.gather(*[task for task, _ in pairs], return_exceptions=True)
+    # 不依赖 done-callback 的时机：退出路径必须自己把登记表清干净，
+    # 否则下一次 shutdown 会重复交还已经不属于本进程的任务。
+    for task, _task_id in pairs:
+        _running_relays.pop(task, None)
+    if database_manager is None:
+        return
+    try:
+        released = await _build_relay_service().release([task_id for _, task_id in pairs])
+        logger.info("日志包代传退出交还 count=%s", released)
+    except Exception:  # noqa: BLE001 - 退出路径不能抛，否则 DB 关不掉
+        logger.exception("日志包代传退出交还失败")
 
 
 @router.post("", response_model=LogCollectTaskResponse, status_code=201)
@@ -515,9 +566,7 @@ async def start_relay(
 
     started = await relay_service.trigger(task_id, force=force)
     if started:
-        background = asyncio.create_task(relay_service.run(task_id))
-        _relay_tasks.add(background)
-        background.add_done_callback(_on_relay_done)
+        _spawn_relay(relay_service, task_id)
     return {
         "task_id": str(task_id),
         "started": started,
@@ -619,7 +668,5 @@ async def complete_upload_direct(
     # 表现为"元数据回滚 + relay 读到空 archive_path"（Q2026101500828）。
     started = await relay_service.trigger(task_id)
     if started:
-        background = asyncio.create_task(relay_service.run(task_id))
-        _relay_tasks.add(background)
-        background.add_done_callback(_on_relay_done)
+        _spawn_relay(relay_service, task_id)
     return result

@@ -5,7 +5,8 @@ Case Service - 主应用
 - 使用 app.state 替代全局变量进行依赖注入
 """
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.responses import Response
@@ -42,10 +43,20 @@ async def lifespan(app: FastAPI):
     log_collect.set_database_manager(database_manager)
     log_collect_scenarios.set_database_manager(database_manager)
 
+    # 接管上一个进程遗留的代传（发布/重启/OOM 后不靠人工干预）：
+    # 租约过期的 running 与优雅退出时交还的 pending 都会在这里被重新拉起。
+    relay_reconcile = asyncio.create_task(log_collect.reconcile_relays_on_startup())
+
     yield
 
     # 关闭
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
+    relay_reconcile.cancel()
+    with suppress(asyncio.CancelledError):
+        await relay_reconcile
+    # 必须在关库之前交还租约：pending 是「下一个实例该接管」的唯一凭据；
+    # 若进程被 SIGKILL 写不进去，则由租约过期兼底。
+    await log_collect.shutdown_relays()
     await database_manager.close()
 
 

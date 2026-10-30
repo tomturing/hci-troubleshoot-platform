@@ -4,6 +4,8 @@
 由集成环境验证；这里锁定协议契约与最容易写错的边界。
 """
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -24,12 +26,16 @@ def make_client(handler) -> httpx.AsyncClient:
 
 
 class _FakeResult:
-    def __init__(self, rowcount: int = 0, scalar=None):
+    def __init__(self, rowcount: int = 0, scalar=None, rows: list | None = None):
         self.rowcount = rowcount
         self._scalar = scalar
+        self._rows = rows or []
 
     def scalar_one_or_none(self):
         return self._scalar
+
+    def all(self):
+        return self._rows
 
 
 class _FakeSession:
@@ -308,16 +314,14 @@ async def test_run_rejects_non_ticket_case_id_before_upload(storage, monkeypatch
     # 契约不符时不得先发一轮注定 400 的请求
     assert called == []
 
+
 # ── 交付终态的持久化口径 ────────────────────────────────────────────────────
 
 
 def _values_by_name(statement) -> dict:
     """把 update 语句的 values 摊成 {列名: 值}，避免依赖 Column 对象身份。"""
     # func.now() 这类服务端表达式没有 .value，原样返回即可（用例不断言它们）
-    return {
-        column.name: (getattr(bind, "value", bind))
-        for column, bind in statement._values.items()
-    }
+    return {column.name: (getattr(bind, "value", bind)) for column, bind in statement._values.items()}
 
 
 class _RecordingSession(_FakeSession):
@@ -373,9 +377,7 @@ async def test_finish_preserves_original_error_code(storage):
         SangforRelayClient("http://relay"),
     )
 
-    await service._finish(
-        uuid4(), "failed", error="平台尚无制品，无法代传", error_code="LC-TRANSFER-001"
-    )
+    await service._finish(uuid4(), "failed", error="平台尚无制品，无法代传", error_code="LC-TRANSFER-001")
     values = _values_by_name(statements[-1])
     assert values["error_code"] == "LC-TRANSFER-001"
     assert values["error_message"] == "平台尚无制品，无法代传"
@@ -532,3 +534,309 @@ async def test_run_rejects_object_size_mismatch_before_upload(storage, monkeypat
     assert excinfo.value.code == "LC-TRANSFER-002"
     assert "大小与落库不一致" in str(excinfo.value)
     assert called == []
+
+
+# ── 租约：发布/重启后的可接管性 ────────────────────────────────────────────────
+#
+# 发布、OOM、SIGKILL 都会在 relay_status=running 时直接杀掉进程，没有任何人
+# 会写终态。这些用例锁住三条不可回退的约束：
+#   1. 租约过期的 running 必须能被普通 trigger 抢占（不依赖人工 force）；
+#   2. 业务长阻塞期间必须持续续租，不能被误判为死进程；
+#   3. 心跳/交还必须只作用于 running，不能复活终态或写坏 pending。
+
+
+def _sql(statement) -> str:
+    from sqlalchemy.dialects import postgresql
+
+    return str(statement.compile(dialect=postgresql.dialect()))
+
+
+def _set_clause(statement) -> str:
+    """取 UPDATE 的 SET 段，用于断言「只改了什么」。"""
+
+    sql = _sql(statement)
+    return sql.split("SET", 1)[1].split("WHERE", 1)[0]
+
+
+class _RecordingSession(_FakeSession):
+    """记录执行过的语句：租约条件必须写进 SQL，而不是只被 Python 分支挡住。"""
+
+    def __init__(self, result, sink: list):
+        super().__init__(result)
+        self._sink = sink
+
+    async def execute(self, statement):
+        self._sink.append(statement)
+        return await super().execute(statement)
+
+
+class _ScriptedSession(_FakeSession):
+    """按调用顺序返回预设结果：select 给 rows，后续 update 给 rowcount。
+
+    ``state`` 必须由调用方共享：服务每次 execute 都会新建 session，
+    若脚本游标跟着 session 走，``trigger`` 会拿到 select 的结果而不是 update 的 rowcount。
+    """
+
+    def __init__(self, script: list, state: dict | None = None):
+        self._script = script
+        self._state = state if state is not None else {"index": 0}
+
+    async def execute(self, statement):
+        index = self._state["index"]
+        result = self._script[min(index, len(self._script) - 1)]
+        self._state["index"] = index + 1
+        return result
+
+    @property
+    def _index(self) -> int:
+        return self._state["index"]
+
+
+def _lease_service(storage, result, sink: list, **kwargs):
+    return LogCollectRelayService(
+        lambda: _RecordingSession(result, sink), storage, SangforRelayClient("http://relay"), **kwargs
+    )
+
+
+async def test_trigger_claims_expired_running_lease(storage):
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rowcount=1), sink, stale_after=60)
+
+    assert await service.trigger(uuid4()) is True
+
+    sql = _sql(sink[0])
+    # 非 force 也必须允许「running 但租约过期」被抢：这是发布后唯一的自动恢复入口
+    assert "relay_updated_at <" in sql
+    assert "relay_status =" in sql
+    assert "relay_status IN" in sql
+
+
+async def test_trigger_force_does_not_require_expired_lease(storage):
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rowcount=1), sink, stale_after=60)
+
+    await service.trigger(uuid4(), force=True)
+
+    sql = _sql(sink[0])
+    # force 是「人已经判断它死了」，不该再被租约时间挡住
+    assert "relay_updated_at <" not in sql
+    assert "relay_status =" in sql
+
+
+async def test_trigger_does_not_claim_fresh_lease(storage):
+    """反向用例：两个实例同时跑同一任务会造成 20 GiB 双传。"""
+
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rowcount=0), sink, stale_after=60)
+
+    assert await service.trigger(uuid4()) is False
+
+
+def test_lease_expired_only_for_running(storage):
+    service = LogCollectRelayService(
+        make_factory(_FakeResult()), storage, SangforRelayClient("http://relay"), stale_after=60
+    )
+    now = datetime.now(UTC)
+
+    assert service.lease_expired("running", None) is True
+    assert service.lease_expired("running", now - timedelta(seconds=61)) is True
+    assert service.lease_expired("running", now) is False
+    # 终态与未开始永远不算过期，避免 reconcile 把已经交付成功的任务再拉起来
+    assert service.lease_expired("success", now - timedelta(hours=5)) is False
+    assert service.lease_expired("pending", None) is False
+
+
+def test_lease_expired_accepts_naive_datetime(storage):
+    """PG 驱动可能回 naive datetime：不能因此把租约判成永久有效。"""
+
+    service = LogCollectRelayService(
+        make_factory(_FakeResult()), storage, SangforRelayClient("http://relay"), stale_after=60
+    )
+    naive = (datetime.now(UTC) - timedelta(seconds=61)).replace(tzinfo=None)
+
+    assert service.lease_expired("running", naive) is True
+
+
+async def test_heartbeat_only_refreshes_timestamp(storage):
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rowcount=0), sink, stale_after=60)
+
+    assert await service.heartbeat(uuid4()) is False
+
+    set_clause = _set_clause(sink[0])
+    assert "relay_updated_at" in set_clause
+    # 关键否定断言：心跳写 relay_status 会把 pending/failed 复活成 running
+    assert "relay_status" not in set_clause
+    # 只给仍在 running 的任务续租
+    assert "relay_status =" in _sql(sink[0]).split("WHERE", 1)[1]
+
+
+async def test_heartbeat_loop_exits_when_lease_lost(storage):
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rowcount=0), sink, stale_after=1.0, heartbeat_interval=0.01)
+
+    loop = asyncio.create_task(service._heartbeat_loop(uuid4()))
+    await asyncio.sleep(0.05)
+
+    # 状态已被终态/别的实例接管时必须停止续租，不能替别人把租约续下去
+    assert loop.done() is True
+
+
+async def test_heartbeat_loop_keeps_renewing_while_owned(storage):
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rowcount=1), sink, stale_after=1.0, heartbeat_interval=0.01)
+
+    loop = asyncio.create_task(service._heartbeat_loop(uuid4()))
+    await asyncio.sleep(0.05)
+    still_running = not loop.done()
+    loop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop
+
+    assert still_running is True
+    assert len(sink) >= 2
+
+
+async def test_claim_stale_selects_pending_and_expired_with_archive(storage):
+    older, fresher = uuid4(), uuid4()
+    script = [
+        _FakeResult(rows=[(older,), (fresher,)]),
+        _FakeResult(rowcount=1),
+        _FakeResult(rowcount=0),
+    ]
+    state = {"index": 0}
+    service = LogCollectRelayService(
+        lambda: _ScriptedSession(script, state),
+        storage,
+        SangforRelayClient("http://relay"),
+        stale_after=60,
+    )
+
+    claimed = await service.claim_stale()
+
+    # 只有真正抢到的一条算本次执行；抢输的那条由对方负责
+    assert claimed == [older]
+
+
+async def test_claim_stale_skips_tasks_without_artifact(storage):
+    session = _ScriptedSession([_FakeResult(rows=[])])
+    service = LogCollectRelayService(
+        lambda: session,
+        storage,
+        SangforRelayClient("http://relay"),
+        stale_after=60,
+    )
+
+    assert await service.claim_stale() == []
+    # 反向用例：没制品的 pending 是「还没合并完」的正常中间态，不该被 trigger
+    assert session._index == 1
+
+
+async def test_claim_stale_sql_requires_artifact_and_stale_lease(storage):
+    statements: list = []
+
+    from sqlalchemy.dialects import postgresql
+
+    class _OneShot(_FakeSession):
+        def __init__(self):
+            self.calls = 0
+
+        async def execute(self, statement):
+            self.calls += 1
+            statements.append(statement)
+            if self.calls == 1:
+                return _FakeResult(rows=[])
+            return _FakeResult(rowcount=0)
+
+    service = LogCollectRelayService(lambda: _OneShot(), storage, SangforRelayClient("http://relay"), stale_after=60)
+    await service.claim_stale()
+
+    sql = str(statements[0].compile(dialect=postgresql.dialect()))
+    assert "archive_path IS NOT NULL" in sql
+    assert "relay_updated_at <" in sql
+    assert "relay_status =" in sql
+
+
+async def test_release_hands_lease_back_as_pending(storage):
+    sink: list = []
+    ids = [uuid4(), uuid4()]
+    service = _lease_service(storage, _FakeResult(rowcount=2), sink, stale_after=60)
+
+    assert await service.release(ids) == 2
+
+    from sqlalchemy.dialects import postgresql
+
+    compiled = sink[0].compile(dialect=postgresql.dialect())
+    assert compiled.params["relay_status"] == "pending"
+    # 只交还仍在 running 的：已 success/failed 的不能被改回 pending
+    assert "relay_status =" in _sql(sink[0]).split("WHERE", 1)[1]
+
+
+async def test_release_without_targets_is_noop(storage):
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rowcount=0), sink, stale_after=60)
+
+    assert await service.release([]) == 0
+    assert sink == []
+
+
+# ── 启动接管与退出交还：发布链路上的两个钩子 ──────────────────────────────
+
+
+async def test_startup_reconcile_spawns_claimed_relays(monkeypatch):
+    """启动时把上一个进程遗留的代传真的重新拉起，而不只是统计个数。"""
+
+    from app.routes import log_collect as routes
+
+    claimed = [uuid4(), uuid4()]
+    monkeypatch.setattr(routes, "database_manager", SimpleNamespace(async_session_factory=lambda: None))
+    monkeypatch.setattr(
+        routes,
+        "_build_relay_service",
+        lambda: SimpleNamespace(claim_stale=AsyncMock(return_value=claimed)),
+    )
+    spawned: list = []
+    monkeypatch.setattr(routes, "_spawn_relay", lambda _svc, task_id: spawned.append(task_id))
+
+    await routes.reconcile_relays_on_startup()
+
+    assert spawned == claimed
+
+
+async def test_startup_reconcile_is_skipped_when_relay_disabled(monkeypatch):
+    """反向用例：关闭代传功能时不能自作主张拉起任务。"""
+
+    from app.routes import log_collect as routes
+
+    monkeypatch.setattr(routes.settings, "LOG_COLLECT_RELAY_ENABLED", False)
+    spawned: list = []
+    monkeypatch.setattr(routes, "_spawn_relay", lambda _svc, task_id: spawned.append(task_id))
+
+    await routes.reconcile_relays_on_startup()
+
+    assert spawned == []
+
+
+async def test_shutdown_hands_back_running_relays(monkeypatch):
+    """退出时必须在关库前把租约交还，否则任务要等租约过期才能被接管。"""
+
+    from app.routes import log_collect as routes
+
+    task = asyncio.create_task(asyncio.sleep(3600))
+    task_id = uuid4()
+    released: list = []
+
+    class _FakeRelay:
+        async def release(self, ids):
+            released.append(ids)
+            return len(ids)
+
+    monkeypatch.setattr(routes, "database_manager", SimpleNamespace(async_session_factory=lambda: None))
+    monkeypatch.setattr(routes, "_build_relay_service", lambda: _FakeRelay())
+    routes._running_relays[task] = task_id
+
+    await routes.shutdown_relays()
+
+    assert released == [[task_id]]
+    assert task.cancelled() is True
+    assert task_id not in routes._running_relays.values()

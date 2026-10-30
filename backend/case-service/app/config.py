@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # P2 段③：平台代传日志服务器（与 acli 插件一致，插件只认官方域名白名单）。
     LOG_COLLECT_RELAY_URL: str = "http://acli.sangfor.com.cn:5888"
     LOG_COLLECT_RELAY_ENABLED: bool = True
+    # 代传租约：running 状态必须靠心跳续租，超时即视为「执行者已死」可被抢占。
+    # 心跳由独立协程发送，所以单个 300s 分片超时期间也在续租；本值只需覆盖
+    # 「进程已死但没人写终态」的判定窗口。默认 120s 对应 30s 心跳。
+    LOG_COLLECT_RELAY_STALE_SECONDS: int = 120
 
     model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 

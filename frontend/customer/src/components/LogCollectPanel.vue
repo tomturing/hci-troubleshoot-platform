@@ -42,6 +42,7 @@ import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCa
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
 import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
+import { shouldRecoverRelayLease } from '@/services/logCollectRelay'
 import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
@@ -3318,6 +3319,7 @@ class RelayPendingError extends Error {}
 
 async function pollRelay(taskId: string, token: number) {
   // 上限 2 小时（1440 次 × 5s）：代传是长任务，但不能无限轮询
+  let leaseRecoveryAttempted = false
   for (let attempt = 0; attempt < 1440; attempt++) {
     if (token !== runToken) return
     const snapshot = await logCollectApi.getRelay(taskId)
@@ -3325,6 +3327,14 @@ async function pollRelay(taskId: string, token: number) {
     if (snapshot.relay_status === 'success') return
     if (snapshot.relay_status === 'failed') {
       throw new Error('归档到日志服务器失败，错误码见平台任务记录，可据此排查')
+    }
+    if (shouldRecoverRelayLease(snapshot, leaseRecoveryAttempted)) {
+      // 发布/重启把执行代传的进程杀掉了，状态会永久停在 running：
+      // 强制续跑只重放搬运（upload_id 与已传分片都已落库），不重传数据；
+      // 抢占仍由服务端裁决，别的标签页/新实例已经接管时 started=false 而已。
+      leaseRecoveryAttempted = true
+      await logCollectApi.startRelay(taskId, true).catch(() => undefined)
+      continue
     }
     await sleep(POLL_INTERVAL)
   }
