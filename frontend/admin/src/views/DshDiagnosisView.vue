@@ -88,6 +88,7 @@ const tagType = computed(() => {
   if (phase === 'ready') return 'success'
   if (phase === 'failed') return 'danger'
   if (phase === 'cancelled') return 'info'
+  if (phase === 'interrupted') return 'info'
   return 'warning'
 })
 
@@ -107,6 +108,7 @@ function artifactTagType(artifact: SyncArtifact) {
   if (artifact.phase === 'ready') return 'success'
   if (artifact.phase === 'failed') return 'danger'
   if (artifact.phase === 'cancelled') return 'info'
+  if (artifact.phase === 'interrupted') return 'info'
   return 'warning'
 }
 

@@ -45,6 +45,7 @@ from .models import (
     validate_ticket_id,
 )
 from .publisher import cleanup_workspace, prune_trash, publish
+from .store import Store
 
 logger = logging.getLogger("ticket-sync")
 
@@ -128,6 +129,64 @@ class JobRegistry:
         self._lock = asyncio.Lock()
         # 退避状态按工单保留，跨任务生命周期，直到该工单成功发布。
         self._retries: dict[str, RetryState] = {}
+        # 持久化：任务历史与产物用量。内存表仍是运行态权威，DB 只是镜像。
+        self._store = Store(cfg.state_db())
+        interrupted = self._store.mark_interrupted()
+        if interrupted:
+            logger.warning("上次进程遗留 %d 个未完成任务，已标记为 %s", interrupted, Phase.INTERRUPTED.value)
+        self._store.prune_jobs()
+        self._history: dict[str, Job] = {}
+        self._load_history()
+
+    def close(self) -> None:
+        self._store.close()
+
+    def _load_history(self) -> None:
+        """把 SQLite 里的任务历史还原成轻量 Job，供 `/artifacts`、`/jobs` 查询。
+
+        这些 Job 没有 asyncio.Task、也不在 RUNNING_PHASES 里，只用于展示与追溯。
+        """
+        for row in self._store.load_jobs():
+            try:
+                job = Job(
+                    ticket_id=row["ticket_id"],
+                    job_id=row["job_id"],
+                    phase=Phase(row["phase"]),
+                    accepted_at=datetime.fromtimestamp(row["accepted_at"], TZ),
+                    updated_at=datetime.fromtimestamp(row["updated_at"], TZ),
+                    started_at=(
+                        datetime.fromtimestamp(row["started_at"], TZ) if row["started_at"] else None
+                    ),
+                    received_bytes=row["received_bytes"],
+                    total_bytes=row["total_bytes"],
+                    extracted_bytes=row["extracted_bytes"],
+                    file_count=row["file_count"],
+                    current_archive=row["current_archive"],
+                    error_code=ErrorCode(row["error_code"]) if row["error_code"] else None,
+                    message=row["message"],
+                )
+            except (ValueError, KeyError, TypeError) as exc:
+                logger.warning("跳过无法还原的历史任务 ticket=%s error=%s", row.get("ticket_id"), exc)
+                continue
+            self._history[job.ticket_id] = job
+
+    def _persist(self, job: Job) -> None:
+        """把任务快照镜像到 SQLite。写失败只记日志，不影响同步主流程。"""
+        self._store.upsert_job(
+            ticket_id=job.ticket_id,
+            job_id=job.job_id,
+            phase=job.phase.value,
+            accepted_at=job.accepted_at,
+            updated_at=job.updated_at,
+            message=job.message,
+            received_bytes=job.received_bytes,
+            total_bytes=job.total_bytes,
+            extracted_bytes=job.extracted_bytes,
+            file_count=job.file_count,
+            current_archive=job.current_archive,
+            error_code=job.error_code.value if job.error_code else None,
+            started_at=job.started_at,
+        )
 
     async def create(self, ticket_id: str, request_id: str = "-") -> Job:
         async with self._lock:
@@ -183,6 +242,7 @@ class JobRegistry:
             updated_at=now,
         )
         self.jobs[ticket_id] = job
+        self._persist(job)
         return job
 
     def _start(self, job: Job, request_id: str) -> None:
@@ -197,7 +257,8 @@ class JobRegistry:
         job.task = asyncio.create_task(self._run(job), name=f"ticket-sync:{job.ticket_id}")
 
     def get(self, ticket_id: str) -> Job | None:
-        return self.jobs.get(ticket_id)
+        # 内存优先；重启后内存为空，用 SQLite 历史回答"上次同步到哪一步"。
+        return self.jobs.get(ticket_id) or self._history.get(ticket_id)
 
     async def cancel(self, ticket_id: str) -> bool:
         job = self.jobs.get(ticket_id)
@@ -217,6 +278,7 @@ class JobRegistry:
         job.phase = Phase.CANCELLED
         job.message = "已取消"
         job.updated_at = _now()
+        self._persist(job)
         logger.info("ticket=%s job=%s 已取消", ticket_id, job.job_id)
         return True
 
@@ -225,6 +287,11 @@ class JobRegistry:
 
     def active_ticket_ids(self) -> set[str]:
         return {job.ticket_id for job in self.jobs.values() if job.phase in RUNNING_PHASES}
+
+    def _forget_ticket(self, ticket_id: str) -> None:
+        """产物被删除后同步清理记账与历史，避免 DB 与磁盘长期漂移。"""
+        self._store.delete_artifact(ticket_id)
+        self._history.pop(ticket_id, None)
 
     async def prune_expired(self, now: datetime) -> int:
         """清理过期产物。
@@ -243,6 +310,7 @@ class JobRegistry:
             now,
             self.cfg.retention_days,
             active,
+            self._forget_ticket,
         )
 
     async def prune_capacity(self, now: datetime) -> tuple[int, int]:
@@ -255,6 +323,8 @@ class JobRegistry:
             self.cfg.min_keep_days,
             now,
             active,
+            self._store,
+            self._forget_ticket,
         )
 
     async def list_artifacts(self) -> list[dict[str, Any]]:
@@ -269,10 +339,10 @@ class JobRegistry:
                 except OSError:
                     logger.warning("读取本地工单目录状态失败 ticket=%s", entry.name)
 
-            ticket_ids = set(local) | set(self.jobs)
+            ticket_ids = set(local) | set(self.jobs) | set(self._history)
             result: list[dict[str, Any]] = []
             for ticket_id in sorted(ticket_ids, reverse=True):
-                job = self.jobs.get(ticket_id)
+                job = self.jobs.get(ticket_id) or self._history.get(ticket_id)
                 retry = self._retries.get(ticket_id)
                 result.append(
                     {
@@ -304,6 +374,7 @@ class JobRegistry:
                 job.started_at = _now()
                 job.phase = Phase.FETCHING
                 job.updated_at = _now()
+                self._persist(job)
 
                 await self._reject_non_log_payload(job)
 
@@ -324,6 +395,7 @@ class JobRegistry:
 
                 job.phase = Phase.EXTRACTING
                 job.updated_at = _now()
+                self._persist(job)
 
                 stats = await extract(
                     ticket_id,
@@ -372,6 +444,20 @@ class JobRegistry:
                     )
                     job.message = f"{job.message}；{suffix}" if job.message else suffix
                 job.updated_at = _now()
+                self._persist(job)
+                # 产物用量单独记账：容量判断只读这张表，不再遍历目录算体积。
+                try:
+                    dir_mtime = (self.cfg.root / ticket_id).stat().st_mtime
+                except OSError:
+                    dir_mtime = None
+                self._store.upsert_artifact(
+                    ticket_id,
+                    stats.bytes,
+                    stats.files,
+                    has_logs,
+                    _now().timestamp(),
+                    dir_mtime,
+                )
                 self._retries.pop(ticket_id, None)
                 logger.info(
                     "ticket=%s job=%s 完成 层数=%d 文件=%d 字节=%d 旧版本=%s",
@@ -391,18 +477,21 @@ class JobRegistry:
             job.error_code = error.code
             job.message = error.message
             job.updated_at = _now()
+            self._persist(job)
             logger.error("ticket=%s job=%s 失败 %s detail=%s", ticket_id, job.job_id, error, error.detail)
             self._note_failure(ticket_id)
         except asyncio.CancelledError:
             job.phase = Phase.CANCELLED
             job.message = "已取消"
             job.updated_at = _now()
+            self._persist(job)
             raise
         except Exception as error:  # noqa: BLE001 - 兜底保证任务不会卡在 running
             job.phase = Phase.FAILED
             job.error_code = ErrorCode.EXTRACT_FAILED
             job.message = "同步失败，请查看服务日志"
             job.updated_at = _now()
+            self._persist(job)
             logger.exception("ticket=%s job=%s 未预期异常 %s", ticket_id, job.job_id, error)
             self._note_failure(ticket_id)
         finally:
@@ -523,6 +612,8 @@ async def lifespan(app: FastAPI):
         # 必须等取消真正落地：kill 子进程是在 CancelledError 处理里完成的，
         # 不等就直接关事件循环，会留下仍在写盘的 rsync/unzip 孤儿进程。
         await asyncio.wait(pending, timeout=10)
+    # 先让被取消的任务把失败/取消状态写进库，再关连接；顺序反了会丢最后一条状态。
+    registry.close()
     logger.info("服务退出 已终止任务数=%d", len(pending))
 
 

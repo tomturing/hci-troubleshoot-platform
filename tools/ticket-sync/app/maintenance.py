@@ -1,13 +1,12 @@
 """ticket-sync 的本地目录保留期与容量维护。
 
-设计取舍（2026-10-31 重构）：
+设计取舍（2026-10-31 重构，第二版）：
 - 「同步完成时间」与「产物体积」在发布时就已经是确定事实，因此写进
-  `<工单目录>/.sync-meta.json`，而不是每天重新扫描文件系统。
-- 目录 mtime 不可靠：它只反映"直接子项最后一次增删"，DSH 在产物里生成报告、
-  人工 touch 都会改写它，会让保留期误判。
-- os.walk + lstat 在冷缓存下极慢：实测 550 GiB / 44 万文件耗时约 3.5 分钟，
-  而这段是同步代码，会把整个事件循环钉死（同期 HTTP 请求全部排队）。
-  现在体积优先取 meta，缺失才扫一次并回填缓存。
+  `<工单目录>/.sync-meta.json`，同时镜像到 SQLite 的 artifacts 表。
+- 目录 mtime 不能当"同步时间"（会被 DSH 写报告、人工 touch 改写），
+  但可以作为"自上次记账后目录有没有被写过"的信号——增量对账就靠它。
+- os.walk + lstat 在冷缓存下极慢：实测 550 GiB / 44 万文件约 3.5 分钟，
+  而这段曾是同步代码，会把整个事件循环钉死（同期 HTTP 请求全部排队）。
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,9 @@ SYNC_META_NAME = ".sync-meta.json"
 # 却往往是 60 GiB 量级的大块头，必须排在正常日志工单之前被淘汰。
 _RANK_NO_LOGS = 0
 _RANK_HAS_LOGS = 1
+
+# mtime 比较的容差：不同文件系统的时间戳精度不同，1ms 足以区分"改过/没改过"。
+_MTIME_EPSILON = 0.001
 
 
 def read_sync_meta(ticket_dir: Path) -> dict[str, Any]:
@@ -73,15 +76,95 @@ def enforce_capacity(
     min_keep_days: int,
     now: datetime,
     active_ticket_ids: set[str] | frozenset[str] = frozenset(),
+    store: Any | None = None,
+    on_removed: Callable[[str], None] | None = None,
 ) -> tuple[int, int]:
     """产物总量超过上限时淘汰，返回 (删除数, 释放字节)。
 
     排序规则：先按"有没有日志"（非日志载荷先删），再按同步时间最旧优先。
     只按最旧排序会让一个 65 GiB 的 dump 工单挤掉多个真正可用的日志工单。
+
+    传了 store 走增量路径（对账后用 SQL 聚合）；没传则走纯扫描，
+    单元测试与"DB 不可用"的降级场景都依赖后者。
     """
     if not root.is_dir():
         return 0, 0
+    if store is not None:
+        return _enforce_with_store(
+            root, max_total_bytes, min_keep_days, now, active_ticket_ids, store, on_removed
+        )
+    return _enforce_by_scanning(root, max_total_bytes, min_keep_days, now, active_ticket_ids, on_removed)
 
+
+def _enforce_with_store(
+    root: Path,
+    max_total_bytes: int,
+    min_keep_days: int,
+    now: datetime,
+    active_ticket_ids: set[str] | frozenset[str],
+    store: Any,
+    on_removed: Callable[[str], None] | None,
+) -> tuple[int, int]:
+    """增量路径：先用目录 mtime 对账（只碰变化的工单），再按 SQL 结果淘汰。"""
+    reconcile_artifacts(root, store)
+
+    total = store.artifact_total()
+    if total <= max_total_bytes:
+        return 0, 0
+
+    cutoff = now.timestamp() - min_keep_days * 86400
+    removed = 0
+    freed = 0
+    for row in store.eviction_order(cutoff):
+        if total <= max_total_bytes:
+            break
+        ticket_id = str(row["ticket_id"])
+        if ticket_id in active_ticket_ids:
+            continue
+        size = int(row["bytes"])
+        entry = root / ticket_id
+        try:
+            shutil.rmtree(entry)
+        except FileNotFoundError:
+            # 目录已不在：记账行是脏的，删掉即可，不算淘汰。
+            store.delete_artifact(ticket_id)
+            continue
+        except OSError as exc:
+            # 删不掉就保留记账行，否则总量会算少、这批数据永远轮不到再删。
+            logger.error("容量淘汰删除失败 ticket=%s error=%s", ticket_id, exc)
+            continue
+        store.delete_artifact(ticket_id)
+        if on_removed is not None:
+            on_removed(ticket_id)
+        total -= size
+        removed += 1
+        freed += size
+        logger.warning(
+            "容量淘汰 ticket=%s size=%.1fGiB 剩余总量=%.1fGiB 上限=%.1fGiB",
+            ticket_id,
+            size / 1024**3,
+            total / 1024**3,
+            max_total_bytes / 1024**3,
+        )
+
+    if total > max_total_bytes:
+        logger.error(
+            "容量淘汰后仍超限 total=%.1fGiB 上限=%.1fGiB 可用工单均未满 %d 天",
+            total / 1024**3,
+            max_total_bytes / 1024**3,
+            min_keep_days,
+        )
+    return removed, freed
+
+
+def _enforce_by_scanning(
+    root: Path,
+    max_total_bytes: int,
+    min_keep_days: int,
+    now: datetime,
+    active_ticket_ids: set[str] | frozenset[str],
+    on_removed: Callable[[str], None] | None,
+) -> tuple[int, int]:
     candidates: list[tuple[int, float, Path, int]] = []
     # total 统计磁盘上真实占用（含活跃与受保护工单），否则会低估压力、
     # 把"删无可删"的告警吞掉。
@@ -116,6 +199,8 @@ def enforce_capacity(
         except OSError as exc:
             logger.error("容量淘汰删除失败 ticket=%s error=%s", entry.name, exc)
             continue
+        if on_removed is not None:
+            on_removed(entry.name)
         total -= size
         removed += 1
         freed += size
@@ -137,11 +222,90 @@ def enforce_capacity(
     return removed, freed
 
 
+def reconcile_artifacts(root: Path, store: Any) -> tuple[int, int, int]:
+    """把磁盘现状与 artifacts 表对齐，返回 (新增, 更新, 删除) 条数。
+
+    用目录 mtime 作为"自上次记账后有没有被写过"的信号：未变化就跳过，
+    既不读 meta 也不扫体积。重新发布一定会改变 mtime，因此不会漏记。
+    """
+    try:
+        known = store.artifact_map()
+    except Exception as exc:  # noqa: BLE001 - 存储异常不能中断维护
+        logger.warning("读取产物记账失败 error=%s", exc)
+        return 0, 0, 0
+
+    added = 0
+    updated = 0
+    seen: set[str] = set()
+    for entry in root.iterdir():
+        if not entry.is_dir() or entry.is_symlink() or _TICKET_DIR.fullmatch(entry.name) is None:
+            continue
+        seen.add(entry.name)
+        try:
+            info = entry.stat()
+        except OSError:
+            continue
+        row = known.get(entry.name)
+        if (
+            row is not None
+            and _same_mtime(row.get("dir_mtime"), info.st_mtime)
+            and row.get("has_logs") is not None
+        ):
+            # 目录没被写过、且该工单的"有无日志"已经判定过，才允许跳过。
+            # has_logs 为空说明是上一版留下的半截记账，必须补判一次。
+            continue
+
+        meta = read_sync_meta(entry)
+        # 历史目录的 meta 可能只有 bytes（上一轮补写尺寸时留下的），缺 hasLogs。
+        # 缺了就现算一次并补齐，否则这批存量永远拿不到"非日志载荷优先淘汰"的待遇。
+        extra: dict[str, Any] = {}
+        size = meta.get("bytes")
+        if not isinstance(size, int) or size < 0:
+            size = _tree_bytes(entry)
+            extra["bytes"] = size
+        has_logs = meta.get("hasLogs")
+        if not isinstance(has_logs, bool):
+            has_logs = has_usable_logs(entry)
+            extra["hasLogs"] = has_logs
+        if extra:
+            write_sync_meta(entry, **extra)
+            # 补写 meta 会刷新目录 mtime，必须还原，否则下次又判定为"变化"。
+            try:
+                os.utime(entry, (info.st_atime, info.st_mtime))
+            except OSError:
+                logger.warning("恢复目录 mtime 失败 path=%s", entry)
+
+        files = meta.get("files")
+        store.upsert_artifact(
+            entry.name,
+            size,
+            int(files) if isinstance(files, int) else 0,
+            has_logs if isinstance(has_logs, bool) else None,
+            _synced_at(entry, info.st_mtime),
+            info.st_mtime,
+        )
+        if row is None:
+            added += 1
+        else:
+            updated += 1
+
+    removed = 0
+    for ticket_id in set(known) - seen:
+        store.delete_artifact(ticket_id)
+        removed += 1
+    return added, updated, removed
+
+
+def _same_mtime(left: Any, right: float) -> bool:
+    return isinstance(left, (int, float)) and abs(float(left) - right) < _MTIME_EPSILON
+
+
 def cleanup_expired(
     root: Path,
     now: datetime,
     retention_days: int,
     active_ticket_ids: set[str] | frozenset[str] = frozenset(),
+    on_removed: Callable[[str], None] | None = None,
 ) -> int:
     """删除超过保留期的已发布工单目录，返回删除数量。
 
@@ -178,6 +342,8 @@ def cleanup_expired(
         except OSError as exc:
             logger.error("清理过期工单目录失败 ticket=%s error=%s", entry.name, exc)
             continue
+        if on_removed is not None:
+            on_removed(entry.name)
         removed += 1
         logger.info(
             "清理过期本地目录 path=%s age_days=%.1f",
