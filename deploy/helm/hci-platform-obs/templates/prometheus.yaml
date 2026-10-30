@@ -1,3 +1,23 @@
+{{- /*
+GatewayServerErrorFirstSeen 的守卫：这条规则靠「offset 时刻没数据」推断「序列刚诞生」，
+但 offset 没数据有两种成因——序列真的刚诞生，或 offset 落进了本实例根本没有的那段数据。
+后者不挡就是成片误报：staging 的 Prometheus 数据目录是 emptyDir，15:50:4x 因
+checksum/rules 重启后 TSDB 全清，15:51:22 首次评估把发布前早已存在的 9 条 5xx 序列
+全部判成「新出现」，一次性 firing 9 条 warning。
+门控写在 rules/alert_rules.yml 里，只是表达式末尾一行 `and on()`，很容易被后来者
+当成冗余括号删掉，所以守卫必须与它同文件同模板：删掉门控即渲染失败。
+*/ -}}
+{{- $rules := .Files.Get "rules/alert_rules.yml" -}}
+{{- if not (contains "alert: GatewayServerErrorFirstSeen" $rules) -}}
+{{- fail "GatewayServerErrorFirstSeen 规则不得删除：Traefik 的 code 标签是懒创建的，5xx 序列诞生前的增量对 rate()/increase() 是结构性盲区，删掉它等于把首次故障让给盲区" -}}
+{{- end -}}
+{{- $firstSeen := regexFind "(?s)alert: GatewayServerErrorFirstSeen.*" $rules -}}
+{{- if not (contains "and on()" $firstSeen) -}}
+{{- fail "GatewayServerErrorFirstSeen 缺少数据连续性门控（and on()）：Prometheus 重启后 offset 落进无数据区间，会把存量 5xx 序列全部判成刚诞生并一次性 firing" -}}
+{{- end -}}
+{{- if not (contains "traefik_service_requests_total offset 10m) > 0" $firstSeen) -}}
+{{- fail "GatewayServerErrorFirstSeen 的门控必须依据指标族自身在 offset 时刻是否有数据，不能用全局 up：job hci-services 有 18 个 target，只要有一个健康 up 就非空，单 Traefik 抓取中断时照样误报" -}}
+{{- end -}}
 {{- if .Values.prometheus.enabled }}
 ---
 # Prometheus Deployment（prometheus-config ConfigMap 在 configs.yaml，这样

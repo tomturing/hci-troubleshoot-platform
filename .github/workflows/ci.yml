@@ -845,6 +845,24 @@ jobs:
             exit 1
           fi
 
+          # 首样本盲区兜底告警不得退化成无门控。
+          # 2026-10-30 staging 实测：Prometheus 数据目录是 emptyDir，15:50:4x 因
+          # checksum/rules 重启后 TSDB 全清，15:51:22 首次评估把发布前早已存在的
+          # 9 条 5xx 序列全部判成「刚诞生」，一次性 firing 9 条 warning。
+          # prometheus.yaml 里已有 render-time fail 守卫，这里再查一次渲染结果：
+          # 连守卫本体一起删掉也拦得住。
+          if ! grep -q 'alert: GatewayServerErrorFirstSeen' /tmp/obs-rendered.yaml; then
+            echo "GatewayServerErrorFirstSeen 规则不得删除：rate()/increase() 对序列诞生前的增量是结构性盲区"
+            exit 1
+          fi
+          if ! awk '/alert: GatewayServerErrorFirstSeen/{f=1}
+                   /alert: GatewayMetricsMissing/{f=0}
+                   f && /and on\(\)/{ok=1}
+                   END{exit !ok}' /tmp/obs-rendered.yaml; then
+            echo "GatewayServerErrorFirstSeen 缺少数据连续性门控（and on()），Prometheus 重启后会成片误报"
+            exit 1
+          fi
+
       - name: Helm template 渲染检查
         run: |
           helm template hci-platform deploy/helm/hci-platform \
