@@ -56,6 +56,9 @@ export const PHASE_TEXT: Record<SyncPhase, string> = {
   ready: '已就绪',
   failed: '失败',
   cancelled: '已取消',
+  // 服务重启导致任务中途消失。文案刻意与"失败"区分：重新触发通常就能成功，
+  // 不该让用户去排查日志源。
+  interrupted: '已中断',
 }
 
 // 错误码到用户可读文案的映射，与服务端文档第 8 章一一对应。
