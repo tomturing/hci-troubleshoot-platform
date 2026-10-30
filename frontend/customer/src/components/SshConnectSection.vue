@@ -19,6 +19,11 @@ import { ElMessage } from 'element-plus'
 import { CircleCheckFilled, Download, Loading, Refresh } from '@element-plus/icons-vue'
 import { useChatStore } from '@/stores/chat'
 import { checkBridgeBeforeOpen, type TerminalAuthType } from '@/api/terminal'
+import {
+  isBridgeVersionStale,
+  loadPublishedBridgeVersion,
+  type PublishedBridgeVersion,
+} from '@/utils/bridgeVersion'
 import SshFormSection from './SshFormSection.vue'
 
 type ViewState = 'bridge-guide' | 'form' | 'progress' | 'error' | 'success' | 'connected'
@@ -287,10 +292,51 @@ const successText = computed(() => {
   if (!props.openTerminal) return 'SSH 连接成功'
   return chatStore.rightPanelTab === 'sftp' ? 'SSH 连接成功，文件下载已打开' : 'SSH 连接成功，终端已打开'
 })
+
+/**
+ * 旧版 bridge 提示。
+ *
+ * 第一性原理：平台分发的新 exe 与客户机上正在跑的 exe 是**两个独立的事实**，只有
+ * 握手包能告诉我们后者的版本。不比对就等于默认"客户永远用的是最新版"，而本次
+ * 交付守卫正是只存在于新版里的修复——旧版既不报错也不提示，静默沿用旧行为。
+ *
+ * 只在**已连上**且**两侧版本都拿得到**时提示：未连接时谈版本没有意义，
+ * 任一侧缺失时也无法判断，此时一律不打扰（见 utils/bridgeVersion.ts 的 fail-open 约定）。
+ */
+const publishedBridgeVersion = ref<PublishedBridgeVersion | null>(null)
+const bridgeOutdated = computed(() =>
+  isBridgeVersionStale(chatStore.bridgeVersion, publishedBridgeVersion.value),
+)
+
+watch(
+  () => chatStore.bridgeVersion,
+  async (version) => {
+    if (!version || publishedBridgeVersion.value) return
+    publishedBridgeVersion.value = await loadPublishedBridgeVersion()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
   <div class="ssh-connect-section" :class="{ 'is-inline': !isDialog }">
+    <!-- 版本不一致提示：放在状态切换之外，已连接 / 连接成功两种态都要能看到 -->
+    <el-alert
+      v-if="bridgeOutdated"
+      type="warning"
+      :closable="false"
+      class="bridge-version-alert"
+    >
+      <template #title>
+        <strong>Bridge 版本与平台分发的不一致</strong>
+      </template>
+      <p class="bridge-version-desc">
+        当前运行 <code>{{ chatStore.bridgeVersion || '未知' }}</code>，平台分发
+        <code>{{ publishedBridgeVersion?.version || '未知' }}</code>。旧版不含最新修复
+        （例如交付失败时可能报"平台暂时不可用"而不是"源包已变化"），建议重新下载并重启 Bridge。
+        <el-button size="small" text type="primary" @click="handleDownloadBridge">重新下载</el-button>
+      </p>
+    </el-alert>
     <!-- ===== 已连接（inline 折叠态）===== -->
     <div v-if="viewState === 'connected'" class="ssh-connected-bar">
       <span class="dot" />
@@ -408,6 +454,15 @@ const successText = computed(() => {
 .bridge-desc {
   margin-top: 8px;
   color: #6b5b00;
+}
+/* 版本不一致提示：出现在已连接态上方，不能抢走"已连接"这条主信息的视觉权重 */
+.bridge-version-alert {
+  margin-bottom: 12px;
+}
+.bridge-version-desc {
+  margin-top: 6px;
+  color: #6b5b00;
+  line-height: 1.6;
 }
 .bridge-download {
   padding: 10px;

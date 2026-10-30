@@ -73,7 +73,16 @@ jobs:
         run: |
           # 忽略文件 mode 差异，避免 Linux 构建的 0644 与仓库 0755 误判为“有变化”
           git config core.fileMode false
+          # 版本清单与 exe 必须同一个 commit：清单是「当前分发版本」的唯一参照物。
+          # 这里 fail-closed：清单缺失时若只提交 exe，前端会拿旧清单去比新 exe，
+          # 于是所有客户都被误报「版本不一致」——宁可让流水线红，也不要发一个说谎的清单。
           git add frontend/customer/public/downloads/terminal_bridge.exe
+          MANIFEST=frontend/customer/public/downloads/bridge-version.json
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::版本清单缺失：scripts/build_terminal_bridge.sh 未产出 $MANIFEST"
+            exit 1
+          fi
+          git add "$MANIFEST"
           if git diff --cached --quiet; then
             echo "exe 内容无变化，跳过提交"
             exit 0

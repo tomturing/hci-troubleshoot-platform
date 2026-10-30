@@ -44,3 +44,17 @@ CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
 
 SIZE=$(stat -c%s "$DST" 2>/dev/null || wc -c < "$DST")
 echo "[build_terminal_bridge] OK -> $DST ($SIZE bytes)"
+
+# 版本清单：与 exe 同一次构建、同一组变量产出，前端据此判断客户机上正在跑的
+# bridge 是否就是平台当前分发的那个版本。
+#
+# 为什么必须由构建产出、不能前端写死：版本号只在构建时才知道（git describe）。
+# 为什么只在 windows/amd64 时写：本清单描述的是**下载分发目录里的那个可执行文件**；
+# 本地或 CI 用 GOOS=linux 跑一次冒烟构建就把清单改成 linux 版本，会让所有客户
+# 被误报「版本过旧」——这是本机制最容易被无意打破的地方。
+if [ "$GOOS" = "windows" ] && [ "$GOARCH" = "amd64" ]; then
+  MANIFEST="$DST_DIR/bridge-version.json"
+  printf '{\n  "version": "%s",\n  "commit": "%s",\n  "build_time": "%s",\n  "goos": "%s",\n  "goarch": "%s"\n}\n' \
+    "$GIT_VER" "$GIT_COMMIT" "$BUILD_TIME" "$GOOS" "$GOARCH" > "$MANIFEST"
+  echo "[build_terminal_bridge] 版本清单 -> $MANIFEST ($GIT_VER)"
+fi
