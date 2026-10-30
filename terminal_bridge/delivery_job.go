@@ -118,7 +118,18 @@ type deliveryJob struct {
 	UploadToken string        `json:"upload_token"`
 	Phase       deliveryPhase `json:"phase"`
 	// SourceSize 为 0 表示尚未 stat 成功（恢复时重新量一次）。
-	SourceSize    int64  `json:"source_size"`
+	SourceSize int64 `json:"source_size"`
+	// SubmittedSize 是「提交那一刻平台上传会话认定的包字节数」，只写一次、永不覆盖。
+	//
+	// 为什么要和 SourceSize 分开：SourceSize 会在拉取阶段被节点上的真实大小覆盖
+	// （历史注释：\"用旧值会把末片长度算错\"），一旦覆盖就再也无法回答
+	// \"平台会话跟本地这个文件还是不是同一个包\"。2026-10-30 Q2026103000994 正是
+	// 这个盲区：提交时 69,010,358 字节（9 片），交付期间包被重新生成成
+	// 172,261,027 字节，SourceSize 跟着变成新值，upload 按新大小切出 8 MiB 的末片，
+	// 平台仍按 69 MB 的会话只允许 1,901,494 字节 → 每片 500，重试 8 轮必然失败，
+	// 而界面只显示\"平台返回 HTTP 500（平台暂时不可用）\"。
+	// 0 表示老前端未上报，此时不做比对（保持向后兼容）。
+	SubmittedSize int64  `json:"submitted_size"`
 	PulledBytes   int64  `json:"pulled_bytes"`
 	ChunkSize     int64  `json:"chunk_size"`
 	PartCount     int    `json:"part_count"`

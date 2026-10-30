@@ -88,17 +88,20 @@ func (b *Bridge) handleDeliverySubmit(ws *websocket.Conn, msg InMessage, cui str
 	}
 
 	job := &deliveryJob{
-		JobID:         "dj-" + taskID,
-		TaskID:        taskID,
-		CaseID:        msg.CaseID,
-		NodeIP:        msg.NodeIP,
-		SourcePath:    sourcePath,
-		LocalPath:     strings.TrimSpace(msg.TransferLocalPath),
-		PlatformURL:   platformURL,
-		UploadToken:   strings.TrimSpace(msg.TransferToken),
-		ChunkSize:     msg.TransferChunkSize,
-		PartCount:     msg.TransferPartCount,
-		SourceSize:    msg.TransferTotalSize,
+		JobID:       "dj-" + taskID,
+		TaskID:      taskID,
+		CaseID:      msg.CaseID,
+		NodeIP:      msg.NodeIP,
+		SourcePath:  sourcePath,
+		LocalPath:   strings.TrimSpace(msg.TransferLocalPath),
+		PlatformURL: platformURL,
+		UploadToken: strings.TrimSpace(msg.TransferToken),
+		ChunkSize:   msg.TransferChunkSize,
+		PartCount:   msg.TransferPartCount,
+		SourceSize:  msg.TransferTotalSize,
+		// 会话基线只在这里写一次：SourceSize 后续会被节点真实大小覆盖，
+		// 只有这份快照能判断\"平台会话对应的还是不是同一个包\"。
+		SubmittedSize: msg.TransferTotalSize,
 		UploadedParts: append([]int(nil), msg.TransferUploadedParts...),
 		Direct:        deliveryModeIsDirect(msg.TransferDeliveryMode),
 		TLSInsecure:   msg.TransferTLSInsecure,

@@ -520,12 +520,20 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession,
 	}
 
 	r.mu.Lock()
+	submittedSize := job.SubmittedSize
 	job.SourcePath = sourcePath
 	// 以节点上的真实大小为准：前端 stat 与这里可能来自不同时刻，
 	// 用旧值会把末片长度算错，导致最后一片永远校验不过。
 	job.SourceSize = size
 	job.Phase = phasePulling
 	r.mu.Unlock()
+
+	// 但"以真实大小为准"只对**本地拉取**成立：平台会话的分片方案仍是提交时的
+	// total_size。两者一旦分叉，后面每一片都会与平台校验不符，而且会白拉一次
+	// 几十 GB 的包。所以在拉取之前就判死。
+	if err := sourceSizeGuard(submittedSize, size); err != nil {
+		return err
+	}
 	_ = r.store.save(job)
 
 	blog("INFO", "delivery.direct_ready", "补交付源包校验通过，开始拉取", "", job.CaseID, job.NodeIP, "", map[string]any{
@@ -831,6 +839,11 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 		return fmt.Errorf("本地副本不存在: %w", err)
 	}
 	totalSize := info.Size()
+	// 兜底：本地副本与提交基线不一致时（拉取后才被替换、或恢复旧作业时基线缺失后补齐），
+	// 同样不能按新大小切片——平台会话不会跟着变。
+	if err := sourceSizeGuard(job.SubmittedSize, totalSize); err != nil {
+		return err
+	}
 
 	uploaded := job.uploadedSet()
 	parts := chunkConcurrencyFor(r.concurrency, job.ChunkSize, availableMemoryMB())
@@ -1078,6 +1091,28 @@ func (e *deliveryFatalError) Error() string { return e.reason }
 func isDeliveryFatalError(err error) bool {
 	var target *deliveryFatalError
 	return errors.As(err, &target)
+}
+
+// sourceSizeGuard 判断交付期间源包是否被重新生成（重新采集/重新打包覆盖同名文件）。
+//
+// 为什么必须是 fatal 而不是 transient：平台上传会话的 total_size 是**提交时快照**，
+// 包的大小一变，末片长度乃至整个切片方案都不再与平台匹配。继续按新大小切片只会
+// 把同一个 500 重复 N 轮 —— 2026-10-30 Q2026103000994 就是这样：提交 9 片 ×
+// 8 MiB（末片 1,901,494 字节），实际文件变成 172 MB，末片按新大小切出 8 MiB，
+// 平台按旧会话只允许 1.9 MB，8 轮 attempt 全 500，界面还显示"平台暂时不可用"。
+//
+// submitted/current 任一为 0 表示信息不足（老前端未上报、stat 失败），此时不做判断，
+// 保持原有行为。
+func sourceSizeGuard(submitted, current int64) error {
+	if submitted <= 0 || current <= 0 || submitted == current {
+		return nil
+	}
+	return &deliveryFatalError{reason: fmt.Sprintf(
+		"源包已变化（提交上传时 %d 字节，当前 %d 字节），本次上传已作废："+
+			"平台上传会话仍按提交时的大小校验，继续上传只会每片都失败。"+
+			"请重新点击「上传到平台」；若要交付最新内容，请先重新采集",
+		submitted, current,
+	)}
 }
 
 // deliveryTransientError 表示"平台暂时不可用，等一会儿重试就能成"。
