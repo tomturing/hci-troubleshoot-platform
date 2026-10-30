@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -55,6 +56,101 @@ class RemoteArchive:
     mtime: float
 
 
+# ssh 自身失败的退出码：连接、认证、主机密钥等原因，与远端命令无关。
+SSH_CONNECT_FAILED = 255
+# 连接层失败的重试间隔。实测这类失败多为瞬时（对端 sshd 重启、网络抖动），
+# 2026-10-30 16:25 那次就是单次失败即报错，下一轮又自愈了。
+SSH_RETRY_DELAY_SECONDS = 5
+
+
+def _ssh_argv(cfg: Config, command: str) -> list[str]:
+    """统一的 ssh 参数。
+
+    BatchMode 禁止交互（否则子进程会挂在密码提示上），ConnectTimeout 防止
+    半开连接挂死；ServerAlive 让"物理断开但 TCP 未感知"的场景尽快收敛。
+    """
+    return [
+        "ssh",
+        "-p",
+        str(cfg.source_port),
+        "-i",
+        str(cfg.ssh_key),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        cfg.source,
+        command,
+    ]
+
+
+async def _ssh_run(cfg: Config, command: str, message: str, timeout: float = 20) -> bytes:
+    """执行一条远端只读命令并返回 stdout。
+
+    失败信息必须可归因：历史实现只把 stderr 写进 detail，而 exit=255 时
+    stderr 往往是空的（实测 `ssh exit=255 stderr=`），导致事故无从查起。
+    这里固定带上 exit code、尝试次数、耗时、远端地址，stderr 为空时显式标注。
+    """
+    last_error: TicketError | None = None
+    for attempt in (1, 2):
+        started = time.monotonic()
+        proc = await asyncio.create_subprocess_exec(
+            *_ssh_argv(cfg, command),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.wait()
+            raise
+        except TimeoutError as exc:
+            proc.kill()
+            await proc.wait()
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            raise TicketError(
+                ErrorCode.SSH_FAILED,
+                message,
+                f"timeout attempt={attempt} elapsed_ms={elapsed_ms} remote={cfg.source}",
+            ) from exc
+
+        code = proc.returncode or 0
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if code == 0:
+            return stdout
+
+        detail = stderr.decode("utf-8", errors="replace")[:800]
+        logger.warning(
+            "ssh 失败 message=%s attempt=%d exit=%d elapsed_ms=%d remote=%s stderr=%s",
+            message,
+            attempt,
+            code,
+            elapsed_ms,
+            cfg.source,
+            detail or "(空)",
+        )
+        last_error = TicketError(
+            ErrorCode.SSH_FAILED,
+            message,
+            f"ssh exit={code} attempt={attempt} elapsed_ms={elapsed_ms} "
+            f"remote={cfg.source} stderr={detail or '(空)'}",
+        )
+        # 只有连接层失败值得重试；远端命令本身报错（如 unzip 缺失）重试无意义。
+        if code != SSH_CONNECT_FAILED or attempt == 2:
+            break
+        await asyncio.sleep(SSH_RETRY_DELAY_SECONDS)
+
+    assert last_error is not None  # 循环只有两种出口：返回 stdout 或留下 last_error
+    raise last_error
+
+
 async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[RemoteArchive]:
     """列出日志源服务器当天生成的顶层工单 zip。
 
@@ -70,47 +166,9 @@ async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[
         f"! -newermt '{end:%Y-%m-%d %H:%M:%S}' "
         "-printf '%p\\t%s\\t%T@\\n'"
     )
-    ssh_command = [
-        "ssh",
-        "-p",
-        str(cfg.source_port),
-        "-i",
-        str(cfg.ssh_key),
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "ConnectTimeout=10",
-        cfg.source,
-        command,
-    ]
 
     logger.info("自动扫描日志源服务器当天归档 source=%s", cfg.source)
-    proc = await asyncio.create_subprocess_exec(
-        *ssh_command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
-    except asyncio.CancelledError:
-        proc.kill()
-        await proc.wait()
-        raise
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
-        raise TicketError(
-            ErrorCode.SSH_FAILED,
-            "扫描日志源服务器超时",
-            "remote archive scan timeout",
-        ) from exc
-
-    code = proc.returncode or 0
-    if code != 0:
-        detail = stderr.decode("utf-8", errors="replace")[:800]
-        raise TicketError(ErrorCode.SSH_FAILED, "无法扫描日志源服务器", f"ssh exit={code} stderr={detail}")
+    stdout = await _ssh_run(cfg, command, "无法扫描日志源服务器")
 
     archives = _parse_remote_archives(stdout.decode("utf-8", errors="replace"))
     logger.info("自动扫描完成 当天归档数=%d", len(archives))
@@ -125,39 +183,7 @@ async def list_remote_entries(cfg: Config, ticket_id: str, limit: int = 50) -> l
     """
     remote = cfg.remote_archive(ticket_id)
     command = f"unzip -Z1 {remote} 2>/dev/null | head -n {limit}"
-    ssh_command = [
-        "ssh",
-        "-p",
-        str(cfg.source_port),
-        "-i",
-        str(cfg.ssh_key),
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        "-o",
-        "ConnectTimeout=10",
-        cfg.source,
-        command,
-    ]
-    proc = await asyncio.create_subprocess_exec(
-        *ssh_command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
-    except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
-        raise TicketError(ErrorCode.SSH_FAILED, "读取归档目录超时", "remote listing timeout") from exc
-
-    if (proc.returncode or 0) != 0:
-        raise TicketError(
-            ErrorCode.SSH_FAILED,
-            "无法读取归档目录",
-            f"ssh exit={proc.returncode} archive={remote}",
-        )
+    stdout = await _ssh_run(cfg, command, "无法读取归档目录")
     return [line.strip() for line in stdout.decode("utf-8", errors="replace").splitlines() if line.strip()]
 
 

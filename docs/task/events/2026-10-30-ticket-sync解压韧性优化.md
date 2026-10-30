@@ -23,9 +23,8 @@
    quota 统计也会偏低。只改属主为自己的条目，避免对保留他人属主的文件触发 EPERM。
 2. **占位包跳过**：名称匹配归档后缀但小于 64 字节的文件直接剔除并告警。
    合法 zip 最小 22 字节、tar.gz 至少 1 KiB 量级，因此该判定不会误删可用数据。
-3. **RAR 支持**：`ARCHIVE_SUFFIXES` 增加 `.rar`，用 7z（p7zip 内置 Rar/Rar5 解码）解压。
-4. **RAR 降级**：宿主的 p7zip 不支持部分 RAR5 压缩方法（实测 `Unsupported Method: 1.dump`），
-   这类附件解不开时保留原件、计入 `unreadable_archives`、任务继续成功。
+3. **RAR 支持**：`ARCHIVE_SUFFIXES` 增加 `.rar`，解压优先 `unrar`、回退 7z（见第二轮收敛）。
+4. **RAR 降级**：两条通道都解不开时保留原件、计入 `unreadable_archives`、任务继续成功。
    已跳过的路径记入 `skipped_archives`，否则下一轮会被重新扫到，形成死循环。
 
 ### 拉取层（`app/fetcher.py`）
@@ -54,6 +53,20 @@
     改为"超出服务解压上限""超出服务层级上限"，并把服务端 `message`
     （含具体数值）拼接展示，新增 `non-log-payload` 文案。
 
+## 第二轮收敛（同日，处理上文「遗留」）
+
+上线后回看日志，三个遗留都还能咬人，逐项处理：
+
+| 遗留 | 处理 | 依据 |
+|---|---|---|
+| 阈值余量只剩 12%（17.6 万 / 20 万） | `MAX_DEPTH` 12、`MAX_FILES` 500,000、`MAX_TOTAL_BYTES` 1 TiB | 实测单工单最大 176,562 文件、最深 7 层；取 2.8 倍与 70% 余量 |
+| 层数超限会整单失败 | 到达上限改为**停止下钻**：保留已解产物、`depth_truncated` 计数、`job.message` 提示 | 主体日志都在浅层，为深层附件回滚整目录等于整单不可用 |
+| RAR5 只能保留原件 | 双通道：优先 `unrar`，失败回退 `7z`；`install-user.sh` 装 rarlab 静态二进制，unit 补 `PATH` | 实测 `1.rar`（RAR5 v50 -m3）p7zip 23.01 报 `Unsupported Method`，unrar 7.23 正常读 |
+| `ssh exit=255 stderr=`（2026-10-30 16:25） | 抽出 `_ssh_run`：连接层失败重试一次，detail 固定带 exit/attempt/elapsed_ms/remote，stderr 为空显式标 `(空)` | 旧实现只记 stderr，而 255 常常为空，事故无从归因 |
+
+关键取舍：**阈值从"判据"降为"护栏"**。层数/文件数的目的不是判断包是否正常，
+而是防止异常归档打爆磁盘与 inode；因此超限的正确反应是"停止并保留"，不是"判死并丢弃"。
+
 ## 验收
 
 ```
@@ -74,14 +87,14 @@
 ## 配置变更（宿主机 env，不入库）
 
 ```
-TICKET_MAX_DEPTH=8            # 真实 7 层，留 1 层余量
-TICKET_MAX_FILES=200000       # 单工单实测 108,523，另一工单 176,562
+TICKET_MAX_DEPTH=12           # 真实 7 层；超限只停止下钻，余量 70%
+TICKET_MAX_FILES=500000       # 单工单实测最大 176,562，余量 183%
 TICKET_MAX_TOTAL_BYTES=1099511627776   # 磁盘扩容到 2.1T 后重定标为 1 TiB
 ```
 
 ## 遗留
 
-- `MAX_FILES=200000` 已被 176,562 占用 88%，`MAX_DEPTH=8` 已被 7 层占用 87.5%，
-  多节点集群继续增长时需要再次定标。
-- 宿主机无官方 `unrar`（需 root 安装），RAR5 新压缩方法只能降级保留原件。
+- 阈值已按单机 8 个工单的实际分布定标；集群节点数翻倍后需按同一口径（实测最大值 × 2.8）重算。
+- `ssh exit=255` 只在 2026-10-30 16:25 出现一次且未复现，根因未定位；
+  现已具备重试与可归因 detail（exit/attempt/elapsed_ms/remote/stderr），下次出现可直接定性。
 - `Q2026010100001` 这类人工目录（仅 README.md）仍会出现在 `/artifacts` 列表中。

@@ -14,6 +14,10 @@ EnvironmentFile=%h/.config/hci-ticket-sync/ticket-sync.env
 # 不会去看代码默认值，缺了就是空字符串。这里先给默认，env 文件可覆盖。
 Environment=TICKET_LISTEN_HOST=192.168.0.4
 Environment=TICKET_LISTEN_PORT=18080
+# systemd 用户单元的默认 PATH 不含 ~/.local/bin，而 rarlab 的静态 unrar 就装在
+# 那里（宿主机没有 root，装不了发行版包）。不显式指定的话，代码里的
+# shutil.which("unrar") 会静默落空，RAR5 又退回"保留原件"。
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 # 重启后内存里的任务表已丢失，.tmp 里的半成品不会再有人处理，必须清空。
 ExecStartPre=/bin/sh -c 'rm -rf /sf/tickets/.tmp/* 2>/dev/null || true'
