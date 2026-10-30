@@ -8,15 +8,24 @@
 # 可观测性栈部署的命名空间（本 Chart 自行创建）
 namespace: hci-observability
 
-# Prometheus 抓取命名空间列表（默认同时覆盖业务、可观测性、argocd）
-# 生产部署时可在环境 values 中覆盖此字段。
+# 日志采集（Alloy）命名空间白名单。
+# 历史教训：这里曾写死 hci|hci-sim-dev|hci-observability|argocd，而实际环境
+# 命名空间是 hci-staging / hci-sim-staging / hci-dsh —— 白名单从未跟上环境改名，
+# 结果 staging **一条业务日志都没进 Loki**，发布期间的 502 无任何现场记录
+# （2026-10-30 复盘时才发现）。新增环境时必须同步此列表。
+# Prometheus 不再依赖它：改成全命名空间 Pod 发现 + prometheus.io/scrape 注解
+# 门控（见 templates/prometheus.yaml），从根上消除「白名单漏了 = 永久盲区」。
 scrapeNamespaces:
-  - hci
+  - hci-dev
+  - hci-staging
+  - hci-prod
   - hci-sim-dev
+  - hci-sim-staging
+  - hci-dsh
   - hci-observability
   - argocd
 
-# 兼容历史字段（建议迁移到 scrapeNamespaces）
+# 兼容历史字段（仅当 scrapeNamespaces 为空时兼为 Alloy 白名单兼底）
 scrapeNamespace: hci
 
 # ======================== 集群级资源管理开关 ==================================

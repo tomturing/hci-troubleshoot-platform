@@ -1,68 +1,7 @@
 {{- if .Values.prometheus.enabled }}
-{{- $scrapeNamespaces := .Values.scrapeNamespaces | default (list .Values.scrapeNamespace) -}}
 ---
-# Prometheus 配置（scrapeNamespace 由 values.scrapeNamespace 指定，默认 hci）
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: prometheus-config
-  namespace: {{ .Values.namespace }}
-  labels:
-    {{- include "hci.labels" . | nindent 4 }}
-data:
-  prometheus.yml: |
-    global:
-      scrape_interval: 15s
-      evaluation_interval: 15s
-      scrape_timeout: 10s
-
-    # 从独立 ConfigMap（prometheus-alert-rules）挂载告警规则文件
-    rule_files:
-      - "/etc/prometheus/rules/*.yml"
-
-    # 告警路由到 alertmanager
-    alerting:
-      alertmanagers:
-        - static_configs:
-            - targets: ['alertmanager:9093']
-
-    scrape_configs:
-      # 通过 K8s Pod 注解自动发现业务命名空间中的服务
-      - job_name: 'hci-services'
-        kubernetes_sd_configs:
-          - role: pod
-            namespaces:
-              names:
-{{- range $ns := $scrapeNamespaces }}
-                - {{ $ns }}
-{{- end }}
-        relabel_configs:
-          # 只采集带有 prometheus.io/scrape=true 注解的 Pod
-          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-            action: keep
-            regex: 'true'
-          # 使用 prometheus.io/path 注解覆盖默认的 /metrics 路径
-          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-            action: replace
-            target_label: __metrics_path__
-            regex: (.+)
-          # 使用 prometheus.io/port 注解覆盖端口
-          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-            action: replace
-            regex: ([^:]+)(?::\d+)?;(\d+)
-            replacement: $1:$2
-            target_label: __address__
-          # 添加 pod / namespace / app 标签
-          - source_labels: [__meta_kubernetes_pod_name]
-            target_label: pod
-          - source_labels: [__meta_kubernetes_namespace]
-            target_label: namespace
-          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
-            target_label: app
-          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
-            target_label: service_name
----
-# Prometheus Deployment
+# Prometheus Deployment（prometheus-config ConfigMap 在 configs.yaml，这样
+# checksum/config 才能覆盖到它的内容）
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -82,6 +21,12 @@ spec:
       labels:
         {{- include "hci.labels" . | nindent 8 }}
         app.kubernetes.io/name: prometheus
+      annotations:
+        # ConfigMap 变了却不重启 Pod，就会让「配置已合入」变成假象（ArgoCD 同步了
+        # ConfigMap，进程还跑旧的）。按整个 configs.yaml 与告警规则文件算哈希，
+        # 任一变更都触发一次滚动重启。
+        checksum/config: {{ include (print $.Template.BasePath "/configs.yaml") . | sha256sum }}
+        checksum/rules: {{ .Files.Get "rules/alert_rules.yml" | sha256sum }}
     spec:
       serviceAccountName: prometheus
       containers:

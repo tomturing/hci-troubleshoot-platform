@@ -5,8 +5,13 @@
 - 日志收集是 **1 任务 : 1 包 : 1 会话**，因此分片目录直接以 ``task_id`` 命名，
   不引入独立的 upload 会话表，也不生成额外的 ``upload_id``；
 - 分片与合并全部流式处理，20 GiB 包不在进程内构建内存副本；
-- 合并先写 ``.tmp`` 再 ``os.replace``，中途失败不会产生半成品对象；
+- 合并先写临时文件再 ``os.replace``，中途失败不会产生半成品对象；
 - 已上传分片以「目录里存在哪些 ``.part``」为唯一事实，不落位图。
+
+临时文件名由「目标名 + pid + 随机串」组成，**不能**只由目标名推导：
+滚动发布期间新旧两个 Pod 共享同一个 RWO 卷，同名临时文件会让两个进程写到
+同一个 inode，互相截断/覆盖，最后被 ``os.replace`` 当作完整分片落盘——那是静默的
+数据损坏，不是可重试的报错。
 
 平台不提供删除 API：本模块的 ``delete_multipart`` 只在合并成功或显式 abort 时调用，
 且只清理临时分片，不触碰 ``objects/`` 下的成品。
@@ -20,6 +25,7 @@ import hashlib
 import json
 import os
 import shutil
+import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -144,6 +150,22 @@ class LocalLogCollectStorage:
     def object_path(self, case_id: str, task_id: str) -> Path:
         return self.objects_root / case_id / f"{task_id}.zip"
 
+    @staticmethod
+    def _temp_for(target: Path) -> Path:
+        """为一次写入分配独占的临时路径（与目标同目录，保证 os.replace 不跨卷）。
+
+        pid 区分进程（滚动发布时新旧 Pod 并存）、随机串区分同进程内的并发请求
+        （同一分片被重复上传、或重试与首次写重叠）。只在目标名上拼固定后缀
+        在小规模下看不出问题，双进程并存时才会暴露成「分片内容错乱」。
+
+        代价：进程被强杀时可能残留 ``.tmp``——分片目录由 ``delete_multipart``
+        整体清理，对象目录的残留需人工兜底（数量与发布次数同阶，不构成本地磁盘风险）。
+        """
+
+        return target.with_name(
+            f"{target.name}.{os.getpid()}-{uuid.uuid4().hex[:12]}.tmp"
+        )
+
     # ── 会话元数据 ──────────────────────────────────────────────────────────
 
     def read_meta(self, upload_id: str) -> dict[str, Any] | None:
@@ -159,7 +181,7 @@ class LocalLogCollectStorage:
         directory = self._part_dir(upload_id)
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         target = self.meta_path(upload_id)
-        temporary = target.with_suffix(".json.tmp")
+        temporary = self._temp_for(target)
         temporary.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         os.replace(temporary, target)
 
@@ -191,7 +213,7 @@ class LocalLogCollectStorage:
             raise FileNotFoundError(f"上传会话不存在：{upload_id}")
 
         target = self.part_path(upload_id, part_number)
-        temporary = target.with_name(f"{target.name}.tmp")
+        temporary = self._temp_for(target)
         digest = hashlib.sha256()
         total = 0
 
@@ -249,7 +271,7 @@ class LocalLogCollectStorage:
             return reused
 
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary = target.with_name(f"{target.name}.tmp")
+        temporary = self._temp_for(target)
         digest = hashlib.sha256()
         total = 0
 

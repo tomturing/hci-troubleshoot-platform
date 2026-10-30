@@ -1,0 +1,56 @@
+# case-service 发布策略：这是「发布期间用户是否被断开」的直接决定项。
+#
+# 2026-10-30 复盘：case-service 用 Recreate 发布，实测每次合并后约 21s 内
+# endpoints 为空，落到旧逻辑就是用户侧 502/503。改成 RollingUpdate + 优雅期
+# 300s 之后，这两条必须被测试锁住，否则很容易被「RWO 卷不能两个 Pod 挂」的
+# 直觉改回去。
+suite: "case-service 发布策略"
+templates:
+  - case-service/deployment.yaml
+release:
+  name: hci-platform
+  namespace: hci-staging
+tests:
+  - it: "默认必须滚动发布：先起新 Pod，且不允许同时下线旧 Pod"
+    set:
+      caseService.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 1
+      # 恒为 0：一旦放开就是回到「先杀掉唯一副本，再等新 Pod」的空窗模式
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 0
+
+  - it: "优雅期必须覆盖合并耗时（默认 300s，不是 30s）"
+    set:
+      caseService.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 300
+
+  - it: "存储换成不支持多挂载的 CSI 时，可以显式退回 Recreate"
+    set:
+      caseService.checksumAnnotations: false
+      caseService.logCollectStorage.rollout.strategy: Recreate
+    asserts:
+      - equal:
+          path: spec.strategy.type
+          value: Recreate
+      - isNull:
+          path: spec.strategy.rollingUpdate
+
+  - it: "关闭日志存储时不写 strategy（交给集群默认，且不挂 PVC）"
+    set:
+      caseService.checksumAnnotations: false
+      caseService.logCollectStorage.enabled: false
+    asserts:
+      - isNull:
+          path: spec.strategy
+      - isNull:
+          path: spec.template.spec.volumes
