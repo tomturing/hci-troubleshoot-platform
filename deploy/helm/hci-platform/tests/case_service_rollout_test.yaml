@@ -54,3 +54,31 @@ tests:
           path: spec.strategy
       - isNull:
           path: spec.template.spec.volumes
+
+  # 下面的用例锁的是「endpoints 非空 ≠ 用户零 5xx」那个坑：
+  # maxUnavailable=0 只保证「有别的 Pod 在服务」，保证不了
+  # 「流量不被打到已经停止监听的旧 Pod」。
+  - it: "必须有 preStop 等待：否则旧 Pod 停机瞬间仍有流量打进来"
+    set:
+      caseService.checksumAnnotations: false
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "preStop 不得吃掉优雅期：大于等于优雅期时必须渲染失败"
+    set:
+      caseService.checksumAnnotations: false
+      caseService.preStopSleepSeconds: 300
+      caseService.terminationGracePeriodSeconds: 300
+    asserts:
+      - failedTemplate:
+          errorMessage: "caseService.preStopSleepSeconds=300 必须小于 terminationGracePeriodSeconds=300：preStop 会先吃掉优雅期，超时后 kubelet 直接 SIGKILL，在途请求照样丢"
+
+  - it: "显式关掉 preStop（置 0）时不写 lifecycle"
+    set:
+      caseService.checksumAnnotations: false
+      caseService.preStopSleepSeconds: 0
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].lifecycle

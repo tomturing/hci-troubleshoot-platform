@@ -636,6 +636,10 @@ export const useChatStore = defineStore('chat', () => {
   // bridge 实例号：由握手首包 bridge_hello 的 detail 带回。
   // 日志直传令牌要绑定到"这一台桥"，否则令牌被复制到别的机器也能用。
   const bridgeInstanceId = ref('')
+  // 客户机上正在运行的 bridge 版本：由 bridge_hello 的 message 带回（构建期注入的
+  // git describe）。与 public/downloads/bridge-version.json 比对，用于发现"平台已发新版、
+  // 而这台机器还在跑旧版"——旧版不含新修复，且用户完全没有感知。
+  const bridgeVersion = ref('')
 
   // === SFTP 文件下载面板状态（SSH 终端下方）===
   // 语义对齐 Xshell / MobaXterm：文件从远端主机落到 bridge 所在机器，
@@ -2717,6 +2721,9 @@ export const useChatStore = defineStore('chat', () => {
         if (msg.type === 'bridge_hello') {
           // 握手首包的 detail 是桥实例号：申请日志直传令牌时用它绑定实例。
           if (msg.detail) bridgeInstanceId.value = String(msg.detail)
+          // message 是桥的版本号（构建期 git describe）。老版本桥若不带该字段，
+          // 这里会保持空串，比对逻辑据此判定"无从判断"而不是"版本不符"。
+          if (msg.message) bridgeVersion.value = String(msg.message).trim()
           return
         }
 
@@ -4415,6 +4422,7 @@ export const useChatStore = defineStore('chat', () => {
     sshTerminalOutputEvent,
     sshTerminalNotice,
     bridgeInstanceId,
+    bridgeVersion,
     sshCommandConsumer,
     connectSSH,
     disconnectSSH,
