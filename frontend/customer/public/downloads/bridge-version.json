@@ -1,0 +1,7 @@
+{
+  "version": "v2.33.0-18-gf9282a80",
+  "commit": "f9282a809e95",
+  "build_time": "2026-10-30T10:40:52Z",
+  "goos": "windows",
+  "goarch": "amd64"
+}
