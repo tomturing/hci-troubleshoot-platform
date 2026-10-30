@@ -211,6 +211,17 @@ apiGateway:
 # ======================== Case Service ======================================
 caseService:
   replicaCount: 1
+  # helm-unittest 单文件渲染时需要关掉：checksum 是跨文件 include，
+  # 测试只加载 case-service/deployment.yaml 会因找不到 configmap.yaml 而失败。
+  checksumAnnotations: true
+  # 收到 SIGTERM 后等多久才 SIGKILL。
+  #
+  # 这个值要覆盖「最长的一次在途请求」，而不是取习惯值 30s：合并 20GiB 包需要
+  # 几分钟，单个 8 MiB 分片在 0.05 MB/s 的上行上也要数十秒。合并写一半被
+  # SIGKILL，留下的是半成品临时文件 + 未交还的代传租约（还要再等 120s 才被
+  # 接管），比多等几百秒更贵。uvicorn 收到 SIGTERM 会先停接新连接、再等在途
+  # 请求结束，所以 300s 只是上限，不会拖慢正常发布。
+  terminationGracePeriodSeconds: 300
   image:
     repository: hci-case-service
     tag: latest
@@ -236,6 +247,19 @@ caseService:
     # 注意：分片大小随上传会话元数据落盘，改值只影响新初始化的会话；
     # 正在续传的任务保持原分片大小，因此调小是安全的。
     chunkSizeBytes: 8388608
+    # 发布策略。
+    #
+    # RollingUpdate：新 Pod Ready 之后才停旧 Pod，发布期间不存在「endpoints
+    # 为空」的窗口（2026-10-30 实测 Recreate 约 21s 不可用）。可行前提已核实：
+    # 单节点上 local-path 的 RWO 卷允许同节点两个 Pod 同时挂载；分片、元数据、
+    # 合并临时文件已按 pid + 随机串唯一命名，双进程并存不会互相截断。
+    # 若存储换成拒绝多挂载的 CSI，新 Pod 会卡在 ContainerCreating——旧 Pod 继续
+    # 服务（用户无感，发布停住），此时把 strategy 改回 Recreate 即可恢复可发布性。
+    rollout:
+      strategy: RollingUpdate
+      # 单节点上 maxSurge 只能是 1（再加一个 Pod 同节点共享 RWO 卷）；
+      # maxUnavailable 不在 values 里开放：它必须恒为 0，否则又回到「先杀后起」。
+      maxSurge: 1
   resources:
     requests:
       cpu: "50m"
