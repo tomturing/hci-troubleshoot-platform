@@ -214,3 +214,32 @@ groups:
         annotations:
           summary: "节点 {{ $labels.instance }} 内存使用率超过 85%"
           description: "节点内存使用率 {{ $value | humanizePercentage }}，AI claw Pod 可能面临 OOM 风险。"
+
+  # ────────────────────────── 发布可用性（网关层）──────────────────────────
+  # 发布期间「Pod 换了」与「用户拿到 502」是两件事：KSM 只能看到前者。
+  # 网关 5xx 才是用户侧真实不可用的直接证据，也是衡量「发布窗口是否归零」的
+  # 唯一客观口径（此前只能靠 Pod 时间戳推导）。
+  - name: gateway_availability
+    rules:
+      - alert: GatewayServerErrorSpike
+        expr: sum by (service) (rate(traefik_service_requests_total{code=~"5.."}[2m])) > 0.05
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "网关 {{ $labels.service }} 持续返回 5xx"
+          description: "最近 2 分钟该服务 5xx 速率 > 0.05/s，超过 1 分钟。发布/重启窗口常见；若持续，检查对应 Deployment 的 Ready 状态与优雅期。"
+
+      # 反向自守：监控自己"静默瘫掉"比任何业务告警都危险。
+      # 2026-10-30 前，staging 就是因为命名空间白名单漏了而没有任何指标，
+      # 却没有任何告警提示这件事。
+      - alert: GatewayMetricsMissing
+        expr: absent(traefik_service_requests_total)
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "网关指标已消失（可用性度量失效）"
+          description: "traefik_service_requests_total 已 15 分钟无数据：可能是 Traefik 未开 metrics/prometheus 或注解端口不对，此时发布窗口无法被度量。"
