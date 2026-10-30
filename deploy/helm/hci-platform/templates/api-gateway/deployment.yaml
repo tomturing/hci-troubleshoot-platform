@@ -92,5 +92,6 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "apiGateway") | nindent 10 }}
           resources:
             {{- toYaml .Values.apiGateway.resources | nindent 12 }}

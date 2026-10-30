@@ -881,6 +881,15 @@ jobs:
             exit 1
           fi
 
+      # 2026-10-30 staging 实测：13 个 Deployment 都没有 lifecycle.preStop。
+      # 旧 Pod 收到 SIGTERM 是毫秒级停止监听，而它从 EndpointSlice 消失、再经
+      # Traefik / kube-proxy 传播到每条转发路径需要约 2s——这个差集就是发布瞬间的
+      # 502 窗口（case-service 经 Traefik 施压 2338 次吃到 28 个，endpoints 却全程非空）。
+      # 修复是共享 helper hci.preStopLifecycle + 每个 Deployment 主动 include，
+      # 「主动 include」最容易在新服务上漏掉，所以源码与渲染结果两头都锁。
+      - name: preStop 覆盖率（模板源码 + 渲染结果）
+        run: python3 scripts/ci/check_prestop_coverage.py /tmp/hci-platform-rendered.yaml
+
       # 数值型环境变量必须是纯十进制：Helm 把 values 里的数字解析为 float64，
       # 模板里直接 `| quote` 会用 %v 格式化，8388608 会变成 "8.388608e+06"。
       # 容器侧是 pydantic int 字段，科学计数法字符串直接 ValidationError，

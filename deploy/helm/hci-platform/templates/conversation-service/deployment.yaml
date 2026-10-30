@@ -128,6 +128,7 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3         # startup 也需要 timeout，避免 DB 连接慢时超时
             failureThreshold: 30
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "conversationService") | nindent 10 }}
           resources:
             {{- toYaml .Values.conversationService.resources | nindent 12 }}
           # qkv_vm_console 截图制品卷（emptyDir；法务保全场景改挂 PVC）
