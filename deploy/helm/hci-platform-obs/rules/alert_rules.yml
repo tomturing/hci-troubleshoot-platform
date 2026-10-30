@@ -243,20 +243,40 @@ groups:
       # 兜底方式不看增量，只问「这条 5xx 序列是不是刚出现」：现在有值、10 分钟前
       # 还不存在（或为 0），说明它的首次增量必然发生在第一次抓取之前。
       # 它是一次性事件告警，序列满 10 分钟后自动消解，不会长期占用告警列表。
+      #
+      # 但「offset 处没有数据」有两种成因，必须区分，否则后者会变成成片误报：
+      #   (a) 序列真的刚诞生 —— 该报；
+      #   (b) offset 落进了本实例根本没有的那段数据 —— 不该报。
+      # (b) 不是理论风险：staging 的 Prometheus 数据目录是 emptyDir，每次重启
+      # TSDB 全清。2026-10-30 15:49 合入本规则后，15:50:4x checksum/rules 触发重启，
+      # 15:51:22 首次评估就把 9 条发布前早已存在的 5xx 序列全部判成「新出现」，
+      # 一次性 firing 9 条 warning。
+      #
+      # 修法是给表达式加一道「数据连续性门控」：只有当被判断依据的那个指标族
+      # 在 offset 时刻确实有数据时，才认为「序列不存在」等价于「序列刚诞生」。
+      # 门控用指标族自身而不是 up：全局 up 只要 18 个 target 里有一个健康就非空，
+      # 单 Traefik 抓取中断 10 分钟同样会漏开门控。
+      # 实测（emptyDir 重启后 30 分钟处即真实空档）：裸表达式命中 10 条，
+      # 加指标族门控命中 0 条；数据齐全处（offset 8m/10m/15m/20m）门控不误挡真实新序列。
       - alert: GatewayServerErrorFirstSeen
-        # 括号不能省：offset 只能直接跟在向量选择器后面，
-        # `... > 0 offset 10m` 会直接报 parse error。
+        # 两层括号都不能省：offset 只能直接跟在向量选择器后面
+        # （`... > 0 offset 10m` 直接 parse error）；unless 与 and 左结合，
+        # 不括起来门控会挂错结合对象。
         expr: |
-          (traefik_service_requests_total{code=~"5.."} > 0)
-          unless
-          ((traefik_service_requests_total{code=~"5.."} offset 10m) > 0)
+          (
+            (traefik_service_requests_total{code=~"5.."} > 0)
+            unless
+            ((traefik_service_requests_total{code=~"5.."} offset 10m) > 0)
+          )
+          and on()
+          (count by () (traefik_service_requests_total offset 10m) > 0)
         for: 0m
         labels:
           severity: warning
           team: platform
         annotations:
           summary: "网关 {{ $labels.service }} 出现新的 5xx 序列（{{ $labels.code }}/{{ $labels.method }}）"
-          description: "该 5xx 计数器刚出现，当前值 {{ $value | humanize }} 全部发生在首次抓取之前，rate()/increase() 看不到它们。这通常是一次发布/重启窗口：先看对应 Deployment 的 Pod 是否在此时重启，以及 preStop 是否生效。"
+          description: "该 5xx 计数器刚出现，当前值 {{ $value | humanize }} 全部发生在首次抓取之前，rate()/increase() 看不到它们。这通常是一次发布/重启窗口：先看对应 Deployment 的 Pod 是否在此时重启，以及 preStop 是否生效。若整批 5xx 序列在同一时刻集体 firing，则更可能是 Prometheus 自身重启导致 TSDB 历史丢失（数据目录目前为 emptyDir），门控已排除这种成片假象。"
 
       # 反向自守：监控自己"静默瘫掉"比任何业务告警都危险。
       # 2026-10-30 前，staging 就是因为命名空间白名单漏了而没有任何指标，
