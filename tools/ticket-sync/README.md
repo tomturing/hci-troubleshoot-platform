@@ -110,7 +110,7 @@ queued ──► fetching ──► extracting ──► ready
 为几个深层附件回滚整个工作目录会让用户拿不到任何日志。
 
 RAR 解压走双通道：优先 `unrar`（rarlab 静态二进制，RAR5 全方法），失败再回退
-`7z`。宿主机没有 root，`deploy/install-user.sh` 会把 unrar 装到 `~/.local/bin`，
+`7z`。宿主机没有 root，`tools/ticket-sync/deploy/install-user.sh` 会把 unrar 装到 `~/.local/bin`，
 unit 里显式补了 `PATH`——否则 `shutil.which("unrar")` 会静默落空。
 
 此外每层解压后都会补权限：文件补属主读写位、目录补执行位。源端
