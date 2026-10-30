@@ -229,7 +229,34 @@ groups:
           team: platform
         annotations:
           summary: "网关 {{ $labels.service }} 持续返回 5xx"
-          description: "最近 2 分钟该服务 5xx 速率 > 0.05/s，超过 1 分钟。发布/重启窗口常见；若持续，检查对应 Deployment 的 Ready 状态与优雅期。"
+          description: "最近 2 分钟该服务 5xx 速率 > 0.05/s，超过 1 分钟。发布/重启窗口常见；若持续，检查对应 Deployment 的 Ready 状态与优雅期。注意本告警用 rate()，对「序列诞生前的增量」是瞎的，那一段由 GatewayServerErrorFirstSeen 兜住。"
+
+      # 首样本盲区：delta 类函数（rate/increase/irate/delta）永远看不见
+      # 「序列诞生前已发生的增量」。Traefik 的 code 标签是懒创建的，某服务第一次
+      # 出 5xx 时序列才诞生，Prometheus 看到的第一个样本就已经是 N，之后每个样本
+      # 都停在 N，于是 rate()/increase() 在任何窗口上都恒为 0。
+      #
+      # 2026-10-30 staging 实测：case-service 的 502 序列首样本就是 10:47:49Z = 28，
+      # 之后常数；同期 sum(increase(...[15m])) = 0。也就是说「5xx 增量为 0」这条
+      # 验收口径在低流量环境下结构性失效——而这恰恰是告警最该响的首次故障。
+      #
+      # 兜底方式不看增量，只问「这条 5xx 序列是不是刚出现」：现在有值、10 分钟前
+      # 还不存在（或为 0），说明它的首次增量必然发生在第一次抓取之前。
+      # 它是一次性事件告警，序列满 10 分钟后自动消解，不会长期占用告警列表。
+      - alert: GatewayServerErrorFirstSeen
+        # 括号不能省：offset 只能直接跟在向量选择器后面，
+        # `... > 0 offset 10m` 会直接报 parse error。
+        expr: |
+          (traefik_service_requests_total{code=~"5.."} > 0)
+          unless
+          ((traefik_service_requests_total{code=~"5.."} offset 10m) > 0)
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "网关 {{ $labels.service }} 出现新的 5xx 序列（{{ $labels.code }}/{{ $labels.method }}）"
+          description: "该 5xx 计数器刚出现，当前值 {{ $value | humanize }} 全部发生在首次抓取之前，rate()/increase() 看不到它们。这通常是一次发布/重启窗口：先看对应 Deployment 的 Pod 是否在此时重启，以及 preStop 是否生效。"
 
       # 反向自守：监控自己"静默瘫掉"比任何业务告警都危险。
       # 2026-10-30 前，staging 就是因为命名空间白名单漏了而没有任何指标，

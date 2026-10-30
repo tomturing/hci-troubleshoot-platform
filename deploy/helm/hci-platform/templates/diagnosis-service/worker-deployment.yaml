@@ -87,6 +87,7 @@ spec:
               port: metrics
             initialDelaySeconds: 5
             periodSeconds: 10
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "diagnosisService") | nindent 10 }}
           resources:
             {{- toYaml .Values.diagnosisService.worker.resources | nindent 12 }}
           volumeMounts:

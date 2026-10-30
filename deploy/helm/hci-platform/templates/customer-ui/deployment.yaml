@@ -70,5 +70,6 @@ spec:
               port: {{ .Values.customerUI.port }}
             initialDelaySeconds: 3
             periodSeconds: 10
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "customerUI") | nindent 10 }}
           resources:
             {{- toYaml .Values.customerUI.resources | nindent 12 }}

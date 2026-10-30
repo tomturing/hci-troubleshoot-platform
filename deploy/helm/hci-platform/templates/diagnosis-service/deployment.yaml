@@ -136,6 +136,7 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 3
             failureThreshold: 30
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "diagnosisService") | nindent 10 }}
           resources:
             {{- toYaml .Values.diagnosisService.resources | nindent 12 }}
           volumeMounts:

@@ -68,5 +68,6 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "schedulerService") | nindent 10 }}
           resources:
             {{- toYaml .Values.schedulerService.resources | nindent 12 }}

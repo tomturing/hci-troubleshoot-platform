@@ -85,5 +85,6 @@ spec:
               port: {{ .Values.adminUI.port }}
             initialDelaySeconds: 3
             periodSeconds: 10
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "adminUI") | nindent 10 }}
           resources:
             {{- toYaml .Values.adminUI.resources | nindent 12 }}

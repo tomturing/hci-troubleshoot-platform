@@ -1,0 +1,121 @@
+# preStop 回归锁（常开服务）。
+#
+# 2026-10-30 实测：13 个 Deployment 的 lifecycle.preStop 全部为空，每次发布
+# 旧 Pod 一收到 SIGTERM 就停止监听，而负载均衡视图还没更新，于是发布瞬间
+# 有约 2s 的 502（case-service 经 Traefik 施压 2338 次就吃到 28 个）。
+# 修复放在 _helpers.tpl 的 hci.preStopLifecycle，由每个 Deployment 主动 include。
+#
+# 覆盖范围说明：这里只放「默认 values 下就会渲染」的服务。
+# diagnosis-service / diagnosis-worker / ops-agent-service / terminal-bridge 默认
+# enabled=false，要渲染它们得先补齐 required 的注入值与 Secret 名，单测会变成
+# 一堆与 preStop 无关的样板。这 4 个由 CI 的静态覆盖率检查兜住
+# （scripts/ci 之外的 ci.yml 步骤：所有 Deployment 模板必须 include 该 helper），
+# 再叠加 `helm template -f environments/staging/values.yaml` 的人工核验。
+#
+# configmap.yaml / secret.yaml 必须一并列出：有一半 Deployment 的 checksum 是
+# 硬编码的跨文件 include，单文件渲染会直接报 "no template ... associated"。
+suite: "常开服务必须有 preStop 等待"
+templates:
+  - admin-ui/deployment.yaml
+  - agent-service/deployment.yaml
+  - api-gateway/deployment.yaml
+  - auth-service/deployment.yaml
+  - case-service/deployment.yaml
+  - conversation-service/deployment.yaml
+  - customer-ui/deployment.yaml
+  - kb-service/deployment.yaml
+  - scheduler-service/deployment.yaml
+  - configmap.yaml
+  - secret.yaml
+set:
+  apiGateway.checksumAnnotations: false
+  caseService.checksumAnnotations: false
+  kbService.checksumAnnotations: false
+tests:
+  - it: "admin-ui 必须在停止监听前等 10s"
+    template: admin-ui/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "agent-service 必须在停止监听前等 10s"
+    template: agent-service/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "api-gateway 必须在停止监听前等 10s"
+    template: api-gateway/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "auth-service 必须在停止监听前等 10s"
+    template: auth-service/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "case-service 必须在停止监听前等 10s"
+    template: case-service/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "conversation-service 必须在停止监听前等 10s"
+    template: conversation-service/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "customer-ui 必须在停止监听前等 10s"
+    template: customer-ui/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "kb-service 必须在停止监听前等 10s"
+    template: kb-service/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "scheduler-service 必须在停止监听前等 10s"
+    template: scheduler-service/deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].lifecycle.preStop.exec.command
+          value: ["/bin/sh", "-c", "sleep 10"]
+
+  - it: "admin-ui 在 global.preStopSleepSeconds=0 时不写 lifecycle"
+    template: admin-ui/deployment.yaml
+    set:
+      global.preStopSleepSeconds: 0
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].lifecycle
+
+  - it: "case-service 在 global.preStopSleepSeconds=0 时不写 lifecycle"
+    template: case-service/deployment.yaml
+    set:
+      global.preStopSleepSeconds: 0
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].lifecycle
+
+  - it: "kb-service 在 global.preStopSleepSeconds=0 时不写 lifecycle"
+    template: kb-service/deployment.yaml
+    set:
+      global.preStopSleepSeconds: 0
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].lifecycle
+
