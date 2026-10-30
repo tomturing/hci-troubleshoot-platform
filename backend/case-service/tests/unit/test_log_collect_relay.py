@@ -160,6 +160,9 @@ async def test_snapshot_maps_relay_fields(storage):
         relay_chunk_index=3,
         relay_chunk_total=10,
         relay_restarts=1,
+        relay_attempt=2,
+        relay_last_error="5888 返回 503",
+        relay_last_error_at=None,
         relay_updated_at=None,
         archive_path="Q1/t.zip",
     )
@@ -172,6 +175,9 @@ async def test_snapshot_maps_relay_fields(storage):
     assert snapshot["relay_status"] == "running"
     assert snapshot["relay_chunk_index"] == 3
     assert snapshot["relay_restarts"] == 1
+    # 单片超时期间 chunk_index 不动，只有这两项能说明"进程还活着、上一轮为什么失败"。
+    assert snapshot["relay_attempt"] == 2
+    assert snapshot["relay_last_error"] == "5888 返回 503"
 
 
 # ── 分片读取边界 ────────────────────────────────────────────────────────────
@@ -433,6 +439,38 @@ async def test_run_retries_transient_then_succeeds(storage):
     await service.run(task.task_id)
     assert calls["n"] == 2
     assert finished == {}, "成功路径不应调用 _finish 写终态"
+
+
+async def test_run_records_attempt_and_last_error_per_round(storage):
+    """每轮开始落 attempt、失败时落 last_error：这是"卡住 vs 在传"的唯一区分依据。"""
+    task, _ = _make_task(storage, "Q1", b"01234567")
+    calls = {"n": 0}
+
+    async def flaky_run(_tid):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise SangforRelayError("5888 超时", "LC-TRANSFER-003")
+
+    saved: list[dict] = []
+
+    async def fake_save(_task_id, **values):
+        saved.append(values)
+
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        max_attempts=2,
+        retry_base_delay=0.0,
+    )
+    service._run = flaky_run  # type: ignore[method-assign]
+    service._save = fake_save  # type: ignore[method-assign]
+    service._finish = AsyncMock()
+    await service.run(task.task_id)
+
+    assert {"attempt": 1} in saved
+    assert {"attempt": 2} in saved, "第二轮也要落库，否则界面永远显示第 1 次"
+    assert any("5888 超时" in str(v.get("last_error", "")) for v in saved), "失败原因必须落库"
 
 
 async def test_run_transient_exhausted_marks_failed(storage):

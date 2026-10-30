@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
+  describeRelayProgress,
+  formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
@@ -187,5 +189,76 @@ describe('buildDeliverySubmitMessage', () => {
     )
     const msg = decode(buildDeliverySubmitMessage(payload, 'Q1'))
     expect(msg.uploaded_parts).toEqual([])
+  })
+})
+
+describe('formatFailureReason', () => {
+  const FALLBACK = '归档到日志服务器失败，平台未记录原因（可在桥日志中按工单号检索）'
+
+  it('码与原因都有时拼成 [码] 原因', () => {
+    expect(formatFailureReason({ error_code: 'LC-TRANSFER-003', error_message: '5888 返回 503' }, FALLBACK)).toBe(
+      '[LC-TRANSFER-003] 5888 返回 503',
+    )
+  })
+
+  // 这条是本次改动的核心：Q2026102801062 界面指向"任务记录"，记录里却什么都没有。
+  it('无码无因时如实说明「平台未记录」，不编造原因', () => {
+    expect(formatFailureReason(null, FALLBACK)).toBe(FALLBACK)
+    expect(formatFailureReason(undefined, FALLBACK)).toBe(FALLBACK)
+    expect(formatFailureReason({ error_code: null, error_message: '   ' }, FALLBACK)).toBe(FALLBACK)
+  })
+
+  it('只有码没有原因时保留码（码本身就能报给支持），再补兜底文案', () => {
+    expect(formatFailureReason({ error_code: 'LC-TRANSFER-002' }, FALLBACK)).toBe(`[LC-TRANSFER-002] ${FALLBACK}`)
+  })
+
+  it('只有原因没有码时不加空方括号', () => {
+    expect(formatFailureReason({ error_message: '平台副本为空文件' }, FALLBACK)).toBe('平台副本为空文件')
+  })
+
+  it('原因两端空白会被裁掉，避免展示出多余空行', () => {
+    expect(formatFailureReason({ error_message: '  归档超时  ' }, FALLBACK)).toBe('归档超时')
+  })
+})
+
+describe('describeRelayProgress', () => {
+  it('正常进度只显示片号，不显示「第 1 次尝试」这类噪声', () => {
+    expect(describeRelayProgress({ relay_chunk_index: 2, relay_chunk_total: 10, relay_attempt: 1 })).toBe(
+      '第 3/10 片',
+    )
+  })
+
+  it('重试过的轮次要显式写出来', () => {
+    expect(describeRelayProgress({ relay_chunk_index: 2, relay_chunk_total: 10, relay_attempt: 3 })).toBe(
+      '第 3/10 片 · 第 3 次尝试',
+    )
+  })
+
+  // 这条对应 Q2026102801062 的体感：单片 300s 超时期间 chunk_index 不动，
+  // 界面与"已卡死"同形，必须给出上一轮的失败原因。
+  it('带上上一轮失败原因', () => {
+    expect(
+      describeRelayProgress({
+        relay_chunk_index: 0,
+        relay_chunk_total: 409,
+        relay_attempt: 2,
+        relay_last_error: '5888 返回 503',
+      }),
+    ).toBe('第 1/409 片 · 第 2 次尝试 · 上次失败：5888 返回 503')
+  })
+
+  it('只有总片数（还没开始传）时说明准备中', () => {
+    expect(describeRelayProgress({ relay_chunk_total: 409 })).toBe('共 409 片，准备中')
+  })
+
+  it('什么都不知道时不能说谎，只能写准备中', () => {
+    expect(describeRelayProgress(null)).toBe('准备中')
+    expect(describeRelayProgress({})).toBe('准备中')
+  })
+
+  it('超长错误截断，避免把单行进度挤没', () => {
+    const text = describeRelayProgress({ relay_chunk_total: 1, relay_last_error: 'x'.repeat(300) })
+    expect(text).toContain('…')
+    expect(text.length).toBeLessThan(200)
   })
 })

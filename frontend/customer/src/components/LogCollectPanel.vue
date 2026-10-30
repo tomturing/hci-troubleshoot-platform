@@ -32,11 +32,14 @@ import {
 import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
+  describeRelayProgress,
+  formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
   rememberPlatformCertTrust,
   type DeliverySubmitPayload,
+  type RelayProgressView,
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
@@ -345,6 +348,9 @@ function resetTransfer() {
   transfer.sha256 = ''
 }
 const relayStatus = ref<RelayStatus>('none')
+// 代传进度明细（第几片 / 第几轮 / 上次失败原因）。relayStatus 只有五态，
+// 单片超时 300s 时它一直停在 running，看不出"在传"还是"卡死"，所以另存一份快照。
+const relayProgress = ref<RelayProgressView | null>(null)
 const cleanupTip = ref('')
 const errorMessage = ref('')
 // 运行令牌：每次启动 / 取消都自增，后台轮询据此退出，避免取消后仍继续写状态
@@ -908,7 +914,11 @@ const resultDelivered = computed(() => {
 const resultArchiveText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
-  if (task.relay_status === 'failed') return '归档失败（详见平台任务记录）'
+  // 不写「详见平台任务记录」：结果态本身就展示 error_code/error_message，
+  // 再把用户指去别处查同一份数据，只会让"记录是空"的现场更困惑（Q2026102801062）。
+  if (task.relay_status === 'failed') {
+    return `归档失败：${formatFailureReason(task, '平台未记录原因（可在桥日志中按工单号检索）')}`
+  }
   if (task.delivery_status === 'failed') return '交付失败（可点「上传到平台」重传，无需重新采集）'
   // queued = 平台已登记一次交付尝试但没走到终态（提交阶段中断/失败）。
   // 不显式化的话，这里只会显示"采集完成，尚未交付"，用户无从知道已经试过一次、
@@ -1312,7 +1322,11 @@ const statusText = computed(() => {
     }
     return `正在上传平台：${transfer.uploadedParts}/${transfer.partCount} 片`
   }
-  if (stage.value === 'relaying') return `正在归档到日志服务器：${relayStatus.value}`
+  if (stage.value === 'relaying') {
+    // 必须带上片段/轮次/上次失败：只写 relayStatus 时，单片 300s 超时期间界面
+    // 与"已卡死"完全同形，用户只能得出"挂了"这一个结论。
+    return `正在归档到日志服务器：${describeRelayProgress(relayProgress.value)}`
+  }
   return ''
 })
 
@@ -2773,12 +2787,22 @@ async function adoptNodeTask() {
       ElMessage.error(errorMessage.value)
       // 交付失败不写 status=failed：采集完成是真实结论，抹掉它会让用户
       // 既看不到包在哪、也找不到重试入口。失败只落在 delivery_* 上。
-      await logCollectApi
-        .patchTask(task.task_id, {
-          delivery_status: 'failed',
-          delivery_error: errorMessage.value.slice(0, 500),
-        })
-        .catch(() => undefined)
+      //
+      // 这里**不写** delivery_error：它是代传终态的唯一权威字段，由后端 _finish 落库。
+      // 前端一旦回写，就会用一句通用文案覆盖后端记录的真实原因（Q2026102801062：
+      // 后端写了原因，被前端覆盖成「错误码见平台任务记录」，结果记录里反而查不到）。
+      //
+      // 桥侧失败的原因改走 error_code / error_message（PATCH 契约允许）。但必须先确认
+      // 后端有没有记录：代传失败时 catch 拿到的 message 本身就是「[码] 原因」的转述，
+      // 原样回写会让下次渲染再拼一次码，变成 "[LC-X] [LC-X] ..."。
+      const fresh = await logCollectApi.getTask(task.task_id).catch(() => null)
+      const alreadyRecorded = Boolean(String(fresh?.error_message ?? '').trim())
+      const failurePatch: Partial<LogCollectTask> = { delivery_status: 'failed' }
+      if (!alreadyRecorded) {
+        failurePatch.error_code = lastNodeErrorCode || platformErrorCode(error) || undefined
+        failurePatch.error_message = errorMessage.value.slice(0, 2000)
+      }
+      await logCollectApi.patchTask(task.task_id, failurePatch).catch(() => undefined)
     }
     return
   }
@@ -3324,9 +3348,16 @@ async function pollRelay(taskId: string, token: number) {
     if (token !== runToken) return
     const snapshot = await logCollectApi.getRelay(taskId)
     relayStatus.value = snapshot.relay_status
+    relayProgress.value = snapshot
     if (snapshot.relay_status === 'success') return
     if (snapshot.relay_status === 'failed') {
-      throw new Error('归档到日志服务器失败，错误码见平台任务记录，可据此排查')
+      // 原因必须从任务记录读，不能就地拼一句通用文案。
+      // Q2026102801062：界面写「错误码见平台任务记录」，而记录里 error_code /
+      // error_message 恰恰是空 —— 用户被指去一个没有答案的地方。
+      // 代传终态的权威原因由后端 _finish 落库，前端只负责转述；
+      // getTask 失败时按"平台未记录"如实说，绝不编造原因。
+      const detail = await logCollectApi.getTask(taskId).catch(() => null)
+      throw new Error(formatFailureReason(detail, '归档到日志服务器失败，平台未记录原因（可在桥日志中按工单号检索）'))
     }
     if (shouldRecoverRelayLease(snapshot, leaseRecoveryAttempted)) {
       // 发布/重启把执行代传的进程杀掉了，状态会永久停在 running：

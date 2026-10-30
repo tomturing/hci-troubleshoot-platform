@@ -63,6 +63,13 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     relay_chunk_total = Column(Integer, nullable=True)
     relay_restarts = Column(Integer, nullable=False, default=0, server_default="0")
     relay_chunk_size = Column(Integer, nullable=True)
+    # 当前（或最近一次）代传尝试轮次：`_run_with_retry` 每轮开始写一次。
+    # 与 relay_restarts 的区别：restarts 记的是"会话被丢弃重建"次数，attempt 记的是
+    # "整轮重试"次数——用户问"到底试了几次"时，答案是后者。
+    relay_attempt = Column(Integer, nullable=False, default=0, server_default="0")
+    # 最近一次失败原因（含瞬时失败）。终态成功时清空：成功任务挂一条历史错误只会误导排障。
+    relay_last_error = Column(Text, nullable=True)
+    relay_last_error_at = Column(DateTime(timezone=True), nullable=True)
     # 代传状态与任务主状态机解耦：主状态反映业务阶段，relay_status 反映归档结果
     relay_status = Column(String(16), nullable=False, default="none", server_default="'none'")
     relay_updated_at = Column(DateTime(timezone=True), nullable=True)

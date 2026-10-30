@@ -606,7 +606,9 @@ async def upload_part_direct(
     """流式写入单个分片。
 
     该路径**不得**配置到 API Gateway：网关默认 1 MiB、豁免 10 MiB，
-    而分片为 32 MiB。鉴权改用 init 签发的短期 token（绑定 task_id）。
+    而分片为 8 MiB（LOG_COLLECT_CHUNK_SIZE_BYTES，已在 10 MiB 豁免内，但仍应
+    直连 case-service 以避免豁免额度被其它路由挤占）。鉴权改用 init 签发的
+    短期 token（绑定 task_id）。
     """
     if not upload_service.verify_token(str(task_id), upload_token):
         raise HTTPException(

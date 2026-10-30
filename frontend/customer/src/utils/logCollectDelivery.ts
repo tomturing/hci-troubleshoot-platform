@@ -140,3 +140,62 @@ export function rememberPlatformCertTrust(origin: string): void {
     /* 忽略：下次再问一次即可 */
   }
 }
+
+/**
+ * 拼装「失败原因」展示文本：`[错误码] 原因`，缺失时如实说明而不是编造。
+ *
+ * 为什么必须读任务记录而不是就地拼一句通用文案：Q2026102801062 现场界面写的是
+ * 「归档到日志服务器失败，错误码见平台任务记录」——用户照着去查，任务记录里
+ * error_code / error_message 全是空，等于让用户去一个没有答案的地方找答案。
+ * 代传终态的权威原因只有后端 `_finish` 写的那一份，前端只能转述它。
+ *
+ * 空值口径：有码无因时保留码（码本身就能报给支持），两者都无才用 fallback。
+ */
+export function formatFailureReason(
+  detail: { error_code?: string | null; error_message?: string | null } | null | undefined,
+  fallback: string,
+): string {
+  const code = detail?.error_code ? `[${detail.error_code}] ` : ''
+  const message = String(detail?.error_message ?? '').trim()
+  return message ? `${code}${message}` : `${code}${fallback}`
+}
+
+/** 代传进度快照里与「正在干什么」相关的字段（与后端 snapshot 一一对应）。 */
+export interface RelayProgressView {
+  relay_chunk_index?: number | null
+  relay_chunk_total?: number | null
+  relay_attempt?: number | null
+  relay_last_error?: string | null
+}
+
+/** 最近一次错误在进度行里的展示上限：进度行是单行，长堆栈会把关键信息挤没。 */
+const RELAY_ERROR_INLINE_LIMIT = 120
+
+/**
+ * 拼装代传进度行，回答「现在传到第几片、第几轮、上一轮为什么失败」。
+ *
+ * 第一性原理：单片上传超时 300s 期间，`relay_chunk_index` 只在成功后前进，
+ * 于是"卡住"和"正在传"在界面上长得一模一样，用户唯一的结论只能是"挂了"。
+ * 这三条信息是区分二者的最小集合，且全部来自服务端事实，前端不猜。
+ */
+export function describeRelayProgress(view: RelayProgressView | null | undefined): string {
+  if (!view) return '准备中'
+  const total = Number(view.relay_chunk_total ?? 0)
+  const index = Number(view.relay_chunk_index ?? -1)
+  const parts: string[] = []
+
+  if (total > 0 && index >= 0) parts.push(`第 ${index + 1}/${total} 片`)
+  else if (total > 0) parts.push(`共 ${total} 片，准备中`)
+
+  const attempt = Number(view.relay_attempt ?? 0)
+  // 第 1 轮是常态，写出来只是噪声；只有真的重试过才值得占位。
+  if (attempt > 1) parts.push(`第 ${attempt} 次尝试`)
+
+  const error = String(view.relay_last_error ?? '').trim()
+  if (error) {
+    const inline = error.length > RELAY_ERROR_INLINE_LIMIT ? `${error.slice(0, RELAY_ERROR_INLINE_LIMIT)}…` : error
+    parts.push(`上次失败：${inline}`)
+  }
+
+  return parts.length > 0 ? parts.join(' · ') : '准备中'
+}
