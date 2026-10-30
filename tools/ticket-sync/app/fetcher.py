@@ -187,20 +187,37 @@ async def list_remote_entries(cfg: Config, ticket_id: str, limit: int = 50) -> l
     return [line.strip() for line in stdout.decode("utf-8", errors="replace").splitlines() if line.strip()]
 
 
-def looks_like_non_log_bundle(entries: list[str]) -> bool:
-    """判断归档是否为"非日志载荷"（如仅含 vmcore 的崩溃转储）。
+# 转储类载荷的条目特征：这些文件不是日志，解析它们对定位问题没有帮助，
+# 体积却往往是几十 GiB。实测 Q2026102101911 的归档只有一个 kasi/kasi.dump，
+# 下载 16.4 GiB、解压后 65 GiB 白占磁盘，旧规则因只认 vmdumpcore/.core 全部放行。
+_NON_LOG_MARKERS = (
+    "vmdumpcore",
+    "vmcore",
+    "kdump",
+    ".core",
+    ".dump",
+    ".dmp",
+    "crash-",
+)
 
-    判定刻意保守，只在特征非常明确时才跳过，避免把正常日志包误判：
+
+def looks_like_non_log_bundle(entries: list[str]) -> bool:
+    """判断归档是否为"非日志载荷"（崩溃转储、内存镜像等）。
+
+    判定刻意保守，三条同时满足才跳过，避免把正常日志包误判：
     - 条目数 <= 3（日志包必然有 log_list.json + 多个 sp_*.tgz）
-    - 不含 .tgz，也不含 log_list.json
-    - 含 vmdumpcore 或 .core 结尾的条目
+    - 不含 .tgz / .tar.gz，也不含 log_list.json
+    - 条目名命中转储特征（vmcore / kdump / .core / .dump / .dmp）
     """
     if not entries or len(entries) > 3:
         return False
     lowered = [entry.lower() for entry in entries]
-    if any(entry.endswith(".tgz") or entry == "log_list.json" for entry in lowered):
+    if any(
+        entry.endswith(".tgz") or entry.endswith(".tar.gz") or entry.endswith("log_list.json")
+        for entry in lowered
+    ):
         return False
-    return any("vmdumpcore" in entry or entry.endswith(".core") for entry in lowered)
+    return any(marker in entry for entry in lowered for marker in _NON_LOG_MARKERS)
 
 
 def _parse_remote_archives(output: str) -> list[RemoteArchive]:

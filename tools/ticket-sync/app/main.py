@@ -34,7 +34,7 @@ from .fetcher import (
     list_today_archives,
     looks_like_non_log_bundle,
 )
-from .maintenance import cleanup_expired, enforce_capacity
+from .maintenance import cleanup_expired, enforce_capacity, has_usable_logs, write_sync_meta
 from .models import (
     RUNNING_PHASES,
     TICKET_RE,
@@ -227,25 +227,35 @@ class JobRegistry:
         return {job.ticket_id for job in self.jobs.values() if job.phase in RUNNING_PHASES}
 
     async def prune_expired(self, now: datetime) -> int:
-        """在任务注册表锁内执行清理，避免与手动入队同时删除产物目录。"""
-        async with self._lock:
-            return cleanup_expired(
-                self.cfg.root,
-                now,
-                self.cfg.retention_days,
-                self.active_ticket_ids(),
-            )
+        """清理过期产物。
+
+        两个必须遵守的约束：
+        1. 磁盘遍历与 rmtree 都是阻塞 IO（冷缓存下全盘统计可达数分钟），
+           必须放进线程池。直接在协程里跑会把事件循环钉死，实测 2026-10-31
+           00:00:07 到 00:03:35 之间服务完全静默，连 /health 都没有响应。
+        2. 不在注册表锁内执行。清理期间不应阻塞入队与前端查询；删除目标已经
+           排除活跃工单，而发布是原子 rename，最坏情况只是多删一个旧目录。
+        """
+        active = self.active_ticket_ids()
+        return await asyncio.to_thread(
+            cleanup_expired,
+            self.cfg.root,
+            now,
+            self.cfg.retention_days,
+            active,
+        )
 
     async def prune_capacity(self, now: datetime) -> tuple[int, int]:
-        """总量超过上限时按最旧优先淘汰，返回 (删除数, 释放字节)。"""
-        async with self._lock:
-            return enforce_capacity(
-                self.cfg.root,
-                self.cfg.max_total_bytes,
-                self.cfg.min_keep_days,
-                now,
-                self.active_ticket_ids(),
-            )
+        """总量超过上限时淘汰，返回 (删除数, 释放字节)。理由同上。"""
+        active = self.active_ticket_ids()
+        return await asyncio.to_thread(
+            enforce_capacity,
+            self.cfg.root,
+            self.cfg.max_total_bytes,
+            self.cfg.min_keep_days,
+            now,
+            active,
+        )
 
     async def list_artifacts(self) -> list[dict[str, Any]]:
         """合并本地已发布目录与内存任务，供 DSH 控制台展示。"""
@@ -328,6 +338,17 @@ class JobRegistry:
                 replaced = publish(work_dir, self.cfg.root / ticket_id, self.cfg.trash_dir())
                 prune_trash(self.cfg.trash_dir())
 
+                # 把"何时同步完、多大、有没有日志"固化成显式事实：
+                # 清理与容量判断不再依赖目录 mtime，也不用每天全盘扫描。
+                has_logs = has_usable_logs(self.cfg.root / ticket_id)
+                write_sync_meta(
+                    self.cfg.root / ticket_id,
+                    completedAt=_now().timestamp(),
+                    bytes=stats.bytes,
+                    files=stats.files,
+                    hasLogs=has_logs,
+                )
+
                 job.extracted_bytes = stats.bytes
                 job.file_count = stats.files
                 job.current_archive = None
@@ -338,6 +359,11 @@ class JobRegistry:
                     job.message = (
                         f"{stats.unreadable_archives} 个归档工具无法解压，已保留原压缩文件"
                     )
+                # 「流程跑通」不等于「产物可用」：实测 Q2026102101911 解出 65 GiB
+                # 的 kasi/kasi.dump，状态却是 ready，用户点进去无日志可看。
+                if not has_logs:
+                    suffix = "产物中未发现日志清单（log_list.json / sp_*），可能仅含转储文件"
+                    job.message = f"{job.message}；{suffix}" if job.message else suffix
                 # 深度上限从「整单失败」改为「停止下钻」后，截断信息不能静默：
                 # 用户需要知道产物里少了更深层的附件，而不是以为日志齐了。
                 if stats.depth_truncated:
@@ -509,15 +535,23 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
         try:
             now = _now()
             if last_cleanup_date != now.date():
+                started = time.monotonic()
                 removed = await registry.prune_expired(now)
                 logger.info("本地保留期检查完成 retention_days=%d removed=%d", cfg.retention_days, removed)
                 cap_removed, cap_freed = await registry.prune_capacity(now)
+                elapsed = time.monotonic() - started
                 logger.info(
-                    "容量检查完成 上限=%.1fGiB 删除=%d 释放=%.1fGiB",
+                    "容量检查完成 上限=%.1fGiB 删除=%d 释放=%.1fGiB elapsed_ms=%.0f",
                     cfg.max_total_bytes / 1024**3,
                     cap_removed,
                     cap_freed / 1024**3,
+                    elapsed * 1000,
                 )
+                # 维护耗时必须可观测：它曾经在冷缓存下达到 3.5 分钟并阻塞事件循环。
+                _MAINTENANCE_STATS["last_run_timestamp"] = now.timestamp()
+                _MAINTENANCE_STATS["last_duration_seconds"] = elapsed
+                _MAINTENANCE_STATS["expired_removed"] += removed
+                _MAINTENANCE_STATS["capacity_freed_bytes"] += cap_freed
                 last_cleanup_date = now.date()
 
             if cfg.auto_sync_enabled:
@@ -634,6 +668,63 @@ async def health(request: Request) -> dict[str, Any]:
         "diskFreeBytes": shutil.disk_usage(cfg.root).free,
         "activeJobs": registry.active_count(),
     }
+
+
+# 维护任务的最近一次结果，供 /metrics 暴露（进程内，重启归零）。
+_MAINTENANCE_STATS: dict[str, float] = {
+    "last_run_timestamp": 0.0,
+    "last_duration_seconds": 0.0,
+    "expired_removed": 0.0,
+    "capacity_freed_bytes": 0.0,
+}
+
+
+@app.get("/metrics")
+async def metrics(request: Request) -> Response:
+    """Prometheus 文本格式指标。
+
+    只暴露真正会用来告警的少量指标，不做"有指标没告警"的摆设：
+    磁盘余量（盘满是所有同步失败的共同前置条件）、队列深度、任务分布、
+    维护耗时（2026-10-31 这里曾把事件循环钉死 3.5 分钟，必须有数可查）。
+    """
+    cfg: Config = request.app.state.cfg
+    registry: JobRegistry = request.app.state.registry
+    free = shutil.disk_usage(cfg.root).free
+
+    phases: dict[str, int] = {}
+    for job in registry.jobs.values():
+        key = getattr(job.phase, "value", str(job.phase))
+        phases[key] = phases.get(key, 0) + 1
+
+    lines = [
+        "# HELP ticket_sync_disk_free_bytes 产物根目录所在磁盘剩余字节",
+        "# TYPE ticket_sync_disk_free_bytes gauge",
+        f"ticket_sync_disk_free_bytes {free}",
+        "# HELP ticket_sync_active_jobs 正在运行或排队中的任务数",
+        "# TYPE ticket_sync_active_jobs gauge",
+        f"ticket_sync_active_jobs {registry.active_count()}",
+        "# HELP ticket_sync_jobs 内存中的任务数（按阶段）",
+        "# TYPE ticket_sync_jobs gauge",
+    ]
+    for phase, count in sorted(phases.items()):
+        lines.append(f'ticket_sync_jobs{{phase="{phase}"}} {count}')
+    lines.extend(
+        [
+            "# HELP ticket_sync_maintenance_last_run_timestamp 最近一次维护执行的 Unix 时间",
+            "# TYPE ticket_sync_maintenance_last_run_timestamp gauge",
+            f"ticket_sync_maintenance_last_run_timestamp {_MAINTENANCE_STATS['last_run_timestamp']:.0f}",
+            "# HELP ticket_sync_maintenance_duration_seconds 最近一次维护耗时",
+            "# TYPE ticket_sync_maintenance_duration_seconds gauge",
+            f"ticket_sync_maintenance_duration_seconds {_MAINTENANCE_STATS['last_duration_seconds']:.3f}",
+            "# HELP ticket_sync_expired_removed_total 累计删除的过期目录数",
+            "# TYPE ticket_sync_expired_removed_total counter",
+            f"ticket_sync_expired_removed_total {_MAINTENANCE_STATS['expired_removed']:.0f}",
+            "# HELP ticket_sync_capacity_freed_bytes_total 累计容量淘汰释放的字节数",
+            "# TYPE ticket_sync_capacity_freed_bytes_total counter",
+            f"ticket_sync_capacity_freed_bytes_total {_MAINTENANCE_STATS['capacity_freed_bytes']:.0f}",
+        ]
+    )
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 def _prepare_dirs(cfg: Config) -> None:
