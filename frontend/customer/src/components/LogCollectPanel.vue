@@ -32,6 +32,7 @@ import {
 import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
+  formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
@@ -2773,12 +2774,22 @@ async function adoptNodeTask() {
       ElMessage.error(errorMessage.value)
       // 交付失败不写 status=failed：采集完成是真实结论，抹掉它会让用户
       // 既看不到包在哪、也找不到重试入口。失败只落在 delivery_* 上。
-      await logCollectApi
-        .patchTask(task.task_id, {
-          delivery_status: 'failed',
-          delivery_error: errorMessage.value.slice(0, 500),
-        })
-        .catch(() => undefined)
+      //
+      // 这里**不写** delivery_error：它是代传终态的唯一权威字段，由后端 _finish 落库。
+      // 前端一旦回写，就会用一句通用文案覆盖后端记录的真实原因（Q2026102801062：
+      // 后端写了原因，被前端覆盖成「错误码见平台任务记录」，结果记录里反而查不到）。
+      //
+      // 桥侧失败的原因改走 error_code / error_message（PATCH 契约允许）。但必须先确认
+      // 后端有没有记录：代传失败时 catch 拿到的 message 本身就是「[码] 原因」的转述，
+      // 原样回写会让下次渲染再拼一次码，变成 "[LC-X] [LC-X] ..."。
+      const fresh = await logCollectApi.getTask(task.task_id).catch(() => null)
+      const alreadyRecorded = Boolean(String(fresh?.error_message ?? '').trim())
+      const failurePatch: Partial<LogCollectTask> = { delivery_status: 'failed' }
+      if (!alreadyRecorded) {
+        failurePatch.error_code = lastNodeErrorCode || platformErrorCode(error) || undefined
+        failurePatch.error_message = errorMessage.value.slice(0, 2000)
+      }
+      await logCollectApi.patchTask(task.task_id, failurePatch).catch(() => undefined)
     }
     return
   }
@@ -3326,7 +3337,13 @@ async function pollRelay(taskId: string, token: number) {
     relayStatus.value = snapshot.relay_status
     if (snapshot.relay_status === 'success') return
     if (snapshot.relay_status === 'failed') {
-      throw new Error('归档到日志服务器失败，错误码见平台任务记录，可据此排查')
+      // 原因必须从任务记录读，不能就地拼一句通用文案。
+      // Q2026102801062：界面写「错误码见平台任务记录」，而记录里 error_code /
+      // error_message 恰恰是空 —— 用户被指去一个没有答案的地方。
+      // 代传终态的权威原因由后端 _finish 落库，前端只负责转述；
+      // getTask 失败时按"平台未记录"如实说，绝不编造原因。
+      const detail = await logCollectApi.getTask(taskId).catch(() => null)
+      throw new Error(formatFailureReason(detail, '归档到日志服务器失败，平台未记录原因（可在桥日志中按工单号检索）'))
     }
     if (shouldRecoverRelayLease(snapshot, leaseRecoveryAttempted)) {
       // 发布/重启把执行代传的进程杀掉了，状态会永久停在 running：
