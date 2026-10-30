@@ -32,12 +32,14 @@ import {
 import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
+  describeRelayProgress,
   formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
   rememberPlatformCertTrust,
   type DeliverySubmitPayload,
+  type RelayProgressView,
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
@@ -346,6 +348,9 @@ function resetTransfer() {
   transfer.sha256 = ''
 }
 const relayStatus = ref<RelayStatus>('none')
+// 代传进度明细（第几片 / 第几轮 / 上次失败原因）。relayStatus 只有五态，
+// 单片超时 300s 时它一直停在 running，看不出"在传"还是"卡死"，所以另存一份快照。
+const relayProgress = ref<RelayProgressView | null>(null)
 const cleanupTip = ref('')
 const errorMessage = ref('')
 // 运行令牌：每次启动 / 取消都自增，后台轮询据此退出，避免取消后仍继续写状态
@@ -909,7 +914,11 @@ const resultDelivered = computed(() => {
 const resultArchiveText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
-  if (task.relay_status === 'failed') return '归档失败（详见平台任务记录）'
+  // 不写「详见平台任务记录」：结果态本身就展示 error_code/error_message，
+  // 再把用户指去别处查同一份数据，只会让"记录是空"的现场更困惑（Q2026102801062）。
+  if (task.relay_status === 'failed') {
+    return `归档失败：${formatFailureReason(task, '平台未记录原因（可在桥日志中按工单号检索）')}`
+  }
   if (task.delivery_status === 'failed') return '交付失败（可点「上传到平台」重传，无需重新采集）'
   // queued = 平台已登记一次交付尝试但没走到终态（提交阶段中断/失败）。
   // 不显式化的话，这里只会显示"采集完成，尚未交付"，用户无从知道已经试过一次、
@@ -1313,7 +1322,11 @@ const statusText = computed(() => {
     }
     return `正在上传平台：${transfer.uploadedParts}/${transfer.partCount} 片`
   }
-  if (stage.value === 'relaying') return `正在归档到日志服务器：${relayStatus.value}`
+  if (stage.value === 'relaying') {
+    // 必须带上片段/轮次/上次失败：只写 relayStatus 时，单片 300s 超时期间界面
+    // 与"已卡死"完全同形，用户只能得出"挂了"这一个结论。
+    return `正在归档到日志服务器：${describeRelayProgress(relayProgress.value)}`
+  }
   return ''
 })
 
@@ -3335,6 +3348,7 @@ async function pollRelay(taskId: string, token: number) {
     if (token !== runToken) return
     const snapshot = await logCollectApi.getRelay(taskId)
     relayStatus.value = snapshot.relay_status
+    relayProgress.value = snapshot
     if (snapshot.relay_status === 'success') return
     if (snapshot.relay_status === 'failed') {
       // 原因必须从任务记录读，不能就地拼一句通用文案。
