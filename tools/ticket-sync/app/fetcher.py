@@ -117,6 +117,66 @@ async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[
     return archives
 
 
+async def list_remote_entries(cfg: Config, ticket_id: str, limit: int = 50) -> list[str]:
+    """只读远端归档的中央目录，返回条目名（不解压、不下载）。
+
+    zip 的中央目录不加密，所以不需要归档密码就能列出内容——这是唯一能在
+    "下载 30 GiB 之前"判断包里到底是什么的手段（实测有工单只含 vmcore）。
+    """
+    remote = cfg.remote_archive(ticket_id)
+    command = f"unzip -Z1 {remote} 2>/dev/null | head -n {limit}"
+    ssh_command = [
+        "ssh",
+        "-p",
+        str(cfg.source_port),
+        "-i",
+        str(cfg.ssh_key),
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ConnectTimeout=10",
+        cfg.source,
+        command,
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        *ssh_command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=20)
+    except TimeoutError as exc:
+        proc.kill()
+        await proc.wait()
+        raise TicketError(ErrorCode.SSH_FAILED, "读取归档目录超时", "remote listing timeout") from exc
+
+    if (proc.returncode or 0) != 0:
+        raise TicketError(
+            ErrorCode.SSH_FAILED,
+            "无法读取归档目录",
+            f"ssh exit={proc.returncode} archive={remote}",
+        )
+    return [line.strip() for line in stdout.decode("utf-8", errors="replace").splitlines() if line.strip()]
+
+
+def looks_like_non_log_bundle(entries: list[str]) -> bool:
+    """判断归档是否为"非日志载荷"（如仅含 vmcore 的崩溃转储）。
+
+    判定刻意保守，只在特征非常明确时才跳过，避免把正常日志包误判：
+    - 条目数 <= 3（日志包必然有 log_list.json + 多个 sp_*.tgz）
+    - 不含 .tgz，也不含 log_list.json
+    - 含 vmdumpcore 或 .core 结尾的条目
+    """
+    if not entries or len(entries) > 3:
+        return False
+    lowered = [entry.lower() for entry in entries]
+    if any(entry.endswith(".tgz") or entry == "log_list.json" for entry in lowered):
+        return False
+    return any("vmdumpcore" in entry or entry.endswith(".core") for entry in lowered)
+
+
 def _parse_remote_archives(output: str) -> list[RemoteArchive]:
     """解析 find 的固定三列输出，并丢弃不符合工单目录契约的文件。"""
     result: list[RemoteArchive] = []

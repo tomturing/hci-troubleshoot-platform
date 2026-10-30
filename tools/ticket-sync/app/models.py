@@ -34,6 +34,9 @@ class ErrorCode(StrEnum):
     DEPTH_EXCEEDED = "depth-exceeded"
     SSH_FAILED = "ssh-failed"
     EXTRACT_FAILED = "extract-failed"
+    # 归档内容不是日志（实测有工单只含 34.6 GiB 的 vmdumpcore），
+    # 按日志包同步只会白占磁盘，因此下载前识别并跳过。
+    NON_LOG_PAYLOAD = "non-log-payload"
 
 
 class TicketError(Exception):
@@ -80,7 +83,16 @@ def validate_ticket_id(value: str) -> str:
 class ExtractStats:
     """解压完成后的统计，用于日志与验收比对。"""
 
-    __slots__ = ("depth", "files", "bytes", "archives", "symlinks_removed")
+    __slots__ = (
+        "depth",
+        "files",
+        "bytes",
+        "archives",
+        "symlinks_removed",
+        "placeholders_skipped",
+        "permissions_fixed",
+        "unreadable_archives",
+    )
 
     def __init__(self) -> None:
         self.depth = 0
@@ -88,10 +100,19 @@ class ExtractStats:
         self.bytes = 0
         self.archives = 0
         self.symlinks_removed = 0
+        # 采集端写坏的占位包数量：跳过而不是让整包失败，需在日志里可追踪。
+        self.placeholders_skipped = 0
+        # 权限补正条目数：源端目录缺执行位会让整棵子树不可读，必须可观测。
+        self.permissions_fixed = 0
+        # 解不开但保留原件的归档数（如 p7zip 不支持的 RAR5 压缩方法）。
+        self.unreadable_archives = 0
 
     def __repr__(self) -> str:
         return (
             f"ExtractStats(depth={self.depth}, files={self.files}, "
             f"bytes={self.bytes}, archives={self.archives}, "
-            f"symlinks_removed={self.symlinks_removed})"
+            f"symlinks_removed={self.symlinks_removed}, "
+            f"placeholders_skipped={self.placeholders_skipped}, "
+            f"permissions_fixed={self.permissions_fixed}, "
+            f"unreadable_archives={self.unreadable_archives})"
         )

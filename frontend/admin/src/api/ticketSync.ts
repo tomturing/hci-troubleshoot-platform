@@ -50,21 +50,31 @@ export const PHASE_TEXT: Record<SyncPhase, string> = {
 }
 
 // 错误码到用户可读文案的映射，与服务端文档第 8 章一一对应。
+// quota/depth 两码此前写作"体积异常""层级异常"，把服务自身的阈值说成了
+// 数据问题，用户会误以为包坏了。这里改为"超出服务上限"，具体数值由
+// 服务端 message 补充（见 errorText 的拼接逻辑）。
 const ERROR_TEXT: Record<string, string> = {
   'invalid-ticket-id': '工单号格式错误，应为 Q + 13 位数字',
   'not-found': '该工单在日志源服务器上不存在',
   'too-large': '工单包过大，超过单工单上限',
   'bad-password': '归档密码错误，请联系运维',
-  'archive-corrupt': '压缩包已损坏',
+  'archive-corrupt': '压缩包已损坏（采集端可能生成了空包）',
   'no-space': '服务器磁盘空间不足',
-  'quota-exceeded': '解压体积异常，已中止',
-  'depth-exceeded': '归档嵌套层级异常',
+  'quota-exceeded': '超出服务解压上限',
+  'depth-exceeded': '超出服务层级上限',
   'ssh-failed': '无法连接日志源服务器',
   'extract-failed': '解压失败，请查看服务日志',
+  'non-log-payload': '该工单包不是日志包（仅含转储文件），已跳过',
 }
 
 export function errorText(code: string | null, fallback: string | null = null): string {
-  if (code && ERROR_TEXT[code]) return ERROR_TEXT[code]
+  const base = code ? ERROR_TEXT[code] : null
+  if (base) {
+    // 服务端 message 带具体依据（如"解压后文件数 107185 超过上限 50000"）。
+    // 固定文案给结论、message 给依据，拼接而不是互相覆盖，
+    // 否则用户永远只能看到一句无法行动的话。
+    return fallback && fallback !== base ? `${base}：${fallback}` : base
+  }
   return fallback || '同步失败，请稍后重试'
 }
 
