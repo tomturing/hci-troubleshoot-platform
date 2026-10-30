@@ -51,6 +51,16 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(body["diskFreeBytes"], 0)
         self.assertEqual(body["activeJobs"], 0)
 
+    async def test_metrics_exposes_alertable_series(self) -> None:
+        """指标是给告警用的，必须有磁盘余量与维护耗时这两条。"""
+        response = await self.client.get("/metrics")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/plain", response.headers["content-type"])
+        body = response.text
+        self.assertIn("ticket_sync_disk_free_bytes", body)
+        self.assertIn("ticket_sync_active_jobs", body)
+        self.assertIn("ticket_sync_maintenance_duration_seconds", body)
+
     async def test_list_artifacts_returns_local_ticket_directory(self) -> None:
         ticket_dir = Path(self.root) / "Q2026010100001"
         ticket_dir.mkdir()

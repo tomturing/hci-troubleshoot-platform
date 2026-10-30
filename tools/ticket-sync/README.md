@@ -44,12 +44,16 @@
 ```
 /sf/tickets/
 ├── <工单号>/                 最终产物（不套额外层级，DSH 直接选这一层）
+│   └── .sync-meta.json       同步事实：completedAt / bytes / files / hasLogs
 ├── .tmp/<id>-<uuid>/         解压中间态，服务启动时清空
 └── .trash/<id>-<时间戳>/      被替换的旧版本（保留最近一次）
 ```
 
 - 产物不套额外层级，避免用户多点一层。
 - `.tmp`/`.trash` 以点开头，文件选择器默认不展示。
+- `<工单目录>/.sync-meta.json` 是**清理与容量判断的唯一事实来源**：`completedAt` 决定保留期、
+  `bytes` 免去每日全盘统计、`hasLogs` 决定容量淘汰顺序。目录 mtime 只在没有
+  meta 的历史目录上兜底——它会被外部写操作改写，不能作为判据。
 
 ### 1.4 任务状态机
 
@@ -73,6 +77,7 @@ queued ──► fetching ──► extracting ──► ready
 | `GET` | `/artifacts` | 本地工单目录 + 自动/手动任务总览（DSH 控制台使用） |
 | `DELETE` | `/jobs/{ticketId}` | 取消任务并清理 `.tmp` |
 | `GET` | `/health` | 健康、磁盘余量、活跃任务数 |
+| `GET` | `/metrics` | Prometheus 文本指标：磁盘余量、活跃任务、任务分布、维护耗时与累计淘汰量 |
 
 工单号唯一合法形态：`^Q\d{13}$`（`Q` + `YYYYMMDD` + 5 位当天序号）。服务端强制校验，
 不接受任何路径分隔符，因此可直接拼进 `/sf/log` 与 `/sf/tickets` 路径。
@@ -82,8 +87,14 @@ queued ──► fetching ──► extracting ──► ready
 - 维护协程**首次等待一个周期**（默认 30s），避免启动时与网络/挂载初始化争抢。
 - 之后按 `TICKET_AUTO_SYNC_INTERVAL_SECONDS` 扫描远端当天归档，仅当**本地工单目录
   不存在**时才入队（避免时钟偏差导致重复拉取）；需要重拉仍用手动 `POST /jobs`。
-- 每天首次巡检时删除根目录下超过 `TICKET_RETENTION_DAYS`（默认 7）天的 `Q\d{13}`
-  目录及 `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。
+- 每天首次巡检时删除超过 `TICKET_RETENTION_DAYS`（默认 7）天的 `Q\d{13}` 目录及
+  `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。判据是
+  `<工单目录>/.sync-meta.json` 的 `completedAt`，无 meta 的历史目录才回退 mtime。
+- 容量超出 `TICKET_MAX_TOTAL_BYTES` 时淘汰，顺序为**先非日志载荷、再最旧优先**：
+  一个 65 GiB 的 dump 工单不该挤掉多个可用日志工单。
+- 上述两项都是**阻塞 IO，必须在线程池里执行**。2026-10-31 00:00:07–00:03:35
+  的实测事故就是同步遍历 550 GiB 把事件循环钉死，期间所有 HTTP 请求排队。
+  改动后维护耗时会写进 `/metrics` 的 `ticket_sync_maintenance_duration_seconds`。
 - 扫描失败只记日志，不中断服务，下一轮自动重试。
 
 ### 1.7 解压能力与降级
@@ -102,7 +113,8 @@ queued ──► fetching ──► extracting ──► ready
 |---|---|---|
 | 归档 < 64 字节（采集端写坏的占位包） | 删除并跳过 | 日志 `跳过占位=N` |
 | `.rar` 解不开（unrar 与 p7zip 都不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
-| 归档只含 vmcore 等转储，无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
+| 归档只含转储（vmcore / kdump / `.core` / `.dump` / `.dmp`），无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
+| 解压后产物里既无 `log_list.json` 也无 `sp_*` | 仍发布，但 `job.message` 明确提示"可能仅含转储文件" | `job.message` |
 
 嵌套层数上限（`TICKET_MAX_DEPTH`）是**停止下钻的护栏，不是整单失败的判据**：
 达到上限时保留已解出的产物、把剩余归档计入 `depth_truncated` 并在 `job.message`
