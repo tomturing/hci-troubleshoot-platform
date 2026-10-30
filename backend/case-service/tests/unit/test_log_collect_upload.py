@@ -498,3 +498,46 @@ def test_complete_request_rejects_malformed_sha256():
     # 放宽只针对"空串"，真正的非法值仍必须拦住
     with pytest.raises(ValidationError):
         UploadCompleteRequest(sha256="not-a-hash")
+
+
+# ── 会话分片几何（2026-10-30 Q2026102801062 事故）─────────────────────────────
+
+
+async def test_reused_session_keeps_original_chunk_geometry(storage, repo):
+    """改默认分片大小后，已存在会话的片数与每片大小必须仍按会话 meta 计算。
+
+    现场事故：默认 32 MiB → 8 MiB 之后，一个已传 72 片（32 MiB/片）的旧会话被
+    重新拿起来续传。服务端响应里 chunk_size 来自 meta（32 MiB），而 part_count
+    用进程默认值（8 MiB）算成 409 —— 桥按 32 MiB 切片、服务端按 8 MiB 校验，
+    每一片都是 500「分片 N 超过允许大小」，续传永久卡死。
+    """
+
+    def build(chunk: int) -> LogCollectUploadService:
+        return LogCollectUploadService(
+            repo,
+            storage,
+            chunk_size=chunk,
+            max_archive_bytes=1024,
+            token_ttl_hours=1,
+            secret=b"test-secret-32-bytes-padding-0000",
+        )
+
+    old, new = build(8), build(4)  # 模拟「旧会话 8 字节/片 + 新默认 4 字节/片」
+    task, total, sha = make_task()
+
+    created = await old.init(task, total_size=total, expected_sha256=sha)
+    assert (created["chunk_size"], created["part_count"]) == (8, 3)
+
+    again = await new.init(task, total_size=total, expected_sha256=sha)
+    assert again["chunk_size"] == 8, "复用会话必须沿用 meta 里的分片大小"
+    assert again["part_count"] == 3, "片数必须按会话分片大小算，不能按进程默认值"
+
+    snapshot = await new.status(task.task_id)
+    assert (snapshot["chunk_size"], snapshot["part_count"]) == (8, 3)
+
+    # 按会话几何上传第 2 片：8 字节必须被接受（按进程默认值会被判 4 字节上限而 500）
+    result = await new.record_part(
+        task.task_id, part_number=2, chunks=chunks_of(b"b" * 8), claimed_sha256=None
+    )
+    assert result["size"] == 8
+    assert result["part_count"] == 3
