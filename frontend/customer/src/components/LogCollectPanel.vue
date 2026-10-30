@@ -73,7 +73,24 @@ const descColumns = computed(() => (chatStore.leftPanelWidth >= 600 ? 2 : 1))
 /** 表单标签：窄容器下置顶，避免标签列继续吃掉本就不多的内容宽度 */
 const formLabelPosition = computed(() => (chatStore.leftPanelWidth < 480 ? 'top' : 'right'))
 
+/** 日志服务器探测目标：与 bridge 的默认值一致，仅用于展示与兜底文案。 */
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
+
+/**
+ * 探测回包归一化：把 bridge 的 `log_server_http_code` 与平台存档的 `http_code` 收成同一个值。
+ *
+ * 第一性原理：HTTP 码是「日志服务器到底回没回话」的唯一机器判据。两个来源并存时若
+ * 「取到哪个算哪个」，同一份事实就会在不同入口给出不同结论（面板说 0、历史记录说 500）。
+ * 所以入口只留一个：合并后的值写回 `http_code`，业务代码不得再读第二个字段。
+ */
+function normalizeProbe(raw: Partial<ProbeResult> | null | undefined): ProbeResult | null {
+  if (!raw) return null
+  const code = raw.log_server_http_code ?? raw.http_code
+  return {
+    ...(raw as ProbeResult),
+    http_code: typeof code === 'number' && Number.isFinite(code) ? code : 0,
+  }
+}
 const POLL_INTERVAL = 5000
 // 终态任务的低频对账间隔：failed 的节点侧任务可能仍在跑（需要「接管」），
 // 完全停轮询会让接管入口再也不出现；但每 5s 打一次 SSH 也没有必要。
@@ -146,13 +163,27 @@ interface ProbeResult {
   acli_binary?: string
   available_mb: number
   log_server_reachable: boolean
+  /**
+   * 日志服务器 HTTP 码（0 = 一个响应字节都没收到）。
+   *
+   * 收敛后的字段：bridge 回传的是 `log_server_http_code`，平台存档与旧单测用 `http_code`，
+   * 两者都由 normalizeProbe 归一到这里。早期前端只声明了 `http_code`，而 bridge 从不发它，
+   * 真值永远落空——随任务落库的探测快照因此长期缺 `http_code`，事后无法判断
+   * 「日志服务器当时是没回话，还是回了 5xx」。
+   */
   http_code: number
+  /** bridge 原始字段（见上）：保留声明只为归一化时有据可依，业务代码一律读 http_code */
+  log_server_http_code?: number
+  /** 探测耗时：失败时是「耗到超时」的秒数，随快照落库，供事后区分丢包与拒绝 */
+  log_server_latency_ms?: number
+  /** 本次探测的目标地址（随快照落库，便于事后核对探的是哪个地址） */
+  log_server_url?: string
   // 以下字段由 bridge 从目标集群读取；缺省表示探测降级，前端必须能继续工作
   modules?: ModuleOption[]
   hosts?: HostOption[]
   catalog_source?: 'acli_help' | 'platform_default'
   catalog_note?: string
-  /** 日志服务器探测失败原因（与 catalog_note 是两类独立故障，不能拼成一句） */
+  /** 日志服务器探测失败原因（bridge 原话，只做排障佐证，不参与结论） */
   note?: string
 }
 
@@ -231,6 +262,19 @@ const pathMode = ref<'P1' | 'P2' | ''>('')
  * 而误判，用户若已明确选择就必须尊重，否则每次点「开始收集」都被静默改回。
  */
 const pathModeTouched = ref(false)
+
+/**
+ * P1 是否可选。
+ *
+ * 第一性原理：两条路径不是偏好，而是由可达性决定的物理选择——HCI 连不上 5888 时，
+ * P1 不是「差一点的选择」，而是注定失败的那一个。把一个必然失败的选项摆给用户，
+ * 等于要求他先用一次失败去验证一个平台已经知道的事实，所以直接置灰。
+ */
+const p1Disabled = computed(() => {
+  const probe = probeResult.value
+  if (!probe) return false
+  return !probe.log_server_reachable
+})
 const currentTask = ref<LogCollectTask | null>(null)
 // 面板视图：form = 新建收集；result = 该工单已完成收集的只读结果
 const viewMode = ref<'form' | 'result'>('form')
@@ -733,79 +777,82 @@ const resultDeliveryText = computed(() => {
 })
 
 /**
+ * 交付路径的默认值与可选性。
+ *
+ * 第一性原理：这项选择的正确值只取决于一个平台已经知道的事实（HCI 能不能直连 5888），
+ * 所以平台直接给结论，不让用户做选择题：
+ *   - 可达 → 默认 P1（少一跳中转），用户仍可手动改 P2；
+ *   - 不可达（含 5xx / 超时 / 无响应等一切异常）→ 强制 P2，P1 置灰不可选。
+ * 用户从未手选时才套默认值；但不可达是硬约束，即使他之前选过 P1，也要收回——
+ * 给一个必然失败的选项不是尊重，而是挖坑。
+ */
+function applyDefaultPathMode() {
+  const probe = probeResult.value
+  if (!probe) return
+  if (!probe.log_server_reachable) {
+    // 不可达（含 5xx）是硬约束：即使之前手选过 P1，也要收回。
+    pathMode.value = 'P2'
+    return
+  }
+  // 可达：用户没手选过就回到 P1。这里不能写成 `!pathMode.value`——否则
+  // 「先判不可达（程序置 P2）→ 重探恢复可达」会永久停在 P2，比实际能力差一跳。
+  if (!pathModeTouched.value) pathMode.value = 'P1'
+}
+
+/**
  * 交付路径的选择说明。
  *
- * 两条路径不是 UI 偏好，而是**由网络可达性决定的物理选择**：
- * P1 要求 HCI 自己能连日志服务器 5888；P2 改由客户机经平台代传，只要求 HCI 能连平台。
- * 因此文案必须把"代价"讲清楚（P1 平台不留副本），而不是只给一个枚举值。
- *
- * 探测结论只用来**提示风险**，不用来禁止选择：可达性是时刻变化的（ACL 临时放通、
- * 5888 抖动都会让探测误判），用户比探测更清楚现场网络。
+ * 只说「这条路的代价」，不复述探测结论：探测结果已经由上方「建议路径」的取值表达，
+ * 在这里再说一遍「连不上日志服务器」就是对同一件事的第二次播报。
  */
 const pathModeHint = computed(() => {
-  const reachable = probeResult.value?.log_server_reachable
   if (pathMode.value === 'P1') {
-    return reachable
-      ? 'acli 插件从 HCI 直接上传到日志服务器：省一跳中转，但平台不留副本，事后无法回看/下载'
-      : '探测显示 HCI 当前无法访问日志服务器，P1 可能在采集完成后上传失败；拿不准请选 P2'
+    return 'acli 插件从 HCI 直接上传到日志服务器：省一跳中转，但平台不留副本，事后无法回看/下载'
   }
   if (pathMode.value === 'P2') {
     return 'HCI 只生成压缩包，由客户机经平台中转到日志服务器：平台留副本，可回看/下载，但需要客户机在线'
   }
-  return reachable === false
-    ? '未选择。探测显示 HCI 当前无法访问日志服务器：选 P1 可能上传失败，选 P2 由平台代传但需客户机在线'
-    : '未选择。探测确认可达时默认 P1；拿不准请选 P2（平台留副本，可回看/下载）'
+  return '探测完成后自动选择：HCI 能直连日志服务器时用 P1，否则用 P2'
 })
 
 /**
- * 交付路径的**事实**来源。
+ * 「建议路径」这一格的取值。
  *
- * 有任务时只认 `upload_mode`：它是创建那一刻落库的决策，能回答"这单实际走哪条路"。
- * 没有任务时才是探测建议，必须带「建议」二字——否则用户会把建议当成既成事实
- * （2026-10-28 现场：Q2026102800331 实际 P1，界面因一次 curl 超时显示 P2，
- * 事后只能靠命令行里的 -u 反推）。
+ * 契约（Q2026102801062）：只有两个字符串——`P1 直传日志服务器` / `P2 经平台中转`，
+ * 不加「（建议）」「待探测」之类修饰。探测结论已经由「取值是哪一个」说清楚，
+ * 每多一个字，用户就要多判断一次。
+ *
+ * 有任务时只认 `upload_mode`：它是创建那一刻落库的决策，能回答「这单实际走哪条路」；
+ * 没有任务时才是探测快照。两种来源共用同一套取值，不让界面出现第二套措辞。
  */
 const deliveryModeFact = computed(() => {
   const mode = currentTask.value?.upload_mode
-  if (mode === 'acli_direct') {
-    return { label: 'P1 直传日志服务器', type: 'success' as const, suggested: false }
-  }
-  if (mode === 'bridge_relay') {
-    return { label: 'P2 经平台中转', type: 'warning' as const, suggested: false }
-  }
-  if (!probeResult.value) {
-    return { label: '待探测', type: 'info' as const, suggested: false }
-  }
-  return probeResult.value.log_server_reachable
-    ? { label: 'P1 直传日志服务器（建议）', type: 'success' as const, suggested: true }
-    : { label: 'P2 经平台中转（建议）', type: 'warning' as const, suggested: true }
+  if (mode === 'acli_direct') return { label: 'P1 直传日志服务器', type: 'success' as const }
+  if (mode === 'bridge_relay') return { label: 'P2 经平台中转', type: 'warning' as const }
+  const probe = probeResult.value
+  if (!probe) return null
+  return probe.log_server_reachable
+    ? { label: 'P1 直传日志服务器', type: 'success' as const }
+    : { label: 'P2 经平台中转', type: 'warning' as const }
 })
 
 /**
- * 探测失败的独立原因清单。
+ * 探测降级项的独立清单。
  *
- * 对抗性审查：节点清单失败（acli 自身）与日志服务器不可达（网络）是两条互不相干的
- * 链路，此前被拼成一句展示，用户只能看到其中一条；分开列才能各自定因。
+ * 只有「读不到节点清单」进这里：它改变的是用户下一步要不要手填 IP。
+ * 日志服务器可达性**不进告警**：连不上只是选 P2 的理由，由上方「建议路径」的取值
+ * 与下方交付路径的默认值/可选性同一件事表达；再叠一条需要判读的文案，用户只会更迷茫。
  */
 const probeIssues = computed(() => {
   const probe = probeResult.value
-  if (!probe) return [] as { key: string; title: string; detail: string }[]
-  const issues: { key: string; title: string; detail: string }[] = []
-  if (!probe.hosts?.length) {
-    issues.push({
+  if (!probe || probe.hosts?.length) return [] as { key: string; title: string; detail: string }[]
+  return [
+    {
       key: 'hosts',
       title: '节点清单获取失败（仍可手填 all 或节点 IP）',
       detail: probe.catalog_note || 'acli 未返回任何节点，且没有给出原因',
-    })
-  }
-  if (!probe.log_server_reachable) {
-    issues.push({
-      key: 'logserver',
-      title: `日志服务器探测失败（HTTP ${probe.http_code ?? 0}）`,
-      detail: probe.note || `curl ${RELAY_URL} 无响应`,
-    })
-  }
-  return issues
+    },
+  ]
 })
 
 /**
@@ -1104,7 +1151,9 @@ async function probeOnce(targetNode: string, token: number): Promise<ProbeResult
   if (probe.status !== 'ok') {
     throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
   }
-  const data = probe.log_data as ProbeResult
+  // 必须先归一化再落状态：下游（告警、落库快照）只认 http_code 一个字段。
+  const data = normalizeProbe(probe.log_data as ProbeResult)
+  if (!data) throw new Error('探测回包缺少环境数据，请重新探测')
   // 字典先落地再合并目录：否则用户会先看到一批无说明的短名，再整排换一次文案（闪变）。
   await dictPromise
   if (token !== prepareToken) return null
@@ -1173,13 +1222,8 @@ async function prepare(
       const data = await probeOnce(targetNode, token)
       if (!data || token !== prepareToken) return false
       probeRetry.value = null
-      // 交付路径的默认值只在「用户从未选过」且探测**成功**时给一次。
-      // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定
-      // 「平台是否留副本」——2026-10-28 现场探测返回 000，4 分钟后 P1 却传成 2.99 GB，
-      // 界面却已把路径改成 P2，事后无法判断任务到底走的哪条路。
-      if (!pathModeTouched.value && !pathMode.value && data.log_server_reachable) {
-        pathMode.value = 'P1'
-      }
+      // 交付路径由探测结论直接决定：可达 P1、不可达 P2（P1 同时置灰）。
+      applyDefaultPathMode()
       probedAt.value = Date.now()
       prepareState.value = 'ready'
       // 历史探测读的是 bridge 事件，失败不影响本次结果，因此不 await。
@@ -1889,17 +1933,13 @@ async function handleStart() {
       await confirmInstall(ws)
     }
 
-    // 只在用户从未手选、且探测确认可达时给一次默认值。
-    // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定交付路径
-    // （2026-10-28 现场：探测 000，P1 实际却传成 2.99 GB，界面已写成 P2）。
-    if (!pathModeTouched.value && !pathMode.value && probeResult.value.log_server_reachable) {
-      pathMode.value = 'P1'
-    }
+    // 只把结论落到默认值，不问用户：可达 P1、不可达 P2（P1 已置灰）。
+    // 旧实现「不可达时不静默选 P2」的初衷是不替用户决定交付路径，但那样会把
+    // 一个必然失败的选项留在台面上；现在改成默认值 + 禁选，用户仍可把 P1 改回 P2。
+    applyDefaultPathMode()
     if (!pathMode.value) {
       stage.value = 'idle'
-      ElMessage.warning(
-        '请选择交付路径：探测显示日志服务器当前不可达，选 P1 可能在采集完成后上传失败',
-      )
+      ElMessage.warning('请选择交付路径（尚未获取探测结论）')
       return
     }
 
@@ -3721,9 +3761,8 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="acli">
             <span :title="acliTitle">{{ acliVersionText }}</span>
           </el-descriptions-item>
-          <el-descriptions-item label="建议路径">
-            <!-- 这是探测建议，不是既定事实：有任务时只认任务记录（deliveryModeFact 在无任务时带「建议」二字），
-                 改名是为了和表单里的「交付路径」（用户决策）区分，避免被读成"已经定了 P1"。 -->
+          <el-descriptions-item v-if="deliveryModeFact" label="建议路径">
+            <!-- 取值定死两个：P1 直传日志服务器 / P2 经平台中转（不加修饰词） -->
             <el-tag :type="deliveryModeFact.type" size="small">
               {{ deliveryModeFact.label }}
             </el-tag>
@@ -3808,7 +3847,7 @@ onBeforeUnmount(() => {
           show-icon
           :title="probeRetryText"
         />
-        <!-- 探测失败必须显式告警：降级可用 ≠ 用户不需要知道 -->
+        <!-- 探测降级只在这里出现：影响用户下一步动作的只有「读不到节点清单」 -->
         <el-alert
           v-for="issue in probeIssues"
           :key="issue.key"
@@ -3906,14 +3945,15 @@ onBeforeUnmount(() => {
           </el-form-item>
           <el-form-item label="交付路径">
             <!--
-              必须可改：探测到的可达性只代表"那一刻"，ACL 临时放通、5888 抖动都会误判；
-              而两条路径的代价不同（P1 平台不留副本），只有用户能权衡。
+              路径不是偏好，是由可达性决定的物理选择：
+              可达时默认 P1（用户可主动改 P2），不可达时 P1 直接置灰——
+              把一个注定失败的选项留着，只会骗用户先用一次失败去做验证。
             -->
             <el-radio-group v-model="pathMode" :disabled="running" @change="pathModeTouched = true">
+              <el-radio-button value="P1" :disabled="p1Disabled">P1 直传日志服务器</el-radio-button>
               <el-radio-button value="P2">P2 经平台中转</el-radio-button>
-              <el-radio-button value="P1">P1 直传日志服务器</el-radio-button>
             </el-radio-group>
-            <div class="lc-hint" :class="{ 'lc-hint-warn': pathMode === 'P1' && probeResult && !probeResult.log_server_reachable }">
+            <div class="lc-hint">
               {{ pathModeHint }}
             </div>
           </el-form-item>
