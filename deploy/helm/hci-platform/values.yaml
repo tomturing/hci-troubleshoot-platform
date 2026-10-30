@@ -229,6 +229,13 @@ caseService:
     size: "50Gi"
     storageClassName: ""
     mountPath: "/var/lib/log-collect"
+    # 单个上传分片的大小（字节）。它不是性能参数，而是「单请求耗时」参数：
+    # 分片越大，一次 PUT 需要的网关读窗口越长。Traefik 的 readTimeout 默认
+    # 60s，现场上行低于 0.5 MB/s 时 32 MiB 分片一定被掐断（Q2026102801062）。
+    # 8 MiB 在 0.5 MB/s 上约 16s，留足余量。
+    # 注意：分片大小随上传会话元数据落盘，改值只影响新初始化的会话；
+    # 正在续传的任务保持原分片大小，因此调小是安全的。
+    chunkSizeBytes: 8388608
   resources:
     requests:
       cpu: "50m"
