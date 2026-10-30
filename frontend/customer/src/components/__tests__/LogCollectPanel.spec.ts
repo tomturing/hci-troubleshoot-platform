@@ -130,10 +130,12 @@ const ElDescriptionsItem = {
 
 // ElAlert 的 title 是属性而非插槽，透传桩会丢掉它；这里显式渲染出来，
 // 否则"完成态"一类文案无法在测试里断言。
+// type 同样要落到 class：提示等级（常态 info / 需处理 warning）正是本文件要锁住的契约。
 const ElAlert = {
-  props: ['title'],
+  props: ['title', 'type'],
   setup(props: any, { slots }: any) {
-    return () => h('div', { class: 'alert-stub' }, [props.title, slots.default?.()])
+    return () =>
+      h('div', { class: ['alert-stub', `alert-${props.type}`] }, [props.title, slots.default?.()])
   },
 }
 
@@ -177,6 +179,47 @@ const ElCheckbox = {
           onClick: () => {
             if (props.disabled) return
             group?.toggle(props.value)
+          },
+        },
+        slots.default?.(),
+      )
+  },
+}
+
+// 交付路径单选同理：P1/P2 是用户对交付链的取舍，而「选了 P1 就该升级告警」是硬契约，
+// 桩子不能真点时这条规则就只能靠人工看屏。
+const RADIO_GROUP_KEY = Symbol('radio-group')
+
+const ElRadioGroup = {
+  props: ['modelValue'],
+  emits: ['update:modelValue', 'change'],
+  setup(props: any, { slots, emit }: any) {
+    provide(RADIO_GROUP_KEY, {
+      isChecked: (value: unknown) => props.modelValue === value,
+      select: (value: unknown) => {
+        if (props.modelValue === value) return
+        emit('update:modelValue', value)
+        emit('change', value)
+      },
+    })
+    return () => h('div', { class: 'radio-group' }, slots.default?.())
+  },
+}
+
+const ElRadioButton = {
+  props: ['value', 'disabled'],
+  setup(props: any, { slots }: any) {
+    const group: any = inject(RADIO_GROUP_KEY, null)
+    return () =>
+      h(
+        'label',
+        {
+          class: ['radio-btn', { 'is-active': group?.isChecked(props.value) }],
+          'data-value': props.value,
+          'data-disabled': props.disabled ? '1' : '0',
+          onClick: () => {
+            if (props.disabled) return
+            group?.select(props.value)
           },
         },
         slots.default?.(),
@@ -235,6 +278,8 @@ function mountPanel() {
           ElStep: passthrough('ElStep'),
           ElCheckboxGroup,
           ElCheckbox,
+          ElRadioGroup,
+          ElRadioButton,
         },
       },
     },
@@ -888,6 +933,131 @@ describe('LogCollectPanel', () => {
     expect(hint).toContain('172.28.25.2,172.28.25.3')
     // 必须说清"为什么没有清单"，避免用户误判为平台故障
     expect(hint).toContain('acli 未安装')
+  })
+
+  // 「建议路径」取值的唯一出口：表格里的那一格。取值定死两个字符串，
+  // 不加「（建议）」「待探测」之类修饰——探测结论已经由「是哪一个」说清楚。
+  const suggestedPathText = (wrapper: any): string => {
+    const cell = wrapper
+      .findAll('.desc-item')
+      .find((node: any) => node.find('.desc-label').text() === '建议路径')
+    return cell ? cell.find('.desc-val').text() : ''
+  }
+
+  // 回归（Q2026102801062）：内网 HCI 连不上日志服务器是最常见的现场，不是故障。
+  // 契约：探测结果只体现在「建议路径」的取值 + 交付路径的默认值/可选性上，
+  // 不再额外弹一条需要用户判读的告警。
+  it('日志服务器不可达时默认选 P2 且 P1 置灰，不额外弹告警', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({
+      status: 'ok',
+      log_data: probePayload({
+        log_server_reachable: false,
+        log_server_http_code: 0,
+        note: 'curl 探测失败（连续 3 次）：000 5.001368',
+      }),
+    })
+    await flushPromises()
+
+    // 不能多出第二条文案：探测结果只靠「建议路径」说话
+    const alerts = wrapper.findAll('.lc-prepare').map((node) => node.text())
+    expect(alerts.some((text) => text.includes('日志服务器'))).toBe(false)
+    expect(suggestedPathText(wrapper)).toBe('P2 经平台中转')
+
+    // 默认落在 P2；P1 因为必然失败而被禁选（点了也不变）
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+    const p1 = wrapper.find('.radio-btn[data-value="P1"]')
+    expect(p1.attributes('data-disabled')).toBe('1')
+    await p1.trigger('click')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').classes()).not.toContain('is-active')
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+  })
+
+  it('日志服务器可达时默认选 P1，用户改选 P2 后不被重探覆盖', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P1 直传日志服务器')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').classes()).toContain('is-active')
+    // 可达才能手选：P2 是备选，不是默认
+    expect(wrapper.find('.radio-btn[data-value="P1"]').attributes('data-disabled')).toBe('0')
+
+    await wrapper.find('.radio-btn[data-value="P2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+
+    // 再次探测（结论不变）：用户已明确选的路径不能被默认值改回去
+    const reprobe = wrapper.findAll('button').find((item) => item.text() === '重新探测')
+    await reprobe!.trigger('click')
+    await flushPromises()
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+  })
+
+  // 5xx 也归入「不可达」：「所有异常一律 P2 + P1 置灰」不能让用户去分辨 HTTP 码
+  it('日志服务器回 5xx 时同样默认 P2、P1 置灰，不向用户解释 HTTP 码', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({
+      status: 'ok',
+      log_data: probePayload({ log_server_reachable: false, log_server_http_code: 502 }),
+    })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P2 经平台中转')
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').attributes('data-disabled')).toBe('1')
+    // HTTP 码属于排障信息，不进入面板文案
+    expect(wrapper.text()).not.toContain('HTTP 502')
+  })
+
+  // 回归：探测先判不可达（程序置 P2）后又查到可达时，默认值必须回到 P1。
+  // 旧实现用 `!pathMode` 做门槛，会永久停在比实际能力差一跳的 P2 上。
+  it('重探恢复可达后，未被手改的默认路径回到 P1', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({
+      status: 'ok',
+      log_data: probePayload({ log_server_reachable: false, log_server_http_code: 0 }),
+    })
+    await flushPromises()
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+
+    const reprobe = wrapper.findAll('button').find((item) => item.text() === '重新探测')
+    await reprobe!.trigger('click')
+    await flushPromises()
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P1 直传日志服务器')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').classes()).toContain('is-active')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').attributes('data-disabled')).toBe('0')
+  })
+
+  // 「（建议）」「待探测」这类修饰一旦回到表格里，说明取值不再定死两个。
+  it('建议路径的取值不带任何修饰词', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P1 直传日志服务器')
+    expect(wrapper.text()).not.toContain('（建议）')
+    expect(wrapper.text()).not.toContain('待探测')
   })
 
   // 回归：任务状态的真值在平台。完成后关掉抽屉再打开，曾经退回空白表单，用户会以为必须重收。

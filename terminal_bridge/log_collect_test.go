@@ -304,6 +304,100 @@ func TestManualLogCollectProbe(t *testing.T) {
 	}
 }
 
+// 回归：内网 HCI 连不上日志服务器是常态，但「一次没通」不能直接当「这里不通」——
+// 这条结论在下游会把 P1 置灰，误判的代价是用户白绕一跳中转（或白等一次失败的直传）。
+func TestConfirmLogServerReachabilityRetriesUntilResponse(t *testing.T) {
+	var slept []time.Duration
+	samples := []logServerProbeSample{
+		{TransportFailed: true, Detail: "000 5.001368"},
+		{HTTPCode: 200, LatencyMS: 320},
+	}
+	index := 0
+	settled, note := confirmLogServerReachability(
+		func() logServerProbeSample {
+			sample := samples[index]
+			index++
+			return sample
+		},
+		[]time.Duration{time.Second, 2 * time.Second},
+		func(delay time.Duration) bool { slept = append(slept, delay); return true },
+	)
+
+	if settled.HTTPCode != 200 || settled.LatencyMS != 320 {
+		t.Fatalf("应以收到响应的那次为准：%+v", settled)
+	}
+	if index != 2 {
+		t.Fatalf("应在第 2 次成功后立即停止，实际取样 %d 次", index)
+	}
+	if len(slept) != 1 || slept[0] != time.Second {
+		t.Fatalf("两次尝试之间应等待一次 1s，实际 %v", slept)
+	}
+	// 抖过一枪必须留痕：否则与「确实不通」在探测历史里长得一模一样
+	if !strings.Contains(note, "第 2 次收到响应") || !strings.Contains(note, "000 5.001368") {
+		t.Fatalf("恢复场景的说明不正确：%q", note)
+	}
+}
+
+func TestConfirmLogServerReachabilityGivesUpAfterMaxAttempts(t *testing.T) {
+	calls := 0
+	settled, note := confirmLogServerReachability(
+		func() logServerProbeSample {
+			calls++
+			return logServerProbeSample{TransportFailed: true, Detail: " 000 5.001368 "}
+		},
+		// 故意给多于上限的间隔：次数必须由上限封顶，而不是由调用方传几个就用几个
+		[]time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second},
+		func(time.Duration) bool { return true },
+	)
+
+	if calls != logServerProbeMaxAttempts {
+		t.Fatalf("应重试到上限 %d 次，实际 %d 次", logServerProbeMaxAttempts, calls)
+	}
+	if settled.HTTPCode != 0 || !settled.TransportFailed {
+		t.Fatalf("全部失败时 HTTPCode 应为 0：%+v", settled)
+	}
+	if !strings.Contains(note, "连续 3 次") || !strings.Contains(note, "000 5.001368") {
+		t.Fatalf("连续失败的说明不正确：%q", note)
+	}
+}
+
+// 收到 HTTP 应答（含 5xx）说明网络通、是服务端在表态，重试只会拖长面板。
+func TestConfirmLogServerReachabilityKeepsServerAnswerWithoutRetry(t *testing.T) {
+	calls := 0
+	settled, note := confirmLogServerReachability(
+		func() logServerProbeSample { calls++; return logServerProbeSample{HTTPCode: 502, LatencyMS: 90} },
+		[]time.Duration{time.Second},
+		func(time.Duration) bool { t.Fatal("有应答时不应等待重试"); return false },
+	)
+
+	if calls != 1 || settled.HTTPCode != 502 {
+		t.Fatalf("有应答应立即收尾：calls=%d sample=%+v", calls, settled)
+	}
+	if note != "" {
+		t.Fatalf("有应答不应写 note：%q", note)
+	}
+}
+
+// ctx 结束（面板关闭 / 动作超时）后不再空等：直接按已有观测收尾。
+func TestConfirmLogServerReachabilityStopsWhenSleepAborts(t *testing.T) {
+	calls := 0
+	_, note := confirmLogServerReachability(
+		func() logServerProbeSample {
+			calls++
+			return logServerProbeSample{TransportFailed: true, Detail: "timeout"}
+		},
+		[]time.Duration{time.Second, 2 * time.Second},
+		func(time.Duration) bool { return false },
+	)
+
+	if calls != 1 {
+		t.Fatalf("放弃重试后不得再取样，实际 %d 次", calls)
+	}
+	if !strings.Contains(note, "连续 1 次") {
+		t.Fatalf("应按已发生的观测数写说明：%q", note)
+	}
+}
+
 func TestInMessageLogCollectFields(t *testing.T) {
 	payload := `{"type":"log_collect","log_action":"create","ticket_no":"Q20261022001","modules":["network","core"],"date_from":"2026-10-21","date_to":"2026-10-22","ips":"all","extra_paths":["/sf/x"],"remote_url":"http://acli.sangfor.com.cn:5888/"}`
 	var msg InMessage
