@@ -136,3 +136,6 @@ dsh/data/customer-logs/*
 !dsh/data/customer-logs/.gitkeep
 dsh/data/tickets/*
 !dsh/data/tickets/.gitkeep
+
+# helm-unittest `-d` 调试产物（2026-10-30 曾被误提交进 #1375）
+.debug/
