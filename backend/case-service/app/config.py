@@ -28,7 +28,17 @@ class Settings(BaseSettings):
     # 日志收集制品存储（P2 段②：客户 PC → 平台 分块上传）
     # 单任务 2–20 GiB，使用本地共享卷；平台不做自动清理，容量告警由前端展示。
     LOG_COLLECT_STORAGE_ROOT: str = "/var/lib/log-collect"
-    LOG_COLLECT_CHUNK_SIZE_BYTES: int = 32 * 1024 * 1024
+    # 分片大小必须按「单请求耗时」反推，而不是按内存效率反推。
+    #
+    # 第一性原理：一个分片 = 一次 PUT = 一次完整的网关读窗口。网关（Traefik）
+    # 读完整个请求（含 body）的时限默认只有 60s，客户侧上行常见 0.3–4 MB/s，
+    # 于是 32 MiB 分片在 0.5 MB/s 链路上需要 64s —— 请求必然被网关掐断，
+    # 表现为「平台返回 HTTP 502」，且重试永远停在同一片（Q2026102801062：
+    # 72/103 片后再无进展，每轮 attempt 精确耗时 3×60s）。8 MiB 把单请求
+    # 窗口压到 16–32s，即使网关超时未放宽也不会必然失败。
+    # 代价是分片数 ×4（3.4 GB 包 103 → 409 片），只增加 HTTP 往返次数；
+    # 服务端按文件逐片落盘、合并仍是流式，不产生额外内存或磁盘峰值。
+    LOG_COLLECT_CHUNK_SIZE_BYTES: int = 8 * 1024 * 1024
     LOG_COLLECT_MAX_ARCHIVE_BYTES: int = 25 * 1024 * 1024 * 1024  # 25 GiB
     LOG_COLLECT_UPLOAD_TOKEN_TTL_HOURS: int = 24
     # 数据面 token 签名密钥；留空时由 INTERNAL_API_TOKEN 派生，避免新增必填配置。

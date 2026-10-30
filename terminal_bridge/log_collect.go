@@ -351,6 +351,69 @@ type logCollectProbeResult struct {
 	Note          string                   `json:"note,omitempty"`
 }
 
+// ── 日志服务器连通性：有界重试 ─────────────────────────────────────────────
+//
+// 第一性原理：一次 curl 没收到任何响应，只证明「这几秒里没通」，不证明「这里不通」。
+// 而这条结论在下游是硬性的——面板据此把 P1 置灰、强制改走 P2（平台留副本、多一跳中转）。
+// 用一个 5 秒的采样去否掉一条交付路径，代价要么是让用户白等一次注定失败的直传，
+// 要么是白绕一跳中转，所以「不可达」必须由多次一致观测才成立。
+//
+// 对抗性审查（哪些情况不重试、为什么次数必须小）：
+//   - 收到 HTTP 应答（含 5xx）说明网络通、是服务端在表态，重试只拖长面板而不改变结论；
+//   - 内网 HCI 本来出不了公网，重试仍会全部耗到超时——所以封顶 3 次，
+//     且只在传输层失败（没拿到 curl 输出）时发生，不把常见现场拖成二三十秒白等。
+const logServerProbeMaxAttempts = 3
+
+// logServerProbeRetryDelays 是第 2、3 次尝试前的等待：
+// 抖动消失以百毫秒计，但也要给 TCP 重传与临时 ACL 一点时间，1s/2s 足够。
+var logServerProbeRetryDelays = []time.Duration{1 * time.Second, 2 * time.Second}
+
+// logServerProbeSample 是一次 curl 探测的取样结果。
+type logServerProbeSample struct {
+	// HTTPCode 为 0 表示一个响应字节都没收到。
+	HTTPCode  int
+	LatencyMS int64
+	// TransportFailed 表示这次没拿到 curl 的 -w 输出（超时 / 拒绝 / 解析失败 / PTY 异常），
+	// 只有这类失败存在「这次没成」与「这里不通」的歧义。
+	TransportFailed bool
+	// Detail 是这次失败的原文佐证（curl 输出或进程错误）。
+	Detail string
+}
+
+// confirmLogServerReachability 用有界重试把「一次没通」收敛成确定结论。
+//
+// sample / sleep 可注入：重试语义必须能在不碰 SSH 的单测里被验证。
+// 第二个返回值是要写进探测快照 note 的说明——两种结局都必须留痕，否则「网络抖过」
+// 与「确实不通」在探测历史里长得一模一样。
+func confirmLogServerReachability(
+	sample func() logServerProbeSample,
+	delays []time.Duration,
+	sleep func(time.Duration) bool,
+) (logServerProbeSample, string) {
+	first := sample()
+	if !first.TransportFailed {
+		return first, ""
+	}
+	last := first
+	attempts := 1
+	for _, delay := range delays {
+		if attempts >= logServerProbeMaxAttempts {
+			break
+		}
+		if sleep != nil && !sleep(delay) {
+			break
+		}
+		attempts++
+		last = sample()
+		if !last.TransportFailed {
+			return last, fmt.Sprintf("日志服务器第 1 次探测无响应（%s），第 %d 次收到响应",
+				truncateString(first.Detail, 200), attempts)
+		}
+	}
+	return last, fmt.Sprintf("curl 探测失败（连续 %d 次）：%s",
+		attempts, truncateString(firstNonEmpty(last.Detail, first.Detail), 200))
+}
+
 // probeLogCollectEnv 采集架构、acli 版本、磁盘余量与日志服务器连通性。
 // 所有命令均为只读；任何单项失败都不阻断其余探测。
 func (s *SSHSession) probeLogCollectEnv(ctx context.Context, logServerURL string) logCollectProbeResult {
@@ -374,22 +437,40 @@ func (s *SSHSession) probeLogCollectEnv(ctx context.Context, logServerURL string
 	curlProbe := fmt.Sprintf(
 		`curl -s -o /dev/null -w '%%{http_code} %%{time_total}' --connect-timeout 5 --max-time 8 --noproxy '*' %s`,
 		shellQuote(logServerURL))
-	probeOut, probeCode, probeErr := s.runCommandPty(ctx, curlProbe, 15*time.Second)
-	if probeErr != nil || probeCode != 0 {
-		result.Note = "curl 探测失败：" + firstNonEmpty(errString(probeErr), strings.TrimSpace(probeOut))
-		return result
-	}
-	fields := strings.Fields(probeOut)
-	if len(fields) >= 1 {
-		result.LogServerHTTPCode, _ = strconv.Atoi(fields[0])
-	}
-	if len(fields) >= 2 {
-		if seconds, parseErr := strconv.ParseFloat(fields[1], 64); parseErr == nil {
-			result.LogServerLatencyMS = int64(seconds * 1000)
+	sample := func() logServerProbeSample {
+		probeOut, probeCode, probeErr := s.runCommandPty(ctx, curlProbe, 15*time.Second)
+		if probeErr != nil || probeCode != 0 {
+			return logServerProbeSample{
+				TransportFailed: true,
+				Detail:          firstNonEmpty(errString(probeErr), strings.TrimSpace(probeOut)),
+			}
 		}
+		one := logServerProbeSample{}
+		fields := strings.Fields(probeOut)
+		if len(fields) >= 1 {
+			one.HTTPCode, _ = strconv.Atoi(fields[0])
+		}
+		if len(fields) >= 2 {
+			if seconds, parseErr := strconv.ParseFloat(fields[1], 64); parseErr == nil {
+				one.LatencyMS = int64(seconds * 1000)
+			}
+		}
+		return one
 	}
+	// ctx 结束（面板关闭 / 动作超时）后不再空等：直接按已有观测收尾，不制造一个假的「在重试」。
+	settled, note := confirmLogServerReachability(sample, logServerProbeRetryDelays, func(delay time.Duration) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(delay):
+			return true
+		}
+	})
+	result.LogServerHTTPCode = settled.HTTPCode
+	result.LogServerLatencyMS = settled.LatencyMS
+	result.Note = note
 	// 401/403 也证明网络可达：只有连接失败或 5xx 才视为不可达。
-	result.LogServerReachable = result.LogServerHTTPCode >= 200 && result.LogServerHTTPCode < 500
+	result.LogServerReachable = settled.HTTPCode >= 200 && settled.HTTPCode < 500
 	return result
 }
 

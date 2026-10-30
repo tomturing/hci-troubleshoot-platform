@@ -840,6 +840,24 @@ jobs:
             exit 1
           fi
 
+      # 数值型环境变量必须是纯十进制：Helm 把 values 里的数字解析为 float64，
+      # 模板里直接 `| quote` 会用 %v 格式化，8388608 会变成 "8.388608e+06"。
+      # 容器侧是 pydantic int 字段，科学计数法字符串直接 ValidationError，
+      # 整个服务起不来（2026-10-30 staging case-service CrashLoopBackOff）。
+      # 8001 这类小整数碰巧不会退化，所以历史上一直没暴露。
+      - name: 数值型环境变量渲染格式检查
+        run: |
+          set -euo pipefail
+          for name in LOG_COLLECT_CHUNK_SIZE_BYTES; do
+            value=$(awk -v n="- name: $name" '$0 ~ n {f=1; next} f && /value:/ {gsub(/^[ \t]*value:[ \t]*"?|"[ \t]*$/, ""); print; exit}' \
+              /tmp/hci-platform-rendered.yaml)
+            echo "$name=$value"
+            if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::$name 渲染为 \"$value\"，不是十进制整数；请改用 {{ \$value | int64 | quote }}"
+              exit 1
+            fi
+          done
+
       # E-2: helm-unittest — 覆盖关键配置渲染场景
       - name: 缓存 Helm 插件
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830

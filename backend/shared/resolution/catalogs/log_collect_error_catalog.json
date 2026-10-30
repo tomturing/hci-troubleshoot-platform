@@ -171,6 +171,39 @@
       "ops_hint": "检查 /sf/sbin/acli wrapper 与容器状态。"
     },
     {
+      "code": "LC-INSTALL-007",
+      "layer": "INSTALL",
+      "stage": "verify",
+      "title_zh": "安装包落盘校验失败",
+      "owner": "customer",
+      "retryable": true,
+      "http_status": 502,
+      "user_hint": "上传到节点的安装包与本地校验值不一致（残包已自动丢弃），可点击重试重新上传。",
+      "ops_hint": "比对远端 size 与 sha256/md5；不一致常见于链路截断、同名覆盖或历史残留半包。"
+    },
+    {
+      "code": "LC-INSTALL-008",
+      "layer": "INSTALL",
+      "stage": "install",
+      "title_zh": "安装包下载不完整",
+      "owner": "customer",
+      "retryable": true,
+      "http_status": 502,
+      "user_hint": "下载到的安装包字节数与服务端声明不一致，请重试。",
+      "ops_hint": "比对 Content-Length 与实收字节数；差异常见于代理截断或并发中断。"
+    },
+    {
+      "code": "LC-INSTALL-009",
+      "layer": "INSTALL",
+      "stage": "install",
+      "title_zh": "安装包传输进行中",
+      "owner": "platform",
+      "retryable": true,
+      "http_status": 409,
+      "user_hint": "上一次上传仍在进行，请稍候再试（重复点击会被拒绝，避免并发写坏同名安装包）。",
+      "ops_hint": "同一 caseID@nodeIP 单飞互斥，见 acli_sync.busy 日志。"
+    },
+    {
       "code": "LC-EXEC-001",
       "layer": "EXEC",
       "stage": "exec",

@@ -14,7 +14,10 @@ import {
   buildDeliveryMessage,
   buildLogCollectMessage,
   createBridgeSocket,
+  parseAcliSyncFacts,
   resolveBridgeUrl,
+  type AcliRetryStage,
+  type AcliSyncFacts,
 } from '@/api/terminal'
 import {
   logCollectApi,
@@ -36,6 +39,7 @@ import {
   type DeliverySubmitPayload,
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
+import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
 import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
 import {
@@ -69,7 +73,24 @@ const descColumns = computed(() => (chatStore.leftPanelWidth >= 600 ? 2 : 1))
 /** 表单标签：窄容器下置顶，避免标签列继续吃掉本就不多的内容宽度 */
 const formLabelPosition = computed(() => (chatStore.leftPanelWidth < 480 ? 'top' : 'right'))
 
+/** 日志服务器探测目标：与 bridge 的默认值一致，仅用于展示与兜底文案。 */
 const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
+
+/**
+ * 探测回包归一化：把 bridge 的 `log_server_http_code` 与平台存档的 `http_code` 收成同一个值。
+ *
+ * 第一性原理：HTTP 码是「日志服务器到底回没回话」的唯一机器判据。两个来源并存时若
+ * 「取到哪个算哪个」，同一份事实就会在不同入口给出不同结论（面板说 0、历史记录说 500）。
+ * 所以入口只留一个：合并后的值写回 `http_code`，业务代码不得再读第二个字段。
+ */
+function normalizeProbe(raw: Partial<ProbeResult> | null | undefined): ProbeResult | null {
+  if (!raw) return null
+  const code = raw.log_server_http_code ?? raw.http_code
+  return {
+    ...(raw as ProbeResult),
+    http_code: typeof code === 'number' && Number.isFinite(code) ? code : 0,
+  }
+}
 const POLL_INTERVAL = 5000
 // 终态任务的低频对账间隔：failed 的节点侧任务可能仍在跑（需要「接管」），
 // 完全停轮询会让接管入口再也不出现；但每 5s 打一次 SSH 也没有必要。
@@ -142,13 +163,27 @@ interface ProbeResult {
   acli_binary?: string
   available_mb: number
   log_server_reachable: boolean
+  /**
+   * 日志服务器 HTTP 码（0 = 一个响应字节都没收到）。
+   *
+   * 收敛后的字段：bridge 回传的是 `log_server_http_code`，平台存档与旧单测用 `http_code`，
+   * 两者都由 normalizeProbe 归一到这里。早期前端只声明了 `http_code`，而 bridge 从不发它，
+   * 真值永远落空——随任务落库的探测快照因此长期缺 `http_code`，事后无法判断
+   * 「日志服务器当时是没回话，还是回了 5xx」。
+   */
   http_code: number
+  /** bridge 原始字段（见上）：保留声明只为归一化时有据可依，业务代码一律读 http_code */
+  log_server_http_code?: number
+  /** 探测耗时：失败时是「耗到超时」的秒数，随快照落库，供事后区分丢包与拒绝 */
+  log_server_latency_ms?: number
+  /** 本次探测的目标地址（随快照落库，便于事后核对探的是哪个地址） */
+  log_server_url?: string
   // 以下字段由 bridge 从目标集群读取；缺省表示探测降级，前端必须能继续工作
   modules?: ModuleOption[]
   hosts?: HostOption[]
   catalog_source?: 'acli_help' | 'platform_default'
   catalog_note?: string
-  /** 日志服务器探测失败原因（与 catalog_note 是两类独立故障，不能拼成一句） */
+  /** 日志服务器探测失败原因（bridge 原话，只做排障佐证，不参与结论） */
   note?: string
 }
 
@@ -189,6 +224,35 @@ const stage = ref<Stage>('idle')
 // 失败发生在第几步：stage 变成 failed 之后，阶段条必须停在真实位置，
 // 否则无论在哪一步挂掉都只亮「探测」，看起来像根本没开始。
 const failedStep = ref(0)
+
+/**
+ * acli 安装这一跳的实时事实（下载 → 上传 → 校验 → 安装）。
+ *
+ * 与 stage 的分工：stage 回答“日志收集流程走到哪”，这里回答“装工具这一步
+ * 到底错在哪、包对不对”。上传失败时只抛一句 error 的话，用户无法回答
+ * “是包被传坏了，还是安装器失败”，也就不知道该点哪个兜底按钮。
+ */
+const acliLive = reactive({
+  status: '',
+  message: '',
+  percent: 0,
+  packageSize: 0,
+  sha256: '',
+  md5: '',
+  integrity: '',
+  attempts: 0,
+  installOutput: '',
+})
+
+/** acli 安装失败态：非空即渲染兜底卡片（含校验摘要与重试按钮）。 */
+const acliFailure = ref<null | {
+  message: string
+  stage: string
+  suggestions: AcliRetryStage[]
+  facts: AcliSyncFacts
+}>(null)
+/** 重试进行中：按钮置灰，避免用户连点造成两个上传叠在同一个 destPath 上。 */
+const acliRetrying = ref(false)
 const probeResult = ref<ProbeResult | null>(null)
 const pathMode = ref<'P1' | 'P2' | ''>('')
 /**
@@ -198,6 +262,19 @@ const pathMode = ref<'P1' | 'P2' | ''>('')
  * 而误判，用户若已明确选择就必须尊重，否则每次点「开始收集」都被静默改回。
  */
 const pathModeTouched = ref(false)
+
+/**
+ * P1 是否可选。
+ *
+ * 第一性原理：两条路径不是偏好，而是由可达性决定的物理选择——HCI 连不上 5888 时，
+ * P1 不是「差一点的选择」，而是注定失败的那一个。把一个必然失败的选项摆给用户，
+ * 等于要求他先用一次失败去验证一个平台已经知道的事实，所以直接置灰。
+ */
+const p1Disabled = computed(() => {
+  const probe = probeResult.value
+  if (!probe) return false
+  return !probe.log_server_reachable
+})
 const currentTask = ref<LogCollectTask | null>(null)
 // 面板视图：form = 新建收集；result = 该工单已完成收集的只读结果
 const viewMode = ref<'form' | 'result'>('form')
@@ -700,79 +777,82 @@ const resultDeliveryText = computed(() => {
 })
 
 /**
+ * 交付路径的默认值与可选性。
+ *
+ * 第一性原理：这项选择的正确值只取决于一个平台已经知道的事实（HCI 能不能直连 5888），
+ * 所以平台直接给结论，不让用户做选择题：
+ *   - 可达 → 默认 P1（少一跳中转），用户仍可手动改 P2；
+ *   - 不可达（含 5xx / 超时 / 无响应等一切异常）→ 强制 P2，P1 置灰不可选。
+ * 用户从未手选时才套默认值；但不可达是硬约束，即使他之前选过 P1，也要收回——
+ * 给一个必然失败的选项不是尊重，而是挖坑。
+ */
+function applyDefaultPathMode() {
+  const probe = probeResult.value
+  if (!probe) return
+  if (!probe.log_server_reachable) {
+    // 不可达（含 5xx）是硬约束：即使之前手选过 P1，也要收回。
+    pathMode.value = 'P2'
+    return
+  }
+  // 可达：用户没手选过就回到 P1。这里不能写成 `!pathMode.value`——否则
+  // 「先判不可达（程序置 P2）→ 重探恢复可达」会永久停在 P2，比实际能力差一跳。
+  if (!pathModeTouched.value) pathMode.value = 'P1'
+}
+
+/**
  * 交付路径的选择说明。
  *
- * 两条路径不是 UI 偏好，而是**由网络可达性决定的物理选择**：
- * P1 要求 HCI 自己能连日志服务器 5888；P2 改由客户机经平台代传，只要求 HCI 能连平台。
- * 因此文案必须把"代价"讲清楚（P1 平台不留副本），而不是只给一个枚举值。
- *
- * 探测结论只用来**提示风险**，不用来禁止选择：可达性是时刻变化的（ACL 临时放通、
- * 5888 抖动都会让探测误判），用户比探测更清楚现场网络。
+ * 只说「这条路的代价」，不复述探测结论：探测结果已经由上方「建议路径」的取值表达，
+ * 在这里再说一遍「连不上日志服务器」就是对同一件事的第二次播报。
  */
 const pathModeHint = computed(() => {
-  const reachable = probeResult.value?.log_server_reachable
   if (pathMode.value === 'P1') {
-    return reachable
-      ? 'acli 插件从 HCI 直接上传到日志服务器：省一跳中转，但平台不留副本，事后无法回看/下载'
-      : '探测显示 HCI 当前无法访问日志服务器，P1 可能在采集完成后上传失败；拿不准请选 P2'
+    return 'acli 插件从 HCI 直接上传到日志服务器：省一跳中转，但平台不留副本，事后无法回看/下载'
   }
   if (pathMode.value === 'P2') {
     return 'HCI 只生成压缩包，由客户机经平台中转到日志服务器：平台留副本，可回看/下载，但需要客户机在线'
   }
-  return reachable === false
-    ? '未选择。探测显示 HCI 当前无法访问日志服务器：选 P1 可能上传失败，选 P2 由平台代传但需客户机在线'
-    : '未选择。探测确认可达时默认 P1；拿不准请选 P2（平台留副本，可回看/下载）'
+  return '探测完成后自动选择：HCI 能直连日志服务器时用 P1，否则用 P2'
 })
 
 /**
- * 交付路径的**事实**来源。
+ * 「建议路径」这一格的取值。
  *
- * 有任务时只认 `upload_mode`：它是创建那一刻落库的决策，能回答"这单实际走哪条路"。
- * 没有任务时才是探测建议，必须带「建议」二字——否则用户会把建议当成既成事实
- * （2026-10-28 现场：Q2026102800331 实际 P1，界面因一次 curl 超时显示 P2，
- * 事后只能靠命令行里的 -u 反推）。
+ * 契约（Q2026102801062）：只有两个字符串——`P1 直传日志服务器` / `P2 经平台中转`，
+ * 不加「（建议）」「待探测」之类修饰。探测结论已经由「取值是哪一个」说清楚，
+ * 每多一个字，用户就要多判断一次。
+ *
+ * 有任务时只认 `upload_mode`：它是创建那一刻落库的决策，能回答「这单实际走哪条路」；
+ * 没有任务时才是探测快照。两种来源共用同一套取值，不让界面出现第二套措辞。
  */
 const deliveryModeFact = computed(() => {
   const mode = currentTask.value?.upload_mode
-  if (mode === 'acli_direct') {
-    return { label: 'P1 直传日志服务器', type: 'success' as const, suggested: false }
-  }
-  if (mode === 'bridge_relay') {
-    return { label: 'P2 经平台中转', type: 'warning' as const, suggested: false }
-  }
-  if (!probeResult.value) {
-    return { label: '待探测', type: 'info' as const, suggested: false }
-  }
-  return probeResult.value.log_server_reachable
-    ? { label: 'P1 直传日志服务器（建议）', type: 'success' as const, suggested: true }
-    : { label: 'P2 经平台中转（建议）', type: 'warning' as const, suggested: true }
+  if (mode === 'acli_direct') return { label: 'P1 直传日志服务器', type: 'success' as const }
+  if (mode === 'bridge_relay') return { label: 'P2 经平台中转', type: 'warning' as const }
+  const probe = probeResult.value
+  if (!probe) return null
+  return probe.log_server_reachable
+    ? { label: 'P1 直传日志服务器', type: 'success' as const }
+    : { label: 'P2 经平台中转', type: 'warning' as const }
 })
 
 /**
- * 探测失败的独立原因清单。
+ * 探测降级项的独立清单。
  *
- * 对抗性审查：节点清单失败（acli 自身）与日志服务器不可达（网络）是两条互不相干的
- * 链路，此前被拼成一句展示，用户只能看到其中一条；分开列才能各自定因。
+ * 只有「读不到节点清单」进这里：它改变的是用户下一步要不要手填 IP。
+ * 日志服务器可达性**不进告警**：连不上只是选 P2 的理由，由上方「建议路径」的取值
+ * 与下方交付路径的默认值/可选性同一件事表达；再叠一条需要判读的文案，用户只会更迷茫。
  */
 const probeIssues = computed(() => {
   const probe = probeResult.value
-  if (!probe) return [] as { key: string; title: string; detail: string }[]
-  const issues: { key: string; title: string; detail: string }[] = []
-  if (!probe.hosts?.length) {
-    issues.push({
+  if (!probe || probe.hosts?.length) return [] as { key: string; title: string; detail: string }[]
+  return [
+    {
       key: 'hosts',
       title: '节点清单获取失败（仍可手填 all 或节点 IP）',
       detail: probe.catalog_note || 'acli 未返回任何节点，且没有给出原因',
-    })
-  }
-  if (!probe.log_server_reachable) {
-    issues.push({
-      key: 'logserver',
-      title: `日志服务器探测失败（HTTP ${probe.http_code ?? 0}）`,
-      detail: probe.note || `curl ${RELAY_URL} 无响应`,
-    })
-  }
-  return issues
+    },
+  ]
 })
 
 /**
@@ -920,6 +1000,7 @@ const hasPinnedAlerts = computed(
   () =>
     chatStore.logCollectCaseOwned === false ||
     prepareState.value === 'failed' ||
+    Boolean(acliFailure.value) ||
     Boolean(nodeSyncHint.value) ||
     Boolean(cleanupTip.value) ||
     Boolean(resultCleanupTip.value),
@@ -1070,7 +1151,9 @@ async function probeOnce(targetNode: string, token: number): Promise<ProbeResult
   if (probe.status !== 'ok') {
     throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
   }
-  const data = probe.log_data as ProbeResult
+  // 必须先归一化再落状态：下游（告警、落库快照）只认 http_code 一个字段。
+  const data = normalizeProbe(probe.log_data as ProbeResult)
+  if (!data) throw new Error('探测回包缺少环境数据，请重新探测')
   // 字典先落地再合并目录：否则用户会先看到一批无说明的短名，再整排换一次文案（闪变）。
   await dictPromise
   if (token !== prepareToken) return null
@@ -1139,13 +1222,8 @@ async function prepare(
       const data = await probeOnce(targetNode, token)
       if (!data || token !== prepareToken) return false
       probeRetry.value = null
-      // 交付路径的默认值只在「用户从未选过」且探测**成功**时给一次。
-      // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定
-      // 「平台是否留副本」——2026-10-28 现场探测返回 000，4 分钟后 P1 却传成 2.99 GB，
-      // 界面却已把路径改成 P2，事后无法判断任务到底走的哪条路。
-      if (!pathModeTouched.value && !pathMode.value && data.log_server_reachable) {
-        pathMode.value = 'P1'
-      }
+      // 交付路径由探测结论直接决定：可达 P1、不可达 P2（P1 同时置灰）。
+      applyDefaultPathMode()
       probedAt.value = Date.now()
       prepareState.value = 'ready'
       // 历史探测读的是 bridge 事件，失败不影响本次结果，因此不 await。
@@ -1340,11 +1418,33 @@ function handleMessage(event: MessageEvent) {
     }
     return
   }
+  if (data.type === 'acli_sync_progress') {
+    // 装工具这一跳的中间态：下载/上传/校验/安装各自有独立文案与百分比。
+    // 只更新展示，不结束等待——真正的结论只出现在 acli_sync_result。
+    const facts = parseAcliSyncFacts(data)
+    acliLive.status = facts.status
+    acliLive.message = data.message || ''
+    acliLive.percent = facts.percent
+    if (facts.packageSize) acliLive.packageSize = facts.packageSize
+    if (facts.packageSha256) acliLive.sha256 = facts.packageSha256
+    if (facts.packageMd5) acliLive.md5 = facts.packageMd5
+    if (facts.integrityState) acliLive.integrity = facts.integrityState
+    if (facts.attempts) acliLive.attempts = facts.attempts
+    if (facts.installOutput) acliLive.installOutput = facts.installOutput
+    return
+  }
   if (data.type === 'acli_sync_result') {
     const waiter = waiters.get('acli_sync')
     if (waiter) {
       waiters.delete('acli_sync')
       waiter(data)
+      return
+    }
+    // 无等待者的回包（前端已超时、或重试期间的迟到结果）：仍然要把失败落成
+    // 可重试的界面状态，否则 bridge 已经在节点上校验过的结论就彻底丢了；
+    // 用户会误以为“什么也没发生”而重头再点一次。
+    if (data.status && data.status !== 'installed' && data.status !== 'up_to_date') {
+      recordAcliFailure(data, 'acli 安装失败')
     }
     return
   }
@@ -1433,7 +1533,17 @@ function sendAndWait(
     if (action === 'acli_sync') {
       // 与 log_collect 同一锚点：不带 node_ip 时 bridge 会去找键为 caseID 的会话，
       // 而真实会话键是 caseID@nodeIP → 必然 session_missing（安装链路根本不会启动）。
-      ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100, nodeIp: nodeIp.value }))
+      //
+      // retry_stage 由兜底按钮带入：upload=复用已校验缓存重传，install=复用节点上的包重装。
+      // 不带它就等于“只能从头再来”，用户为了重试一次要重新拉 20~30MB。
+      ws.send(
+        buildAcliSyncMessage(props.caseId, {
+          force: options.force === true,
+          minDiskMb: 100,
+          nodeIp: nodeIp.value,
+          retryStage: (options.retryStage as AcliRetryStage) || 'all',
+        }),
+      )
     } else if (action === 'delivery_submit') {
       // submit 携带的是完整协议载荷（snake_case）。**不能**走下面的通用组装：
       // 那一层按 camelCase 取字段，会把 source_path / upload_token / total_size /
@@ -1823,17 +1933,13 @@ async function handleStart() {
       await confirmInstall(ws)
     }
 
-    // 只在用户从未手选、且探测确认可达时给一次默认值。
-    // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定交付路径
-    // （2026-10-28 现场：探测 000，P1 实际却传成 2.99 GB，界面已写成 P2）。
-    if (!pathModeTouched.value && !pathMode.value && probeResult.value.log_server_reachable) {
-      pathMode.value = 'P1'
-    }
+    // 只把结论落到默认值，不问用户：可达 P1、不可达 P2（P1 已置灰）。
+    // 旧实现「不可达时不静默选 P2」的初衷是不替用户决定交付路径，但那样会把
+    // 一个必然失败的选项留在台面上；现在改成默认值 + 禁选，用户仍可把 P1 改回 P2。
+    applyDefaultPathMode()
     if (!pathMode.value) {
       stage.value = 'idle'
-      ElMessage.warning(
-        '请选择交付路径：探测显示日志服务器当前不可达，选 P1 可能在采集完成后上传失败',
-      )
+      ElMessage.warning('请选择交付路径（尚未获取探测结论）')
       return
     }
 
@@ -1979,16 +2085,42 @@ async function handleStart() {
   }
 }
 
-async function confirmInstall(ws: WebSocket) {
-  await ElMessageBox.confirm(
-    `当前节点未检测到 acli（架构 ${probeResult.value?.architecture || '未知'}）。` +
-      '安装会向集群所有节点分发插件，约 10–15 秒/节点，属于变更操作。是否继续？',
-    '需要安装 acli',
-    { confirmButtonText: '确认安装', cancelButtonText: '取消', type: 'warning' },
-  )
-  stage.value = 'installing'
-  const result = await sendAndWait(ws, 'acli_sync', {}, 300000)
-  if (result.status === 'error') throw new Error(result.message || 'acli 安装失败')
+function resetAcliLive() {
+  acliLive.status = ''
+  acliLive.message = ''
+  acliLive.percent = 0
+  acliLive.packageSize = 0
+  acliLive.sha256 = ''
+  acliLive.md5 = ''
+  acliLive.integrity = ''
+  acliLive.attempts = 0
+  acliLive.installOutput = ''
+}
+
+/**
+ * 把一次 acli 同步失败转换成可展示、可重试的失败态。
+ *
+ * 关键约定：**不丢弃 facts**。历史实现只把 message 抛给上层，于是界面只剩
+ * 一句“上传失败”，既不知道包多大、摘要是什么，也不知道该重传还是重装。
+ */
+function recordAcliFailure(data: any, fallbackMessage: string) {
+  const facts = parseAcliSyncFacts(data)
+  const stageHint = facts.stage || ''
+  const suggestions = acliRetrySuggestions({ ...facts, status: 'error' })
+  acliFailure.value = {
+    message: String(data?.message || fallbackMessage),
+    stage: stageHint,
+    // 建议为空只会在“不可重试”（如磁盘不足）时出现：那类失败重试也不会变好。
+    suggestions,
+    facts,
+  }
+  acliLive.installOutput = facts.installOutput || acliLive.installOutput
+}
+
+/** 安装/重试成功后清空失败态，并把 acli 标记为可用 + 重探集群能力。 */
+async function markAcliInstalled() {
+  acliFailure.value = null
+  resetAcliLive()
   probeResult.value = { ...(probeResult.value as ProbeResult), acli_installed: true }
   // 安装成功后必须重探：节点清单与场景目录只有 acli 可用后才读得到，
   // 不重探会让用户"装完 acli 仍看到读不到节点清单"，误判为安装无效。
@@ -2002,6 +2134,112 @@ async function confirmInstall(ws: WebSocket) {
     // 重探失败不能就此停在旧快照：交给事实复查把「装好了但没读到清单」补上，
     // 否则用户又回到「必须 F5」的老路
     scheduleFactRecheck()
+  }
+}
+
+async function confirmInstall(ws: WebSocket) {
+  await ElMessageBox.confirm(
+    `当前节点未检测到 acli（架构 ${probeResult.value?.architecture || '未知'}）。` +
+      '安装会向集群所有节点分发插件，约 10–15 秒/节点，属于变更操作。是否继续？',
+    '需要安装 acli',
+    { confirmButtonText: '确认安装', cancelButtonText: '取消', type: 'warning' },
+  )
+  stage.value = 'installing'
+  resetAcliLive()
+  acliFailure.value = null
+  // 超时预算跟 bridge 的分段预算对齐（下载 120s + 上传 300s + 安装 240s）：
+  // 前端先超时会让用户误以为已经失败，并叠出第二次上传。
+  const result = await sendAndWait(ws, 'acli_sync', {}, ACLI_SYNC_TIMEOUT_MS)
+  // 除了 installed/up_to_date 之外都是失败——包括 disk_space_insufficient：
+  // 历史实现只判 status==='error'，会把“磁盘不足”当成装好了，后面采集中再莫名失败。
+  if (result.status !== 'installed' && result.status !== 'up_to_date') {
+    // 先落失败态（含校验摘要与重试建议），再抛出：调用方的错误提示照旧，
+    // 但用户手里多了一组可以继续走下去的按钮，而不是停在红色报错上。
+    recordAcliFailure(result, 'acli 安装失败')
+    throw new Error(result.message || 'acli 安装失败')
+  }
+  await markAcliInstalled()
+}
+
+/**
+ * 重试 acli 安装（兜底入口）。
+ *
+ * retryStage 直接决定跳过哪些已确认正确的工作：
+ * - upload ：复用 bridge 内存缓存里的已校验安装包重传，不再拉官网；
+ * - install：复用节点上已校验的安装包重装，不再传任何字节；
+ * - all    ：完整重来（缓存过期、或怀疑缓存本身有问题时才用）。
+ */
+async function retryAcliSync(retryStage: AcliRetryStage) {
+  if (acliRetrying.value) return
+  if (!nodeIp.value) {
+    ElMessage.warning('请先在 SSH 终端连接 HCI 节点')
+    return
+  }
+  let ws: WebSocket
+  try {
+    ws = await openSocket()
+  } catch (error: any) {
+    ElMessage.error(error.message)
+    return
+  }
+  acliRetrying.value = true
+  const previousStage = stage.value
+  stage.value = 'installing'
+  try {
+    const result = await sendAndWait(ws, 'acli_sync', { retryStage }, ACLI_SYNC_TIMEOUT_MS)
+    if (result.status !== 'installed' && result.status !== 'up_to_date') {
+      recordAcliFailure(result, 'acli 安装重试失败')
+      ElMessage.error(result.message || 'acli 安装重试失败')
+      return
+    }
+    await markAcliInstalled()
+    ElMessage.success(
+      retryStage === 'install' ? 'acli 已用节点上校验通过的安装包重装成功' : 'acli 安装包重传并校验通过',
+    )
+  } catch (error: any) {
+    // 通道断开/超时同样要给出重试建议：这是最常见的可恢复情况。
+    recordAcliFailure(
+      { status: 'error', stage: 'upload', message: error?.message || 'acli 重试失败' },
+      'acli 重试失败',
+    )
+    ElMessage.error(error?.message || 'acli 重试失败')
+  } finally {
+    acliRetrying.value = false
+    // 失败前如果已经在别的阶段（如采集中），不能被一次重试拉回 installing。
+    if (stage.value === 'installing') stage.value = previousStage === 'installing' ? 'idle' : previousStage
+  }
+}
+
+/** 安装包字节数的人类可读形态；未量到时返回空串，避免把“没测到”显示成 0 字节。 */
+function formatAcliBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return ''
+  const mb = bytes / (1024 * 1024)
+  return mb >= 1 ? `${mb.toFixed(1)} MB（${bytes} 字节）` : `${bytes} 字节`
+}
+
+/** 兜底按钮文案：用“从哪一跳继续”而不是笼统的“重试”。 */
+function acliRetryLabel(target: AcliRetryStage): string {
+  switch (target) {
+    case 'upload':
+      return '重试上传（复用已校验包）'
+    case 'install':
+      return '重试安装（复用节点上已校验包）'
+    default:
+      return '从头重试（重新下载并校验）'
+  }
+}
+
+/** 校验强度的用户可见表述：size_only 必须显式说明“只比了字节数”。 */
+function acliIntegrityText(facts: AcliSyncFacts): string {
+  switch (facts.integrityState) {
+    case 'sha256':
+      return '已通过 SHA-256 内容校验（本地与节点一致）'
+    case 'md5':
+      return '已通过 MD5 内容校验（节点无 sha256sum，降级为 MD5）'
+    case 'size_only':
+      return '节点无 sha256sum/md5sum，仅比对字节数（未做内容校验）'
+    default:
+      return '尚未完成落盘校验'
   }
 }
 
@@ -3189,6 +3427,10 @@ watch(
     stage.value = 'idle'
     cleanupTip.value = ''
     errorMessage.value = ''
+    // 上一单的 acli 失败态与校验摘要必须一起清掉：带着 A 单的 sha256 去展示
+    // B 单的安装失败，只会把排障引到错误的包上。
+    acliFailure.value = null
+    resetAcliLive()
     // 节点包路径属于上一单的节点视图，必须一起清掉，否则补交付可能拿着 A 单的路径去 stat
     nodeArchivePath.value = ''
     nodeAction.value = ''
@@ -3299,6 +3541,68 @@ onBeforeUnmount(() => {
         <el-button size="small" text type="primary" :disabled="running" @click="prepare()">
           重新读取
         </el-button>
+      </el-alert>
+      <!--
+        acli 安装失败兜底：必须同时给出“为什么失败”和“下一步做什么”。
+        历史实现失败后只弹一句错误就不再管，用户唯一的办法是重头点“开始收集”（
+        又一次 20~30MB 下载 + 上传），这恰恰是 2026-10-29 现场反复上传的原因之一。
+      -->
+      <el-alert v-if="acliFailure" class="lc-acli-fail" type="error" :closable="false" show-icon>
+        <template #title>
+          <span>acli 安装失败：{{ acliFailure.message }}</span>
+        </template>
+        <div class="lc-acli-facts">
+          <span v-if="acliFailure.facts.errorCode" class="lc-acli-chip">
+            错误码 {{ acliFailure.facts.errorCode }}
+          </span>
+          <span v-if="acliFailure.stage" class="lc-acli-chip">失败环节 {{ acliFailure.stage }}</span>
+          <span v-if="acliFailure.facts.attempts" class="lc-acli-chip">
+            已尝试 {{ acliFailure.facts.attempts }} 次
+          </span>
+          <span v-if="acliFailure.facts.packageFilename" class="lc-acli-chip">
+            {{ acliFailure.facts.packageFilename }}
+          </span>
+          <span v-if="formatAcliBytes(acliFailure.facts.packageSize)" class="lc-acli-chip">
+            {{ formatAcliBytes(acliFailure.facts.packageSize) }}
+          </span>
+          <span class="lc-acli-chip">{{ acliIntegrityText(acliFailure.facts) }}</span>
+          <span v-if="acliFailure.facts.installExitCode" class="lc-acli-chip">
+            安装退出码 {{ acliFailure.facts.installExitCode }}
+          </span>
+        </div>
+        <!-- 摘要必须可见：事后核对“到底传上去的是哪个包”只能靠这两行 -->
+        <div v-if="acliFailure.facts.packageSha256 || acliFailure.facts.packageMd5" class="lc-acli-digests">
+          <div v-if="acliFailure.facts.packageSha256">
+            本地 sha256：{{ acliFailure.facts.packageSha256 }}
+          </div>
+          <div v-if="acliFailure.facts.packageMd5">本地 md5：{{ acliFailure.facts.packageMd5 }}</div>
+          <div v-if="acliFailure.facts.remoteDigest">
+            节点 {{ acliFailure.facts.remoteAlgo || 'digest' }}：{{ acliFailure.facts.remoteDigest }}
+          </div>
+        </div>
+        <pre v-if="acliFailure.facts.installOutput || acliLive.installOutput" class="lc-acli-output">{{
+          stripAnsi(acliFailure.facts.installOutput || acliLive.installOutput)
+        }}</pre>
+        <div v-if="acliFailure.facts.packagePath" class="lc-acli-path">
+          节点路径：{{ acliFailure.facts.packagePath }}
+        </div>
+        <div class="lc-sync-actions">
+          <el-button
+            v-for="option in acliFailure.suggestions"
+            :key="option"
+            size="small"
+            type="primary"
+            :plain="option === 'all'"
+            :loading="acliRetrying"
+            :disabled="acliRetrying || running"
+            @click="retryAcliSync(option)"
+          >
+            {{ acliRetryLabel(option) }}
+          </el-button>
+          <el-button v-if="!acliFailure.suggestions.length" size="small" text @click="acliFailure = null">
+            知道了
+          </el-button>
+        </div>
       </el-alert>
       <!--
         两端对账结论：节点是唯一真相源，平台只是投影。
@@ -3457,9 +3761,8 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="acli">
             <span :title="acliTitle">{{ acliVersionText }}</span>
           </el-descriptions-item>
-          <el-descriptions-item label="建议路径">
-            <!-- 这是探测建议，不是既定事实：有任务时只认任务记录（deliveryModeFact 在无任务时带「建议」二字），
-                 改名是为了和表单里的「交付路径」（用户决策）区分，避免被读成"已经定了 P1"。 -->
+          <el-descriptions-item v-if="deliveryModeFact" label="建议路径">
+            <!-- 取值定死两个：P1 直传日志服务器 / P2 经平台中转（不加修饰词） -->
             <el-tag :type="deliveryModeFact.type" size="small">
               {{ deliveryModeFact.label }}
             </el-tag>
@@ -3544,7 +3847,7 @@ onBeforeUnmount(() => {
           show-icon
           :title="probeRetryText"
         />
-        <!-- 探测失败必须显式告警：降级可用 ≠ 用户不需要知道 -->
+        <!-- 探测降级只在这里出现：影响用户下一步动作的只有「读不到节点清单」 -->
         <el-alert
           v-for="issue in probeIssues"
           :key="issue.key"
@@ -3642,14 +3945,15 @@ onBeforeUnmount(() => {
           </el-form-item>
           <el-form-item label="交付路径">
             <!--
-              必须可改：探测到的可达性只代表"那一刻"，ACL 临时放通、5888 抖动都会误判；
-              而两条路径的代价不同（P1 平台不留副本），只有用户能权衡。
+              路径不是偏好，是由可达性决定的物理选择：
+              可达时默认 P1（用户可主动改 P2），不可达时 P1 直接置灰——
+              把一个注定失败的选项留着，只会骗用户先用一次失败去做验证。
             -->
             <el-radio-group v-model="pathMode" :disabled="running" @change="pathModeTouched = true">
+              <el-radio-button value="P1" :disabled="p1Disabled">P1 直传日志服务器</el-radio-button>
               <el-radio-button value="P2">P2 经平台中转</el-radio-button>
-              <el-radio-button value="P1">P1 直传日志服务器</el-radio-button>
             </el-radio-group>
-            <div class="lc-hint" :class="{ 'lc-hint-warn': pathMode === 'P1' && probeResult && !probeResult.log_server_reachable }">
+            <div class="lc-hint">
               {{ pathModeHint }}
             </div>
           </el-form-item>
@@ -3868,6 +4172,48 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   margin-top: 6px;
+}
+/* acli 安装失败兜底：事实用小胶囊平铺，摘要单行可复制，输出限高可滚 */
+.lc-acli-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+.lc-acli-chip {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.05);
+  font-size: 12px;
+  line-height: 20px;
+  word-break: break-all;
+}
+.lc-acli-digests {
+  margin: 4px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+}
+/* 安装输出往往带进度条与 ANSI：限高 + 可滚，保证结论行不被刷掉也不拖垮布局 */
+.lc-acli-output {
+  max-height: 160px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.lc-acli-path {
+  margin-top: 4px;
+  font-size: 12px;
+  word-break: break-all;
+  opacity: 0.8;
 }
 .lc-conflict {
   display: flex;

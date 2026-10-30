@@ -73,6 +73,11 @@ helm_equivalents:
   LOG_COLLECT_STORAGE_ROOT:
     value_paths: [caseService.logCollectStorage.mountPath]
     template_env: [LOG_COLLECT_STORAGE_ROOT]
+  # 日志包分片大小：决定单次分片 PUT 需要多长的网关读窗口，
+  # 必须能按现场上行带宽调小（默认 8 MiB），故由 values 驱动。
+  LOG_COLLECT_CHUNK_SIZE_BYTES:
+    value_paths: [caseService.logCollectStorage.chunkSizeBytes]
+    template_env: [LOG_COLLECT_CHUNK_SIZE_BYTES]
   CONVERSATION_SERVICE_PORT:
     value_paths: [conversationService.port]
     template_env: [SERVICE_PORT]

@@ -59,34 +59,39 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
 
 vi.mock('@/stores/chat', () => ({ useChatStore: () => mockStore }))
 
-vi.mock('@/api/terminal', () => ({
-  resolveBridgeUrl: vi.fn().mockResolvedValue('ws://localhost:9999'),
-  createBridgeSocket: vi.fn(() => {
-    // 真实 WebSocket 每次 new 都是一条**新**连接，不可能返回一个已 CLOSED 的实例。
-    // 这里复用单例，就必须在每次「建连」时把 readyState 复位：前一个用例 unmount
-    // 时 close() 会把它置成 3，残留的 3 会让后续挂载永远拿到一条已关闭的通道，
-    // 于是 sendAndWait 依通道不可用立即失败、探测根本发不出去，描述表也就无从渲染。
-    fakeSocket.readyState = 1
-    // onopen 在构造之后才被赋值，必须延后一拍触发
-    setTimeout(() => fakeSocket.onopen?.(), 0)
-    return fakeSocket
-  }),
-  buildAcliSyncMessage: vi.fn(() => JSON.stringify({ type: 'acli_sync' })),
-  buildLogCollectMessage: (caseId: string, action: string, options: any = {}) =>
-    JSON.stringify({
-      type: 'log_collect',
-      case_id: caseId,
-      log_action: action,
-      node_ip: options.nodeIp,
+vi.mock('@/api/terminal', async () => {
+  // 真实实现仅在“纯函数”上复用：消息构造与完整性解析都是纯数据变换，桩掉它们
+  // 等于把“点重试有没有真的把 retry_stage 发给 bridge”从测试里抹掉。
+  const actual = await vi.importActual<typeof import('@/api/terminal')>('@/api/terminal')
+  return {
+    ...actual,
+    resolveBridgeUrl: vi.fn().mockResolvedValue('ws://localhost:9999'),
+    createBridgeSocket: vi.fn(() => {
+      // 真实 WebSocket 每次 new 都是一条**新**连接，不可能返回一个已 CLOSED 的实例。
+      // 这里复用单例，就必须在每次「建连」时把 readyState 复位：前一个用例 unmount
+      // 时 close() 会把它置成 3，残留的 3 会让后续挂载永远拿到一条已关闭的通道，
+      // 于是 sendAndWait 依通道不可用立即失败、探测根本发不出去，描述表也就无从渲染。
+      fakeSocket.readyState = 1
+      // onopen 在构造之后才被赋值，必须延后一拍触发
+      setTimeout(() => fakeSocket.onopen?.(), 0)
+      return fakeSocket
     }),
-  // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
-  buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
-    JSON.stringify({ type: 'delivery', case_id: caseId, log_action: action, ...options }),
-  // submit 走独立入口（snake_case 载荷平铺）。mock 必须与真实实现同构，
-  // 否则又会像上一轮那样把"字段被丢空"掩盖成绿灯。
-  buildDeliverySubmitMessage: (payload: any, caseId: string, nodeIp?: string) =>
-    JSON.stringify({ type: 'delivery_submit', case_id: caseId, node_ip: nodeIp, ...payload }),
-}))
+    buildLogCollectMessage: (caseId: string, action: string, options: any = {}) =>
+      JSON.stringify({
+        type: 'log_collect',
+        case_id: caseId,
+        log_action: action,
+        node_ip: options.nodeIp,
+      }),
+    // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
+    buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
+      JSON.stringify({ type: 'delivery', case_id: caseId, log_action: action, ...options }),
+    // submit 走独立入口（snake_case 载荷平铺）。mock 必须与真实实现同构，
+    // 否则又会像上一轮那样把"字段被丢空"掩盖成绿灯。
+    buildDeliverySubmitMessage: (payload: any, caseId: string, nodeIp?: string) =>
+      JSON.stringify({ type: 'delivery_submit', case_id: caseId, node_ip: nodeIp, ...payload }),
+  }
+})
 
 vi.mock('@/api/logCollect', () => ({
   logCollectApi: {
@@ -125,10 +130,12 @@ const ElDescriptionsItem = {
 
 // ElAlert 的 title 是属性而非插槽，透传桩会丢掉它；这里显式渲染出来，
 // 否则"完成态"一类文案无法在测试里断言。
+// type 同样要落到 class：提示等级（常态 info / 需处理 warning）正是本文件要锁住的契约。
 const ElAlert = {
-  props: ['title'],
+  props: ['title', 'type'],
   setup(props: any, { slots }: any) {
-    return () => h('div', { class: 'alert-stub' }, [props.title, slots.default?.()])
+    return () =>
+      h('div', { class: ['alert-stub', `alert-${props.type}`] }, [props.title, slots.default?.()])
   },
 }
 
@@ -172,6 +179,47 @@ const ElCheckbox = {
           onClick: () => {
             if (props.disabled) return
             group?.toggle(props.value)
+          },
+        },
+        slots.default?.(),
+      )
+  },
+}
+
+// 交付路径单选同理：P1/P2 是用户对交付链的取舍，而「选了 P1 就该升级告警」是硬契约，
+// 桩子不能真点时这条规则就只能靠人工看屏。
+const RADIO_GROUP_KEY = Symbol('radio-group')
+
+const ElRadioGroup = {
+  props: ['modelValue'],
+  emits: ['update:modelValue', 'change'],
+  setup(props: any, { slots, emit }: any) {
+    provide(RADIO_GROUP_KEY, {
+      isChecked: (value: unknown) => props.modelValue === value,
+      select: (value: unknown) => {
+        if (props.modelValue === value) return
+        emit('update:modelValue', value)
+        emit('change', value)
+      },
+    })
+    return () => h('div', { class: 'radio-group' }, slots.default?.())
+  },
+}
+
+const ElRadioButton = {
+  props: ['value', 'disabled'],
+  setup(props: any, { slots }: any) {
+    const group: any = inject(RADIO_GROUP_KEY, null)
+    return () =>
+      h(
+        'label',
+        {
+          class: ['radio-btn', { 'is-active': group?.isChecked(props.value) }],
+          'data-value': props.value,
+          'data-disabled': props.disabled ? '1' : '0',
+          onClick: () => {
+            if (props.disabled) return
+            group?.select(props.value)
           },
         },
         slots.default?.(),
@@ -230,6 +278,8 @@ function mountPanel() {
           ElStep: passthrough('ElStep'),
           ElCheckboxGroup,
           ElCheckbox,
+          ElRadioGroup,
+          ElRadioButton,
         },
       },
     },
@@ -883,6 +933,131 @@ describe('LogCollectPanel', () => {
     expect(hint).toContain('172.28.25.2,172.28.25.3')
     // 必须说清"为什么没有清单"，避免用户误判为平台故障
     expect(hint).toContain('acli 未安装')
+  })
+
+  // 「建议路径」取值的唯一出口：表格里的那一格。取值定死两个字符串，
+  // 不加「（建议）」「待探测」之类修饰——探测结论已经由「是哪一个」说清楚。
+  const suggestedPathText = (wrapper: any): string => {
+    const cell = wrapper
+      .findAll('.desc-item')
+      .find((node: any) => node.find('.desc-label').text() === '建议路径')
+    return cell ? cell.find('.desc-val').text() : ''
+  }
+
+  // 回归（Q2026102801062）：内网 HCI 连不上日志服务器是最常见的现场，不是故障。
+  // 契约：探测结果只体现在「建议路径」的取值 + 交付路径的默认值/可选性上，
+  // 不再额外弹一条需要用户判读的告警。
+  it('日志服务器不可达时默认选 P2 且 P1 置灰，不额外弹告警', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({
+      status: 'ok',
+      log_data: probePayload({
+        log_server_reachable: false,
+        log_server_http_code: 0,
+        note: 'curl 探测失败（连续 3 次）：000 5.001368',
+      }),
+    })
+    await flushPromises()
+
+    // 不能多出第二条文案：探测结果只靠「建议路径」说话
+    const alerts = wrapper.findAll('.lc-prepare').map((node) => node.text())
+    expect(alerts.some((text) => text.includes('日志服务器'))).toBe(false)
+    expect(suggestedPathText(wrapper)).toBe('P2 经平台中转')
+
+    // 默认落在 P2；P1 因为必然失败而被禁选（点了也不变）
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+    const p1 = wrapper.find('.radio-btn[data-value="P1"]')
+    expect(p1.attributes('data-disabled')).toBe('1')
+    await p1.trigger('click')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').classes()).not.toContain('is-active')
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+  })
+
+  it('日志服务器可达时默认选 P1，用户改选 P2 后不被重探覆盖', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P1 直传日志服务器')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').classes()).toContain('is-active')
+    // 可达才能手选：P2 是备选，不是默认
+    expect(wrapper.find('.radio-btn[data-value="P1"]').attributes('data-disabled')).toBe('0')
+
+    await wrapper.find('.radio-btn[data-value="P2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+
+    // 再次探测（结论不变）：用户已明确选的路径不能被默认值改回去
+    const reprobe = wrapper.findAll('button').find((item) => item.text() === '重新探测')
+    await reprobe!.trigger('click')
+    await flushPromises()
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+  })
+
+  // 5xx 也归入「不可达」：「所有异常一律 P2 + P1 置灰」不能让用户去分辨 HTTP 码
+  it('日志服务器回 5xx 时同样默认 P2、P1 置灰，不向用户解释 HTTP 码', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({
+      status: 'ok',
+      log_data: probePayload({ log_server_reachable: false, log_server_http_code: 502 }),
+    })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P2 经平台中转')
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').attributes('data-disabled')).toBe('1')
+    // HTTP 码属于排障信息，不进入面板文案
+    expect(wrapper.text()).not.toContain('HTTP 502')
+  })
+
+  // 回归：探测先判不可达（程序置 P2）后又查到可达时，默认值必须回到 P1。
+  // 旧实现用 `!pathMode` 做门槛，会永久停在比实际能力差一跳的 P2 上。
+  it('重探恢复可达后，未被手改的默认路径回到 P1', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({
+      status: 'ok',
+      log_data: probePayload({ log_server_reachable: false, log_server_http_code: 0 }),
+    })
+    await flushPromises()
+    expect(wrapper.find('.radio-btn[data-value="P2"]').classes()).toContain('is-active')
+
+    const reprobe = wrapper.findAll('button').find((item) => item.text() === '重新探测')
+    await reprobe!.trigger('click')
+    await flushPromises()
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P1 直传日志服务器')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').classes()).toContain('is-active')
+    expect(wrapper.find('.radio-btn[data-value="P1"]').attributes('data-disabled')).toBe('0')
+  })
+
+  // 「（建议）」「待探测」这类修饰一旦回到表格里，说明取值不再定死两个。
+  it('建议路径的取值不带任何修饰词', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    replyProbe({ status: 'ok', log_data: probePayload({ log_server_http_code: 200 }) })
+    await flushPromises()
+
+    expect(suggestedPathText(wrapper)).toBe('P1 直传日志服务器')
+    expect(wrapper.text()).not.toContain('（建议）')
+    expect(wrapper.text()).not.toContain('待探测')
   })
 
   // 回归：任务状态的真值在平台。完成后关掉抽屉再打开，曾经退回空白表单，用户会以为必须重收。
@@ -1853,5 +2028,148 @@ describe('LogCollectPanel 提示条不得被 flex 压缩', () => {
   it('固定提示区里确实有提示条，守卫不是写了个空规则', () => {
     const alertsBlock = SOURCE.split('class="lc-alerts"')[1]?.split('<div class="lc-scroll">')[0] ?? ''
     expect(alertsBlock).toContain('el-alert')
+  })
+})
+
+/**
+ * acli 安装失败兜底（2026-10-29 Q2026102901049 现场）。
+ *
+ * 现场形态：上传 92s×3 超时后界面只弹一句错误就结束，用户唯一的出路是重头
+ * 再点一次“开始收集”，于是又拉一遍 20MB 并再传一遍。契约：失败必须同时留下
+ * 「为什么失败（含具体 md5/sha256）」与「从哪一跳继续」两个出口。
+ */
+describe('LogCollectPanel acli 安装失败兜底', () => {
+  // 新 describe 不继承上面的 beforeEach：消息箱与平台字典必须逐例复位，
+  // 否则上一条用例的 sent/probe 会渗到下一条，断言就失去意义。
+  beforeEach(() => {
+    sentMessages.length = 0
+    fakeSocket.readyState = 1
+    mockStore.lastSshHost = ''
+    mockStore.sshConnectionState = 'disconnected'
+    mockStore.sshCurrentConfig = null
+    mockStore.leftPanelWidth = 520
+    vi.mocked(logCollectApi.listTasks).mockReset()
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 0, items: [] })
+    vi.mocked(logCollectApi.listScenarios).mockReset()
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue([])
+    vi.mocked(logCollectApi.getTask).mockReset()
+  })
+
+  const mountReady = async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await flushPromises()
+    return wrapper
+  }
+
+  const pushAcliResult = (payload: Record<string, unknown>) => {
+    fakeSocket.onmessage?.({ data: JSON.stringify({ type: 'acli_sync_result', ...payload }) })
+  }
+
+  it('上传落盘校验不符时展示摘要，并给出「重试上传」而不是从头再来', async () => {
+    const wrapper = await mountReady()
+
+    pushAcliResult({
+      case_id: 'Q2026102300001',
+      status: 'error',
+      stage: 'verify',
+      error_code: 'LC-INSTALL-007',
+      error_retryable: 'true',
+      attempts: 3,
+      package_size: 18718164,
+      package_sha256: 'a1b2c3d4e5f6',
+      package_md5: '0f1e2d3c4b5a',
+      package_filename: 'acli-installer_v1.0.1.acli',
+      package_path: '/sf/data/local/acli-installer_v1.0.1.acli',
+      remote_size: 18700000,
+      remote_algo: 'sha256',
+      remote_digest: 'deadbeefcafe',
+      message: '上传内容校验不符：已丢弃远端残包',
+    })
+    await flushPromises()
+
+    const card = wrapper.find('.lc-acli-fail')
+    expect(card.exists()).toBe(true)
+    // 摘要必须原样可见：事后核对“传上去的是哪个包”只能靠这几行
+    expect(card.text()).toContain('LC-INSTALL-007')
+    expect(card.text()).toContain('a1b2c3d4e5f6')
+    expect(card.text()).toContain('0f1e2d3c4b5a')
+    expect(card.text()).toContain('deadbeefcafe')
+    expect(card.text()).toContain('已尝试 3 次')
+    expect(card.text()).toContain('17.9 MB')
+
+    const buttons = card.findAll('button').map((btn) => btn.text())
+    expect(buttons.some((text) => text.includes('重试上传'))).toBe(true)
+    // 包还没被证明正确，不应该先建议“只重装”
+    expect(buttons.some((text) => text.includes('重试安装'))).toBe(false)
+
+    // 点「重试上传」必须把 retry_stage 真的发出去（否则 bridge 只能从头下载）
+    const uploadButton = card.findAll('button').find((btn) => btn.text().includes('重试上传'))
+    await uploadButton!.trigger('click')
+    await flushPromises()
+
+    const retry = sentMessages
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'acli_sync')
+      .pop()
+    expect(retry?.retry_stage).toBe('upload')
+    expect(retry?.node_ip).toBe('172.28.25.1')
+  })
+
+  it('安装命令失败时只给「重试安装」（包已校验通过，重传无意义）', async () => {
+    const wrapper = await mountReady()
+
+    pushAcliResult({
+      case_id: 'Q2026102300001',
+      status: 'error',
+      stage: 'install',
+      error_code: 'LC-INSTALL-002',
+      error_retryable: 'true',
+      install_exit_code: 2,
+      install_output: 'distribute to node 172.28.25.2 failed',
+      integrity_state: 'sha256',
+      package_sha256: 'feedface',
+      message: 'acli 安装命令退出码 2',
+    })
+    await flushPromises()
+
+    const card = wrapper.find('.lc-acli-fail')
+    expect(card.exists()).toBe(true)
+    // 安装输出必须上屏：真正的失败原因只出现在这里
+    expect(card.text()).toContain('distribute to node 172.28.25.2 failed')
+    expect(card.text()).toContain('已通过 SHA-256 内容校验')
+
+    const installButton = card.findAll('button').find((btn) => btn.text().includes('重试安装'))
+    expect(installButton).toBeTruthy()
+    await installButton!.trigger('click')
+    await flushPromises()
+
+    const retry = sentMessages
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'acli_sync')
+      .pop()
+    expect(retry?.retry_stage).toBe('install')
+  })
+
+  it('不可重试的失败（磁盘不足）不提供重试按钮', async () => {
+    const wrapper = await mountReady()
+
+    pushAcliResult({
+      case_id: 'Q2026102300001',
+      status: 'disk_space_insufficient',
+      error_code: 'LC-ENV-007',
+      error_retryable: 'false',
+      message: '/sf/data/local 目录可用空间不足',
+    })
+    await flushPromises()
+
+    const card = wrapper.find('.lc-acli-fail')
+    expect(card.exists()).toBe(true)
+    const labels = card.findAll('button').map((btn) => btn.text())
+    expect(labels).toContain('知道了')
+    expect(labels.some((text) => text.includes('重试'))).toBe(false)
   })
 })
