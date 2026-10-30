@@ -229,6 +229,42 @@ export interface TerminalWsMessage {
   latest_version?: string
   available_mb?: number
   required_mb?: number
+  /**
+   * 安装包完整性事实（与 Bridge OutMessage 一一对应）。
+   *
+   * 存在的理由：回答“上传到 HCI 的包对不对”，前端必须能拿到本地摘要与远端
+   * 回显摘要两个事实。拿不到就无法判断该“重试上传”还是“重试安装”。
+   */
+  package_size?: number
+  package_sha256?: string
+  package_md5?: string
+  package_filename?: string
+  package_path?: string
+  /** 上传进度：字节级事实，避免长链路只能看到“正在上传...” */
+  uploaded_bytes?: number
+  percent?: number
+  /** sha256 | md5 | size_only：校验强度的自证，size_only 必须显式告知用户 */
+  integrity_state?: string
+  remote_size?: number
+  remote_algo?: string
+  remote_digest?: string
+  /** 本次已尝试的传输次数（含首次） */
+  attempts?: number
+  /** all | upload | install：告知前端“从哪一跳重试” */
+  retry_stage?: string
+  /** download | upload | verify | install */
+  stage?: string
+  /** 安装命令事实：exit_code 为 0 时会被 omitempty 吞掉，故用 install_success 表达结论 */
+  install_success?: boolean
+  install_exit_code?: number
+  install_ms?: number
+  install_output?: string
+  install_stderr?: string
+  /** 统一诊断字段：layer/owner/retryable 由 bridge 的 sendMsg 自动补全 */
+  error_code?: string
+  error_layer?: string
+  error_owner?: string
+  error_retryable?: string
   // WebSocket 保活心跳字段
   ping?: number     // 服务端发送心跳时间戳（Unix 毫秒）
   // bridge_log 消息的负载（结构化日志条目）
@@ -475,7 +511,19 @@ export interface AcliSyncOptions {
    * 表现为「环境没有 acli 却永远不安装、也看不到任何下载日志」。
    */
   nodeIp?: string
+  /**
+   * 重试起点（兜底按钮携带）：
+   * - all    ：完整流程（默认）
+   * - upload ：复用 bridge 已校验缓存重传，不重新下载
+   * - install：复用节点上已校验的包重装，不再传字节
+   */
+  retryStage?: AcliRetryStage
+  /** 重试时可指定新的追踪链路，便于把“首次失败”与“重试结果”分开看 */
+  traceId?: string
 }
+
+/** acli 安装链路的重试起点 */
+export type AcliRetryStage = 'all' | 'upload' | 'install'
 
 /**
  * 构建 acli_sync 消息（检测与自动更新 acli 工具）
@@ -488,7 +536,81 @@ export function buildAcliSyncMessage(caseId: string, options?: AcliSyncOptions):
     min_disk_mb: options?.minDiskMb || 100,
     acli_url: options?.acliUrl || undefined,
     node_ip: options?.nodeIp || undefined,
+    // 只在显式重试时下发：bridge 把非 all 视作“用户明确要求重做该阶段”的强制信号。
+    retry_stage: options?.retryStage && options.retryStage !== 'all' ? options.retryStage : undefined,
+    trace_id: options?.traceId || undefined,
   })
+}
+
+/**
+ * acli 安装链路的完整性事实（acli_sync_progress / acli_sync_result 共用）。
+ *
+ * 统一解析的理由：进度与结果两处都要展示同一组事实，各写一套必然漂移，
+ * 而这里一旦解析错，就会把“校验失败”渲染成“安装失败”，引导用户做出错误的兜底动作。
+ */
+export interface AcliSyncFacts {
+  status: string
+  errorCode: string
+  stage: string
+  retryStage: AcliRetryStage
+  retryable: boolean
+  attempts: number
+  packageSize: number
+  packageSha256: string
+  packageMd5: string
+  packageFilename: string
+  packagePath: string
+  integrityState: string
+  remoteSize: number
+  remoteAlgo: string
+  remoteDigest: string
+  uploadedBytes: number
+  percent: number
+  installSuccess: boolean
+  installExitCode: number
+  installMs: number
+  installOutput: string
+  installStderr: string
+}
+
+function asText(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function normalizeRetryStage(value: unknown): AcliRetryStage {
+  return value === 'upload' || value === 'install' ? value : 'all'
+}
+
+/** 解析 acli 同步消息里的完整性事实；结构不合法时返回全零值，绝不抛错。 */
+export function parseAcliSyncFacts(message: unknown): AcliSyncFacts {
+  const data = (typeof message === 'object' && message !== null ? message : {}) as Record<string, unknown>
+  const status = asText(data.status)
+  const retryableRaw = asText(data.error_retryable)
+  return {
+    status,
+    errorCode: asText(data.error_code),
+    stage: asText(data.stage),
+    retryStage: normalizeRetryStage(data.retry_stage),
+    // 没有显式标注时用状态兜底：error 默认可重试，否则兜底按钮永远不会出现。
+    retryable: retryableRaw === 'false' ? false : retryableRaw === 'true' ? true : status === 'error',
+    attempts: asNumber(data.attempts),
+    packageSize: asNumber(data.package_size),
+    packageSha256: asText(data.package_sha256),
+    packageMd5: asText(data.package_md5),
+    packageFilename: asText(data.package_filename),
+    packagePath: asText(data.package_path),
+    integrityState: asText(data.integrity_state),
+    remoteSize: asNumber(data.remote_size),
+    remoteAlgo: asText(data.remote_algo),
+    remoteDigest: asText(data.remote_digest),
+    uploadedBytes: asNumber(data.uploaded_bytes),
+    percent: asNumber(data.percent),
+    installSuccess: data.install_success === true,
+    installExitCode: asNumber(data.install_exit_code),
+    installMs: asNumber(data.install_ms),
+    installOutput: asText(data.install_output),
+    installStderr: asText(data.install_stderr),
+  }
 }
 
 export interface LogCollectMessageOptions {

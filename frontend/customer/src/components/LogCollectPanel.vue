@@ -14,7 +14,10 @@ import {
   buildDeliveryMessage,
   buildLogCollectMessage,
   createBridgeSocket,
+  parseAcliSyncFacts,
   resolveBridgeUrl,
+  type AcliRetryStage,
+  type AcliSyncFacts,
 } from '@/api/terminal'
 import {
   logCollectApi,
@@ -36,6 +39,7 @@ import {
   type DeliverySubmitPayload,
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
+import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
 import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
 import {
@@ -189,6 +193,35 @@ const stage = ref<Stage>('idle')
 // 失败发生在第几步：stage 变成 failed 之后，阶段条必须停在真实位置，
 // 否则无论在哪一步挂掉都只亮「探测」，看起来像根本没开始。
 const failedStep = ref(0)
+
+/**
+ * acli 安装这一跳的实时事实（下载 → 上传 → 校验 → 安装）。
+ *
+ * 与 stage 的分工：stage 回答“日志收集流程走到哪”，这里回答“装工具这一步
+ * 到底错在哪、包对不对”。上传失败时只抛一句 error 的话，用户无法回答
+ * “是包被传坏了，还是安装器失败”，也就不知道该点哪个兜底按钮。
+ */
+const acliLive = reactive({
+  status: '',
+  message: '',
+  percent: 0,
+  packageSize: 0,
+  sha256: '',
+  md5: '',
+  integrity: '',
+  attempts: 0,
+  installOutput: '',
+})
+
+/** acli 安装失败态：非空即渲染兜底卡片（含校验摘要与重试按钮）。 */
+const acliFailure = ref<null | {
+  message: string
+  stage: string
+  suggestions: AcliRetryStage[]
+  facts: AcliSyncFacts
+}>(null)
+/** 重试进行中：按钮置灰，避免用户连点造成两个上传叠在同一个 destPath 上。 */
+const acliRetrying = ref(false)
 const probeResult = ref<ProbeResult | null>(null)
 const pathMode = ref<'P1' | 'P2' | ''>('')
 /**
@@ -920,6 +953,7 @@ const hasPinnedAlerts = computed(
   () =>
     chatStore.logCollectCaseOwned === false ||
     prepareState.value === 'failed' ||
+    Boolean(acliFailure.value) ||
     Boolean(nodeSyncHint.value) ||
     Boolean(cleanupTip.value) ||
     Boolean(resultCleanupTip.value),
@@ -1340,11 +1374,33 @@ function handleMessage(event: MessageEvent) {
     }
     return
   }
+  if (data.type === 'acli_sync_progress') {
+    // 装工具这一跳的中间态：下载/上传/校验/安装各自有独立文案与百分比。
+    // 只更新展示，不结束等待——真正的结论只出现在 acli_sync_result。
+    const facts = parseAcliSyncFacts(data)
+    acliLive.status = facts.status
+    acliLive.message = data.message || ''
+    acliLive.percent = facts.percent
+    if (facts.packageSize) acliLive.packageSize = facts.packageSize
+    if (facts.packageSha256) acliLive.sha256 = facts.packageSha256
+    if (facts.packageMd5) acliLive.md5 = facts.packageMd5
+    if (facts.integrityState) acliLive.integrity = facts.integrityState
+    if (facts.attempts) acliLive.attempts = facts.attempts
+    if (facts.installOutput) acliLive.installOutput = facts.installOutput
+    return
+  }
   if (data.type === 'acli_sync_result') {
     const waiter = waiters.get('acli_sync')
     if (waiter) {
       waiters.delete('acli_sync')
       waiter(data)
+      return
+    }
+    // 无等待者的回包（前端已超时、或重试期间的迟到结果）：仍然要把失败落成
+    // 可重试的界面状态，否则 bridge 已经在节点上校验过的结论就彻底丢了；
+    // 用户会误以为“什么也没发生”而重头再点一次。
+    if (data.status && data.status !== 'installed' && data.status !== 'up_to_date') {
+      recordAcliFailure(data, 'acli 安装失败')
     }
     return
   }
@@ -1433,7 +1489,17 @@ function sendAndWait(
     if (action === 'acli_sync') {
       // 与 log_collect 同一锚点：不带 node_ip 时 bridge 会去找键为 caseID 的会话，
       // 而真实会话键是 caseID@nodeIP → 必然 session_missing（安装链路根本不会启动）。
-      ws.send(buildAcliSyncMessage(props.caseId, { force: false, minDiskMb: 100, nodeIp: nodeIp.value }))
+      //
+      // retry_stage 由兜底按钮带入：upload=复用已校验缓存重传，install=复用节点上的包重装。
+      // 不带它就等于“只能从头再来”，用户为了重试一次要重新拉 20~30MB。
+      ws.send(
+        buildAcliSyncMessage(props.caseId, {
+          force: options.force === true,
+          minDiskMb: 100,
+          nodeIp: nodeIp.value,
+          retryStage: (options.retryStage as AcliRetryStage) || 'all',
+        }),
+      )
     } else if (action === 'delivery_submit') {
       // submit 携带的是完整协议载荷（snake_case）。**不能**走下面的通用组装：
       // 那一层按 camelCase 取字段，会把 source_path / upload_token / total_size /
@@ -1979,16 +2045,42 @@ async function handleStart() {
   }
 }
 
-async function confirmInstall(ws: WebSocket) {
-  await ElMessageBox.confirm(
-    `当前节点未检测到 acli（架构 ${probeResult.value?.architecture || '未知'}）。` +
-      '安装会向集群所有节点分发插件，约 10–15 秒/节点，属于变更操作。是否继续？',
-    '需要安装 acli',
-    { confirmButtonText: '确认安装', cancelButtonText: '取消', type: 'warning' },
-  )
-  stage.value = 'installing'
-  const result = await sendAndWait(ws, 'acli_sync', {}, 300000)
-  if (result.status === 'error') throw new Error(result.message || 'acli 安装失败')
+function resetAcliLive() {
+  acliLive.status = ''
+  acliLive.message = ''
+  acliLive.percent = 0
+  acliLive.packageSize = 0
+  acliLive.sha256 = ''
+  acliLive.md5 = ''
+  acliLive.integrity = ''
+  acliLive.attempts = 0
+  acliLive.installOutput = ''
+}
+
+/**
+ * 把一次 acli 同步失败转换成可展示、可重试的失败态。
+ *
+ * 关键约定：**不丢弃 facts**。历史实现只把 message 抛给上层，于是界面只剩
+ * 一句“上传失败”，既不知道包多大、摘要是什么，也不知道该重传还是重装。
+ */
+function recordAcliFailure(data: any, fallbackMessage: string) {
+  const facts = parseAcliSyncFacts(data)
+  const stageHint = facts.stage || ''
+  const suggestions = acliRetrySuggestions({ ...facts, status: 'error' })
+  acliFailure.value = {
+    message: String(data?.message || fallbackMessage),
+    stage: stageHint,
+    // 建议为空只会在“不可重试”（如磁盘不足）时出现：那类失败重试也不会变好。
+    suggestions,
+    facts,
+  }
+  acliLive.installOutput = facts.installOutput || acliLive.installOutput
+}
+
+/** 安装/重试成功后清空失败态，并把 acli 标记为可用 + 重探集群能力。 */
+async function markAcliInstalled() {
+  acliFailure.value = null
+  resetAcliLive()
   probeResult.value = { ...(probeResult.value as ProbeResult), acli_installed: true }
   // 安装成功后必须重探：节点清单与场景目录只有 acli 可用后才读得到，
   // 不重探会让用户"装完 acli 仍看到读不到节点清单"，误判为安装无效。
@@ -2002,6 +2094,112 @@ async function confirmInstall(ws: WebSocket) {
     // 重探失败不能就此停在旧快照：交给事实复查把「装好了但没读到清单」补上，
     // 否则用户又回到「必须 F5」的老路
     scheduleFactRecheck()
+  }
+}
+
+async function confirmInstall(ws: WebSocket) {
+  await ElMessageBox.confirm(
+    `当前节点未检测到 acli（架构 ${probeResult.value?.architecture || '未知'}）。` +
+      '安装会向集群所有节点分发插件，约 10–15 秒/节点，属于变更操作。是否继续？',
+    '需要安装 acli',
+    { confirmButtonText: '确认安装', cancelButtonText: '取消', type: 'warning' },
+  )
+  stage.value = 'installing'
+  resetAcliLive()
+  acliFailure.value = null
+  // 超时预算跟 bridge 的分段预算对齐（下载 120s + 上传 300s + 安装 240s）：
+  // 前端先超时会让用户误以为已经失败，并叠出第二次上传。
+  const result = await sendAndWait(ws, 'acli_sync', {}, ACLI_SYNC_TIMEOUT_MS)
+  // 除了 installed/up_to_date 之外都是失败——包括 disk_space_insufficient：
+  // 历史实现只判 status==='error'，会把“磁盘不足”当成装好了，后面采集中再莫名失败。
+  if (result.status !== 'installed' && result.status !== 'up_to_date') {
+    // 先落失败态（含校验摘要与重试建议），再抛出：调用方的错误提示照旧，
+    // 但用户手里多了一组可以继续走下去的按钮，而不是停在红色报错上。
+    recordAcliFailure(result, 'acli 安装失败')
+    throw new Error(result.message || 'acli 安装失败')
+  }
+  await markAcliInstalled()
+}
+
+/**
+ * 重试 acli 安装（兜底入口）。
+ *
+ * retryStage 直接决定跳过哪些已确认正确的工作：
+ * - upload ：复用 bridge 内存缓存里的已校验安装包重传，不再拉官网；
+ * - install：复用节点上已校验的安装包重装，不再传任何字节；
+ * - all    ：完整重来（缓存过期、或怀疑缓存本身有问题时才用）。
+ */
+async function retryAcliSync(retryStage: AcliRetryStage) {
+  if (acliRetrying.value) return
+  if (!nodeIp.value) {
+    ElMessage.warning('请先在 SSH 终端连接 HCI 节点')
+    return
+  }
+  let ws: WebSocket
+  try {
+    ws = await openSocket()
+  } catch (error: any) {
+    ElMessage.error(error.message)
+    return
+  }
+  acliRetrying.value = true
+  const previousStage = stage.value
+  stage.value = 'installing'
+  try {
+    const result = await sendAndWait(ws, 'acli_sync', { retryStage }, ACLI_SYNC_TIMEOUT_MS)
+    if (result.status !== 'installed' && result.status !== 'up_to_date') {
+      recordAcliFailure(result, 'acli 安装重试失败')
+      ElMessage.error(result.message || 'acli 安装重试失败')
+      return
+    }
+    await markAcliInstalled()
+    ElMessage.success(
+      retryStage === 'install' ? 'acli 已用节点上校验通过的安装包重装成功' : 'acli 安装包重传并校验通过',
+    )
+  } catch (error: any) {
+    // 通道断开/超时同样要给出重试建议：这是最常见的可恢复情况。
+    recordAcliFailure(
+      { status: 'error', stage: 'upload', message: error?.message || 'acli 重试失败' },
+      'acli 重试失败',
+    )
+    ElMessage.error(error?.message || 'acli 重试失败')
+  } finally {
+    acliRetrying.value = false
+    // 失败前如果已经在别的阶段（如采集中），不能被一次重试拉回 installing。
+    if (stage.value === 'installing') stage.value = previousStage === 'installing' ? 'idle' : previousStage
+  }
+}
+
+/** 安装包字节数的人类可读形态；未量到时返回空串，避免把“没测到”显示成 0 字节。 */
+function formatAcliBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return ''
+  const mb = bytes / (1024 * 1024)
+  return mb >= 1 ? `${mb.toFixed(1)} MB（${bytes} 字节）` : `${bytes} 字节`
+}
+
+/** 兜底按钮文案：用“从哪一跳继续”而不是笼统的“重试”。 */
+function acliRetryLabel(target: AcliRetryStage): string {
+  switch (target) {
+    case 'upload':
+      return '重试上传（复用已校验包）'
+    case 'install':
+      return '重试安装（复用节点上已校验包）'
+    default:
+      return '从头重试（重新下载并校验）'
+  }
+}
+
+/** 校验强度的用户可见表述：size_only 必须显式说明“只比了字节数”。 */
+function acliIntegrityText(facts: AcliSyncFacts): string {
+  switch (facts.integrityState) {
+    case 'sha256':
+      return '已通过 SHA-256 内容校验（本地与节点一致）'
+    case 'md5':
+      return '已通过 MD5 内容校验（节点无 sha256sum，降级为 MD5）'
+    case 'size_only':
+      return '节点无 sha256sum/md5sum，仅比对字节数（未做内容校验）'
+    default:
+      return '尚未完成落盘校验'
   }
 }
 
@@ -3189,6 +3387,10 @@ watch(
     stage.value = 'idle'
     cleanupTip.value = ''
     errorMessage.value = ''
+    // 上一单的 acli 失败态与校验摘要必须一起清掉：带着 A 单的 sha256 去展示
+    // B 单的安装失败，只会把排障引到错误的包上。
+    acliFailure.value = null
+    resetAcliLive()
     // 节点包路径属于上一单的节点视图，必须一起清掉，否则补交付可能拿着 A 单的路径去 stat
     nodeArchivePath.value = ''
     nodeAction.value = ''
@@ -3299,6 +3501,68 @@ onBeforeUnmount(() => {
         <el-button size="small" text type="primary" :disabled="running" @click="prepare()">
           重新读取
         </el-button>
+      </el-alert>
+      <!--
+        acli 安装失败兜底：必须同时给出“为什么失败”和“下一步做什么”。
+        历史实现失败后只弹一句错误就不再管，用户唯一的办法是重头点“开始收集”（
+        又一次 20~30MB 下载 + 上传），这恰恰是 2026-10-29 现场反复上传的原因之一。
+      -->
+      <el-alert v-if="acliFailure" class="lc-acli-fail" type="error" :closable="false" show-icon>
+        <template #title>
+          <span>acli 安装失败：{{ acliFailure.message }}</span>
+        </template>
+        <div class="lc-acli-facts">
+          <span v-if="acliFailure.facts.errorCode" class="lc-acli-chip">
+            错误码 {{ acliFailure.facts.errorCode }}
+          </span>
+          <span v-if="acliFailure.stage" class="lc-acli-chip">失败环节 {{ acliFailure.stage }}</span>
+          <span v-if="acliFailure.facts.attempts" class="lc-acli-chip">
+            已尝试 {{ acliFailure.facts.attempts }} 次
+          </span>
+          <span v-if="acliFailure.facts.packageFilename" class="lc-acli-chip">
+            {{ acliFailure.facts.packageFilename }}
+          </span>
+          <span v-if="formatAcliBytes(acliFailure.facts.packageSize)" class="lc-acli-chip">
+            {{ formatAcliBytes(acliFailure.facts.packageSize) }}
+          </span>
+          <span class="lc-acli-chip">{{ acliIntegrityText(acliFailure.facts) }}</span>
+          <span v-if="acliFailure.facts.installExitCode" class="lc-acli-chip">
+            安装退出码 {{ acliFailure.facts.installExitCode }}
+          </span>
+        </div>
+        <!-- 摘要必须可见：事后核对“到底传上去的是哪个包”只能靠这两行 -->
+        <div v-if="acliFailure.facts.packageSha256 || acliFailure.facts.packageMd5" class="lc-acli-digests">
+          <div v-if="acliFailure.facts.packageSha256">
+            本地 sha256：{{ acliFailure.facts.packageSha256 }}
+          </div>
+          <div v-if="acliFailure.facts.packageMd5">本地 md5：{{ acliFailure.facts.packageMd5 }}</div>
+          <div v-if="acliFailure.facts.remoteDigest">
+            节点 {{ acliFailure.facts.remoteAlgo || 'digest' }}：{{ acliFailure.facts.remoteDigest }}
+          </div>
+        </div>
+        <pre v-if="acliFailure.facts.installOutput || acliLive.installOutput" class="lc-acli-output">{{
+          stripAnsi(acliFailure.facts.installOutput || acliLive.installOutput)
+        }}</pre>
+        <div v-if="acliFailure.facts.packagePath" class="lc-acli-path">
+          节点路径：{{ acliFailure.facts.packagePath }}
+        </div>
+        <div class="lc-sync-actions">
+          <el-button
+            v-for="option in acliFailure.suggestions"
+            :key="option"
+            size="small"
+            type="primary"
+            :plain="option === 'all'"
+            :loading="acliRetrying"
+            :disabled="acliRetrying || running"
+            @click="retryAcliSync(option)"
+          >
+            {{ acliRetryLabel(option) }}
+          </el-button>
+          <el-button v-if="!acliFailure.suggestions.length" size="small" text @click="acliFailure = null">
+            知道了
+          </el-button>
+        </div>
       </el-alert>
       <!--
         两端对账结论：节点是唯一真相源，平台只是投影。
@@ -3868,6 +4132,48 @@ onBeforeUnmount(() => {
   display: flex;
   gap: 8px;
   margin-top: 6px;
+}
+/* acli 安装失败兜底：事实用小胶囊平铺，摘要单行可复制，输出限高可滚 */
+.lc-acli-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+.lc-acli-chip {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.05);
+  font-size: 12px;
+  line-height: 20px;
+  word-break: break-all;
+}
+.lc-acli-digests {
+  margin: 4px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+}
+/* 安装输出往往带进度条与 ANSI：限高 + 可滚，保证结论行不被刷掉也不拖垮布局 */
+.lc-acli-output {
+  max-height: 160px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.lc-acli-path {
+  margin-top: 4px;
+  font-size: 12px;
+  word-break: break-all;
+  opacity: 0.8;
 }
 .lc-conflict {
   display: flex;

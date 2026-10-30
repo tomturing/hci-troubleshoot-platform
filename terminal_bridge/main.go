@@ -371,6 +371,11 @@ type InMessage struct {
 	Force     bool   `json:"force"`              // 强制重新安装/更新
 	MinDiskMB int    `json:"min_disk_mb"`        // 最小剩余磁盘要求（默认 100MB）
 	AcliURL   string `json:"acli_url,omitempty"` // 可选自定义下载链接
+	// RetryStage 由前端「重试」按钮指定复用的起点，避免把已完成的阶段重跑一遍：
+	//   all（默认）—— 重新下载 + 上传 + 安装（能修复下载侧污染）；
+	//   upload      —— 复用已校验的安装包缓存，只重传（对应「重新上传」按钮）；
+	//   install     —— 复用节点上已校验的安装包，只重跑安装命令。
+	RetryStage string `json:"retry_stage,omitempty"`
 
 	// ── log_collect 专用字段 ──
 	// 参数在 bridge 侧二次校验并以单引号转义后拼命令：acli 插件本身不防注入。
@@ -492,6 +497,31 @@ type OutMessage struct {
 	LatestVersion  string `json:"latest_version,omitempty"`
 	AvailableMB    int64  `json:"available_mb,omitempty"`
 	RequiredMB     int64  `json:"required_mb,omitempty"`
+	// 安装包完整性事实：让「包到底对不对」不再需要登录节点去猜。
+	// IntegrityState 是校验强度的自证：sha256/md5 为真比对，size_only 是降级，
+	// 前端必须把 size_only 显式展示成「仅比对了字节数」。
+	PackageSize     int64  `json:"package_size,omitempty"`
+	PackageSHA256   string `json:"package_sha256,omitempty"`
+	PackageMD5      string `json:"package_md5,omitempty"`
+	PackageFilename string `json:"package_filename,omitempty"`
+	PackagePath     string `json:"package_path,omitempty"`
+	// 上传进度：字节级事实，避免长链路只能看到“正在上传...”。
+	UploadedBytes  int64  `json:"uploaded_bytes,omitempty"`
+	Percent        int    `json:"percent,omitempty"`
+	IntegrityState string `json:"integrity_state,omitempty"`
+	RemoteSize     int64  `json:"remote_size,omitempty"`
+	RemoteAlgo     string `json:"remote_algo,omitempty"`
+	RemoteDigest   string `json:"remote_digest,omitempty"`
+	Attempts       int    `json:"attempts,omitempty"`
+	RetryStage     string `json:"retry_stage,omitempty"`
+	Stage          string `json:"stage,omitempty"` // download | upload | verify | install
+	// 安装命令的完整事实：退出码 0 在 omitempty 下会被吞掉，因此用 InstallSuccess
+	// 表达「成功」这一结论，退出码只作为附加信息。
+	InstallSuccess  bool   `json:"install_success,omitempty"`
+	InstallExitCode int    `json:"install_exit_code,omitempty"`
+	InstallMS       int64  `json:"install_ms,omitempty"`
+	InstallOutput   string `json:"install_output,omitempty"`
+	InstallStderr   string `json:"install_stderr,omitempty"`
 
 	// ── log_collect_result 专用字段 ──
 	// 进度与探测结果是结构化数据；RAW 保留插件原文，解析失败时前端按原文展示，
@@ -3251,6 +3281,16 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	}
 	msg.TraceID = traceID
 
+	// 重试起点：由前端「重试上传 / 重试安装」兜底按钮带入。
+	//   all     —— 完整流程（默认）；
+	//   upload  —— 复用已校验的内存缓存重传，不重新下载；
+	//   install —— 复用节点上已校验的安装包重装，不再传字节。
+	// 非法值一律回 all：宁可多做一次完整校验，也不要因一个笔误走了未校验的快捷路径。
+	retryStage := strings.ToLower(strings.TrimSpace(msg.RetryStage))
+	if retryStage != "upload" && retryStage != "install" {
+		retryStage = "all"
+	}
+
 	s, key := b.resolveAcliSyncSession(msg)
 	if s == nil {
 		sendMsg(ws, OutMessage{
@@ -3265,9 +3305,13 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	}
 	blog("INFO", "acli_sync.start", "acli 检测与安装开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"force": msg.Force, "min_disk_mb": msg.MinDiskMB, "custom_url": msg.AcliURL != "", "key": key,
+		"retry_stage": retryStage,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// 总预算是三段独立预算之和再加余量：下载 120s + 上传 300s + 安装 240s。
+	// 历史实现用单一 180s 总超时，导致任何一段变慢都会表现成“另一段超时”，
+	// 排障只能猜（Q2026102901049 现场三次失败都精确卡在 92s）。
+	ctx, cancel := context.WithTimeout(context.Background(), 720*time.Second)
 	defer cancel()
 
 	sendMsg(ws, OutMessage{
@@ -3344,6 +3388,14 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		blog("INFO", "acli_sync.force_install", "收到 force 标记，强制重新安装 acli", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch,
 		})
+	case retryStage != "all":
+		// 对抗性审查：若这里不显式置位，用户点「重试上传」很可能直接落到
+		// 「acli 已是最新」分支——按钮点了却什么都不发生，与“报错不管”等价。
+		// 用户的显式重试意图本身就是强制信号。
+		needInstall = true
+		blog("INFO", "acli_sync.retry_requested", "收到重试请求，强制执行对应阶段", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"retry_stage": retryStage, "current_version": currentVer, "current_build": currentBuild,
+		})
 	case remoteBuild != "" && currentBuild != "" && !sameBuildDate(currentBuild, remoteBuild):
 		needInstall = true
 		blog("INFO", "acli_sync.version_outdated", "acli 版本落后，需要更新", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
@@ -3417,157 +3469,353 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		return
 	}
 
-	// 6. 下载安装包
-	sendMsg(ws, OutMessage{
-		Type:         "acli_sync_progress",
-		CaseID:       msg.CaseID,
-		Status:       "downloading",
-		Architecture: targetArch,
-		Message:      fmt.Sprintf("正在从官方源下载 acli 安装包 (%s)...", targetArch),
-	})
-
-	dlReq, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
-	if err != nil {
+	// 6. 传输互斥：同一会话同一时刻只允许一个安装包在上传。
+	//
+	// 并发的两个上传会各自写 tmp 再 mv 到同一个 destPath，谁最后落盘完全取决于时序——
+	// 这正是“上传到 HCI 的包不对”的可行成因之一。宁可显式拒绝（可重试），
+	// 也不要让两次传输互相覆盖。
+	release, acquired := b.acquireAcliTransfer(key)
+	if !acquired {
 		sendMsg(ws, OutMessage{
-			Type:    "acli_sync_result",
-			CaseID:  msg.CaseID,
-			Status:  "error",
-			TraceID: traceID,
-			Message: "创建下载请求失败: " + err.Error(), ErrorCode: ErrInstallReqFailed,
+			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
+			Architecture: targetArch, ErrorCode: ErrInstallBusy, Stage: "upload",
+			Message: "上一次 acli 安装包传输仍在进行中，请等其结束后再重试（重复上传会互相覆盖同名文件）",
 		})
-		blog("ERROR", "acli_sync.download_request_failed", "创建 acli 下载请求失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"error": err.Error(),
+		blog("WARN", "acli_sync.busy", "acli 安装包传输进行中，拒绝并发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"key": key,
 		})
 		return
 	}
+	defer release()
 
-	httpClient := &http.Client{Timeout: 90 * time.Second}
-	dlResp, err := httpClient.Do(dlReq)
-	if err != nil {
-		sendMsg(ws, OutMessage{
-			Type:    "acli_sync_result",
-			CaseID:  msg.CaseID,
-			Status:  "error",
-			TraceID: traceID,
-			Message: "下载 acli 安装包失败: " + err.Error(), ErrorCode: ErrInstallDownload,
-		})
-		blog("ERROR", "acli_sync.download_failed", "下载 acli 安装包失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"error": err.Error(), "architecture": targetArch,
-		})
-		return
-	}
-	defer dlResp.Body.Close()
+	// 7. 落点：文件名来自远端响应头，必须收敛后才能拼进路径与 shell 命令。
+	pkgName := sanitizeAcliFilename(remoteFilename, targetArch)
+	destPath := "/sf/data/local/" + pkgName
 
-	if dlResp.StatusCode != http.StatusOK && dlResp.StatusCode != http.StatusPartialContent {
-		sendMsg(ws, OutMessage{
-			Type:    "acli_sync_result",
-			CaseID:  msg.CaseID,
-			Status:  "error",
-			TraceID: traceID,
-			Message: fmt.Sprintf("下载源返回 HTTP %d", dlResp.StatusCode), ErrorCode: ErrInstallBadStatus,
-		})
-		blog("ERROR", "acli_sync.download_bad_status", "下载源返回异常状态码", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"http_status": dlResp.StatusCode, "architecture": targetArch,
-		})
-		return
+	// 重试安装的兜底：官网不可达时拿不到远端 filename，路径会拼错。
+	// 此时优先使用节点上真实存在的包——用户要的是“重试安装”，不是“重新下载”。
+	if retryStage == "install" && strings.TrimSpace(remoteFilename) == "" {
+		if found := findRemoteAcliPackage(ctx, s); found != "" {
+			destPath = found
+			pkgName = found[strings.LastIndex(found, "/")+1:]
+			blog("WARN", "acli_sync.remote_package_fallback", "官网文件名不可得，改用节点上已有的安装包", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"dest_path": destPath, "probe_error": errString(probeErr),
+			})
+		}
 	}
-	blog("INFO", "acli_sync.download_done", "acli 安装包下载完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-		"architecture": targetArch, "content_length": dlResp.ContentLength, "filename": remoteFilename,
+
+	blog("INFO", "acli_sync.retry_stage", "acli 安装重试起点已确定", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"retry_stage": retryStage, "dest_path": destPath, "package_filename": pkgName,
 	})
 
-	// 确定目标文件路径
-	if remoteFilename == "" {
-		remoteFilename = fmt.Sprintf("acli-installer_%s.acli", targetArch)
+	cache := b.packageCache()
+
+	// 8. 「只重跑安装 / 只重传」：先验证节点上那份包与本地基线是否一致。
+	// 不一致就不复用——上一轮正是因为“盘上那份包不对”才失败的，
+	// 无条件复用等于把同一个错误再执行一遍。
+	remoteReady := false
+	var remoteSize int64
+	var remoteAlgo, remoteDigest string
+	if retryStage != "all" {
+		size, algo, digest, missing, probeErr := probeRemoteAcliPackage(ctx, s, destPath)
+		switch {
+		case probeErr != nil:
+			blog("WARN", "acli_sync.reuse_probe_failed", "探测节点已有安装包失败，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"dest_path": destPath, "error": errString(probeErr),
+			})
+		case missing:
+			blog("INFO", "acli_sync.reuse_missing", "节点上没有可用安装包，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"dest_path": destPath,
+			})
+		default:
+			if reuseErr := verifyReusedRemotePackage(cache.get(key), size, algo, digest); reuseErr == nil {
+				remoteReady = true
+				remoteSize, remoteAlgo, remoteDigest = size, algo, digest
+				blog("INFO", "acli_sync.reuse_verified", "节点已有安装包与本地基线一致，复用并跳过传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"dest_path": destPath, "remote_size": size, "remote_algo": algo, "remote_digest": digest,
+				})
+			} else {
+				blog("WARN", "acli_sync.reuse_rejected", "节点上的安装包不可复用，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"dest_path": destPath, "reason": errString(reuseErr),
+					"remote_size": size, "remote_algo": algo, "remote_digest": digest,
+				})
+			}
+		}
 	}
-	destPath := fmt.Sprintf("/sf/data/local/%s", remoteFilename)
 
-	// 7. 上传至 /sf/data/local
-	sendMsg(ws, OutMessage{
-		Type:         "acli_sync_progress",
-		CaseID:       msg.CaseID,
-		Status:       "uploading",
-		Architecture: targetArch,
-		Message:      fmt.Sprintf("正在流式上传安装包至 %s...", destPath),
-	})
+	// 9. 传输：下载 → 上传 → 落盘校验，失败自动重试。
+	// 重试整体重跑“下载+上传”：因为校验不符既可能是上传截断，也可能是下载侧被污染，
+	// 仅重复上传同一份可疑字节无法排除后者。
+	var (
+		pkg         *acliPackage
+		writeRes    acliWriteResult
+		integrity   string
+		transferMS  int64
+		attempts    int
+		transferErr error
+	)
+	transferStart := time.Now()
 
-	if err := s.uploadStream(ctx, destPath, dlResp.Body, "0755"); err != nil {
+	if !remoteReady {
+		for attempt := 1; attempt <= acliMaxAttempts; attempt++ {
+			attempts = attempt
+
+			// 9.1 拿包：优先复用“只重传”场景下的已校验缓存。
+			if pkg == nil {
+				if cached := cache.get(key); cached != nil && retryStage == "upload" {
+					pkg = cached
+					blog("INFO", "acli_sync.package_reused", "复用已校验的安装包缓存，跳过下载", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+						"size": cached.Size, "sha256": cached.SHA256, "md5": cached.MD5, "filename": cached.Filename,
+					})
+				} else {
+					sendMsg(ws, OutMessage{
+						Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "downloading",
+						Architecture: targetArch, TraceID: traceID, Attempts: attempt,
+						Message: fmt.Sprintf("正在从官方源下载 acli 安装包 (%s，第 %d/%d 次)...", targetArch, attempt, acliMaxAttempts),
+					})
+					downloadCtx, cancelDownload := context.WithTimeout(context.Background(), acliDownloadTimeout)
+					downloadStart := time.Now()
+					pkg, transferErr = downloadAcliPackage(downloadCtx, downloadURL, remoteFilename, remoteBuild)
+					cancelDownload()
+					if transferErr != nil {
+						blog("ERROR", "acli_sync.download_failed", "下载 acli 安装包失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+							"attempt": attempt, "architecture": targetArch, "download_url": downloadURL, "error": errString(transferErr),
+						})
+					} else {
+						cache.put(key, pkg)
+						// 摘要必须落日志：事后核对“当时到底下到了什么”只能靠这一行。
+						blog("INFO", "acli_sync.download_verified", "acli 安装包下载完成并通过长度校验", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+							"attempt": attempt, "architecture": targetArch, "filename": pkg.Filename,
+							"size": pkg.Size, "declared_length": pkg.DeclaredLen,
+							"sha256": pkg.SHA256, "md5": pkg.MD5, "duration_ms": time.Since(downloadStart).Milliseconds(),
+						})
+					}
+				}
+			}
+
+			if transferErr == nil {
+				// 9.2 上传：预算独立于下载，避免“链路慢”被读成“下载超时”。
+				sendMsg(ws, OutMessage{
+					Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "uploading",
+					Architecture: targetArch, TraceID: traceID, Attempts: attempt,
+					PackageSize: pkg.Size, PackageSHA256: pkg.SHA256, PackagePath: destPath,
+					Message: fmt.Sprintf("正在上传安装包至 %s（%d 字节，第 %d/%d 次）...", destPath, pkg.Size, attempt, acliMaxAttempts),
+				})
+				uploadCtx, cancelUpload := context.WithTimeout(context.Background(), acliUploadTimeout)
+				progressFn := func(sent, total int64) {
+					percent := int64(0)
+					if total > 0 {
+						percent = sent * 100 / total
+					}
+					sendMsg(ws, OutMessage{
+						Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "uploading",
+						Architecture: targetArch, TraceID: traceID, Attempts: attempt,
+						PackageSize: total, UploadedBytes: sent, Percent: int(percent),
+						Message: fmt.Sprintf("正在上传安装包：%d/%d 字节（%d%%）", sent, total, percent),
+					})
+				}
+				writeRes, transferErr = uploadAcliPackage(uploadCtx, s, pkg, destPath, progressFn)
+				cancelUpload()
+				if transferErr == nil {
+					integrity, transferErr = verifyAcliRemoteWrite(pkg, writeRes)
+				}
+			}
+
+			if transferErr == nil {
+				break
+			}
+
+			// 失败：丢弃缓存。下一轮重新下载，排除“下载侧被污染”这一可能。
+			cache.drop(key)
+			pkg = nil
+			blog("ERROR", "acli_sync.transfer_failed", "acli 安装包传输/校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"attempt": attempt, "dest_path": destPath, "error": errString(transferErr),
+				"remote_size": writeRes.RemoteSize, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
+				"remote_fail_reason": writeRes.FailReason,
+			})
+			if attempt < acliMaxAttempts {
+				backoff := time.Duration(attempt) * 2 * time.Second
+				sendMsg(ws, OutMessage{
+					Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "retrying",
+					Architecture: targetArch, TraceID: traceID, Attempts: attempt,
+					Message: fmt.Sprintf("安装包传输失败（%s），%s 后自动重试...", errString(transferErr), backoff),
+				})
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+				}
+			}
+		}
+		transferMS = time.Since(transferStart).Milliseconds()
+	}
+
+	if transferErr != nil {
+		code, detail, retryable := acliSyncErrorCode(transferErr, ErrInstallUpload)
+		stage := "upload"
+		var syncErr *acliSyncError
+		if errors.As(transferErr, &syncErr) && syncErr.Stage != "" {
+			stage = syncErr.Stage
+		}
+		title := "acli 安装包传输失败"
+		if !retryable {
+			title = "acli 安装包校验失败，需人工确认后重试"
+		}
 		sendMsg(ws, OutMessage{
-			Type:    "acli_sync_result",
-			CaseID:  msg.CaseID,
-			Status:  "error",
-			TraceID: traceID,
-			Message: "上传 acli 安装包至 HCI 失败: " + err.Error(), ErrorCode: ErrInstallUpload,
+			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
+			Architecture: targetArch, ErrorCode: code, Stage: stage, Attempts: attempts, RetryStage: retryStage,
+			PackageFilename: pkgName, PackagePath: destPath, Percent: 0,
+			Message: fmt.Sprintf("%s（已尝试 %d/%d 次）：%s", title, attempts, acliMaxAttempts, detail),
 		})
 		blog("ERROR", "acli_sync.upload_failed", "acli 安装包上传失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"dest_path": destPath, "error": err.Error(),
+			"dest_path": destPath, "attempts": attempts, "retry_stage": retryStage,
+			"error_code": code, "stage": stage, "error": detail,
 		})
 		return
 	}
-	blog("INFO", "acli_sync.upload_done", "acli 安装包已上传", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-		"dest_path": destPath, "architecture": targetArch,
-	})
 
-	// 8. 执行集群安装
+	if remoteReady {
+		integrity = remoteAlgo
+		blog("INFO", "acli_sync.upload_skipped", "复用节点上已校验的安装包，跳过上传", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"dest_path": destPath, "remote_size": remoteSize, "remote_algo": remoteAlgo, "remote_digest": remoteDigest,
+		})
+	} else {
+		blog("INFO", "acli_sync.upload_verified", "acli 安装包已上传并通过落盘校验", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"dest_path": destPath, "architecture": targetArch, "attempts": attempts, "duration_ms": transferMS,
+			"package_size": pkgSize(pkg), "sha256": pkgSHA(pkg), "md5": pkgMD(pkg),
+			"remote_size": writeRes.RemoteSize, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
+			"integrity_state": integrity,
+		})
+	}
+
+	// 安装包完整性事实：复用节点已有包时本地没有 pkg（可能是缓存过期），
+	// 此时把远端探测到的摘要回填，保证 UI 与日志里「哪个包被装上」始终有据可查。
+	reportedSize := pkgSize(pkg)
+	reportedSHA := pkgSHA(pkg)
+	reportedMD5 := pkgMD(pkg)
+	if remoteReady {
+		if reportedSize == 0 {
+			reportedSize = remoteSize
+		}
+		if reportedSHA == "" && remoteAlgo == "sha256" {
+			reportedSHA = remoteDigest
+		}
+		if reportedMD5 == "" && remoteAlgo == "md5" {
+			reportedMD5 = remoteDigest
+		}
+	}
+
+	// 10. 执行集群安装。
+	// 安装与传输使用独立预算：安装器要在集群内分发 20~30MB，用上传预算衡量它
+	// 只会在慢集群上制造假失败。
 	sendMsg(ws, OutMessage{
-		Type:         "acli_sync_progress",
-		CaseID:       msg.CaseID,
-		Status:       "installing",
-		Architecture: targetArch,
-		Message:      "正在执行 acli 集群分发安装（预计耗时 10-15 秒）...",
+		Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "installing",
+		Architecture: targetArch, TraceID: traceID, Attempts: attempts, RetryStage: "install",
+		PackageSize: reportedSize, PackageSHA256: reportedSHA, PackageMD5: reportedMD5,
+		PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity, Percent: 100,
+		Message: fmt.Sprintf("安装包已就绪并通过校验（%s），正在执行 acli 集群分发安装（预算 %s）...",
+			integrity, acliInstallTimeout),
 	})
 
-	installCmd := fmt.Sprintf("export PATH=\"$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin\"; '%s' --install --force", destPath)
-	installOut, installCode, installErr := s.runQuickCommand(ctx, installCmd)
-	if installErr != nil || installCode != 0 {
-		sendMsg(ws, OutMessage{
-			Type:    "acli_sync_result",
-			CaseID:  msg.CaseID,
-			Status:  "error",
-			TraceID: traceID,
-			Message: fmt.Sprintf("acli 安装命令执行失败 (code=%d): %s", installCode, installOut), ErrorCode: ErrInstallExec,
-		})
+	installCtx, cancelInstall := context.WithTimeout(ctx, acliInstallTimeout)
+	outcome := installAcliPackage(installCtx, s, destPath)
+	installTimedOut := installCtx.Err() != nil
+	cancelInstall()
+
+	preview, stdoutBytes, stderrBytes := acliOutputForLog(outcome)
+	// 结论统一用 InstallSuccess 表达（退出码 0 在 omitempty 下会被吞掉）。
+	installOK := outcome.Err == nil && outcome.ExitCode == 0
+	// 完整输出先以 progress 形式回传：错误分支也要回传，否则「装不上」时
+	// 远端只剩一句『安装失败』，排障又要登录节点。
+	sendMsg(ws, OutMessage{
+		Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "install_output",
+		Architecture: targetArch, TraceID: traceID, Attempts: attempts, RetryStage: "install",
+		PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
+		InstallSuccess: installOK, InstallExitCode: outcome.ExitCode,
+		InstallMS: outcome.DurationMS, InstallOutput: preview, InstallStderr: truncateString(outcome.Stderr, 2048),
+		Message: fmt.Sprintf("acli 安装命令已结束：exit=%d，耗时 %dms（stdout %dB / stderr %dB）",
+			outcome.ExitCode, outcome.DurationMS, stdoutBytes, stderrBytes),
+	})
+
+	if !installOK {
+		code := ErrInstallExec
+		detail := fmt.Sprintf("acli 安装命令退出码 %d", outcome.ExitCode)
+		if installTimedOut {
+			code = ErrInstallExec
+			detail = fmt.Sprintf("acli 安装命令超时（预算 %s）", acliInstallTimeout)
+		} else if outcome.Err != nil && outcome.ExitCode == 0 {
+			// 无退出码但有错误：通常意味着 SSH 通道在安装过程中断开。
+			detail = "acli 安装命令异常中断（SSH 通道中断或远端 shell 退出）"
+		}
 		blog("ERROR", "acli_sync.install_failed", "acli 安装命令执行失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": installCode, "error": errString(installErr),
-			"output_preview": formatOutputPreview(installOut, 1024, 768), "dest_path": destPath,
+			"dest_path": destPath, "command": outcome.Command, "exit_code": outcome.ExitCode,
+			"duration_ms": outcome.DurationMS, "timed_out": installTimedOut,
+			"stdout_bytes": stdoutBytes, "stderr_bytes": stderrBytes,
+			"error": errString(outcome.Err), "output_preview": preview,
+			"package_size": reportedSize, "sha256": reportedSHA, "md5": reportedMD5,
+			"integrity_state": integrity, "attempts": attempts,
+		})
+		sendMsg(ws, OutMessage{
+			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
+			Architecture: targetArch, ErrorCode: code, Stage: "install", RetryStage: "install",
+			Attempts: attempts, PackageSize: reportedSize, PackageSHA256: reportedSHA, PackageMD5: reportedMD5,
+			PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
+			InstallExitCode: outcome.ExitCode, InstallMS: outcome.DurationMS,
+			InstallOutput: preview, InstallStderr: truncateString(outcome.Stderr, 2048),
+			Message: fmt.Sprintf("%s。安装包已校验完整，可点击「重试安装」直接复用，无需重新下载。\n%s", detail, preview),
 		})
 		return
 	}
-	// 安装器会把 acli 分发到集群各节点，输出里含节点与耗时，保留摘要供远端核对。
+
+	// 安装器会把 acli 分发到集群各节点，输出里含节点与耗时，完整摘要回传远端供核对。
 	blog("INFO", "acli_sync.install_done", "acli 集群分发安装完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-		"exit_code": installCode, "output_preview": formatOutputPreview(installOut, 1024, 768),
+		"dest_path": destPath, "command": outcome.Command, "exit_code": outcome.ExitCode,
+		"duration_ms": outcome.DurationMS, "stdout_bytes": stdoutBytes, "stderr_bytes": stderrBytes,
+		"package_size": reportedSize, "sha256": reportedSHA, "md5": reportedMD5,
+		"integrity_state": integrity, "output_preview": preview,
 	})
 
-	// 9. 验证安装成果
-	verifyOut, verifyCode, _ := s.runQuickCommand(ctx, versionCmd)
+	// 11. 验证安装成果
+	verifyCtx, cancelVerify := context.WithTimeout(ctx, acliVerifyTimeout)
+	verifyOut, verifyCode, _ := s.runQuickCommand(verifyCtx, versionCmd)
+	cancelVerify()
 	newVer, newBuild := parseAcliVersion(verifyOut)
 	if verifyCode == 0 && newVer != "" {
 		log.Printf("[Bridge] acli 安装成功且已验证: ver=%s build=%s key=%s", newVer, newBuild, key)
 		sendMsg(ws, OutMessage{
-			Type:           "acli_sync_result",
-			CaseID:         msg.CaseID,
-			Status:         "installed",
-			Architecture:   targetArch,
-			CurrentVersion: newVer,
-			LatestVersion:  newBuild,
-			TraceID:        traceID,
-			Detail:         fmt.Sprintf("%s (build %s)", newVer, newBuild),
-			Message:        "acli 工具安装并集群分发成功！",
+			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "installed",
+			Architecture: targetArch, CurrentVersion: newVer, LatestVersion: newBuild,
+			TraceID: traceID, Detail: fmt.Sprintf("%s (build %s)", newVer, newBuild),
+			Attempts: attempts, RetryStage: retryStage, Stage: "install",
+			PackageSize: reportedSize, PackageSHA256: reportedSHA, PackageMD5: reportedMD5,
+			PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
+			RemoteSize: writeRes.RemoteSize, RemoteAlgo: writeRes.Algo, RemoteDigest: writeRes.Digest,
+			InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
+			Message: "acli 工具安装并集群分发成功！",
 		})
 		blog("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": newVer, "build": newBuild, "key": key,
+			"package_size": reportedSize, "sha256": reportedSHA, "md5": reportedMD5,
+			"integrity_state": integrity, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
+			"install_ms": outcome.DurationMS, "attempts": attempts,
 		})
-	} else {
-		sendMsg(ws, OutMessage{
-			Type:    "acli_sync_result",
-			CaseID:  msg.CaseID,
-			Status:  "error",
-			TraceID: traceID,
-			Message: "acli 安装完成但执行 acli --version 验证失败", ErrorCode: ErrInstallVerify,
-		})
-		blog("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": verifyCode, "output_preview": formatOutputPreview(verifyOut, 512, 512),
-		})
+		return
 	}
+
+	// 安装命令成功但版本探测失败：包是完整的、装也装完了，问题在可执行入口，
+	// 因此给 verify 阶段码并允许「重试安装」（重跑安装会重建 /sf/bin 软链）。
+	blog("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"exit_code": verifyCode, "output_preview": formatOutputPreview(verifyOut, 512, 512),
+		"dest_path": destPath, "integrity_state": integrity,
+	})
+	sendMsg(ws, OutMessage{
+		Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
+		Architecture: targetArch, ErrorCode: ErrInstallVerify, Stage: "verify", RetryStage: "install",
+		Attempts: attempts, PackageSize: reportedSize, PackageSHA256: reportedSHA, PackageMD5: reportedMD5,
+		PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
+		InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
+		Message: fmt.Sprintf("acli 安装完成但 acli --version 验证失败（exit=%d）：%s。可点击「重试安装」重新执行安装。",
+			verifyCode, formatOutputPreview(verifyOut, 512, 512)),
+	})
 }
 
 // ── 结构化日志与回采（Observability）────────────────────────────────────────
@@ -4395,6 +4643,13 @@ type Bridge struct {
 	// （日志面板借用的会话、以及刷新页面后准备接上的会话都不应被连坐清理）。
 	sessionRefs   map[string]int
 	sessionIdleAt map[string]time.Time
+
+	// acli 安装包传输互斥与已校验包缓存（见 acli_package.go）。
+	// 互斥不是性能优化而是正确性要求：并发的两个上传会各自 cat>tmp 再 mv 到
+	// 同一个 destPath，谁最后落盘完全取决于时序——这正是「包不对」的成因之一。
+	acliMu    sync.Mutex
+	acliBusy  map[string]bool
+	acliCache *acliPackageCache
 }
 
 func newBridge() *Bridge {

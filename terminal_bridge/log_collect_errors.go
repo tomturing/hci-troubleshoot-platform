@@ -32,6 +32,14 @@ const (
 	ErrInstallUpload    = "LC-INSTALL-004"
 	ErrInstallExec      = "LC-INSTALL-005"
 	ErrInstallVerify    = "LC-INSTALL-006"
+	// 落盘校验不符：节点上的字节数与本地事实不一致（半包、被同名覆盖、中转污染）。
+	// 必须与 004 区分：004 是"没传完"，007 是"传完了但不是同一个东西"。
+	ErrInstallChecksum = "LC-INSTALL-007"
+	// 下载不完整：实际收到的字节数与 Content-Length 不一致。
+	ErrInstallTruncated = "LC-INSTALL-008"
+	// 同一会话的安装包传输正在进行中：并发重试会各自写同一目标路径，
+	// 历史现场因此出现过"包不对"。此码显式拒绝，而不是让它们互相覆盖。
+	ErrInstallBusy = "LC-INSTALL-009"
 
 	ErrExecPtyRequest = "LC-EXEC-001"
 	ErrExecTimeout    = "LC-EXEC-002"
@@ -104,6 +112,9 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrInstallUpload:    {"INSTALL", "customer", "true", "install"},
 	ErrInstallExec:      {"INSTALL", "customer", "manual", "install"},
 	ErrInstallVerify:    {"INSTALL", "product", "manual", "install"},
+	ErrInstallChecksum:  {"INSTALL", "customer", "true", "verify"},
+	ErrInstallTruncated: {"INSTALL", "customer", "true", "install"},
+	ErrInstallBusy:      {"INSTALL", "platform", "true", "install"},
 
 	ErrExecPtyRequest: {"EXEC", "customer", "false", "exec"},
 	ErrExecTimeout:    {"EXEC", "customer", "true", "exec"},
