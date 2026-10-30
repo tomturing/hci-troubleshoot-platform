@@ -25,7 +25,15 @@ from .models import ErrorCode, ExtractStats, TicketError
 logger = logging.getLogger(__name__)
 
 # 顺序必须长后缀在前：.tar.gz 先于 .gz 判断，否则会得到错误的去后缀结果。
-ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar", ".zip")
+# .rar 来自客户现场自行打包的转储（实测 Q2026102700323 是 RAR5），
+# 宿主机 p7zip 23.01 自带 Rar/Rar5 解码器，因此纳入解压范围。
+ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar", ".zip", ".rar")
+
+# 占位包阈值：合法 zip 的最小体积是空归档的 22 字节（EOCD 记录），
+# 合法 tar.gz 至少含 10 字节 gzip 头 + 1024 字节 tar 结束块。
+# 低于该值只可能是采集端写坏的占位文件（生产实测有 1 字节的 LOG_run_shm.txt.zip，
+# unzip 报 exit=9）。它的缺失不影响主体日志，跳过比整包失败更合理。
+PLACEHOLDER_MAX_BYTES = 64
 
 
 async def extract(
@@ -51,12 +59,24 @@ async def extract(
     archive.unlink(missing_ok=True)  # 归档不再需要，先删掉腾空间
     stats.archives += 1
     stats.depth = 1
+    # 必须在扫描嵌套归档之前补齐权限：源端目录可能缺执行位，
+    # 不补的话下一轮 os.walk 进不去，里面的归档会被整片漏扫。
+    stats.permissions_fixed += _normalize_permissions(work_dir)
     _audit(work_dir, cfg, stats)
     _notify(on_progress, stats)
 
     depth = 1
+    # 已确认解不开、但按策略保留原件的归档。必须显式记住，
+    # 否则下一轮 _find_archives 会再次扫到它，形成"解压失败→降级→再扫到"的死循环。
+    skipped_archives: set[Path] = set()
     while True:
-        pending = _find_archives(work_dir)
+        # 先剔除采集端写坏的占位包：它们解不出来，但也不该让整个工单失败，
+        # 更不能因为留在原地而在下一轮被反复扫到。
+        pending = [
+            path
+            for path in _drop_placeholders(_find_archives(work_dir), ticket_id, job_id, stats)
+            if path not in skipped_archives
+        ]
         if not pending:
             break
         if depth >= cfg.max_depth:
@@ -79,16 +99,38 @@ async def extract(
                 relative,
             )
             _notify_archive(on_archive, relative)
-            await _extract_any(nested, target, cfg.archive_password)
+            try:
+                await _extract_any(nested, target, cfg.archive_password)
+            except TicketError as error:
+                # .rar 降级：宿主的 p7zip 不支持部分 RAR5 压缩方法（实测报
+                # "Unsupported Method"），而这类包通常是客户自打的单个转储。
+                # 保留原件、记告警、继续走其它归档，避免一个解不开的附件
+                # 让整包日志都不可用。
+                if not nested.name.lower().endswith(".rar"):
+                    raise
+                shutil.rmtree(target, ignore_errors=True)
+                skipped_archives.add(nested)
+                stats.unreadable_archives += 1
+                logger.warning(
+                    "ticket=%s job=%s 跳过无法解压的归档 path=%s code=%s detail=%s",
+                    ticket_id,
+                    job_id,
+                    relative,
+                    error.code,
+                    error.detail,
+                )
+                continue
             nested.unlink(missing_ok=True)
             stats.archives += 1
+            stats.permissions_fixed += _normalize_permissions(target)
 
         stats.depth = depth
         _audit(work_dir, cfg, stats)
         _notify(on_progress, stats)
 
     logger.info(
-        "ticket=%s job=%s phase=extracting 完成 depth=%d files=%d bytes=%d archives=%d 清理链接=%d",
+        "ticket=%s job=%s phase=extracting 完成 depth=%d files=%d bytes=%d archives=%d "
+        "清理链接=%d 跳过占位=%d 补权限=%d 无法解压=%d",
         ticket_id,
         job_id,
         stats.depth,
@@ -96,6 +138,9 @@ async def extract(
         stats.bytes,
         stats.archives,
         stats.symlinks_removed,
+        stats.placeholders_skipped,
+        stats.permissions_fixed,
+        stats.unreadable_archives,
     )
     return stats
 
@@ -124,6 +169,60 @@ def _find_archives(root: Path) -> list[Path]:
             if name.lower().endswith(ARCHIVE_SUFFIXES):
                 found.append(Path(path))
     return sorted(found)
+
+
+def _drop_placeholders(
+    pending: list[Path],
+    ticket_id: str,
+    job_id: str,
+    stats: ExtractStats,
+) -> list[Path]:
+    """剔除采集端写坏的占位归档，返回真正可解压的归档列表。
+
+    判定只依赖体积：合法 zip 最小 22 字节、合法 tar.gz 至少 1 KiB 量级，
+    因此小于 PLACEHOLDER_MAX_BYTES 的文件在两种格式下都不可能被解析，删除它
+    不会丢失任何可用信息。反过来，若保留，它会让整个工单在每轮自动巡检里
+    反复失败、反复重拉（生产实测单工单 192 次，累计数百 GiB 无效流量）。
+
+    删除失败时直接终止任务而不是跳过：残留文件会在下一轮被重新扫到，
+    形成永不结束的失败循环。
+    """
+    kept: list[Path] = []
+    for path in pending:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            logger.warning(
+                "ticket=%s job=%s 读取归档体积失败，跳过 path=%s error=%s",
+                ticket_id,
+                job_id,
+                path,
+                exc,
+            )
+            continue
+        if size >= PLACEHOLDER_MAX_BYTES:
+            kept.append(path)
+            continue
+
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise TicketError(
+                ErrorCode.EXTRACT_FAILED,
+                "无法清理占位归档，已中止",
+                f"path={path} size={size} error={exc}",
+            ) from exc
+
+        stats.placeholders_skipped += 1
+        logger.warning(
+            "ticket=%s job=%s 跳过占位归档 path=%s size=%d 原因=小于 %d 字节，不可能是合法归档",
+            ticket_id,
+            job_id,
+            path,
+            size,
+            PLACEHOLDER_MAX_BYTES,
+        )
+    return kept
 
 
 def _target_for(archive: Path) -> Path:
@@ -169,6 +268,8 @@ async def _extract_any(archive: Path, target: Path, password: str) -> None:
         ) from exc
     if archive.name.lower().endswith(".zip"):
         await _unzip(archive, target, password)
+    elif archive.name.lower().endswith(".rar"):
+        await _unrar(archive, target, password)
     else:
         await _untar(archive, target)
 
@@ -201,6 +302,49 @@ async def _unzip(archive: Path, target: Path, password: str) -> None:
         error_code,
         _unzip_message(error_code),
         f"unzip exit={code} archive={archive.name} stderr={text[:800]}",
+    )
+
+
+async def _unrar(archive: Path, target: Path, password: str) -> None:
+    """用 7z 解 RAR（宿主唯一能读 RAR5 的工具，p7zip 内置解码器）。
+
+    注意 -o 与路径之间不能有空格，-p 同理；密码走 argv 的既有风险与 unzip 一致。
+    """
+    # -bb0 只关掉逐文件输出，错误信息必须保留，否则无法分类失败原因。
+    cmd = ["7z", "x", "-y", "-bb0", f"-o{target}"]
+    if password:
+        cmd.append(f"-p{password}")
+    cmd.append(str(archive))
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await _communicate(proc)
+    code = proc.returncode or 0
+    # 7z：0 成功；1 有警告但已解压。其余均为失败。
+    if code in (0, 1):
+        return
+
+    text = (stdout + b"\n" + stderr).decode("utf-8", errors="replace")
+    lowered = text.lower()
+    if "wrong password" in lowered or "can not open encrypted archive" in lowered:
+        error_code = ErrorCode.BAD_PASSWORD
+    elif "no space left" in lowered:
+        error_code = ErrorCode.NO_SPACE
+    elif "can not open the file as archive" in lowered or "is not archive" in lowered:
+        error_code = ErrorCode.ARCHIVE_CORRUPT
+    elif "unsupported method" in lowered:
+        # p7zip 内置的 RAR5 解码器不支持较新的压缩方法（实测 1.dump 报此错）。
+        # 这是工具能力问题，不是包损坏，交给上层按"无法解压"降级处理。
+        error_code = ErrorCode.EXTRACT_FAILED
+    else:
+        error_code = ErrorCode.EXTRACT_FAILED
+    raise TicketError(
+        error_code,
+        _unzip_message(error_code),
+        f"7z exit={code} archive={archive.name} stderr={text[:800]}",
     )
 
 
@@ -334,6 +478,51 @@ def _strip_escaped_symlinks(root: Path) -> int:
                 ) from exc
 
     return removed
+
+
+def _normalize_permissions(root: Path) -> int:
+    """补齐产物属主的读写位，目录额外补执行位，返回实际修正的条目数。
+
+    为什么必须做：
+    - 源端 HCI 的 `sf/log/kubelet`、`sf/log/containerd` 目录权限是 `drw-r--r--`，
+      缺执行位。tar 的 `--no-same-permissions` 只是把归档权限与 umask 求交，
+      不会补回缺失的 x 位；unzip 则直接照搬 zip 外部属性。
+    - 目录缺 x 的后果是连属主都进不去：DSH（uid 1000）读不到 kubelet.log，
+      本服务的 os.walk 也遍历不进，深层嵌套归档被整片漏扫、quota 统计偏低。
+
+    只改属主是自己的条目，避免对解压时保留了他人属主的文件触发 EPERM。
+    """
+    uid = os.getuid()
+    fixed = 0
+
+    def fix(path: str, want: int) -> int:
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return 0
+        # 符号链接与设备文件不碰：chmod 会跟随链接，改到目标上去。
+        if not stat.S_ISDIR(info.st_mode) and not stat.S_ISREG(info.st_mode):
+            return 0
+        if info.st_uid != uid:
+            return 0
+        mode = stat.S_IMODE(info.st_mode)
+        if mode & want == want:
+            return 0
+        try:
+            os.chmod(path, mode | want)
+        except OSError as exc:
+            logger.warning("补齐权限失败 path=%s error=%s", path, exc)
+            return 0
+        return 1
+
+    fixed += fix(str(root), stat.S_IRWXU)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        # 先修子目录再继续下行：os.walk 下一步就要进入它们，缺 x 会直接失败。
+        for name in dirnames:
+            fixed += fix(os.path.join(dirpath, name), stat.S_IRWXU)
+        for name in filenames:
+            fixed += fix(os.path.join(dirpath, name), stat.S_IRUSR | stat.S_IWUSR)
+    return fixed
 
 
 def _tree_stats(root: Path) -> tuple[int, int]:

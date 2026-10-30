@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 from datetime import datetime
 from pathlib import Path
 
@@ -60,7 +61,56 @@ def prune_trash(trash_dir: Path, keep: int = 1) -> int:
 
 
 def cleanup_workspace(work_dir: Path) -> None:
-    """失败路径上的清理。尽力而为，不掩盖原始异常。"""
-    if work_dir.exists():
-        shutil.rmtree(work_dir, ignore_errors=True)
-        logger.info("已清理临时目录 path=%s", work_dir)
+    """失败路径上的清理。
+
+    不能只用 rmtree(ignore_errors=True)：解压产物里存在权限为 000 的文件、
+    缺执行位的目录，rmtree 会在中途失败但异常被吞掉，日志却照常打印
+    "已清理"，于是 .tmp 里越积越多（实测单机 588 个残留目录），
+    属于"谎报成功 + 静默泄漏"。这里改为：先补权限再删，失败必须留痕。
+    """
+    if not work_dir.exists():
+        return
+
+    try:
+        _make_removable(work_dir)
+        shutil.rmtree(work_dir)
+    except OSError as exc:
+        logger.error("清理临时目录失败 path=%s error=%s 残留需人工或下次启动处理", work_dir, exc)
+        return
+    logger.info("已清理临时目录 path=%s", work_dir)
+
+
+def _make_removable(root: Path) -> None:
+    """给目录树补上属主读写执行位，使 rmtree 能够真正删掉。
+
+    删除文件依赖父目录的 w+x，删除目录还依赖目录自身的 w+x，
+    因此两类条目都要补，且目录必须先于其子项生效（os.walk 自顶向下）。
+    """
+    want_dir = stat.S_IRWXU
+    want_file = stat.S_IRUSR | stat.S_IWUSR
+    uid = os.getuid()
+
+    def widen(path: Path, want: int) -> None:
+        try:
+            info = os.lstat(path)
+        except OSError:
+            return
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            return
+        if info.st_uid != uid:
+            return
+        mode = stat.S_IMODE(info.st_mode)
+        if mode & want == want:
+            return
+        try:
+            os.chmod(path, mode | want)
+        except OSError:
+            # 补不上就交给上层的 rmtree 报错，由调用方记录残留。
+            return
+
+    widen(root, want_dir)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in dirnames:
+            widen(Path(dirpath) / name, want_dir)
+        for name in filenames:
+            widen(Path(dirpath) / name, want_file)

@@ -86,7 +86,30 @@ queued ──► fetching ──► extracting ──► ready
   目录及 `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。
 - 扫描失败只记日志，不中断服务，下一轮自动重试。
 
-### 1.7 错误码
+### 1.7 解压能力与降级
+
+解压交给宿主 GNU `unzip` / `tar` 与 p7zip（`7z`）：
+
+| 格式 | 工具 | 说明 |
+|---|---|---|
+| `.zip` | `unzip -P` | 支持 ZipCrypto 密码 |
+| `.tar.gz` / `.tgz` / `.tar` | GNU `tar` | — |
+| `.rar` | `7z x` | 依赖 p7zip 内置 Rar/Rar5 解码器 |
+
+三类"单点问题"不会升级为整包失败，但都会留下可追踪的告警：
+
+| 情形 | 处理 | 可见字段 |
+|---|---|---|
+| 归档 < 64 字节（采集端写坏的占位包） | 删除并跳过 | 日志 `跳过占位=N` |
+| `.rar` 解不开（p7zip 不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
+| 归档只含 vmcore 等转储，无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
+
+此外每层解压后都会补权限：文件补属主读写位、目录补执行位。源端
+`sf/log/kubelet`、`sf/log/containerd` 等目录权限常是 `drw-r--r--`，
+`tar --no-same-permissions` 补不回缺失的 `x`，不处理则 DSH 与本地遍历都进不去，
+深层归档会被整片漏扫。日志字段 `补权限=N`。
+
+### 1.8 错误码
 
 | code | 触发条件 | 前端展示 |
 |---|---|---|
@@ -100,8 +123,9 @@ queued ──► fetching ──► extracting ──► ready
 | `depth-exceeded` | 嵌套超过 4 层 | 归档嵌套层级异常 |
 | `ssh-failed` | ssh/rsync 非零退出 | 无法连接 0.2 |
 | `extract-failed` | 其他解压错误 | 解压失败，请查看服务日志 |
+| `non-log-payload` | 归档只含 vmdumpcore/.core 等转储（无 `log_list.json`、无 `sp_*.tgz`） | 该工单包不是日志包（仅含转储文件），已跳过 |
 
-### 1.8 配置项
+### 1.9 配置项
 
 全部来自环境变量（`app/config.py`），未设置时使用代码默认值：
 
@@ -124,6 +148,8 @@ queued ──► fetching ──► extracting ──► ready
 | `TICKET_AUTO_SYNC_ENABLED` | `true` | 是否启用远端自动扫描 |
 | `TICKET_AUTO_SYNC_INTERVAL_SECONDS` | `30` | 自动扫描间隔 |
 | `TICKET_RETENTION_DAYS` | `7` | 本地工单目录保留天数 |
+| `TICKET_MAX_TOTAL_BYTES` | 400 GiB | 产物总量上限，超限时按最旧优先淘汰 |
+| `TICKET_MIN_KEEP_DAYS` | `3` | 容量淘汰的最短保留天数（不足则只告警不删） |
 
 配置模板见 `tools/ticket-sync/deploy/ticket-sync.env.example`。**密码只存在宿主机 env 文件，不入库、
 不进集群 Secret、不进镜像。**
