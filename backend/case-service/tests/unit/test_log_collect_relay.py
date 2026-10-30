@@ -326,6 +326,85 @@ async def test_await_archive_fails_fast_when_server_reports_failed(storage):
     assert excinfo.value.code == "LC-TRANSFER-003"
 
 
+async def test_await_archive_verifies_server_digest(storage):
+    """done + 摘要一致 → 正常返回（这是链尾唯一的内容级校验锚点）。"""
+    task, _ = _make_task(storage, "Q2026102700010")
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        poll_interval=0.01,
+        archive_timeout=30.0,
+    )
+
+    async def fake_status(_client, _upload_id):
+        return {"status": "done", "digest": {"sha256": "abc123", "md5": "m", "size": 8}}
+
+    service.client.upload_status = fake_status  # type: ignore[method-assign]
+
+    await service._await_archive(None, "u-1", "ABC123")  # 大小写不敏感
+
+
+async def test_await_archive_rejects_digest_mismatch(storage):
+    """服务端落盘内容与平台副本不一致 → 必须失败，且不能被当成 transient 混过去。"""
+    task, _ = _make_task(storage, "Q2026102700011")
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        poll_interval=0.01,
+        archive_timeout=30.0,
+    )
+
+    async def fake_status(_client, _upload_id):
+        return {"status": "done", "digest": {"sha256": "deadbeef"}}
+
+    service.client.upload_status = fake_status  # type: ignore[method-assign]
+
+    with pytest.raises(SangforRelayError) as excinfo:
+        await service._await_archive(None, "u-1", "abc123")
+
+    assert excinfo.value.code == "LC-TRANSFER-002"
+    assert "摘要" in str(excinfo.value)
+
+
+async def test_await_archive_accepts_done_without_digest(storage):
+    """服务端没回报摘要时不能判失败（老版本兼容），但也不能假装校验过。"""
+    task, _ = _make_task(storage, "Q2026102700012")
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)),
+        storage,
+        SangforRelayClient("http://relay"),
+        poll_interval=0.01,
+        archive_timeout=30.0,
+    )
+
+    async def fake_status(_client, _upload_id):
+        return {"status": "done"}
+
+    service.client.upload_status = fake_status  # type: ignore[method-assign]
+
+    await service._await_archive(None, "u-1", "abc123")
+
+
+async def test_client_sends_bearer_only_when_token_configured(monkeypatch):
+    """5888 开启 ACLI_UPLOAD_TOKEN 后必须带 Bearer；未配置时不得多发认证头。"""
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization", ""))
+        return httpx.Response(200, json={"upload_id": "u-1", "chunk_size": CHUNK})
+
+    _patch_http_transport(monkeypatch, handler)
+
+    async with httpx.AsyncClient() as http:
+        await SangforRelayClient("http://relay", token="tok-1").init_upload(http, "Q1.zip", 8)
+        await SangforRelayClient("http://relay").init_upload(http, "Q1.zip", 8)
+
+    assert seen[0] == "Bearer tok-1"
+    assert seen[1] == "", "未配置 token 时不应发送认证头（向后兼容旧 5888）"
+
+
 async def test_run_reinitializes_session_when_server_reported_failed(storage, monkeypatch):
     """服务端已判失败时不能续传：失败路径会清理分片，只能重建会话重传。"""
 

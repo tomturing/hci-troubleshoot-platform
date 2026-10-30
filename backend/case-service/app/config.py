@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # P2 段③：平台代传日志服务器（与 acli 插件一致，插件只认官方域名白名单）。
     LOG_COLLECT_RELAY_URL: str = "http://acli.sangfor.com.cn:5888"
     LOG_COLLECT_RELAY_ENABLED: bool = True
+    # 5888 的 ACLI_UPLOAD_TOKEN。留空 = 对方未启用鉴权（当前现网），此时不发认证头。
+    # 切换顺序（不可颠倒）：先给本项配置真实值并部署平台侧 → 再在 5888 上设置
+    # ACLI_UPLOAD_TOKEN 并重启。反过来会让所有代传立刻 401。
+    LOG_COLLECT_RELAY_TOKEN: str = ""
     # 代传租约：running 状态必须靠心跳续租，超时即视为「执行者已死」可被抢占。
     # 心跳由独立协程发送，所以单个 300s 分片超时期间也在续租；本值只需覆盖
     # 「进程已死但没人写终态」的判定窗口。默认 120s 对应 30s 心跳。
