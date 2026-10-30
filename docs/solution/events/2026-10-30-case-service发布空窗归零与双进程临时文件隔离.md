@@ -42,7 +42,7 @@ case-service 属于后者，但它的三点写入（分片 / 元数据 / 合并�
    - 保留 `rollout.strategy=Recreate` 作为退路：换到拒绝多挂载的 CSI 时改回来即可。
 3. **优雅期 300s**（`terminationGracePeriodSeconds`）：覆盖「在途合并」这一最长请求。uvicorn 收到 SIGTERM 先停接新连接、再等在途请求结束，所以 300s 只是上限，不会拖慢正常发布。
 4. **测试锁**：
-   - `tests/unit/test_log_collect_storage_temp.py`：临时路径唯一（机制）、并发写同一分片只能得到完整副本（行为）、并发合并只能得到完整压缩包；
+   - `backend/case-service/tests/unit/test_log_collect_storage_temp.py`：临时路径唯一（机制）、并发写同一分片只能得到完整副本（行为）、并发合并只能得到完整压缩包；
    - `deploy/helm/hci-platform/tests/case_service_rollout_test.yaml`：默认必须 RollingUpdate、maxUnavailable=0、优雅期 300、可显式退回 Recreate。
 
 ## 四、对抗性审查：什么条件下会失效
