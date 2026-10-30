@@ -301,6 +301,115 @@ const probedAt = ref<number | null>(null)
 // 准备令牌：节点 IP 变更会重探，旧探测结果不得覆盖新结果
 let prepareToken = 0
 
+// ── 探测重试与事实复查 ───────────────────────────────────────────────────
+/**
+ * 瞬态失败的重试节奏：2s / 4s / 8s（指数退避 + ±20% 抖动）。
+ *
+ * 第一性原理：探测失败只有两类——「这次没成」与「这里就是这样」。
+ * 超时、通道被踢、bridge 无回包属于前者，重试有意义；acli 未安装、节点清单为空、
+ * 日志服务器不可达属于后者，重试一万次也不会变，只能等外部事实改变。
+ * 把两类塞进同一个重试循环，就会在「acli 没装」上空转到上限，把真因刷成噪音。
+ */
+const PROBE_RETRY_DELAYS = [2000, 4000, 8000]
+/** 事实复查节奏：acli 可能被后台安装流程装上、节点可能上下线，低频看一眼足够。 */
+const PROBE_RECHECK_INTERVAL_MS = 30000
+const PROBE_RECHECK_MAX = 3
+/**
+ * 探测卡死自愈阈值。
+ *
+ * 对抗性审查：旧实现用 `prepareState === 'probing'` 挡住重入，且早退时静默 return。
+ * 一旦某次探测的等待器丢失（回包被同 action 的后到请求覆盖、组件重挂载丢 waiter），
+ * 状态会永远停在 probing——用户点「重新探测」毫无反应，只有 F5 重建组件才能恢复
+ * （2026-10-30 现场：装完 acli 后必须刷新页面面板才更新）。
+ * 因此重入判据必须是「这次探测已经跑了多久」，而不是「状态是不是 probing」。
+ */
+const PROBE_STALL_MS = 120000
+
+/** 本次探测开始的时刻：只用于判定「是否已卡死」，不参与展示。 */
+const probingStartedAt = ref(0)
+/** 当前这一轮自动重试的进度（null = 没有在重试）。 */
+const probeRetry = ref<{ attempt: number; total: number; delayMs: number } | null>(null)
+/** 事实复查已执行次数：手动重探、换工单、换节点都会归零。 */
+const probeRecheckCount = ref(0)
+let probeRecheckTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 重试间隔加 ±20% 抖动：多客户端同时探测时避免同相位冲击同一个节点。 */
+function probeRetryDelay(index: number): number {
+  const base =
+    PROBE_RETRY_DELAYS[Math.min(index, PROBE_RETRY_DELAYS.length - 1)] ?? PROBE_RETRY_DELAYS[0]
+  return Math.round(base + base * (Math.random() * 0.4 - 0.2))
+}
+
+/**
+ * 该失败是否值得重试。
+ *
+ * 只有「重连 SSH 才能解决」的失败被排除：session_missing / LC-ENV-006 / 未连接节点。
+ * 其余（超时、通道断开、未知桥侧异常）一律按瞬态处理——未知错误重试一次的代价，
+ * 远小于让用户自己发现「其实再点一次就好了」。
+ */
+function isRetryableProbeError(error: unknown): boolean {
+  const text = String((error as any)?.message || error || '')
+  if (text.includes('请先在 SSH 终端连接')) return false
+  if (text.includes('LC-ENV-006') || text.includes('session_missing')) return false
+  if (text.includes('会话不存在')) return false
+  return true
+}
+
+function probeErrorText(error: unknown): string {
+  return String((error as any)?.message || error || '').slice(0, 200)
+}
+
+/** 重试提示文案：必须同时说明「失败原因」「等多久」「第几次」，否则与卡死无法区分。 */
+const probeRetryText = computed(() => {
+  const retry = probeRetry.value
+  if (!retry) return ''
+  const seconds = Math.max(1, Math.round(retry.delayMs / 1000))
+  const reason = prepareError.value || '原因未记录'
+  return `环境探测失败（${reason}），${seconds} 秒后自动重试（第 ${retry.attempt}/${retry.total} 次）`
+})
+
+/**
+ * 探测结论里「会被外部改变、但不算探测故障」的项。
+ *
+ * 成功标准（2026-10-30 与现场确认）：通道通 + acli 已装 + 节点清单非空。
+ * 日志服务器可达性不参与成功判定（它是网络现状，不是探测故障），但仍进复查范围——
+ * 权限放开后同一份快照就该被刷新。
+ */
+function needsFactRecheck(data: ProbeResult | null | undefined): boolean {
+  if (!data) return false
+  if (!data.acli_installed) return true
+  if (!data.hosts?.length) return true
+  if (!data.log_server_reachable) return true
+  return false
+}
+
+function stopFactRecheck() {
+  if (probeRecheckTimer) {
+    clearTimeout(probeRecheckTimer)
+    probeRecheckTimer = null
+  }
+}
+
+/**
+ * 安排一次事实复查。
+ *
+ * 与重试的关系：复查不复用重试（`retries: false`），否则一次瞬态失败会被放大成
+ * 3×3 次 SSH 调用；复查次数也不因成功而归零，只由用户动作（手动重探/换单/换节点）复位。
+ */
+function scheduleFactRecheck() {
+  stopFactRecheck()
+  // 采集中不复查：探测要连发多条 SSH 命令，会和采集抢同一个会话
+  if (!visible.value || running.value) return
+  if (!needsFactRecheck(probeResult.value)) return
+  if (probeRecheckCount.value >= PROBE_RECHECK_MAX) return
+  probeRecheckTimer = setTimeout(() => {
+    probeRecheckTimer = null
+    if (!visible.value || running.value) return
+    probeRecheckCount.value += 1
+    void prepare({ silent: true, retries: false, resetRecheck: false })
+  }, PROBE_RECHECK_INTERVAL_MS)
+}
+
 const nodeIpReady = computed(() => Boolean(nodeIp.value))
 
 /**
@@ -920,62 +1029,119 @@ const emptyModulesHint = computed(() =>
 )
 
 /**
- * 准备阶段：读取架构、acli、可用空间、日志服务器连通性，以及场景目录与节点清单。
+ * 单次探测：读取架构、acli、可用空间、日志服务器连通性，以及场景目录与节点清单。
+ *
+ * 返回 null 表示这次探测已被新的一次取代（换工单/换节点/手动重探），
+ * 此时**不得**写任何状态，否则旧结论会覆盖新结论。
+ */
+async function probeOnce(targetNode: string, token: number): Promise<ProbeResult | null> {
+  // 字典与探测并行：字典是 HTTP、探测走 bridge WS，串行会让面板多等一个往返。
+  // 字典失败已在 loadScenarioDict 内部吞掉，不会影响这里的探测结果。
+  const dictPromise = loadScenarioDict()
+  const ws = await openSocket()
+  const probe = await sendAndWait(
+    ws,
+    'probe',
+    { remoteUrl: RELAY_URL, nodeIp: targetNode, ticketNo: props.caseId },
+    90000,
+  )
+  if (probe.status !== 'ok') {
+    throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
+  }
+  const data = probe.log_data as ProbeResult
+  // 字典先落地再合并目录：否则用户会先看到一批无说明的短名，再整排换一次文案（闪变）。
+  await dictPromise
+  if (token !== prepareToken) return null
+  probeResult.value = data
+  applyCatalog(data)
+  return data
+}
+
+/**
+ * 准备阶段：探测集群环境，瞬态失败自动重试，成功后再安排一次低频事实复查。
  *
  * 对抗性审查：探测失败不等于不能收集——主机清单为空时回退手填 IP，
  * 因此这里只记录失败原因，不阻断后续表单编辑。
+ *
+ * 参数：
+ * - `silent`：不弹 ElMessage（打开面板/复查时用），失败仍会在表单上方留告警；
+ * - `retries`：false 表示只探一次（复查链路用，避免「重试×复查」指数放大）；
+ * - `resetRecheck`：false 表示不归零复查计数（复查自己触发的探测必须保留计数）。
  */
-async function prepare(options: { silent?: boolean } = {}): Promise<boolean> {
-  if (prepareState.value === 'probing') return false
+async function prepare(
+  options: { silent?: boolean; retries?: boolean; resetRecheck?: boolean } = {},
+): Promise<boolean> {
   const targetNode = nodeIp.value
   if (!targetNode) {
     prepareState.value = 'failed'
     prepareError.value = '请先在 SSH 终端连接 HCI 节点'
     return false
   }
-  const token = ++prepareToken
-  prepareState.value = 'probing'
-  prepareError.value = ''
-  try {
-    // 字典与探测并行：字典是 HTTP、探测走 bridge WS，串行会让面板多等一个往返。
-    // 字典失败已在 loadScenarioDict 内部吞掉，不会影响这里的探测结果。
-    const dictPromise = loadScenarioDict()
-    const ws = await openSocket()
-    const probe = await sendAndWait(
-      ws,
-      'probe',
-      { remoteUrl: RELAY_URL, nodeIp: targetNode, ticketNo: props.caseId },
-      90000,
-    )
-    if (token !== prepareToken) return false
-    if (probe.status !== 'ok') {
-      throw new Error(probe.message || '环境探测失败，请确认已在 SSH 终端连接 HCI')
-    }
-    const data = probe.log_data as ProbeResult
-    probeResult.value = data
-    // 字典先落地再合并目录：否则用户会先看到一批无说明的短名，再整排换一次文案（闪变）。
-    await dictPromise
-    if (token !== prepareToken) return false
-    applyCatalog(data)
-    // 交付路径的默认值只在「用户从未选过」且探测**成功**时给一次。
-    // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定
-    // 「平台是否留副本」——2026-10-28 现场探测返回 000，4 分钟后 P1 却传成 2.99 GB，
-    // 界面却已把路径改成 P2，事后无法判断任务到底走的哪条路。
-    if (!pathModeTouched.value && !pathMode.value && data.log_server_reachable) {
-      pathMode.value = 'P1'
-    }
-    probedAt.value = Date.now()
-    prepareState.value = 'ready'
-    // 历史探测读的是 bridge 事件，失败不影响本次结果，因此不 await。
-    void loadProbeHistory()
-    return true
-  } catch (error: any) {
-    if (token !== prepareToken) return false
-    prepareState.value = 'failed'
-    prepareError.value = String(error?.message || error).slice(0, 200)
-    if (!options.silent) ElMessage.error(prepareError.value)
+  // 注意：不能用 running 挡在这里。handleStart 在 stage='probing' 之后会调用本函数
+  // （未准备/准备失败时现场补探），而 probing 本身就在 running 集合里，
+  // 一挡就会把「开始收集」的补探静默吞掉。采集期间不允许探测只由两个入口负责：
+  // 按钮 disabled（手动）+ scheduleFactRecheck（自动复查）。
+  const stalled =
+    prepareState.value === 'probing' && Date.now() - probingStartedAt.value > PROBE_STALL_MS
+  if (prepareState.value === 'probing' && !stalled) {
+    // 复用进行中的那次：并发探测会让两个请求抢同一个 waiter（后到者覆盖前者，
+    // 前者只能空等到 90s 超时）。但静默返回会让用户以为按钮失灵——
+    // 这正是 2026-10-30「点了没反应、只能 F5」的直接成因，必须给出可见反馈。
+    if (!options.silent) ElMessage.info('正在探测集群环境，请稍候（也可等本次结果返回）')
     return false
   }
+
+  const token = ++prepareToken
+  prepareState.value = 'probing'
+  probingStartedAt.value = Date.now()
+  prepareError.value = ''
+  probeRetry.value = null
+  if (options.resetRecheck !== false) probeRecheckCount.value = 0
+
+  const maxRetries = options.retries === false ? 0 : PROBE_RETRY_DELAYS.length
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    if (attempt > 0) {
+      const delayMs = probeRetryDelay(attempt - 1)
+      probeRetry.value = { attempt, total: maxRetries, delayMs }
+      await sleep(delayMs)
+      // 等待期间面板关闭 / 换工单 / 被新探测取代：整轮作废，不留下「正在重试」的假象
+      if (token !== prepareToken || !visible.value) {
+        if (token === prepareToken) {
+          probeRetry.value = null
+          prepareState.value = 'idle'
+        }
+        return false
+      }
+    }
+    try {
+      const data = await probeOnce(targetNode, token)
+      if (!data || token !== prepareToken) return false
+      probeRetry.value = null
+      // 交付路径的默认值只在「用户从未选过」且探测**成功**时给一次。
+      // 不可达时不再静默选 P2：一次 10 秒的超时探测不足以替用户决定
+      // 「平台是否留副本」——2026-10-28 现场探测返回 000，4 分钟后 P1 却传成 2.99 GB，
+      // 界面却已把路径改成 P2，事后无法判断任务到底走的哪条路。
+      if (!pathModeTouched.value && !pathMode.value && data.log_server_reachable) {
+        pathMode.value = 'P1'
+      }
+      probedAt.value = Date.now()
+      prepareState.value = 'ready'
+      // 历史探测读的是 bridge 事件，失败不影响本次结果，因此不 await。
+      void loadProbeHistory()
+      // 探测成功 ≠ 环境就绪：acli 可能刚被别的流程装上，节点可能刚上线
+      scheduleFactRecheck()
+      return true
+    } catch (error: any) {
+      if (token !== prepareToken) return false
+      prepareError.value = probeErrorText(error)
+      if (isRetryableProbeError(error) && attempt < maxRetries) continue
+      probeRetry.value = null
+      prepareState.value = 'failed'
+      if (!options.silent) ElMessage.error(prepareError.value)
+      return false
+    }
+  }
+  return false
 }
 
 const running = computed(() =>
@@ -1617,8 +1783,10 @@ async function handleStart() {
   try {
     // 复用准备阶段的探测结果：打开面板时已经读过集群，这里再探一次纯属浪费，
     // 且会重复触发 acli help 解析。仅在未准备/准备失败时现场补探。
+    // 补探不重试（retries: false）：用户已经点了「开始收集」，等待时间必须可预期——
+    // 最坏情况下的退避叠加会把一次下发拖上几分钟，反而不知道卡在哪。
     if (prepareState.value !== 'ready' || !probeResult.value) {
-      const ready = await prepare({ silent: true })
+      const ready = await prepare({ silent: true, retries: false })
       if (!ready || !probeResult.value) throw new Error(prepareError.value || '环境准备失败')
     }
 
@@ -1795,11 +1963,16 @@ async function confirmInstall(ws: WebSocket) {
   probeResult.value = { ...(probeResult.value as ProbeResult), acli_installed: true }
   // 安装成功后必须重探：节点清单与场景目录只有 acli 可用后才读得到，
   // 不重探会让用户"装完 acli 仍看到读不到节点清单"，误判为安装无效。
-  const refreshed = await prepare({ silent: true })
+  // 只探一次（retries: false）：安装已经成功，重探失败不该再拖住用户等待；
+  // 真没探到会由事实复查在 30s 后自动补读。
+  const refreshed = await prepare({ silent: true, retries: false })
   if (!refreshed && prepareState.value === 'failed') {
     // 重探失败不改写安装结果，也不让面板停在红色错误态：采集仍可继续（-i all 合法）
     prepareState.value = 'ready'
     prepareError.value = ''
+    // 重探失败不能就此停在旧快照：交给事实复查把「装好了但没读到清单」补上，
+    // 否则用户又回到「必须 F5」的老路
+    scheduleFactRecheck()
   }
 }
 
@@ -2941,8 +3114,9 @@ watch(
   visible,
   (open) => {
     if (!open) {
-      // 收起面板（v-show，不销毁）时停止自动刷新，避免不可见还在后台发 SSH 命令
+      // 收起面板（v-show，不销毁）时停止自动刷新与事实复查，避免不可见还在后台发 SSH 命令
       stopAutoSync()
+      stopFactRecheck()
       return
     }
     if (form.dateRange.length === 0) {
@@ -2958,9 +3132,10 @@ watch(
     // 每次打开都重探：面板关闭时 App.vue 的 v-if 仍成立（组件不卸载），
     // 若沿用 'ready' 就跳过探测，界面会一直显示关闭前那份快照——
     // acli 在此期间被自动升级（1.0.0 → 1.0.1）就会造成"平台显示旧版本，终端手敲是新版本"。
-    if (prepareState.value !== 'probing') {
-      void prepare({ silent: true })
-    }
+    // 卡死自愈已下沉到 prepare 内部（按耗时判定），这里不再用状态挡重入：
+    // 用状态挡会把「上一次探测卡死」变成「永远不再探测」，只能 F5 复活。
+    probeRecheckCount.value = 0
+    void prepare({ silent: true })
     // 重开面板时接管进行中的任务，避免"关掉再打开就看不到进度"
     void restoreTaskState()
   },
@@ -2986,6 +3161,9 @@ watch(
     nodeArchivePath.value = ''
     nodeAction.value = ''
     nodeSyncHint.value = ''
+    // 复查计数属于上一单：不复位会把 B 单的第一次复查直接吞掉
+    stopFactRecheck()
+    probeRecheckCount.value = 0
     if (visible.value) void restoreTaskState(true)
   },
 )
@@ -3004,6 +3182,9 @@ watch(
     nodeIpTimer = setTimeout(() => {
       probeResult.value = null
       prepareState.value = 'idle'
+      // 换了节点 = 换了一个环境：上一台的复查计数没有意义
+      stopFactRecheck()
+      probeRecheckCount.value = 0
       void prepare({ silent: true })
     }, 500)
   },
@@ -3023,8 +3204,9 @@ function formatDate(value: Date): string {
 onBeforeUnmount(() => {
   // 让仍在运行的后台轮询退出，避免组件卸载后继续改状态
   runToken++
-  // 准备阶段的令牌与定时器同样要失效，否则重探会在卸载后回写状态
+  // 准备阶段的令牌与定时器同样要失效，否则重探/复查会在卸载后回写状态
   prepareToken++
+  stopFactRecheck()
   if (nodeIpTimer) {
     clearTimeout(nodeIpTimer)
     nodeIpTimer = null
@@ -3156,6 +3338,26 @@ onBeforeUnmount(() => {
         >
           刷新进度
         </el-button>
+        <!--
+          重新探测必须是常驻入口：探测结论是快照，而环境会被外部改变
+          （acli 在终端被装、节点上下线、日志服务器权限放开）。
+          旧实现只把入口埋在探测表下方，现场找不到，只能 F5 重建组件。
+
+          disabled 不能直接写 running：running 包含 'probing'，而探测本身就在设 probing——
+          那样一旦探测卡死，按钮也永远是禁用的，恰好把唯一的自愈入口堵死。
+          这里只挡「真的在采集/安装」的阶段。
+        -->
+        <el-button
+          v-if="viewMode === 'form'"
+          text
+          size="small"
+          type="primary"
+          :loading="prepareState === 'probing'"
+          :disabled="!nodeIpReady || (running && prepareState !== 'probing')"
+          @click="prepare()"
+        >
+          重新探测
+        </el-button>
       </div>
 
       <!--
@@ -3241,21 +3443,12 @@ onBeforeUnmount(() => {
           </el-descriptions-item>
         </el-descriptions>
 
-        <!-- 探测结论是快照：acli 可能被自动升级，面板关闭重开或点这里都要重新读一次 -->
+        <!-- 探测结论是快照：acli 可能被自动升级，面板关闭重开或点上方「重新探测」都会重新读一次 -->
         <div v-if="probeResult" class="lc-probe-meta">
           <span v-if="probedAtText">探测于 {{ probedAtText }}</span>
           <span v-if="probeResult.acli_binary" class="lc-probe-binary" :title="probeResult.acli_binary">
             {{ probeResult.acli_binary }}
           </span>
-          <el-button
-            text
-            size="small"
-            type="primary"
-            :disabled="prepareState === 'probing'"
-            @click="prepare()"
-          >
-            重新探测
-          </el-button>
         </div>
 
         <!--
@@ -3303,12 +3496,21 @@ onBeforeUnmount(() => {
           title="请先在 SSH 终端连接 HCI 节点；连接后才能读取场景目录与节点清单"
         />
         <el-alert
-          v-else-if="prepareState === 'probing'"
+          v-else-if="prepareState === 'probing' && !probeRetry"
           class="lc-prepare"
           type="info"
           :closable="false"
           show-icon
           title="正在读取集群环境：架构 / acli / 场景目录 / 节点清单…"
+        />
+        <!-- 重试必须可见：用户要能分清「没反应」与「正在重试」，这正是现场误判的根源 -->
+        <el-alert
+          v-if="probeRetry"
+          class="lc-prepare"
+          type="warning"
+          :closable="false"
+          show-icon
+          :title="probeRetryText"
         />
         <!-- 探测失败必须显式告警：降级可用 ≠ 用户不需要知道 -->
         <el-alert
