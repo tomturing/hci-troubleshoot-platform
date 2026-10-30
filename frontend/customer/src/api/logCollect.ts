@@ -205,6 +205,8 @@ export interface RelaySnapshot {
   relay_chunk_total?: number | null
   relay_restarts: number
   relay_updated_at?: string | null
+  /** running 且心跳过期：说明执行进程已死（发布/重启），可强制续跑。 */
+  stale?: boolean
   archive_path?: string | null
 }
 
