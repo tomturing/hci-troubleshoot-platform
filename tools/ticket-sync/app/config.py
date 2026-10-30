@@ -24,6 +24,10 @@ DEFAULT_MAX_DEPTH = 4
 DEFAULT_CONCURRENCY = 2
 DEFAULT_AUTO_SYNC_INTERVAL_SECONDS = 30
 DEFAULT_RETENTION_DAYS = 7
+# 产物总量上限 400 GiB：宿主机盘 1.2T，需给系统、镜像与 .tmp 留余量。
+DEFAULT_MAX_TOTAL_BYTES = 400 * 1024**3
+# 容量淘汰的最短保留天数，避免"刚同步完就被容量逻辑删掉"。
+DEFAULT_MIN_KEEP_DAYS = 3
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,12 @@ class Config:
     auto_sync_enabled: bool
     auto_sync_interval_seconds: int
     retention_days: int
+    # 产物总量上限：超过后按"最旧优先"淘汰，默认 400 GiB。
+    # 单一保留天数是不够的：实测客户一天能推来 5 个 50~65 GiB 的工单，
+    # 7 天内就能把 1.2T 的盘填满，届时只会拒绝新任务而不会自愈。
+    max_total_bytes: int = 400 * 1024**3
+    # 容量淘汰的最短保留天数：不足该天数即使超限也不删，避免刚同步就被清掉。
+    min_keep_days: int = 3
 
     @property
     def source(self) -> str:
@@ -99,6 +109,8 @@ class Config:
                 optional("TICKET_AUTO_SYNC_INTERVAL_SECONDS", str(DEFAULT_AUTO_SYNC_INTERVAL_SECONDS))
             ),
             retention_days=int(optional("TICKET_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))),
+            max_total_bytes=int(optional("TICKET_MAX_TOTAL_BYTES", str(DEFAULT_MAX_TOTAL_BYTES))),
+            min_keep_days=int(optional("TICKET_MIN_KEEP_DAYS", str(DEFAULT_MIN_KEEP_DAYS))),
         )
 
 

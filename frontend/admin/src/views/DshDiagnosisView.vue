@@ -277,6 +277,8 @@ onUnmounted(() => {
 
         <span v-else-if="job.phase === 'ready'" class="sync-meta">
           共 {{ job.fileCount }} 个文件 · {{ mib(job.extractedBytes) }}，可在下方 DSH 中选择该工单目录
+          <!-- 解压成功但存在工具解不开的附件时，必须显式告警，否则"已就绪"会掩盖缺失 -->
+          <em v-if="job.message" class="sync-warning">（{{ job.message }}）</em>
         </span>
 
         <span v-else-if="job.phase === 'failed'" class="sync-error">
@@ -351,6 +353,7 @@ onUnmounted(() => {
             </div>
             <div v-else-if="artifact.phase === 'ready'" class="artifact-detail artifact-success">
               已同步并解压，可在下方 DSH 文件选择器中使用
+              <span v-if="artifact.job?.message" class="sync-warning">（{{ artifact.job.message }}）</span>
             </div>
             <div v-else-if="artifact.phase === 'failed'" class="artifact-detail artifact-error">
               {{ errorText(artifact.job?.errorCode ?? null, artifact.job?.message ?? null) }}
@@ -470,6 +473,13 @@ onUnmounted(() => {
 .sync-error {
   font-size: 13px;
   color: #f56c6c;
+}
+
+/* 已就绪但有降级信息（如附件无法解压）时使用，与真正的失败区分开 */
+.sync-warning {
+  font-size: 13px;
+  font-style: normal;
+  color: #e6a23c;
 }
 
 .artifact-panel {
