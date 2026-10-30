@@ -2,8 +2,8 @@
 
 职责边界：
 - 真实采集由客户 PC 上的 terminal_bridge 经 PTY 执行；分片数据面走
-  ``/api/direct/log-collect-uploads`` 直连 case-service（32 MiB 超出网关 1 MiB 限制），
-  因此不经本路由；
+  ``/api/direct/log-collect-uploads`` 直连 case-service（分片 8 MiB，
+  ``LOG_COLLECT_CHUNK_SIZE_BYTES``），因此不经本路由；
 - 本路由只代理控制面：任务登记/状态机/分片会话/代传，全部落在 case-service。
 
 鉴权：

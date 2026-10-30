@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
+  formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
@@ -187,5 +188,34 @@ describe('buildDeliverySubmitMessage', () => {
     )
     const msg = decode(buildDeliverySubmitMessage(payload, 'Q1'))
     expect(msg.uploaded_parts).toEqual([])
+  })
+})
+
+describe('formatFailureReason', () => {
+  const FALLBACK = '归档到日志服务器失败，平台未记录原因（可在桥日志中按工单号检索）'
+
+  it('码与原因都有时拼成 [码] 原因', () => {
+    expect(formatFailureReason({ error_code: 'LC-TRANSFER-003', error_message: '5888 返回 503' }, FALLBACK)).toBe(
+      '[LC-TRANSFER-003] 5888 返回 503',
+    )
+  })
+
+  // 这条是本次改动的核心：Q2026102801062 界面指向"任务记录"，记录里却什么都没有。
+  it('无码无因时如实说明「平台未记录」，不编造原因', () => {
+    expect(formatFailureReason(null, FALLBACK)).toBe(FALLBACK)
+    expect(formatFailureReason(undefined, FALLBACK)).toBe(FALLBACK)
+    expect(formatFailureReason({ error_code: null, error_message: '   ' }, FALLBACK)).toBe(FALLBACK)
+  })
+
+  it('只有码没有原因时保留码（码本身就能报给支持），再补兜底文案', () => {
+    expect(formatFailureReason({ error_code: 'LC-TRANSFER-002' }, FALLBACK)).toBe(`[LC-TRANSFER-002] ${FALLBACK}`)
+  })
+
+  it('只有原因没有码时不加空方括号', () => {
+    expect(formatFailureReason({ error_message: '平台副本为空文件' }, FALLBACK)).toBe('平台副本为空文件')
+  })
+
+  it('原因两端空白会被裁掉，避免展示出多余空行', () => {
+    expect(formatFailureReason({ error_message: '  归档超时  ' }, FALLBACK)).toBe('归档超时')
   })
 })

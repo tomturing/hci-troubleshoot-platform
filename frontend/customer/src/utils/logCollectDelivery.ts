@@ -140,3 +140,22 @@ export function rememberPlatformCertTrust(origin: string): void {
     /* 忽略：下次再问一次即可 */
   }
 }
+
+/**
+ * 拼装「失败原因」展示文本：`[错误码] 原因`，缺失时如实说明而不是编造。
+ *
+ * 为什么必须读任务记录而不是就地拼一句通用文案：Q2026102801062 现场界面写的是
+ * 「归档到日志服务器失败，错误码见平台任务记录」——用户照着去查，任务记录里
+ * error_code / error_message 全是空，等于让用户去一个没有答案的地方找答案。
+ * 代传终态的权威原因只有后端 `_finish` 写的那一份，前端只能转述它。
+ *
+ * 空值口径：有码无因时保留码（码本身就能报给支持），两者都无才用 fallback。
+ */
+export function formatFailureReason(
+  detail: { error_code?: string | null; error_message?: string | null } | null | undefined,
+  fallback: string,
+): string {
+  const code = detail?.error_code ? `[${detail.error_code}] ` : ''
+  const message = String(detail?.error_message ?? '').trim()
+  return message ? `${code}${message}` : `${code}${fallback}`
+}
