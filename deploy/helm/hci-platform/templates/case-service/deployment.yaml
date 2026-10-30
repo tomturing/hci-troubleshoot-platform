@@ -58,7 +58,12 @@ spec:
               # 分片大小决定单次 PUT 需要多长的网关读窗口。现场上行越慢，分片
               # 必须越小，否则请求会稳定撞上网关 60s 读超时并报成「平台返回
               # HTTP 502」。可按现场带宽下调（下限 1 MiB，上限 32 MiB）。
-              value: {{ .Values.caseService.logCollectStorage.chunkSizeBytes | quote }}
+              #
+              # 必须显式 `int64`：values 里的数字经 Helm 解析成 float64，
+              # 直接 `quote` 会把 8388608 渲染成 "8.388608e+06"，
+              # schema 里该字段是 int，容器启动即 pydantic ValidationError
+              # （2026-10-30 staging 上 case-service 因此 CrashLoopBackOff）。
+              value: {{ .Values.caseService.logCollectStorage.chunkSizeBytes | int64 | quote }}
           livenessProbe:
             httpGet:
               path: /health
