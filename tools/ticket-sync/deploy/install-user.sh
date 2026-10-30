@@ -45,6 +45,43 @@ fi
 
 install -m 644 "$src/deploy/hci-ticket-sync.user.service" "$unit_dir/hci-ticket-sync.service"
 
+# RAR5 解码器：宿主机没有 root，装不了发行版包，改用 rarlab 的静态二进制。
+# 实测 p7zip 23.01 对 RAR5（v50 -m3）报 Unsupported Method，unrar 7.x 能正常解；
+# 没有它，客户自打的 .rar 只能"保留原件"。幂等：已就绪直接跳过。
+# 下载失败只告警不中断安装——rar 只是少数工单里的附件，不该拖垮整个部署。
+install_unrar() {
+  local bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
+  local target="$bin_dir/unrar"
+  # unrar 无参数时会打印横幅但退出码非 0，在 set -o pipefail 下直接接管道
+  # 会被判成失败、每次都重装，所以先捕获输出再比对。
+  if [[ -x "$target" ]]; then
+    local banner
+    banner=$("$target" 2>&1 || true)
+    if [[ "$banner" == *UNRAR* ]]; then
+      echo "unrar 已就绪：$target"
+      return 0
+    fi
+  fi
+  install -d -m 755 "$bin_dir"
+  local tmp pkg
+  tmp=$(mktemp -d)
+  # 优先取官网当前包名，取不到时回退到已验证版本，避免网页改版让安装断掉。
+  pkg=$(curl -fsSL --max-time 15 https://www.rarlab.com/download.htm 2>/dev/null \
+        | grep -oE 'rarlinux-x64-[0-9]+\.tar\.gz' | head -n 1) || true
+  pkg=${pkg:-rarlinux-x64-723.tar.gz}
+  if ! curl -fsSL --max-time 120 -o "$tmp/rar.tgz" "https://www.rarlab.com/rar/$pkg"; then
+    rm -rf "$tmp"
+    echo "警告：下载 unrar 失败，RAR5 归档将只能保留原件（$pkg）" >&2
+    return 0
+  fi
+  tar xzf "$tmp/rar.tgz" -C "$tmp"
+  install -m 755 "$tmp/rar/unrar" "$target"
+  rm -rf "$tmp"
+  echo "已安装 unrar：$target"
+}
+
+install_unrar
+
 systemctl --user daemon-reload
 # enable 只建开机链接；restart 保证重跑脚本时新代码真的生效（--now 对已在跑的服务不重启）。
 systemctl --user enable hci-ticket-sync.service

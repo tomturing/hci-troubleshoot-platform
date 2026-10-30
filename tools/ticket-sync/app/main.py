@@ -338,6 +338,13 @@ class JobRegistry:
                     job.message = (
                         f"{stats.unreadable_archives} 个归档工具无法解压，已保留原压缩文件"
                     )
+                # 深度上限从「整单失败」改为「停止下钻」后，截断信息不能静默：
+                # 用户需要知道产物里少了更深层的附件，而不是以为日志齐了。
+                if stats.depth_truncated:
+                    suffix = (
+                        f"{stats.depth_truncated} 个归档超出嵌套层数上限，未继续解压"
+                    )
+                    job.message = f"{job.message}；{suffix}" if job.message else suffix
                 job.updated_at = _now()
                 self._retries.pop(ticket_id, None)
                 logger.info(

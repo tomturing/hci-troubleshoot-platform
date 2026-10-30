@@ -92,6 +92,7 @@ class ExtractStats:
         "placeholders_skipped",
         "permissions_fixed",
         "unreadable_archives",
+        "depth_truncated",
     )
 
     def __init__(self) -> None:
@@ -106,6 +107,8 @@ class ExtractStats:
         self.permissions_fixed = 0
         # 解不开但保留原件的归档数（如 p7zip 不支持的 RAR5 压缩方法）。
         self.unreadable_archives = 0
+        # 超出嵌套层数上限而停止下钻的归档数：日志主体仍可用，必须可观测。
+        self.depth_truncated = 0
 
     def __repr__(self) -> str:
         return (
@@ -114,5 +117,6 @@ class ExtractStats:
             f"symlinks_removed={self.symlinks_removed}, "
             f"placeholders_skipped={self.placeholders_skipped}, "
             f"permissions_fixed={self.permissions_fixed}, "
-            f"unreadable_archives={self.unreadable_archives})"
+            f"unreadable_archives={self.unreadable_archives}, "
+            f"depth_truncated={self.depth_truncated})"
         )

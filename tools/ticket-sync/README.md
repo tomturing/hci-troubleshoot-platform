@@ -101,8 +101,17 @@ queued ──► fetching ──► extracting ──► ready
 | 情形 | 处理 | 可见字段 |
 |---|---|---|
 | 归档 < 64 字节（采集端写坏的占位包） | 删除并跳过 | 日志 `跳过占位=N` |
-| `.rar` 解不开（p7zip 不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
+| `.rar` 解不开（unrar 与 p7zip 都不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
 | 归档只含 vmcore 等转储，无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
+
+嵌套层数上限（`TICKET_MAX_DEPTH`）是**停止下钻的护栏，不是整单失败的判据**：
+达到上限时保留已解出的产物、把剩余归档计入 `depth_truncated` 并在 `job.message`
+里提示"N 个归档超出嵌套层数上限，未继续解压"。理由是主体日志都在浅层，
+为几个深层附件回滚整个工作目录会让用户拿不到任何日志。
+
+RAR 解压走双通道：优先 `unrar`（rarlab 静态二进制，RAR5 全方法），失败再回退
+`7z`。宿主机没有 root，`deploy/install-user.sh` 会把 unrar 装到 `~/.local/bin`，
+unit 里显式补了 `PATH`——否则 `shutil.which("unrar")` 会静默落空。
 
 此外每层解压后都会补权限：文件补属主读写位、目录补执行位。源端
 `sf/log/kubelet`、`sf/log/containerd` 等目录权限常是 `drw-r--r--`，
@@ -119,8 +128,8 @@ queued ──► fetching ──► extracting ──► ready
 | `bad-password` | unzip 密码错误 / 密码为空 | 归档密码错误，请联系运维 |
 | `archive-corrupt` | 头部校验失败 | 压缩包已损坏 |
 | `no-space` | 剩余空间低于红线 | 服务器磁盘空间不足 |
-| `quota-exceeded` | 展开后超限（400 GiB / 5 万文件） | 解压体积异常，已中止 |
-| `depth-exceeded` | 嵌套超过 4 层 | 归档嵌套层级异常 |
+| `quota-exceeded` | 展开后超限（400 GiB / 50 万文件） | 解压体积异常，已中止 |
+| `depth-exceeded` | 已废弃：嵌套超限改为停止下钻并保留产物，见 1.7 | 不再出现 |
 | `ssh-failed` | ssh/rsync 非零退出 | 无法连接 0.2 |
 | `extract-failed` | 其他解压错误 | 解压失败，请查看服务日志 |
 | `non-log-payload` | 归档只含 vmdumpcore/.core 等转储（无 `log_list.json`、无 `sp_*.tgz`） | 该工单包不是日志包（仅含转储文件），已跳过 |
@@ -142,13 +151,13 @@ queued ──► fetching ──► extracting ──► ready
 | `TICKET_MAX_ARCHIVE_BYTES` | 20 GiB | 单工单归档上限 |
 | `TICKET_MAX_EXTRACT_BYTES` | 400 GiB | 展开总量上限 |
 | `TICKET_MIN_FREE_BYTES` | 60 GiB | 剩余空间红线 |
-| `TICKET_MAX_FILES` | `50000` | 文件数上限 |
-| `TICKET_MAX_DEPTH` | `4` | 解压嵌套层数上限 |
+| `TICKET_MAX_FILES` | `500000` | 文件数上限（实测单工单最多 176,562） |
+| `TICKET_MAX_DEPTH` | `12` | 解压嵌套层数上限（实测最深 7 层；超限只停止下钻） |
 | `TICKET_CONCURRENCY` | `2` | 全局并发任务数 |
 | `TICKET_AUTO_SYNC_ENABLED` | `true` | 是否启用远端自动扫描 |
 | `TICKET_AUTO_SYNC_INTERVAL_SECONDS` | `30` | 自动扫描间隔 |
 | `TICKET_RETENTION_DAYS` | `7` | 本地工单目录保留天数 |
-| `TICKET_MAX_TOTAL_BYTES` | 400 GiB | 产物总量上限，超限时按最旧优先淘汰 |
+| `TICKET_MAX_TOTAL_BYTES` | 1 TiB | 产物总量上限（盘已扩到 2.1T），超限时按最旧优先淘汰 |
 | `TICKET_MIN_KEEP_DAYS` | `3` | 容量淘汰的最短保留天数（不足则只告警不删） |
 
 配置模板见 `tools/ticket-sync/deploy/ticket-sync.env.example`。**密码只存在宿主机 env 文件，不入库、
