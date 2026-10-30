@@ -9,10 +9,26 @@ spec:
   replicas: {{ .Values.caseService.replicaCount }}
   revisionHistoryLimit: 3  # 只保留最近 3 个 ReplicaSet，避免空 RS 僵尸积累
   {{- if .Values.caseService.logCollectStorage.enabled }}
-  # 日志存储是 RWO 卷 + 本地文件系统语义：两个 Pod 同时挂载会互相覆盖分片目录，
-  # 部分 CSI 还会让滚动更新卡在 ContainerCreating。先停旧 Pod 再起新 Pod 是刻意取舍。
+  {{- $rollout := .Values.caseService.logCollectStorage.rollout | default dict }}
+  {{- if eq (get $rollout "strategy" | default "RollingUpdate" | toString) "Recreate" }}
+  # 先停旧 Pod 再起新 Pod：仅适用于「同一 RWO 卷不允许两个 Pod 同时挂载」的存储。
+  # 代价是发布期间有一段 endpoints 为空的窗口（2026-10-30 实测约 21s）。
   strategy:
     type: Recreate
+  {{- else }}
+  # 滚动发布：新 Pod Ready 之后才停旧 Pod，发布期间请求不会落到空 endpoints。
+  #
+  # 两个前提都已核实：
+  # 1. 集群是单节点，local-path 的 RWO 卷允许同节点两个 Pod 同时挂载；
+  # 2. 分片/元数据/合并的临时文件已按 pid + 随机串唯一命名
+  #    （log_collect_storage._temp_for），双进程并存不会互相截断。
+  # maxUnavailable 固定为 0，不开放配置：一旦放开 1，就是又回到「先杀后起」。
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ get $rollout "maxSurge" | default 1 }}
+      maxUnavailable: 0
+  {{- end }}
   {{- end }}
   selector:
     matchLabels:
@@ -22,12 +38,18 @@ spec:
       labels:
         {{- include "hci.podLabels" (dict "name" "case-service" "Release" .Release "Chart" .Chart) | nindent 8 }}
       annotations:
+        {{- if .Values.caseService.checksumAnnotations }}
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
         prometheus.io/scrape: "true"
         prometheus.io/port: {{ .Values.caseService.port | quote }}
         prometheus.io/path: "/metrics"
     spec:
+      {{- with .Values.caseService.terminationGracePeriodSeconds }}
+      # 在途请求最长可达几分钟（合并 20GiB 包），30s 会在中途 SIGKILL。
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "case-service") | nindent 6 }}
       containers:
         - name: case-service
