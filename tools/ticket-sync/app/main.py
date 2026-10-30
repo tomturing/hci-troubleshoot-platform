@@ -17,7 +17,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -27,8 +27,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Config
 from .extractor import extract
-from .fetcher import RemoteArchive, fetch, list_today_archives
-from .maintenance import cleanup_expired
+from .fetcher import (
+    RemoteArchive,
+    fetch,
+    list_remote_entries,
+    list_today_archives,
+    looks_like_non_log_bundle,
+)
+from .maintenance import cleanup_expired, enforce_capacity
 from .models import (
     RUNNING_PHASES,
     TICKET_RE,
@@ -46,9 +52,30 @@ logger = logging.getLogger("ticket-sync")
 TZ = ZoneInfo("Asia/Shanghai")
 VERSION = "1.0.0"
 
+# 失败退避阶梯（秒）：10min → 30min → 2h → 6h，之后固定 6h。
+# 存在的理由：自动巡检每 30 秒一轮，而"本地目录不存在"会被当成待同步。
+# 一个必然失败的包（层数超限、体积超限、坏包）因此会被无限重拉：
+# 实测单工单 192 次、累计约 450 GiB 无效流量，并把正常工单挤在队列后面。
+RETRY_BACKOFF_SECONDS = (600, 1800, 7200, 21600)
+
 
 class JobConflict(Exception):
     """同一工单已有任务在执行。"""
+
+
+@dataclass
+class RetryState:
+    """按工单累计的失败退避状态。
+
+    存内存而非磁盘：与服务重启后任务表丢失的口径一致，重启即重新给一次机会。
+    """
+
+    failures: int = 0
+    next_retry_at: datetime | None = None
+
+    def delay_for_next(self) -> int:
+        index = min(self.failures, len(RETRY_BACKOFF_SECONDS) - 1)
+        return RETRY_BACKOFF_SECONDS[index]
 
 
 @dataclass
@@ -99,6 +126,8 @@ class JobRegistry:
         self.jobs: dict[str, Job] = {}
         self._slots = asyncio.Semaphore(cfg.concurrency)
         self._lock = asyncio.Lock()
+        # 退避状态按工单保留，跨任务生命周期，直到该工单成功发布。
+        self._retries: dict[str, RetryState] = {}
 
     async def create(self, ticket_id: str, request_id: str = "-") -> Job:
         async with self._lock:
@@ -119,6 +148,13 @@ class JobRegistry:
 
             final_dir = self.cfg.root / archive.ticket_id
             if final_dir.is_dir():
+                # 已经发布成功，历史退避记录可以清掉。
+                self._retries.pop(archive.ticket_id, None)
+                return None
+
+            state = self._retries.get(archive.ticket_id)
+            if state is not None and state.next_retry_at is not None and _now() < state.next_retry_at:
+                # 仍在退避窗口内：本轮巡检跳过，避免把同一个坏包反复重拉。
                 return None
 
             job = self._create_locked(archive.ticket_id)
@@ -200,6 +236,17 @@ class JobRegistry:
                 self.active_ticket_ids(),
             )
 
+    async def prune_capacity(self, now: datetime) -> tuple[int, int]:
+        """总量超过上限时按最旧优先淘汰，返回 (删除数, 释放字节)。"""
+        async with self._lock:
+            return enforce_capacity(
+                self.cfg.root,
+                self.cfg.max_total_bytes,
+                self.cfg.min_keep_days,
+                now,
+                self.active_ticket_ids(),
+            )
+
     async def list_artifacts(self) -> list[dict[str, Any]]:
         """合并本地已发布目录与内存任务，供 DSH 控制台展示。"""
         async with self._lock:
@@ -216,6 +263,7 @@ class JobRegistry:
             result: list[dict[str, Any]] = []
             for ticket_id in sorted(ticket_ids, reverse=True):
                 job = self.jobs.get(ticket_id)
+                retry = self._retries.get(ticket_id)
                 result.append(
                     {
                         "ticketId": ticket_id,
@@ -223,6 +271,16 @@ class JobRegistry:
                         "directoryReady": ticket_id in local,
                         "directoryUpdatedAt": local[ticket_id].isoformat() if ticket_id in local else None,
                         "job": job.to_payload() if job else None,
+                        # 退避状态对外可见：否则页面显示"失败"但后台不再重试，
+                        # 用户无从判断到底还会不会自己好。
+                        "retry": (
+                            {
+                                "failures": retry.failures,
+                                "nextRetryAt": retry.next_retry_at.isoformat() if retry.next_retry_at else None,
+                            }
+                            if retry is not None
+                            else None
+                        ),
                     }
                 )
             return result
@@ -236,6 +294,8 @@ class JobRegistry:
                 job.started_at = _now()
                 job.phase = Phase.FETCHING
                 job.updated_at = _now()
+
+                await self._reject_non_log_payload(job)
 
                 archive = await fetch(
                     ticket_id,
@@ -272,7 +332,14 @@ class JobRegistry:
                 job.file_count = stats.files
                 job.current_archive = None
                 job.phase = Phase.READY
+                # 解压成功但有归档解不开（如 RAR5 新压缩方法）：必须让用户看见，
+                # 否则"已就绪"会掩盖"少了一份转储"的事实。
+                if stats.unreadable_archives:
+                    job.message = (
+                        f"{stats.unreadable_archives} 个归档工具无法解压，已保留原压缩文件"
+                    )
                 job.updated_at = _now()
+                self._retries.pop(ticket_id, None)
                 logger.info(
                     "ticket=%s job=%s 完成 层数=%d 文件=%d 字节=%d 旧版本=%s",
                     ticket_id,
@@ -292,6 +359,7 @@ class JobRegistry:
             job.message = error.message
             job.updated_at = _now()
             logger.error("ticket=%s job=%s 失败 %s detail=%s", ticket_id, job.job_id, error, error.detail)
+            self._note_failure(ticket_id)
         except asyncio.CancelledError:
             job.phase = Phase.CANCELLED
             job.message = "已取消"
@@ -303,10 +371,53 @@ class JobRegistry:
             job.message = "同步失败，请查看服务日志"
             job.updated_at = _now()
             logger.exception("ticket=%s job=%s 未预期异常 %s", ticket_id, job.job_id, error)
+            self._note_failure(ticket_id)
         finally:
             # 成功时 work_dir 已被 rename 走，这里是空操作；
             # 失败与取消时清理半成品，避免 .tmp 累积。
             cleanup_workspace(work_dir)
+
+    async def _reject_non_log_payload(self, job: Job) -> None:
+        """下载前识别非日志载荷（vmcore 等），避免为几十 GiB 的转储白耗资源。
+
+        探测本身只是优化：ssh 不可用、unzip 缺失等失败一律放行，
+        绝不能因为"探测失败"把正常工单挡在门外。
+        """
+        try:
+            entries = await list_remote_entries(self.cfg, job.ticket_id)
+        except Exception as error:  # noqa: BLE001 - 探测失败必须降级放行
+            logger.warning(
+                "ticket=%s job=%s 归档内容探测失败，按日志包继续 error=%s",
+                job.ticket_id,
+                job.job_id,
+                error,
+            )
+            return
+
+        if looks_like_non_log_bundle(entries):
+            raise TicketError(
+                ErrorCode.NON_LOG_PAYLOAD,
+                "该工单包不是日志包（仅含转储文件），已跳过",
+                f"entries={entries[:5]}",
+            )
+
+    def _note_failure(self, ticket_id: str) -> None:
+        """登记一次失败并按阶梯推迟下一次自动重试。
+
+        手动 POST /jobs 不受退避限制：用户显式点击代表新的判断，
+        自动巡检则必须让路，否则坏包会把带宽和磁盘反复烧掉。
+        """
+        state = self._retries.setdefault(ticket_id, RetryState())
+        delay = state.delay_for_next()
+        state.failures += 1
+        state.next_retry_at = _now() + timedelta(seconds=delay)
+        logger.warning(
+            "ticket=%s 失败退避 第%d次 下次自动重试=%s 间隔=%ds",
+            ticket_id,
+            state.failures,
+            state.next_retry_at.isoformat(),
+            delay,
+        )
 
     def _progress_writer(self, job: Job):
         def callback(received: int, total: int) -> None:
@@ -393,6 +504,13 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
             if last_cleanup_date != now.date():
                 removed = await registry.prune_expired(now)
                 logger.info("本地保留期检查完成 retention_days=%d removed=%d", cfg.retention_days, removed)
+                cap_removed, cap_freed = await registry.prune_capacity(now)
+                logger.info(
+                    "容量检查完成 上限=%.1fGiB 删除=%d 释放=%.1fGiB",
+                    cfg.max_total_bytes / 1024**3,
+                    cap_removed,
+                    cap_freed / 1024**3,
+                )
                 last_cleanup_date = now.date()
 
             if cfg.auto_sync_enabled:
