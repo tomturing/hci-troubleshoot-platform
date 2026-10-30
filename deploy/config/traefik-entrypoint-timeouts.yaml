@@ -1,0 +1,51 @@
+# Traefik entrypoint 读/写超时声明（K3s HelmChartConfig）
+#
+# 为什么这份配置必须进仓库：
+#   Traefik 3.x 的 entryPoint `transport.respondingTimeouts.readTimeout` 默认 **60s**，
+#   语义是「读完整个请求（含 body）的最大时长」。日志包分片上传是唯一会把单请求
+#   拖到分钟级的接口，于是默认值一旦生效，客户侧上行略慢就会稳定触发：
+#     桥侧看到 "平台返回 HTTP 502" → 判 transient → 退避重试 → 又撞 60s
+#     → 永远停在同一分片（Q2026102801062 卡在 72/103 片，每轮 attempt 精确 3×60s）。
+#
+# 两个已踩过的坑，改这份文件前必须知道：
+#   1. **`globalArguments` 在 chart 39.x 不产生容器 args**。2026-03 的旧版本
+#      用 globalArguments 写过 readTimeout=120，`last-applied-configuration`
+#      注解里还留着它，但 live spec 只有 ports —— 也就是说 web/websecure
+#      **两个入口一直是默认 60s**，所谓「web 已放宽」从未真正生效。
+#      追加 traefik 参数唯一可靠的位置是 `additionalArguments`。
+#   2. `--entryPoints.web.http.tls=true` 由本文件提供（admin-ui 内网隔离依赖它）。
+#      HelmChartConfig 的 valuesContent 会**整体替换** Helm user values，
+#      漏写这一行会让管理后台 4888 退回 HTTP。删参数前先确认没有其它消费者。
+#
+# 使用方式：
+#   ./scripts/ops/traefik-entrypoint-timeouts.sh [--dry-run]
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  failurePolicy: reinstall
+  valuesContent: |-
+    ports:
+      web:
+        # 宿主机对外暴露端口（NAT/防火墙层映射 4888）
+        exposedPort: 4888
+        # 保持 Traefik 内部 entrypoint 名/端口不变，Ingress 注解无需改动
+        port: 8000
+      websecure:
+        exposedPort: 4443
+        port: 8443
+
+    additionalArguments:
+      # 管理后台（admin-ui）走 web：普通请求，120s 足够。
+      # 这行同时承担「启用 web TLS」的作用，不能删。
+      - "--entryPoints.web.http.tls=true"
+      - "--entryPoints.web.transport.respondingTimeouts.readTimeout=120"
+      - "--entryPoints.web.transport.respondingTimeouts.writeTimeout=120"
+      # 对外业务（customer-ui / api / 分片上传）走 websecure：
+      # 单请求窗口必须覆盖「最慢现场上行 × 最大分片」。
+      # 600s 在 0.5 MB/s 上可承载 300 MB 分片、在 0.05 MB/s 上仍可承载 30 MB，
+      # 远超当前 8 MiB 分片所需，又不会让失控连接无限占用。
+      - "--entryPoints.websecure.transport.respondingTimeouts.readTimeout=600"
+      - "--entryPoints.websecure.transport.respondingTimeouts.writeTimeout=600"
