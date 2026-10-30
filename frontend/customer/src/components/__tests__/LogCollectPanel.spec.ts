@@ -363,16 +363,150 @@ describe('LogCollectPanel', () => {
     expect(wrapper.find('.panel-composer').exists()).toBe(true)
   })
 
-  it('工具条提供「刷新进度」入口，「关闭」由外壳的收起按钮承担', async () => {
+  it('工具条提供「刷新进度」「重新探测」两个常驻入口，「关闭」由外壳的收起按钮承担', async () => {
     const wrapper = mountPanel()
     await flushPromises()
 
     const bar = wrapper.find('.lc-case-bar')
     expect(bar.text()).toContain('归档工单')
     expect(bar.text()).toContain('刷新进度')
+    // 探测结论是快照：入口必须常驻在工具条，而不是埋在探测表下方（现场找不到，只能 F5）
+    expect(bar.text()).toContain('重新探测')
     // 收起动作由 PanelShell 提供，组件内不该再出现"关闭"按钮导致两个入口
     expect(bar.text()).not.toContain('关闭')
     expect(bar.text()).not.toContain('钉住')
+  })
+
+  // ── 探测重试与事实复查（2026-10-30 现场：装完 acli 必须 F5 面板才更新）──
+
+  const probePayload = (patch: Record<string, unknown> = {}) => ({
+    architecture: 'x86_64',
+    acli_installed: true,
+    acli_version: '1.0.1',
+    acli_build_time: '2026-09-20 17:22:30',
+    acli_binary: '/sf/bin/acli',
+    available_mb: 540088,
+    log_server_reachable: true,
+    http_code: 200,
+    modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+    hosts: [{ ip: '10.122.216.222', name: 'host', master: true }],
+    catalog_source: 'acli_help',
+    ...patch,
+  })
+
+  const replyProbe = (payload: Record<string, unknown>) => {
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({ type: 'log_collect_result', log_action: 'probe', ...payload }),
+    })
+  }
+
+  const probeCount = () =>
+    sentMessages
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.log_action === 'probe').length
+
+  const connectSsh = () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+  }
+
+  it('瞬态失败自动重试：第二次探测成功后更新界面，成功后停止重试', async () => {
+    connectSsh()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const wrapper = mountPanel()
+    try {
+      await vi.advanceTimersByTimeAsync(5)
+      await flushPromises()
+      expect(probeCount()).toBe(1)
+
+      // 第一次：桥侧超时（瞬态失败）
+      replyProbe({ status: 'error', message: 'probe 超时（90s）' })
+      await flushPromises()
+      // 重试必须可见：否则用户分不清「没反应」与「正在重试」（这正是现场误判）
+      expect(wrapper.text()).toContain('自动重试（第 1/3 次）')
+
+      // 2s 退避后第二次探测成功
+      await vi.advanceTimersByTimeAsync(3000)
+      await flushPromises()
+      expect(probeCount()).toBe(2)
+      replyProbe({ status: 'ok', log_data: probePayload() })
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(10)
+      await flushPromises()
+
+      expect(wrapper.text()).toContain('1.0.1')
+      expect(wrapper.text()).toContain('1 个')
+      // 成功即收敛：不得再发第三次
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(probeCount()).toBe(2)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  // 反向用例：重试不能把「重连 SSH 才能解决」的失败也重放一遍，那是纯噪音
+  it('会话缺失（LC-ENV-006）属永久失败，不进入自动重试', async () => {
+    connectSsh()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const wrapper = mountPanel()
+    try {
+      await vi.advanceTimersByTimeAsync(5)
+      await flushPromises()
+      expect(probeCount()).toBe(1)
+
+      replyProbe({ status: 'error', error_code: 'LC-ENV-006', message: 'SSH 会话不存在' })
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(probeCount()).toBe(1)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  // 现场核心场景：探测发生在「acli 还没装」之前，装好后界面必须自动点亮，不需要 F5
+  it('acli 在探测之后才装好时，事实复查自动更新界面并收敛', async () => {
+    connectSsh()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const wrapper = mountPanel()
+    try {
+      await vi.advanceTimersByTimeAsync(5)
+      await flushPromises()
+
+      // 首次探测：acli 未安装、节点清单为空（现场 09:50 的真实状态）
+      replyProbe({
+        status: 'ok',
+        log_data: probePayload({
+          acli_installed: false,
+          acli_version: '',
+          acli_binary: '',
+          hosts: [],
+          catalog_source: 'platform_default',
+          catalog_note: 'acli 未安装，使用平台内置场景目录',
+        }),
+      })
+      await flushPromises()
+      expect(wrapper.text()).toContain('acli 未安装')
+
+      // 30s 后自动复查：此时用户已在终端装好 acli
+      await vi.advanceTimersByTimeAsync(31000)
+      await flushPromises()
+      expect(probeCount()).toBe(2)
+      replyProbe({ status: 'ok', log_data: probePayload() })
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(10)
+      await flushPromises()
+
+      expect(wrapper.text()).not.toContain('acli 未安装，无法自动读取节点清单')
+
+      // 成功标准达成（通道通 + acli 已装 + 节点清单非空）后不再复查
+      await vi.advanceTimersByTimeAsync(120000)
+      expect(probeCount()).toBe(2)
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
   })
 
   // 回归：两抽屉同时展开时左栏被压到 500px 上下，
