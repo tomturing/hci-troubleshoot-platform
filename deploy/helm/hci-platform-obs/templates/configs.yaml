@@ -1,3 +1,4 @@
+{{- $logNamespaces := .Values.scrapeNamespaces | default (list .Values.scrapeNamespace) -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -64,7 +65,7 @@ data:
 
       rule {
         source_labels = ["__meta_kubernetes_namespace"]
-        regex         = {{ join "|" .Values.scrapeNamespaces | quote }}
+        regex         = {{ join "|" $logNamespaces | quote }}
         action        = "keep"
       }
       rule {
@@ -126,6 +127,84 @@ data:
           event    = "",
           span_id  = "",
           trace_id = "",
+        }
+      }
+      forward_to = [loki.write.default.receiver]
+    }
+
+    // ── 网关 5xx（Traefik accesslog）──────────────────────────────────
+    // kube-system 不能整段纳入：coredns / metrics-server / local-path 的日志与
+    // 业务无关，会把 Loki 淹掉。这里用两条 keep（AND 语义）只留 Traefik，
+    // 且 Traefik 侧已用 `--accesslog.filters.statuscodes=500-599` 只写 5xx，
+    // 所以这条链路每天只有寥寥数行，却是「发布是否真的打断用户请求」的直接证据。
+    discovery.relabel "ingress_logs" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "kube-system"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        regex         = "traefik"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        regex         = "(.+)/(.+)"
+        replacement   = "/var/log/pods/*$1/$2/*.log"
+        target_label  = "__path__"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+        target_label  = "app"
+      }
+    }
+
+    local.file_match "ingress_logs" {
+      path_targets = discovery.relabel.ingress_logs.output
+    }
+
+    loki.source.file "ingress_logs" {
+      targets       = local.file_match.ingress_logs.targets
+      tail_from_end = true
+      forward_to    = [loki.process.ingress_logs.receiver]
+    }
+
+    loki.process "ingress_logs" {
+      stage.cri {}
+      // Traefik accesslog 是 JSON（PascalCase 键）；可检索字段提为 structured
+      // metadata，既不增 label 基数，又能直接按 service_name 过滤出「谁在 502」。
+      stage.json {
+        expressions = {
+          downstream_status = "DownstreamStatus",
+          service_name      = "ServiceName",
+          router_name       = "RouterName",
+          request_path      = "RequestPath",
+          duration           = "Duration",
+        }
+      }
+      stage.structured_metadata {
+        values = {
+          downstream_status = "",
+          service_name      = "",
+          router_name       = "",
+          request_path      = "",
+          duration           = "",
         }
       }
       forward_to = [loki.write.default.receiver]
@@ -372,3 +451,71 @@ data:
         }
       ]
     }
+{{- if .Values.prometheus.enabled }}
+---
+# Prometheus 配置
+#
+# 不按命名空间白名单发现 Pod：白名单一旦漏掉某个环境（2026-10-30 前 staging
+# 就是这样），就是「指标永远缺失」而且没人会发现。真正的门控是 Pod 上的
+# `prometheus.io/scrape=true` 注解——只有我们自己的 workload 会打这个标注，
+# 所以全命名空间发现不会带入系统组件噪声，却能让新环境开箱即有指标。
+#
+# 本文件里所有 ConfigMap 的总体变更都会被 prometheus / alloy 的
+# `checksum/config` 注解捕获（见 prometheus.yaml、alloy.yaml），从而在 ArgoCD
+# 同步后自动滚动重启。否则 ConfigMap 改了、Pod 还跑旧配置，是最难发现的
+# 「声明式不生效」。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+      scrape_timeout: 10s
+
+    # 从独立 ConfigMap（prometheus-alert-rules）挂载告警规则文件
+    rule_files:
+      - "/etc/prometheus/rules/*.yml"
+
+    # 告警路由到 alertmanager
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: ['alertmanager:9093']
+
+    scrape_configs:
+      # 通过 K8s Pod 注解自动发现服务（不再限定命名空间）
+      - job_name: 'hci-services'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # 只采集带有 prometheus.io/scrape=true 注解的 Pod
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: 'true'
+          # 使用 prometheus.io/path 注解覆盖默认的 /metrics 路径
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+          # 使用 prometheus.io/port 注解覆盖端口
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: ([^:]+)(?::\d+)?;(\d+)
+            replacement: $1:$2
+            target_label: __address__
+          # 添加 pod / namespace / app 标签
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: app
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            target_label: service_name
+{{- end }}

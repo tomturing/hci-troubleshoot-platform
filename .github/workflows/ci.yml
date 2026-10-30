@@ -800,8 +800,45 @@ jobs:
         run: |
           helm lint deploy/helm/hci-platform
           helm lint deploy/helm/hci-platform-dsh
+          helm lint deploy/helm/hci-platform-obs
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
             helm lint deploy/helm/hci-sim
+          fi
+
+      # 观测栈的两条不变量：一旦退回“命名空间白名单”或白名单漏环境，
+      # 整个环境就会静默地没有任何指标/日志（2026-10-30 复盘根因）。
+      # 这里把两条都锁成 CI 断言，避免只能靠人工看面板发现。
+      - name: 观测栈渲染不变量（去白名单 + 环境全覆盖）
+        run: |
+          helm template obs deploy/helm/hci-platform-obs \
+            --set global.domain=ci.example.com \
+            >/tmp/obs-rendered.yaml
+
+          if [ ! -s /tmp/obs-rendered.yaml ]; then
+            echo "观测栈渲染结果为空"
+            exit 1
+          fi
+
+          # 反向：Prometheus 的 Pod 发现不得再声明命名空间白名单
+          # （白名单漏一个环境 = 整个环境没有指标，且不报错）
+          if grep -A3 'role: pod' /tmp/obs-rendered.yaml | grep -q 'namespaces:'; then
+            echo "Prometheus 的 Pod 发现不得使用命名空间白名单（注解门控即可）"
+            exit 1
+          fi
+
+          # 正向：Alloy 日志白名单必须覆盖现有全部环境命名空间
+          for ns in hci-staging hci-sim-staging hci-dsh hci-observability argocd; do
+            if ! grep -q "$ns" /tmp/obs-rendered.yaml; then
+              echo "Alloy 日志白名单缺少命名空间：$ns"
+              exit 1
+            fi
+          done
+
+          # 采集器必须带 checksum/config：ConfigMap 改了而 Pod 不重启，
+          # 会让「配置已合入」变成假象（Prometheus 不 reload、Alloy 不重读）
+          if ! grep -q 'checksum/config:' /tmp/obs-rendered.yaml; then
+            echo "Prometheus / Alloy 的 Pod 模板必须带 checksum/config 注解"
+            exit 1
           fi
 
       - name: Helm template 渲染检查

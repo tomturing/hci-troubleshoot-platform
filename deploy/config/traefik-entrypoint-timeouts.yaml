@@ -19,6 +19,16 @@
 #
 # 使用方式：
 #   ./scripts/ops/traefik-entrypoint-timeouts.sh [--dry-run]
+#
+# 2026-10-30 追加（发布可用性可观测性）：
+#   Prometheus 的 Pod 发现按 `prometheus.io/scrape=true` 注解抓取。目前集群里的
+#   Deployment 注解是 9100（人工 patch 过），但这个文件的声明式状态里一直没有
+#   podAnnotations，Helm release 的 user values 里甚至还是 8082 —— 下一次 helm
+#   upgrade 就会把注解打回 8082，而 Traefik 的 metrics entrypoint 实际在 **9100**
+#   （`--entryPoints.metrics.address=:9100/tcp`）。下面把这些值写进声明式配置，
+#   让「现网能采」不再依赖手工 patch。
+#   accesslog 只保留 5xx：这是「用户真的拿到 502/504」的唯一直接证据，且能带
+#   RouterName/ServiceName 做归因；全量访问日志量太大，不入 Loki。
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -37,6 +47,15 @@ spec:
         exposedPort: 4443
         port: 8443
 
+    # 修正网关指标端口（现网被人工 patch 成 9100，声明式里缺这一段）。
+    # HelmChartConfig 的 valuesContent 会整体替换 Helm user values，这里必须写全
+    # 需要保留的 podAnnotations。
+    deployment:
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9100"
+        prometheus.io/path: "/metrics"
+
     additionalArguments:
       # 管理后台（admin-ui）走 web：普通请求，120s 足够。
       # 这行同时承担「启用 web TLS」的作用，不能删。
@@ -49,3 +68,11 @@ spec:
       # 远超当前 8 MiB 分片所需，又不会让失控连接无限占用。
       - "--entryPoints.websecure.transport.respondingTimeouts.readTimeout=600"
       - "--entryPoints.websecure.transport.respondingTimeouts.writeTimeout=600"
+      # 网关 5xx 是「发布是否真的打断用户请求」的唯一端到端证据。
+      # 只记 5xx：正常请求量级上百万，全量 accesslog 会淹掉 Loki 且无助于判定
+      # 可用性；5xx 每天寥寥数条，恰好对应要复盘的那几次窗口。
+      # 参数名已用 `traefik --help` 核对；addEntryPointsLabels / addServicesLabels
+      # 默认就是 true，不必显式写（写了也不会错，但少一个可写错的地方）。
+      - "--accesslog=true"
+      - "--accesslog.format=json"
+      - "--accesslog.filters.statuscodes=500-599"

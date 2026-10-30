@@ -17,6 +17,9 @@ spec:
         prometheus.io/scrape: "true"
         prometheus.io/path: "/metrics"
         prometheus.io/port: "12345"
+        # alloy 的采集链全在 configs.yaml 的 alloy-config 里。没有这个哈希，ArgoCD
+        # 同步完 ConfigMap 后 DaemonSet 不会重启，新增的采集链等于没上线。
+        checksum/config: {{ include (print $.Template.BasePath "/configs.yaml") . | sha256sum }}
     spec:
       serviceAccountName: alloy
       containers:
