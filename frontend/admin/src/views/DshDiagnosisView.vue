@@ -5,6 +5,7 @@ import { createApiClient } from '@hci/shared'
 import { getAccessToken } from '@/utils/auth'
 import {
   PHASE_TEXT,
+  phaseText,
   TICKET_ID_PATTERN,
   cancelSyncJob,
   createSyncJob,
@@ -88,6 +89,7 @@ const tagType = computed(() => {
   if (phase === 'ready') return 'success'
   if (phase === 'failed') return 'danger'
   if (phase === 'cancelled') return 'info'
+  if (phase === 'interrupted') return 'info'
   return 'warning'
 })
 
@@ -107,6 +109,7 @@ function artifactTagType(artifact: SyncArtifact) {
   if (artifact.phase === 'ready') return 'success'
   if (artifact.phase === 'failed') return 'danger'
   if (artifact.phase === 'cancelled') return 'info'
+  if (artifact.phase === 'interrupted') return 'info'
   return 'warning'
 }
 
@@ -254,7 +257,7 @@ onUnmounted(() => {
       </div>
 
       <div v-if="job" class="sync-status">
-        <el-tag :type="tagType" size="small">{{ PHASE_TEXT[job.phase] }}</el-tag>
+        <el-tag :type="tagType" size="small">{{ phaseText(job.phase) }}</el-tag>
         <span class="sync-meta">工单 {{ job.ticketId }}</span>
 
         <template v-if="job.phase === 'fetching'">
@@ -310,7 +313,7 @@ onUnmounted(() => {
           <div v-for="artifact in filteredArtifacts" :key="artifact.ticketId" class="artifact-item">
             <div class="artifact-item-header">
               <div class="artifact-item-title">
-                <el-tag :type="artifactTagType(artifact)" size="small">{{ PHASE_TEXT[artifact.phase] }}</el-tag>
+                <el-tag :type="artifactTagType(artifact)" size="small">{{ phaseText(artifact.phase) }}</el-tag>
                 <span>工单 {{ artifact.ticketId }}</span>
               </div>
               <el-button

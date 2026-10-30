@@ -12,7 +12,16 @@ import { getAccessToken } from '@/utils/auth'
 // 与服务端 ^Q\d{13}$ 完全一致：Q + YYYYMMDD + 5 位当天序号，共 14 字符。
 export const TICKET_ID_PATTERN = /^Q\d{13}$/
 
-export type SyncPhase = 'queued' | 'fetching' | 'extracting' | 'ready' | 'failed' | 'cancelled'
+export type SyncPhase =
+  | 'queued'
+  | 'fetching'
+  | 'extracting'
+  | 'ready'
+  | 'failed'
+  | 'cancelled'
+  // 服务重启导致任务中途消失。与 failed 区分：重新触发通常就能成功，
+  // 不应提示用户去排查日志源。
+  | 'interrupted'
 
 /** 仍在推进的阶段：轮询与「取消」按钮只在此时有意义。 */
 export const RUNNING_PHASES: readonly SyncPhase[] = ['queued', 'fetching', 'extracting']
@@ -47,6 +56,14 @@ export const PHASE_TEXT: Record<SyncPhase, string> = {
   ready: '已就绪',
   failed: '失败',
   cancelled: '已取消',
+  // 服务重启导致任务中途消失。文案刻意与"失败"区分：重新触发通常就能成功，
+  // 不该让用户去排查日志源。
+  interrupted: '已中断',
+}
+
+/** 阶段文案。未知阶段回退为原始值，避免后端新增阶段时页面出现空白标签。 */
+export function phaseText(phase: SyncPhase): string {
+  return PHASE_TEXT[phase] ?? phase
 }
 
 // 错误码到用户可读文案的映射，与服务端文档第 8 章一一对应。
