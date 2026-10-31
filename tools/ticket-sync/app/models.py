@@ -19,6 +19,9 @@ class Phase(StrEnum):
     READY = "ready"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    # 服务重启导致任务中途消失。必须与 failed 区分：它不是"同步失败"，
+    # 重新触发通常就能成功，前端不应提示用户去排查日志源。
+    INTERRUPTED = "interrupted"
 
 
 class ErrorCode(StrEnum):

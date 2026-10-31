@@ -80,6 +80,14 @@ class Config:
     def trash_dir(self) -> Path:
         return self.root / ".trash"
 
+    def state_db(self) -> Path:
+        """任务历史与产物用量的 SQLite 文件。
+
+        放在产物根目录下：与产物同盘便于一起备份/迁移；点开头不会被
+        DSH 文件选择器展示，也不匹配 `Q\\d{13}` 因此不会被清理逻辑误删。
+        """
+        return self.root / ".ticket-sync.db"
+
     @classmethod
     def from_env(cls, env_file: Path | None = None) -> Config:
         """先加载 env 文件（若存在），再读环境变量覆盖。

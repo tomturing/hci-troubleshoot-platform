@@ -46,7 +46,8 @@
 ├── <工单号>/                 最终产物（不套额外层级，DSH 直接选这一层）
 │   └── .sync-meta.json       同步事实：completedAt / bytes / files / hasLogs
 ├── .tmp/<id>-<uuid>/         解压中间态，服务启动时清空
-└── .trash/<id>-<时间戳>/      被替换的旧版本（保留最近一次）
+├── .trash/<id>-<时间戳>/      被替换的旧版本（保留最近一次）
+└── .ticket-sync.db           SQLite：任务历史 + 产物用量
 ```
 
 - 产物不套额外层级，避免用户多点一层。
@@ -66,7 +67,10 @@ queued ──► fetching ──► extracting ──► ready
 ```
 
 - 同一工单串行：重复提交返回 `409 job-running`；全局并发信号量默认 `2`。
-- 状态仅存进程内存（单实例）：重启后任务丢失，`.tmp` 被清空，重新触发即可。
+- 任务状态落 SQLite（`<产物根>/.ticket-sync.db`），重启后 `/jobs`、`/artifacts` 仍能查到历史。
+  重启时遗留的 `queued/fetching/extracting` 会被改写为 `interrupted`——它与 `failed`
+  必须区分：前者重新触发通常就能成功，后者才需要排查日志源。
+- `.tmp` 半成品在启动时清空，但产物与历史不受影响。
 
 ### 1.5 接口
 
@@ -90,6 +94,8 @@ queued ──► fetching ──► extracting ──► ready
 - 每天首次巡检时删除超过 `TICKET_RETENTION_DAYS`（默认 7）天的 `Q\d{13}` 目录及
   `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。判据是
   `<工单目录>/.sync-meta.json` 的 `completedAt`，无 meta 的历史目录才回退 mtime。
+- 产物用量记在 SQLite 的 `artifacts` 表。每日对账时**只处理"目录 mtime 变过"的工单**，
+  未变化的直接跳过（不读 meta、不扫体积），容量判断由 SQL 聚合完成。
 - 容量超出 `TICKET_MAX_TOTAL_BYTES` 时淘汰，顺序为**先非日志载荷、再最旧优先**：
   一个 65 GiB 的 dump 工单不该挤掉多个可用日志工单。
 - 上述两项都是**阻塞 IO，必须在线程池里执行**。2026-10-31 00:00:07–00:03:35
