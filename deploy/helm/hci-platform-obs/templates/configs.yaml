@@ -2,6 +2,21 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
+  name: loki-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+data:
+  # 文件名必须是 local-config.yaml：loki.yaml 的 args 是
+  # `-config.file=/etc/loki/local-config.yaml`，而这个目录会被整个挂载覆盖。
+  # 内容由 _helpers.tpl 的 hci.lokiConfig 单一定义（与 loki.yaml 的 checksum/config
+  # 同源），改配置时只会改一处。
+  local-config.yaml: |
+{{ include "hci.lokiConfig" . | indent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
   name: tempo-config
   namespace: {{ .Values.namespace }}
   labels:

@@ -944,12 +944,64 @@ jobs:
                               "应改用 backend_service = \"ServiceName\"")
           if not labels_txt:
               problems.append("渲染结果里找不到 ingress_logs 的 structured_metadata.values，网关 5xx 采集链丢了")
+          # 4) Loki 的配置文件必须在 Git 里，而不是靠镜像自带。
+          #    2026-10-31 发现：loki.yaml 只挂了 /loki 数据盘，`-config.file` 指向的
+          #    /etc/loki/local-config.yaml 来自镜像（grafana/loki:3.4.2）——
+          #    retention / limits_config / compactor 全不归本仓管理，也无从审计。
+          #    这类缺失最坏的地方是「无声」：没有配置文件，「配置有没有变」根本没法比对。
+          loki = next((d for d in docs if d.get("kind") == "Deployment"
+                       and d.get("metadata", {}).get("name") == "loki"), None)
+          if loki is None:
+              problems.append("渲染结果里没有 loki 的 Deployment，门禁对象丢了")
+          else:
+              lspec = loki["spec"]["template"]["spec"]
+              lvols = {v.get("name"): v for v in lspec.get("volumes", [])}
+              lctr = (lspec.get("containers") or [{}])[0]
+              lmounts = {m.get("name"): m for m in lctr.get("volumeMounts", [])}
+              lcfg = (lvols.get("loki-config") or {}).get("configMap") or {}
+              if lcfg.get("name") != "loki-config":
+                  problems.append("loki 没把配置卷挂到 ConfigMap(loki-config)："
+                                  "/etc/loki/local-config.yaml 会退回镜像自带默认，retention 等配置"
+                                  "既改不了也审不了")
+              if lcfg.get("optional") is not False:
+                  problems.append("loki-config 必须 optional: false：ConfigMap 丢了宁可 Pod 起不来，"
+                                  "也不能静默回退到镜像自带配置（这正是 2026-10-31 的原始形态）")
+              if (lmounts.get("loki-config") or {}).get("mountPath") != "/etc/loki":
+                  problems.append("loki-config 必须挂到 /etc/loki（-config.file 指向那里），实际挂到"
+                                  f" {lmounts.get('loki-config', {}).get('mountPath')}")
+              if "checksum/config" not in (loki["spec"]["template"]["metadata"].get("annotations") or {}):
+                  problems.append("loki 的 Pod 模板必须带 checksum/config：Loki 只在启动时读配置，"
+                                  "改了配置不重启 = 配置合入变假象")
+          loki_cfg = "\n".join((d.get("data") or {}).get("local-config.yaml", "")
+                               for d in docs if d.get("kind") == "ConfigMap"
+                               and d.get("metadata", {}).get("name") == "loki-config")
+          if not loki_cfg:
+              problems.append("缺 loki-config 的 local-config.yaml")
+          else:
+              if "schema_config:" not in loki_cfg:
+                  problems.append("loki 配置缺 schema_config，Loki 起不来")
+              # 数据目录必须落在 /loki（PVC 挂载点）：指到别处就会写进容器层，
+              # 重启即丢，而且不报任何错——比宕机更难发现。
+              for key, want in (("path_prefix", "/loki"),
+                                ("chunks_directory", "/loki/chunks"),
+                                ("rules_directory", "/loki/rules")):
+                  if not re.search(rf"(?m)^\s*{key}:\s*{re.escape(want)}\s*$", loki_cfg):
+                      problems.append(f"loki 配置的 {key} 必须指向 {want}（PVC 挂载点），"
+                                      f"否则数据写进容器层，重启即丢且不报警")
+              # 删除策略：本阶段刻意不启用（不开 retention 等价于永不删除）。
+              # 开启删除不可逆，必须同时改文档与这条断言——把「改策略」变成显式动作，
+              # 而不是某次顺手补配置。
+              for key in ("retention_period", "retention_enabled"):
+                  if re.search(rf"(?m)^\s*{key}:", loki_cfg):
+                      problems.append(f"loki 配置出现了 {key}：开启删除不可逆，"
+                                      f"必须先改可观测性设计的 P1 与本步断言，再改这里")
           if problems:
               print("观测栈持久化/采集链不变量未通过：")
               for item in problems:
                   print("  -", item)
               sys.exit(1)
-          print("✅ TSDB 已落 PVC + Recreate，且 ingress_logs 的 metadata 集只含有界字段")
+          print("✅ TSDB 已落 PVC + Recreate；ingress_logs 的 metadata 集只含有界字段；"
+                "Loki 配置已入 Git 且未开启删除")
           PY
 
       # 2026-10-31 staging 事故：合并后 alloy 立刻 CrashLoopBackOff，日志采集中断约
