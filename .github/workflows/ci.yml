@@ -1052,7 +1052,12 @@ jobs:
           if out=$(render --set terminalBridge.replicaCount=2 2>&1); then
             echo "terminalBridge.replicaCount=2 居然渲染成功了：values.schema.json 的 maximum:1 被删了"
             exit 1
-          elif ! printf '%s' "$out" | grep -q "'/terminalBridge/replicaCount': maximum"; then
+          #  比对文案时不能绑 Helm 版本：同一份 schema 越界，v3.20 输出
+          #  "- at '/terminalBridge/replicaCount': maximum: got 2, want 1"，
+          #  而 CI 的 v3.17.3 输出 "- terminalBridge.replicaCount: Must be less than
+          #  or equal to 1"。第一版只匹配本地文案 → 本地全绿、CI 红。
+          #  所以断言要求「键名 + 越界语义」同时出现，两种格式都盖得住。
+          elif ! printf '%s' "$out" | grep -Eq "terminalBridge[./]replicaCount.*(maximum|less than or equal to)"; then
             echo "terminal-bridge 渲染失败但不是因为 schema 的副本上限：$out" | head -5
             exit 1
           fi
