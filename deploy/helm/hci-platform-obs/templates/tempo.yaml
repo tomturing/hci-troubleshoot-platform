@@ -24,6 +24,7 @@ spec:
       containers:
         - name: tempo
           image: {{ .Values.tempo.image }}
+          imagePullPolicy: {{ .Values.tempo.imagePullPolicy | default .Values.imagePullPolicy | default "IfNotPresent" }}
           args: ["-config.file=/etc/tempo.yaml"]
           ports:
             - containerPort: 3200

@@ -995,13 +995,36 @@ jobs:
                   if re.search(rf"(?m)^\s*{key}:", loki_cfg):
                       problems.append(f"loki 配置出现了 {key}：开启删除不可逆，"
                                       f"必须先改可观测性设计的 P1 与本步断言，再改这里")
+          # 5) 每个容器必须显式声明 imagePullPolicy，且不得为 Always。
+          #    2026-10-31 实测事故：prod 集群（aiops）无法访问 docker.io（i/o timeout），
+          #    节点只能靠本地镜像缓存。而 K8s 在字段缺省时按 **tag** 推导策略
+          #    （`:latest` = Always），且该推导值一旦写进 Deployment 就固化，
+          #    之后改 tag 也不会回退。prod 的 loki 就带着 218 天前 `:latest` 时期的
+          #    Always，Chart 又从未声明该字段 → ArgoCD 无从纠正 → 一次 Pod 重建
+          #    直接 ImagePullBackOff（实测不可用约 2 分 28 秒）；同集群 grafana / minio
+          #    已因此连续 119 天不可用。
+          #    固定 tag + 无外网集群里 Always 没有收益（tag 不可变，pull 只多做一次
+          #    digest 校验），换来的是「重建必挂」。所以要求逐容器显式且非 Always。
+          for d in docs:
+              if d.get("kind") not in ("Deployment", "DaemonSet", "StatefulSet", "Job"):
+                  continue
+              pspec = d["spec"]["template"]["spec"]
+              for c in (pspec.get("containers") or []) + (pspec.get("initContainers") or []):
+                  where = f"{d['kind']}/{d['metadata']['name']}[{c['name']}]"
+                  pol = c.get("imagePullPolicy")
+                  if not pol:
+                      problems.append(f"{where} 未显式声明 imagePullPolicy：缺省值由 tag 推导且会固化，"
+                                      f"`:latest` 会变成 Always，在无外网集群里重建必挂")
+                  elif pol == "Always":
+                      problems.append(f"{where} 的 imagePullPolicy 是 Always：镜像 tag 固定时"
+                                      f"Always 只多一次 digest 校验，却让无外网集群的 Pod 重建必失败")
           if problems:
               print("观测栈持久化/采集链不变量未通过：")
               for item in problems:
                   print("  -", item)
               sys.exit(1)
           print("✅ TSDB 已落 PVC + Recreate；ingress_logs 的 metadata 集只含有界字段；"
-                "Loki 配置已入 Git 且未开启删除")
+                "Loki 配置已入 Git 且未开启删除；所有容器的 imagePullPolicy 均已显式声明且非 Always")
           PY
 
       # 2026-10-31 staging 事故：合并后 alloy 立刻 CrashLoopBackOff，日志采集中断约
