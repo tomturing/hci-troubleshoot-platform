@@ -85,6 +85,29 @@ class LegacyCompletedAtTest(unittest.TestCase):
         # 补写 meta 后目录 mtime 必须还原，否则"固化值"与"mtime 信号"互相打架
         self.assertAlmostEqual(ticket.stat().st_mtime, stamp, delta=1)
 
+    def test_unchanged_ticket_without_completed_at_is_still_frozen(self) -> None:
+        """mtime 没变过也必须再固化一次，否则存量永远走不到固化分支。
+
+        真实事故：第一版补丁部署后 37 个目录里 0 个被固化、`removed` 依然恒为 0。
+        原因是它们的 mtime 从上次对账起就没变过，被"未变化就跳过"直接挡在门外，
+        而"完成时间是否已固化"当时并不在跳过判据里。
+        """
+        ticket = _make_ticket(self.root, TICKET_ID)
+        write_sync_meta(ticket, bytes=100, hasLogs=True)
+        stamp = _set_age(ticket, 10, self.now)
+        reconcile_artifacts(self.root, self.store)  # 先建立"已记账"状态
+
+        # 抹掉 completedAt 并还原 mtime，造出"上一版留下的存量 meta"
+        meta = read_sync_meta(ticket)
+        meta.pop("completedAt", None)
+        (ticket / SYNC_META_NAME).write_text(json.dumps(meta), encoding="utf-8")
+        os.utime(ticket, (stamp, stamp))
+
+        added, updated, _ = reconcile_artifacts(self.root, self.store)
+
+        self.assertEqual((added, updated), (0, 1))
+        self.assertAlmostEqual(read_sync_meta(ticket)["completedAt"], stamp, delta=1)
+
     def test_frozen_completed_at_ignores_later_writes(self) -> None:
         """固化后目录再被写（DSH 写报告），完成时间不跟着漂移——本次缺陷的核心。"""
         ticket = _make_ticket(self.root, TICKET_ID)

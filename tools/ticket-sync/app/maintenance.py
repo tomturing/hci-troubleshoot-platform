@@ -234,8 +234,10 @@ def reconcile_artifacts(
 ) -> tuple[int, int, int]:
     """把磁盘现状与 artifacts 表对齐，返回 (新增, 更新, 删除) 条数。
 
-    用目录 mtime 作为"自上次记账后有没有被写过"的信号：未变化就跳过，
-    既不读 meta 也不扫体积。重新发布一定会改变 mtime，因此不会漏记。
+    用目录 mtime 作为"自上次记账后有没有被写过"的信号：未变化且**各项判据
+    都已固化**才跳过。跳过前仍要读一次 meta（几十字节的小文件，代价可忽略），
+    因为"完成时间有没有固化"也是判据之一；真正昂贵的是扫体积，那部分照旧只在
+    mtime 变化时才做。重新发布一定会改变 mtime，因此不会漏记。
 
     `active_ticket_ids` 里的工单正在同步，目录内容与 mtime 都是中途值：
     既不能拿它固化完成时间，也不能因为本轮"先跳过"而把记账行删掉。
@@ -262,16 +264,21 @@ def reconcile_artifacts(
         except OSError:
             continue
         row = known.get(entry.name)
+        meta = read_sync_meta(entry)
         if (
             row is not None
             and _same_mtime(row.get("dir_mtime"), info.st_mtime)
             and row.get("has_logs") is not None
+            and _valid_timestamp(meta.get("completedAt"))
         ):
-            # 目录没被写过、且该工单的"有无日志"已经判定过，才允许跳过。
-            # has_logs 为空说明是上一版留下的半截记账，必须补判一次。
+            # 跳过条件必须覆盖"所有判据都已确定"，其中包含完成时间。
+            # 漏掉这一项，存量目录会永远走不到下面的固化分支：它们的 mtime
+            # 从上次对账起就没再变过，"未变化就跳过"把固化逻辑挡在门外，
+            # 保留期依旧退化成会被外部写入污染的 mtime。实测第一版补丁
+            # 部署后 37 个目录里 0 个被固化，`removed` 依然恒为 0。
+            # has_logs 为空说明是上一版留下的半截记账，同样必须补判一次。
             continue
 
-        meta = read_sync_meta(entry)
         # 历史目录的 meta 可能只有 bytes（上一轮补写尺寸时留下的），缺 hasLogs。
         # 缺了就现算一次并补齐，否则这批存量永远拿不到"非日志载荷优先淘汰"的待遇。
         extra: dict[str, Any] = {}
