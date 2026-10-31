@@ -30,6 +30,7 @@ spec:
       containers:
         - name: loki
           image: {{ .Values.loki.image }}
+          imagePullPolicy: {{ .Values.loki.imagePullPolicy | default .Values.imagePullPolicy | default "IfNotPresent" }}
           args: ["-config.file=/etc/loki/local-config.yaml"]
           ports:
             - containerPort: 3100

@@ -26,6 +26,7 @@ spec:
       containers:
         - name: clickhouse
           image: {{ .Values.langfuse.clickhouse.image }}
+          imagePullPolicy: {{ .Values.langfuse.clickhouse.imagePullPolicy | default .Values.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - containerPort: 8123
               name: http
@@ -125,6 +126,7 @@ spec:
       containers:
         - name: minio
           image: {{ .Values.langfuse.minio.image }}
+          imagePullPolicy: {{ .Values.langfuse.minio.imagePullPolicy | default .Values.imagePullPolicy | default "IfNotPresent" }}
           command: ["sh"]
           args: ["-c", "mkdir -p /data/langfuse && minio server --address ':9000' --console-address ':9001' /data"]
           ports:
@@ -224,6 +226,7 @@ spec:
       initContainers:
         - name: init-db
           image: postgres:15-alpine
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
           command:
             - sh
             - -c
@@ -244,6 +247,7 @@ spec:
       containers:
         - name: langfuse-server
           image: {{ .Values.langfuse.server.image }}
+          imagePullPolicy: {{ .Values.langfuse.server.imagePullPolicy | default .Values.imagePullPolicy | default "IfNotPresent" }}
           ports:
             - containerPort: 3000
               name: http
@@ -407,6 +411,7 @@ spec:
       containers:
         - name: langfuse-worker
           image: {{ .Values.langfuse.worker.image }}
+          imagePullPolicy: {{ .Values.langfuse.worker.imagePullPolicy | default .Values.imagePullPolicy | default "IfNotPresent" }}
           env:
             - name: DATABASE_URL
               value: {{ printf "postgresql://hci_admin:%s@postgres.%s.svc.cluster.local:5432/langfuse" (.Values.secrets.postgresPassword | urlquery) .Values.global.namespace | quote }}

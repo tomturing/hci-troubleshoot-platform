@@ -8,6 +8,23 @@
 # 可观测性栈部署的命名空间（本 Chart 自行创建）
 namespace: hci-observability
 
+# 镜像拉取策略（全局默认，可用 <组件>.imagePullPolicy 逐个覆盖）
+# 为什么必须显式声明，而不能依赖 K8s 默认值：
+#   imagePullPolicy 缺省时由 **tag** 推导——`:latest`（或省略 tag）= Always，
+#   其他 = IfNotPresent；而这个推导结果**一旦写进 Deployment 就固化**，
+#   之后把 tag 改成固定版本也不会自动回退。
+# 2026-10-31 实测：prod 集群（aiops，192.168.0.3）无法访问 docker.io
+#   （`dial tcp ...:443: i/o timeout`），节点只能靠本地镜像缓存。
+#   prod 的 loki Deployment 至今仍带着 218 天前 `:latest` 时期的 `Always`，
+#   而 Chart 从未声明该字段 → ArgoCD 同步不会纠正它 → 任何一次 Pod 重建
+#   都必然 ImagePullBackOff（当日实测：Loki 不可用约 2 分 28 秒，靠 patch 回
+#   IfNotPresent 命中节点缓存才恢复）。
+#   同集群的 grafana / langfuse-minio 已因同一原因连续 119 天不可用
+#   （minio 的 values 里正是 `:latest`）。
+# 固定 tag + 无外网集群里，Always 没有任何收益：tag 不可变，pull 只多做一次
+# digest 校验，换来的是「重建必挂」。
+imagePullPolicy: IfNotPresent
+
 # 日志采集（Alloy）命名空间白名单。
 # 历史教训：这里曾写死 hci|hci-sim-dev|hci-observability|argocd，而实际环境
 # 命名空间是 hci-staging / hci-sim-staging / hci-dsh —— 白名单从未跟上环境改名，

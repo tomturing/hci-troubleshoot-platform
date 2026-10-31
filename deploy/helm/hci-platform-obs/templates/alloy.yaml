@@ -25,6 +25,7 @@ spec:
       containers:
         - name: alloy
           image: {{ .Values.alloy.image }}
+          imagePullPolicy: {{ .Values.alloy.imagePullPolicy | default .Values.imagePullPolicy | default "IfNotPresent" }}
           args:
             - run
             - /etc/alloy/config.alloy
