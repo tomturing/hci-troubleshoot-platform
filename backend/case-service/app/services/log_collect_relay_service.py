@@ -57,14 +57,22 @@ class SangforRelayClient:
     （生产实测未启用 `ACLI_UPLOAD_TOKEN`，插件自身也不带认证头）。
     """
 
-    def __init__(self, base_url: str, *, chunk_timeout: float = 300.0):
+    def __init__(self, base_url: str, *, chunk_timeout: float = 300.0, token: str = ""):
         self.base_url = base_url.rstrip("/")
         self.chunk_timeout = chunk_timeout
+        # 5888 开启 `ACLI_UPLOAD_TOKEN` 后，上传与状态接口都要求 Bearer。
+        # 留空表示对方未启用鉴权（现网默认），此时**不发**认证头，保持向后兼容；
+        # 两端必须按顺序切换，否则会立刻 401（见事件文档"切换顺序"）。
+        self.token = (token or "").strip()
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     async def init_upload(self, client: httpx.AsyncClient, filename: str, file_size: int) -> tuple[str, int]:
         response = await client.post(
             f"{self.base_url}/init_upload",
             files={"filename": (None, filename), "file_size": (None, str(file_size))},
+            headers=self._headers(),
         )
         response.raise_for_status()
         data = response.json()
@@ -94,6 +102,7 @@ class SangforRelayClient:
                 "chunk_total": (None, str(chunk_total)),
                 "chunk": (filename, payload, ""),
             },
+            headers=self._headers(),
             timeout=self.chunk_timeout,
         )
         response.raise_for_status()
@@ -102,7 +111,7 @@ class SangforRelayClient:
     async def upload_status(self, client: httpx.AsyncClient, upload_id: str) -> dict[str, Any] | None:
         """返回 None 表示会话已不存在：已归档完成或超过 24h 过期。"""
 
-        response = await client.get(f"{self.base_url}/upload_status/{upload_id}")
+        response = await client.get(f"{self.base_url}/upload_status/{upload_id}", headers=self._headers())
         if response.status_code == 404:
             return None
         response.raise_for_status()
@@ -423,6 +432,13 @@ class LogCollectRelayService:
                 status = await self.client.upload_status(client, upload_id)
                 if status is None:
                     upload_id = ""
+                elif str(status.get("status") or "") == "failed":
+                    # 5888 把合片失败原因写回了会话，并**刻意保留**会话（删掉会被调用方
+                    # 读成 404 而误判成功）。但失败时服务端已清理该次上传的分片文件，
+                    # 续传不可能成功 —— 只能丢弃会话、重建后重传。
+                    reason = str(status.get("error") or "").strip() or "服务端未记录原因"
+                    await self._save(task_id, last_error=f"服务端判定失败，重建会话重传：{reason}"[:2000])
+                    upload_id = ""
                 else:
                     start_index = int(task.relay_chunk_index or -1) + 1
 
@@ -457,7 +473,7 @@ class LogCollectRelayService:
                 if status == "complete":
                     break
 
-            await self._await_archive(client, upload_id)
+            await self._await_archive(client, upload_id, expected_digest)
             await self._finish(task_id, "success")
 
     @staticmethod
@@ -489,15 +505,60 @@ class LogCollectRelayService:
             handle.seek(offset)
             return handle.read(length)
 
-    async def _await_archive(self, client: httpx.AsyncClient, upload_id: str) -> None:
-        """确认归档落地：会话 JSON 被删除（404）才代表 process_upload.py 成功。"""
+    async def _await_archive(
+        self,
+        client: httpx.AsyncClient,
+        upload_id: str,
+        expected_digest: str = "",
+    ) -> None:
+        """确认归档落地，并尽量核对服务端落盘摘要。
+
+        成功判据有两种，按 5888 版本自动适配：
+          * `status == "done"`（新版）：附带 `digest.sha256`，可与平台副本逐字节对齐；
+          * 会话已删除（404，旧版）：只能证明处理进程跑完了，无法核对内容。
+        """
 
         deadline = time.monotonic() + self.archive_timeout
         while time.monotonic() < deadline:
-            if await self.client.upload_status(client, upload_id) is None:
+            status = await self.client.upload_status(client, upload_id)
+            if status is None:
+                # 旧版 5888：处理完成即删会话，读不到摘要，只能按"进程跑完"算成功。
+                return
+            state = str(status.get("status") or "")
+            # 5888 合片失败时把 status=failed + error 写回会话。读到就当场失败，
+            # 不必干等 archive_timeout（默认 1800s）——那段时间里界面只能显示 running。
+            if state == "failed":
+                reason = str(status.get("error") or "").strip() or "服务端未记录原因"
+                raise SangforRelayError(f"日志服务器归档失败：{reason}", "LC-TRANSFER-003")
+            if state == "done":
+                self._verify_server_digest(status, expected_digest)
                 return
             await asyncio.sleep(self.poll_interval)
         raise SangforRelayError("归档确认超时：服务端会话仍存在，归档可能失败")
+
+    @staticmethod
+    def _verify_server_digest(status: dict[str, Any], expected_digest: str) -> None:
+        """核对服务端落盘摘要。
+
+        这是整条链路上唯一能证明"归档件内容 == 平台副本"的锚点：平台侧只能自证本地
+        文件，服务端落盘后的字节此前没有任何回读通道。取不到摘要时**不判失败**
+        （老版本 5888 没有该字段），但必须留下 warning，避免"看起来校验过了"。
+        """
+
+        digest = status.get("digest") or {}
+        server_digest = str(digest.get("sha256") or "").strip().lower()
+        if not server_digest:
+            logger.warning("服务端未回报摘要，跳过链尾内容校验 upload=%s", status.get("target_path"))
+            return
+        if not expected_digest:
+            logger.warning("平台侧无 object_sha256，无法校验服务端摘要（服务端=%s）", server_digest)
+            return
+        if server_digest != expected_digest.strip().lower():
+            raise SangforRelayError(
+                f"服务端归档摘要与平台副本不一致：服务端 {server_digest}，平台 {expected_digest}",
+                "LC-TRANSFER-002",
+            )
+        logger.info("链尾摘要校验通过：%s", server_digest)
 
     # ── 持久化 ──────────────────────────────────────────────────────────────
 

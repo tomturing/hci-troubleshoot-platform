@@ -131,7 +131,10 @@ def _build_relay_service() -> LogCollectRelayService:
     return LogCollectRelayService(
         database_manager.async_session_factory,
         get_upload_storage(),
-        SangforRelayClient(settings.LOG_COLLECT_RELAY_URL),
+        SangforRelayClient(
+            settings.LOG_COLLECT_RELAY_URL,
+            token=settings.LOG_COLLECT_RELAY_TOKEN,
+        ),
     )
 
 
