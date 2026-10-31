@@ -34,7 +34,13 @@ from .fetcher import (
     list_today_archives,
     looks_like_non_log_bundle,
 )
-from .maintenance import cleanup_expired, enforce_capacity, has_usable_logs, write_sync_meta
+from .maintenance import (
+    cleanup_expired,
+    enforce_capacity,
+    has_usable_logs,
+    reconcile_artifacts,
+    write_sync_meta,
+)
 from .models import (
     RUNNING_PHASES,
     TICKET_RE,
@@ -293,6 +299,21 @@ class JobRegistry:
         self._store.delete_artifact(ticket_id)
         self._history.pop(ticket_id, None)
 
+    def _prune_expired_sync(self, now: datetime) -> int:
+        active = self.active_ticket_ids()
+        # 判据必须先于使用：过期判断读的 completedAt 只有新工单才写，
+        # 历史目录缺这个字段就退化成目录 mtime，而 mtime 会被外部写入刷新
+        # （DSH 往产物里写报告），结果是早已过期的产物永远显示"刚同步完"。
+        # 所以在同一次维护里先对账固化完成时间，再判过期。
+        reconcile_artifacts(self.cfg.root, self._store, active)
+        return cleanup_expired(
+            self.cfg.root,
+            now,
+            self.cfg.retention_days,
+            active,
+            self._forget_ticket,
+        )
+
     async def prune_expired(self, now: datetime) -> int:
         """清理过期产物。
 
@@ -303,15 +324,7 @@ class JobRegistry:
         2. 不在注册表锁内执行。清理期间不应阻塞入队与前端查询；删除目标已经
            排除活跃工单，而发布是原子 rename，最坏情况只是多删一个旧目录。
         """
-        active = self.active_ticket_ids()
-        return await asyncio.to_thread(
-            cleanup_expired,
-            self.cfg.root,
-            now,
-            self.cfg.retention_days,
-            active,
-            self._forget_ticket,
-        )
+        return await asyncio.to_thread(self._prune_expired_sync, now)
 
     async def prune_capacity(self, now: datetime) -> tuple[int, int]:
         """总量超过上限时淘汰，返回 (删除数, 释放字节)。理由同上。"""

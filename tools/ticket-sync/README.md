@@ -93,9 +93,19 @@ queued ──► fetching ──► extracting ──► ready
   不存在**时才入队（避免时钟偏差导致重复拉取）；需要重拉仍用手动 `POST /jobs`。
 - 每天首次巡检时删除超过 `TICKET_RETENTION_DAYS`（默认 7）天的 `Q\d{13}` 目录及
   `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。判据是
-  `<工单目录>/.sync-meta.json` 的 `completedAt`，无 meta 的历史目录才回退 mtime。
+  `<工单目录>/.sync-meta.json` 的 `completedAt`。
+- **对账必须先于过期判断**：历史目录的 meta 只有 bytes/hasLogs、没有 `completedAt`，
+  此时只能回退目录 mtime；而 mtime 会被 DSH 往产物里写报告、人工 touch 刷新，
+  直接拿它当完成时间，一份老产物每天都会被算成"刚同步完"，永远不满足保留期
+  （`Q2026102101911` 是 10-21 的包，10-30 被刷新后 64.3 GiB 一直没回收，
+  `ticket_sync_expired_removed_total` 恒为 0）。所以每日维护先对账把当时的
+  mtime 固化成显式 `completedAt`，此后再被写入也不再漂移。
+- `completedAt` 只接受 `(0, now+5min]` 区间内的数值：`true` 是 int 子类、
+  会被当成 1970 年而误删，`0` 同理，未来时间则永远不会过期，一律按缺失处理。
 - 产物用量记在 SQLite 的 `artifacts` 表。每日对账时**只处理"目录 mtime 变过"的工单**，
   未变化的直接跳过（不读 meta、不扫体积），容量判断由 SQL 聚合完成。
+  正在同步的工单本轮跳过，但仍算"见过"，否则末尾的 `known - seen` 会把它
+  刚写好的记账行删掉。
 - 容量超出 `TICKET_MAX_TOTAL_BYTES` 时淘汰，顺序为**先非日志载荷、再最旧优先**：
   一个 65 GiB 的 dump 工单不该挤掉多个可用日志工单。
 - 上述两项都是**阻塞 IO，必须在线程池里执行**。2026-10-31 00:00:07–00:03:35

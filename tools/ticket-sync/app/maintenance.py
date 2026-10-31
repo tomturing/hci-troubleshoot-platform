@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +38,10 @@ _RANK_HAS_LOGS = 1
 
 # mtime 比较的容差：不同文件系统的时间戳精度不同，1ms 足以区分"改过/没改过"。
 _MTIME_EPSILON = 0.001
+
+# completedAt 的"未来"判定容差：NTP 校时可能让本机时间小幅回拨，
+# 不该因此把已经固化好的完成时间整批作废、退回会被污染的 mtime。
+_FUTURE_TOLERANCE_SECONDS = 300
 
 
 def read_sync_meta(ticket_dir: Path) -> dict[str, Any]:
@@ -106,7 +111,7 @@ def _enforce_with_store(
     on_removed: Callable[[str], None] | None,
 ) -> tuple[int, int]:
     """增量路径：先用目录 mtime 对账（只碰变化的工单），再按 SQL 结果淘汰。"""
-    reconcile_artifacts(root, store)
+    reconcile_artifacts(root, store, active_ticket_ids)
 
     total = store.artifact_total()
     if total <= max_total_bytes:
@@ -222,11 +227,18 @@ def _enforce_by_scanning(
     return removed, freed
 
 
-def reconcile_artifacts(root: Path, store: Any) -> tuple[int, int, int]:
+def reconcile_artifacts(
+    root: Path,
+    store: Any,
+    active_ticket_ids: set[str] | frozenset[str] = frozenset(),
+) -> tuple[int, int, int]:
     """把磁盘现状与 artifacts 表对齐，返回 (新增, 更新, 删除) 条数。
 
     用目录 mtime 作为"自上次记账后有没有被写过"的信号：未变化就跳过，
     既不读 meta 也不扫体积。重新发布一定会改变 mtime，因此不会漏记。
+
+    `active_ticket_ids` 里的工单正在同步，目录内容与 mtime 都是中途值：
+    既不能拿它固化完成时间，也不能因为本轮"先跳过"而把记账行删掉。
     """
     try:
         known = store.artifact_map()
@@ -241,6 +253,10 @@ def reconcile_artifacts(root: Path, store: Any) -> tuple[int, int, int]:
         if not entry.is_dir() or entry.is_symlink() or _TICKET_DIR.fullmatch(entry.name) is None:
             continue
         seen.add(entry.name)
+        if entry.name in active_ticket_ids:
+            # 必须留在 seen 里：本轮跳过不等于"目录已消失"，
+            # 否则末尾的 known - seen 会把正在同步工单的记账行一并删掉。
+            continue
         try:
             info = entry.stat()
         except OSError:
@@ -267,6 +283,12 @@ def reconcile_artifacts(root: Path, store: Any) -> tuple[int, int, int]:
         if not isinstance(has_logs, bool):
             has_logs = has_usable_logs(entry)
             extra["hasLogs"] = has_logs
+        # 历史目录（本改造之前发布的）meta 里没有 completedAt，保留期只能回退
+        # 目录 mtime；而 mtime 会被外部写入刷新（DSH 往产物里写报告、人工 touch），
+        # 于是一份早已过期的产物每天都被算成"刚同步完"，永远不满足保留期。
+        # 首次对账时把当时的 mtime 固化成显式事实，此后不再随目录写入漂移。
+        if not _valid_timestamp(meta.get("completedAt")):
+            extra["completedAt"] = _clamp_timestamp(info.st_mtime)
         if extra:
             write_sync_meta(entry, **extra)
             # 补写 meta 会刷新目录 mtime，必须还原，否则下次又判定为"变化"。
@@ -380,10 +402,33 @@ def has_usable_logs(root: Path, max_depth: int = 2) -> bool:
     return False
 
 
+def _valid_timestamp(value: Any) -> bool:
+    """completedAt 是否可信：必须是正数且不在未来。
+
+    bool 是 int 的子类，`{"completedAt": true}` 会被当成 1（1970 年），
+    让产物立刻满足保留期而被删掉；未来时间戳则相反，永远不满足。
+    两种都必须按"字段不存在"处理。
+    未来判定留 5 分钟容差：NTP 校时的小幅回拨不该让整批产物退回 mtime。
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return 0 < float(value) <= time.time() + _FUTURE_TOLERANCE_SECONDS
+
+
+def _clamp_timestamp(value: float) -> float:
+    """把待固化的时间戳夹进 (0, now]，避免写入非正数或未来时间。"""
+    now = time.time()
+    return now if value <= 0 else min(float(value), now)
+
+
 def _synced_at(ticket_dir: Path, fallback_mtime: float) -> float:
-    """产物何时同步完成：优先显式标记，回退目录 mtime。"""
+    """产物何时同步完成：优先显式标记，回退目录 mtime。
+
+    显式标记可能是历史脏数据（0、布尔、未来时间），一律按"不存在"回退。
+    回退值只会让产物活得更久，不会导致误删，这个方向的降级是安全的。
+    """
     value = read_sync_meta(ticket_dir).get("completedAt")
-    if isinstance(value, (int, float)):
+    if _valid_timestamp(value):
         return float(value)
     return fallback_mtime
 
