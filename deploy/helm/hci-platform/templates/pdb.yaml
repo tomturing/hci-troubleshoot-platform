@@ -15,6 +15,12 @@ PDB 覆盖面：本文件由「手工复制 6 个服务」改成列表驱动，�
 
 replicaCount 一律直接引用各服务自己的 values 键，不再另建一份副本数配置——
 两处真相迟早不一致，那时 PDB 的 gate 就变成了「看起来有保护其实没有」。
+
+为什么本列表是 12 条而不是 13 个服务：第 13 个 Deployment
+`ops-agent-service` 的 `replicas: 1` 写死在它的 deployment.yaml 里（没有 values
+开关），所以它永远不可能进入 `replicas ≥ 2` 分支，列进来也不会渲染出 PDB。
+要扩它必须先把它改成 values 驱动，并同步往本列表加一行（门禁
+`check_pdb_coverage.py` 不会替人发现「写死了所以测不到」这件事）。
 */ -}}
 {{- if .Values.workloadDefaults.pdb.enabled }}
 {{- $targets := list

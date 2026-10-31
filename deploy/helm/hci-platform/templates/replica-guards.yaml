@@ -11,9 +11,13 @@ values 里把 replicaCount 改成 2 之后，K8s 层面一切正常（Pod Runnin
 现存的证据都在 backend/ 源码里，改代码时就地更新本文件。
 
 不在本文件里的两个：
-  - terminal-bridge：守卫在 _helpers.tpl 的 hci.terminalBridgeGuard 里（它与
-    allowedOrigins / wildcard Origin 检查同属一个服务的配置约束，一起渲染才不
-    会出现「Origin 查了、副本数没查」的空档）。
+  - terminal-bridge：它有两层守卫，而且**默认路径上报错的不是下面那一层**：
+      1） values.schema.json 的 `terminalBridge.replicaCount.maximum: 1`（Helm 先跑
+         schema 校验，实测报的是 `at '/terminalBridge/replicaCount': maximum: got 2, want 1`）；
+      2） _helpers.tpl 的 hci.terminalBridgeGuard 里的 `fail`（与 allowedOrigins /
+         wildcard Origin 检查同属一个服务的配置约束，一起渲染才不会留下「Origin 查了、
+         副本数没查」的空档）。实测只有 `--skip-schema-validation` 且 enabled=true
+         时才能走到第二层。两层都有 CI 负例分别验证，不靠推断认定其中一层必然生效。
   - ops-agent-service：deployment.yaml 里 replicas 写死为 1，没有 values 开关；
     它的 ACP 会话上下文跨轮次保存在单进程内（见 agent-service 侧
     ops_agent_adapter.py 的注释「ops-agent 侧在跨轮次对话中保持会话上下文」）。

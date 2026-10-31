@@ -33,7 +33,7 @@ owner: team
 | 2026-04-01-dbmate数据库版本管理.md | 2026-04-01 | dbmate 数据库版本管理方案 |
 | 2026-04-27-k3s重启后prod-TLS与Grafana入口点修复.md | 2026-04-27 | k3s 重启后 prod TLS 证书丢失与 Grafana 入口点修复 |
 | 2026-04-27-staging-prometheus-reload-hook修复.md | 2026-04-27 | staging 环境 Prometheus reload Hook 卡死修复 |
-| 2026-10-31-网关空窗量化与观测持久化PDB覆盖.md | 2026-10-31 | 入口网关重启空窗客户端实测（1.07 s / 157 次拒连 / 0 次 5xx）与「网关自身重启对 5xx 指标与 accesslog 是结构性盲区」；Prometheus TSDB 从 emptyDir 改 10Gi PVC + Recreate；Traefik 5xx accesslog 入 Loki；PDB 列表化覆盖 13 服务 + 不可扩副本渲染期守卫 + CI 门禁。含两项对旧文档的订正（§8.1 「无状态服务」清单、Loki structured_metadata 不等于 label） |
+| 2026-10-31-网关空窗量化与观测持久化PDB覆盖.md | 2026-10-31 | 入口网关重启空窗客户端实测（1.07 s / 157 次拒连 / 0 次 5xx）与「网关自身重启对 5xx 指标与 accesslog 是结构性盲区」；Prometheus TSDB 从 emptyDir 改 10Gi PVC + Recreate；Traefik 5xx accesslog 入 Loki；PDB 列表化覆盖 12 个 values 可控副本的服务（第 13 个 ops-agent-service 副本数写死）+ 不可扩副本渲染期守卫 + CI 门禁。含两项对旧文档的订正（§8.1 「无状态服务」清单、Loki structured_metadata 不等于 label） |
 
 ---
 

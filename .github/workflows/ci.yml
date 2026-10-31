@@ -1043,6 +1043,29 @@ jobs:
             fi
           done
 
+          # terminal-bridge 是两层守卫，且**报错来源跟上面三个不一样**：
+          #   第一层 values.schema.json 的 `maximum: 1`（Helm 先做 schema 校验）；
+          #   第二层 _helpers.tpl 的 hci.terminalBridgeGuard（实测仅在
+          #   `--skip-schema-validation` 且 enabled=true 时才会触发）。
+          # 只测第二层等于默认第一层一定生效，只测第一层则没人知道第二层还存在，
+          # 所以这里验默认路径（schema）报的是 replicaCount 上限，下面单独验模板守卫。
+          if out=$(render --set terminalBridge.replicaCount=2 2>&1); then
+            echo "terminalBridge.replicaCount=2 居然渲染成功了：values.schema.json 的 maximum:1 被删了"
+            exit 1
+          elif ! printf '%s' "$out" | grep -q "'/terminalBridge/replicaCount': maximum"; then
+            echo "terminal-bridge 渲染失败但不是因为 schema 的副本上限：$out" | head -5
+            exit 1
+          fi
+          if out=$(render --set terminalBridge.enabled=true \
+                         --set terminalBridge.replicaCount=2 \
+                         --skip-schema-validation 2>&1); then
+            echo "跳过 schema 后 terminal-bridge 的模板守卫也没拦住：hci.terminalBridgeGuard 成了死代码"
+            exit 1
+          elif ! printf '%s' "$out" | grep -q "terminalBridge.replicaCount 必须为 1"; then
+            echo "terminal-bridge 模板守卫拦住了但不是这条原因：$out" | head -5
+            exit 1
+          fi
+
       # 数值型环境变量必须是纯十进制：Helm 把 values 里的数字解析为 float64，
       # 模板里直接 `| quote` 会用 %v 格式化，8388608 会变成 "8.388608e+06"。
       # 容器侧是 pydantic int 字段，科学计数法字符串直接 ValidationError，

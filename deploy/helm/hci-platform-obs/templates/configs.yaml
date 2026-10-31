@@ -204,8 +204,9 @@ data:
       //     Loki label」——**这句是错的**。2026-10-30 在 Loki 3.4.2 上实测：
       //       /loki/api/v1/labels 全集只有 7 个（app/container/filename/namespace/
       //       pod/service_name/stream），既查不到 duration 也查不到 downstream_status；
-      //       标签选择器 {duration="90270"} 返回空；只有行过滤语法
-      //       {app="traefik"} | duration="90270" 能命中——即原生 structured metadata，
+      //       标签选择器 {duration="90270"} 返回空；只有标签过滤语法
+      //       {app="traefik"} | duration="90270" 能命中（label filter 阶段，不是
+      //       行过滤 |= / |~）——即原生 structured metadata，
       //       不进 label 索引，所以旧注释那句「不增 label 基数」本身没写错。
       //   但它仍然不是免费的：metadata 参与**查询结果的 stream 分组**。实测
       //     {app="traefik"} 近 24h 返回 6 条流，其中 3 条各只装 1 行、彼此的差异

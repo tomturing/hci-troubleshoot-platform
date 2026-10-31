@@ -1,0 +1,44 @@
+# 不可扩副本服务的渲染期守卫断言。
+#
+# 为什么与 pdb_replica_guard_test.yaml 分成两个文件：helm-unittest v0.4.4 会把
+# 一个文件里的**多个 suite 静默丢弃**（实测 `Test Suites: 1 total / Tests: 5`，
+# 第二个 suite 一条没跑）。靠「文件里写了就算测了」在这里必然假通过，只能一文件一 suite。
+# 守卫断言放在同一个 suite 文件里，因为它们与 PDB 是同一条不变量的两面：
+# 「能扩的必须有 PDB」与「不能扩的必须响亮失败」。
+suite: "不可扩副本服务的渲染期守卫"
+templates:
+  - replica-guards.yaml
+tests:
+  - it: "默认 values 下守卫不触发"
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "apiGateway 扩到 2 必须 fail，且原因串里带上进程内状态的位置"
+    set:
+      apiGateway.replicaCount: 2
+    asserts:
+      - failedTemplate:
+          errorMessage: "apiGateway.replicaCount 必须为 1：api-gateway 的 terminal 会话把 SSH 连接、stdout/stderr 读取任务和 WebSocket 句柄都存在进程内字典里（backend/api-gateway/app/services/terminal.py 的 _connections/_tasks/_websockets + _cleanup_loop），多副本会让 execute/attach/resume 落到没有该 session 的副本上。解除条件：会话状态外置（redis/DB）或经实测的 ingress 粘性会话"
+
+  - it: "schedulerService 扩到 2 必须 fail，且报的是预热池那一条原因"
+    set:
+      schedulerService.replicaCount: 2
+    asserts:
+      - failedTemplate:
+          errorMessage: "schedulerService.replicaCount 必须为 1：warm-pool 的 idle_pods/active_pods 计数与 ensure_warm_pool 循环都在进程内（backend/scheduler-service/app/services/pod_pool.py），main.py 启动时还会 create_task 一份初始化循环；多副本等于每个副本各建一池，预热 Pod 数量按副本数翻倍且互相看不见。解除条件：池状态改为集中式（DB/redis 记账 + 单领导者）"
+
+  - it: "kbService 扩到 2 必须 fail：原因串必须引用代码自带的 404 警告"
+    set:
+      kbService.replicaCount: 2
+    asserts:
+      - failedTemplate:
+          errorMessage: "kbService.replicaCount 必须为 1：SignalJobManager/VisionJobManager 是进程内存储，代码里自带警告「多 worker/多副本部署下 POST 与 GET /status 可能落到不同进程而 404」（backend/kb-service/app/services/signal_job_manager.py、vision_job_manager.py）。解除条件：job 状态迁到 redis/DB（代码注释里已列为演进方向）"
+
+  - it: "kbService 的守卫带 enabled 门控：服务关掉时不得误伤（否则禁用服务也渲不出来）"
+    set:
+      kbService.enabled: false
+      kbService.replicaCount: 2
+    asserts:
+      - hasDocuments:
+          count: 0
