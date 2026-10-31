@@ -229,18 +229,22 @@ data:
       // 自信但错误的答案，所以这里另起一个不会混淆的名字。
       stage.json {
         expressions = {
-          downstream_status = "DownstreamStatus"
-          origin_status     = "OriginStatus"
-          router_name       = "RouterName"
-          backend_service   = "ServiceName"
+          // 同上：这张表的逗号也是 2026-10-31 那次事故的另一处，别删。
+          downstream_status = "DownstreamStatus",
+          origin_status     = "OriginStatus",
+          router_name       = "RouterName",
+          backend_service   = "ServiceName",
         }
       }
       stage.structured_metadata {
         values = {
-          downstream_status = ""
-          origin_status     = ""
-          router_name       = ""
-          backend_service   = ""
+          // River 的表项**必须**以逗号分隔，漏逗号会让 Alloy 直接
+          // 「could not perform the initial load successfully」而 CrashLoop：
+          // 2026-10-31 就是这样把 staging 的日志采集停了 3 分钟。
+          downstream_status = "",
+          origin_status     = "",
+          router_name       = "",
+          backend_service   = "",
         }
       }
       forward_to = [loki.write.default.receiver]

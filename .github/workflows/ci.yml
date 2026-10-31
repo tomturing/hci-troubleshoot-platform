@@ -109,6 +109,8 @@ jobs:
               # 等于监控/日志整体缺失，而且不会报错。不纳入过滤器的话，
               # 本 job 里针对 obs 的断言永远跑不到（就是死代码）。
               - 'deploy/helm/hci-platform-obs/**'
+              # 语法门禁脚本本身改了也要重跑：门禁坏了必须被发现，而不是静默失效
+              - 'scripts/ci/check_alloy_syntax.py'
             # `config-contract-check` 读取的全部输入：契约文件、环境变量样例、
             # Compose、Helm Chart 与校验器自身。deploy/** 不在 backend filter 内，
             # 因此 PR 上这类变更此前既跳过 Lint 也跳过 unit-tests（零校验）。
@@ -170,6 +172,8 @@ jobs:
               # 靠这份自测抓出「文档声明了、代码只实现一半」的静默失效）
               - 'scripts/ci/check_pdb_coverage.py'
               - 'scripts/ci/test_check_pdb_coverage.py'
+              - 'scripts/ci/check_alloy_syntax.py'
+              - 'scripts/ci/test_check_alloy_syntax.py'
               - 'hci_sim/Dockerfile'
               - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
               - 'deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml'
@@ -214,7 +218,9 @@ jobs:
             scripts/ci/check_docs_changelog.py \
             scripts/ci/test_check_docs_changelog.py \
             scripts/ci/check_pdb_coverage.py \
-            scripts/ci/test_check_pdb_coverage.py
+            scripts/ci/test_check_pdb_coverage.py \
+            scripts/ci/check_alloy_syntax.py \
+            scripts/ci/test_check_alloy_syntax.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -243,7 +249,9 @@ jobs:
             scripts/ci/check_docs_changelog.py \
             scripts/ci/test_check_docs_changelog.py \
             scripts/ci/check_pdb_coverage.py \
-            scripts/ci/test_check_pdb_coverage.py
+            scripts/ci/test_check_pdb_coverage.py \
+            scripts/ci/check_alloy_syntax.py \
+            scripts/ci/test_check_alloy_syntax.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
@@ -261,6 +269,7 @@ jobs:
             scripts/ci/test_check_docs_frontmatter.py \
             scripts/ci/test_check_docs_changelog.py \
             scripts/ci/test_check_pdb_coverage.py \
+            scripts/ci/test_check_alloy_syntax.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -942,6 +951,22 @@ jobs:
               sys.exit(1)
           print("✅ TSDB 已落 PVC + Recreate，且 ingress_logs 的 metadata 集只含有界字段")
           PY
+
+      # 2026-10-31 staging 事故：合并后 alloy 立刻 CrashLoopBackOff，日志采集中断约
+      # 3 分钟。根因是重写 loki.process "ingress_logs" 时删掉了两张表的尾逗号
+      # （River 表项必须逗号分隔）。上面那条正则检查全程绿着 —— 它只查「键在不在」，
+      # 查不出「这串字解析器收不收」。正则证明不了语法，只有解析器能。
+      # 所以这里把渲染出来的 config.alloy 交给 alloy 自己的 `alloy fmt`（纯解析；
+      # 不用 --test，它还会要求排版风格一致，我们这份缩进必然不满足，等于永久假红），
+      # 并先用两份常量夹具做双向自证：缺逗号必须失败且报 missing ','，补齐必须成功。
+      # 解析器镜像从渲染结果里的 Alloy DaemonSet 取，与线上同版本，不会漂移。
+      - name: Alloy 配置语法真解析（alloy fmt + 双向自证）
+        run: |
+          set -euo pipefail
+          helm template obs deploy/helm/hci-platform-obs \
+            --set global.domain=ci.example.com \
+            >/tmp/obs-alloy-syntax.yaml
+          python3 scripts/ci/check_alloy_syntax.py /tmp/obs-alloy-syntax.yaml
 
       - name: Helm template 渲染检查
         run: |
