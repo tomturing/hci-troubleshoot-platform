@@ -220,6 +220,10 @@ helm_equivalents:
     value_paths: [config.redisUrl]
   INTERNAL_API_TOKEN:
     value_paths: [secrets.internalApiToken]
+  # 5888 代传鉴权：留空时 Secret 不注入该键（保持与启用前一致），故渲染可缺省。
+  LOG_COLLECT_RELAY_TOKEN:
+    value_paths: [secrets.logCollectRelayToken]
+    render_optional: true
   LLM_BASE_URL:
     value_paths: [llm.baseUrl]
   LLM_API_KEY:

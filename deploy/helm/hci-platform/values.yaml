@@ -689,6 +689,9 @@ secrets:
   rootSignalApiKey: ""
   # 内部服务间 API 鉴权 Token
   internalApiToken: "hci-dev-internal-token"
+  # 5888 日志服务器上传鉴权（对应 5888 的 ACLI_UPLOAD_TOKEN）。
+  # 留空 = 对方未启用鉴权，Secret 不注入该键，case-service 不发认证头。
+  logCollectRelayToken: ""
   # auth-service RS256 固定签名私钥（Base64(PEM) 单行，避免多行 PEM 被 values 合并截断）。
   # 为空时 auth-service 用启动期临时密钥（仅 dev/test，重启即失效→JWKS 变更→全员掉线）。
   # staging/prod 必须注入，并配合 authService.requirePersistentKey=true：缺失则 auth-service 拒绝启动。

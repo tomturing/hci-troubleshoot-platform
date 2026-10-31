@@ -82,6 +82,10 @@
         },
         "ghcrToken": {
           "type": "string"
+        },
+        "logCollectRelayToken": {
+          "type": "string",
+          "description": "5888 日志服务器上传鉴权 token（对应 5888 的 ACLI_UPLOAD_TOKEN）。留空=对方未启用鉴权、平台不发认证头。启用顺序：先配置本项并部署 → 确认请求带 Bearer → 再开 5888，反序会让代传全部 401"
         }
       }
     },
