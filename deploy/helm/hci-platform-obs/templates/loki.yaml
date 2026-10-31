@@ -20,6 +20,12 @@ spec:
     metadata:
       labels:
         {{- include "hci.podLabels" (dict "name" "loki" "Release" .Release "Chart" .Chart) | nindent 8 }}
+      annotations:
+        # 配置文件现在来自 ConfigMap（见 configs.yaml 的 loki-config）。
+        # ConfigMap 变了而 Pod 不重启 = 「配置已合入」只是个假象：Loki 只在启动时读配置。
+        # 用 hci.lokiConfig 算校验和（与 ConfigMap 同源），只有 Loki 配置本身变了才会重启，
+        # 不会因为同文件里 alloy/grafana 的改动被连带重启。
+        checksum/config: {{ include "hci.lokiConfig" . | sha256sum }}
     spec:
       containers:
         - name: loki
@@ -45,10 +51,22 @@ spec:
           volumeMounts:
             - name: loki-data
               mountPath: /loki
+            # 挂整个目录（不是 subPath）：loki 只读不写 /etc/loki，
+            # 整目录挂载可以让后续更新直接生效（搭配 checksum/config 重启）。
+            - name: loki-config
+              mountPath: /etc/loki
+              readOnly: true
       volumes:
         - name: loki-data
           persistentVolumeClaim:
             claimName: loki-data
+        # optional: false 是刻意的：ConfigMap 丢了就让 Pod 起不来（响亮失败），
+        # 而不是静默回退到镜像自带的 /etc/loki/local-config.yaml ——
+        # 后者正是 2026-10-31 那次「配置根本不在 Git 里」的原始形态。
+        - name: loki-config
+          configMap:
+            name: loki-config
+            optional: false
 ---
 # Loki PVC（使用 local-path-retain 防止数据意外丢失）
 apiVersion: v1
