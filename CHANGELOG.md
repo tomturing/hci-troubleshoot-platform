@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.34.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.33.0...v2.34.0) (2026-10-31)
+
+
+### ✨ 新功能
+
+* **customer-ui:** 交付链路新增 bridge 版本不一致提示 ([#1386](https://github.com/tomturing/hci-troubleshoot-platform/issues/1386)) ([f9282a8](https://github.com/tomturing/hci-troubleshoot-platform/commit/f9282a809e952816c98e5bd3840e6c2a5e025cdc))
+* **deploy:** preStop 全量覆盖 13 个 Deployment + 网关 5xx 告警补首次故障盲区 ([#1391](https://github.com/tomturing/hci-troubleshoot-platform/issues/1391)) ([98369a0](https://github.com/tomturing/hci-troubleshoot-platform/commit/98369a052188abf4f0b1a10c7754ba772dc8f198))
+* **deploy:** 注入 5888 代传鉴权 token 到 hci-secrets ([#1401](https://github.com/tomturing/hci-troubleshoot-platform/issues/1401)) ([5d803b0](https://github.com/tomturing/hci-troubleshoot-platform/commit/5d803b09ba1387de8f690adea736b122fd692b82))
+* **deploy:** 观测持久化 + 网关 5xx 可定论 + PDB 覆盖面硬化 ([#1398](https://github.com/tomturing/hci-troubleshoot-platform/issues/1398)) ([dc90ccf](https://github.com/tomturing/hci-troubleshoot-platform/commit/dc90ccf68da848fc200300692bdf5a1ced6dc401))
+* **log-collect:** 中继进度透出轮次与上次失败原因，卡顿不再与在传同形 ([#1393](https://github.com/tomturing/hci-troubleshoot-platform/issues/1393)) ([e382918](https://github.com/tomturing/hci-troubleshoot-platform/commit/e3829184d7f893ef64ab0a811be39ae3054c7463))
+* **obs:** 把 Loki 配置文件纳入 Git 管理（此前完全来自镜像自带） ([#1404](https://github.com/tomturing/hci-troubleshoot-platform/issues/1404)) ([948be19](https://github.com/tomturing/hci-troubleshoot-platform/commit/948be19b6271a345d02c32c9680bf214a6fb8c78))
+* **obs:** 补齐 staging 可观测性与网关 5xx 度量 ([#1383](https://github.com/tomturing/hci-troubleshoot-platform/issues/1383)) ([af21382](https://github.com/tomturing/hci-troubleshoot-platform/commit/af2138265db14c095d671d11da99b2ff518e836a))
+* **ticket-sync:** 任务状态落 SQLite + 产物用量增量对账 ([#1397](https://github.com/tomturing/hci-troubleshoot-platform/issues/1397)) ([baaf1c0](https://github.com/tomturing/hci-troubleshoot-platform/commit/baaf1c0d7b672333db3543597564f7760e2e0685))
+
+
+### 🐛 Bug 修复
+
+* **case-service:** 发布空窗归零——临时文件按写者唯一化 + RollingUpdate ([#1384](https://github.com/tomturing/hci-troubleshoot-platform/issues/1384)) ([a894b29](https://github.com/tomturing/hci-troubleshoot-platform/commit/a894b2925ee85ee5cd25e74316c2f73b6363f6e1))
+* **case-service:** 补 preStop 等待，消除发布瞬间打到旧 Pod 的 502 ([#1388](https://github.com/tomturing/hci-troubleshoot-platform/issues/1388)) ([caacb18](https://github.com/tomturing/hci-troubleshoot-platform/commit/caacb18dda382fa0c02e51eba8249d76b874726f))
+* **customer-ui:** 交付失败原因不再被前端覆盖，展示真实错误码与原因 ([#1390](https://github.com/tomturing/hci-troubleshoot-platform/issues/1390)) ([2bbd10f](https://github.com/tomturing/hci-troubleshoot-platform/commit/2bbd10f276badc19359179dd00dca70c5fb2a2b6))
+* **helm:** 分片大小环境变量被渲染成科学计数法导致 case-service 起不来 ([#1375](https://github.com/tomturing/hci-troubleshoot-platform/issues/1375)) ([672796c](https://github.com/tomturing/hci-troubleshoot-platform/commit/672796c71f384c5e4dbd99e930fc0fa5039ff9a8))
+* **log-collect:** 代传改为租约制，发布/重启后自动接管 ([#1381](https://github.com/tomturing/hci-troubleshoot-platform/issues/1381)) ([dd061ad](https://github.com/tomturing/hci-troubleshoot-platform/commit/dd061ad2074f2ea4f138b57d87dbae14c320f407))
+* **log-collect:** 分片上传撞网关 60s 读超时导致 HTTP 502 卡死 ([#1373](https://github.com/tomturing/hci-troubleshoot-platform/issues/1373)) ([064f664](https://github.com/tomturing/hci-troubleshoot-platform/commit/064f6641a6d4e03883a9d41f49b4728959b17c98))
+* **log-collect:** 分片几何必须取自会话 meta，否则改默认值后旧会话续传全部 500 ([#1378](https://github.com/tomturing/hci-troubleshoot-platform/issues/1378)) ([003f834](https://github.com/tomturing/hci-troubleshoot-platform/commit/003f834d2c4976c9e6ea9671614a15d188ae515a))
+* **log-collect:** 建议路径只留两个取值，日志服务器不可达改为多次采样定论 ([#1374](https://github.com/tomturing/hci-troubleshoot-platform/issues/1374)) ([d6bf88d](https://github.com/tomturing/hci-troubleshoot-platform/commit/d6bf88dd761e033a9100936bc81733a675101d2e))
+* **log-collect:** 消费日志服务器失败态，归档失败不再干等 30 分钟 ([#1396](https://github.com/tomturing/hci-troubleshoot-platform/issues/1396)) ([e157920](https://github.com/tomturing/hci-troubleshoot-platform/commit/e157920d88a9dfeecd4466b7d87f221eebf3b58a))
+* **log-collect:** 进度条改为整条链路分段映射，修复「0 字节却显示 100%」 ([#1368](https://github.com/tomturing/hci-troubleshoot-platform/issues/1368)) ([f314b4f](https://github.com/tomturing/hci-troubleshoot-platform/commit/f314b4f634c4112b645cf957fc7b4e18131a1409))
+* **obs:** 修复 Alloy 配置缺逗号导致的 CrashLoop，并补语法真解析门禁 ([#1399](https://github.com/tomturing/hci-troubleshoot-platform/issues/1399)) ([ffdc7fc](https://github.com/tomturing/hci-troubleshoot-platform/commit/ffdc7fc02432462f76f8ae38cd6584d6da867675))
+* **obs:** 显式声明 imagePullPolicy，堵住无外网集群重建必挂的缺陷 ([#1406](https://github.com/tomturing/hci-troubleshoot-platform/issues/1406)) ([9512b8d](https://github.com/tomturing/hci-troubleshoot-platform/commit/9512b8d89fe85144b0b1e79a3ab43af6f49db615))
+* **obs:** 网关 5xx 兜底告警补数据连续性门控，并回填发布可用性验收实测 ([#1392](https://github.com/tomturing/hci-troubleshoot-platform/issues/1392)) ([8416195](https://github.com/tomturing/hci-troubleshoot-platform/commit/8416195ae0aa4c05157d9f0d6978bc75f2a4378e))
+* **terminal_bridge:** acli 安装包全链路校验与失败重试兜底 ([#1371](https://github.com/tomturing/hci-troubleshoot-platform/issues/1371)) ([3a59845](https://github.com/tomturing/hci-troubleshoot-platform/commit/3a59845ee421a6a6e18e5c96065dd67c346a79a0))
+* **terminal_bridge:** 交付源包被重新生成时提前判死，避免分片上传全 500 ([#1380](https://github.com/tomturing/hci-troubleshoot-platform/issues/1380)) ([d187c09](https://github.com/tomturing/hci-troubleshoot-platform/commit/d187c09074160797aa4398f52baa96dd9c45c81e))
+* **terminal-bridge:** NetworkPolicy 放行 Prometheus 抓取 /metrics ([#1385](https://github.com/tomturing/hci-troubleshoot-platform/issues/1385)) ([60c0573](https://github.com/tomturing/hci-troubleshoot-platform/commit/60c057372c3a222d56975c680d1ef9d621e3424e))
+* **ticket-sync:** 固化历史产物 completedAt，修复过期清理永不生效 ([#1400](https://github.com/tomturing/hci-troubleshoot-platform/issues/1400)) ([ef83a6e](https://github.com/tomturing/hci-troubleshoot-platform/commit/ef83a6ebaaf4e173c3b3ccc3d8a11f47a073d3b2))
+* **ticket-sync:** 把 completedAt 固化纳入对账的跳过判据 ([#1405](https://github.com/tomturing/hci-troubleshoot-platform/issues/1405)) ([8f858be](https://github.com/tomturing/hci-troubleshoot-platform/commit/8f858be460e2f4be489431bd46a172d87ad2252a))
+* **ticket-sync:** 清理改显式元数据 + 阻塞 IO 移出事件循环 + 转储识别与指标 ([#1395](https://github.com/tomturing/hci-troubleshoot-platform/issues/1395)) ([781cfd9](https://github.com/tomturing/hci-troubleshoot-platform/commit/781cfd9ad6cc3532f1a5b2c80ce8bca19f2284b2))
+* **ticket-sync:** 解压韧性优化，修复层级/文件数/坏包/权限四类失败 ([#1379](https://github.com/tomturing/hci-troubleshoot-platform/issues/1379)) ([e416adf](https://github.com/tomturing/hci-troubleshoot-platform/commit/e416adf524e1dc1170ed565cbe4f462645bd208d))
+* **ticket-sync:** 阈值改为护栏语义 + RAR5 双通道 + ssh 失败可归因 ([#1389](https://github.com/tomturing/hci-troubleshoot-platform/issues/1389)) ([41c797a](https://github.com/tomturing/hci-troubleshoot-platform/commit/41c797a8799a63eea9e0f7da71f54627d5e820bb))
+* 日志收集探测失败自动重试与事实复查 ([#1369](https://github.com/tomturing/hci-troubleshoot-platform/issues/1369)) ([e4eb34f](https://github.com/tomturing/hci-troubleshoot-platform/commit/e4eb34ffe58017d3433040ba3770c994976ce1e6))
+
+
+### 📝 文档
+
+* **deploy:** 回填验收实测数据，并推翻一条错判据（PDB drain） ([#1402](https://github.com/tomturing/hci-troubleshoot-platform/issues/1402)) ([c5008cc](https://github.com/tomturing/hci-troubleshoot-platform/commit/c5008cc2b9c351ab7c7dd520fc20cce21d5c13d3))
+* **deploy:** 订正 prod OutOfSync 的性质，并列清 prod 落地的三项前置条件 ([#1403](https://github.com/tomturing/hci-troubleshoot-platform/issues/1403)) ([5f59eeb](https://github.com/tomturing/hci-troubleshoot-platform/commit/5f59eeb9a1d30ab13b2765571bf6ab8f75c32bef))
+* **events:** 补门控反向验证实测——真阳性注入 FirstSeen 精确 fire 1 条 ([#1394](https://github.com/tomturing/hci-troubleshoot-platform/issues/1394)) ([338914a](https://github.com/tomturing/hci-troubleshoot-platform/commit/338914abc9cb1ce0168a463f8e027d61fb1c0333))
+* 更新 2026-10-30 全量preStop 事件文档（第五节改为分场景验收结果）与 ([8416195](https://github.com/tomturing/hci-troubleshoot-platform/commit/8416195ae0aa4c05157d9f0d6978bc75f2a4378e))
+
 ## [2.33.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.32.0...v2.33.0) (2026-10-29)
 
 
