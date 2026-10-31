@@ -2,7 +2,7 @@
 status: active
 category: deploy
 audience: operator
-last_updated: 2026-10-20
+last_updated: 2026-10-31
 owner: team
 ---
 
@@ -215,6 +215,12 @@ curl -s http://127.0.0.1:9999/metrics | rg '^bridge_'
 
 Pod stdout 保留一行一个结构化 JSON 事件，Grafana Alloy 使用 CRI parser 像采集其他 K3s Pod 一样写入 Loki，从而补齐原先 Windows 本地进程不可见的程序级日志。与此同时，带 `case_id` 的 `bridge_log` 仍经 customer-ui 持久 Outbox 批量提交 `/api/bridge-logs` 落库，用于工单维度审计。
 
+在 Loki 里查 Bridge 程序日志必须用 **stream 标签 `service_name`**：
+`{namespace="hci-staging", service_name="terminal-bridge"}`（2026-10-31 staging 实测 1 条流）。
+`service_name` 由 `discovery.relabel "pod_logs"` 从 Pod 标签 `app.kubernetes.io/name` 写入；
+写成 `app_kubernetes_io_name="terminal-bridge"` 会返回 **0 条且不报错**（流选择器只碰索引
+标签，未知键既不报错也不提示），极易被误判成「Pod 没写日志」。
+
 本地 `bridge.log` 只用于短期断线/重启回放，不是长期日志权威源。Pod 替换会清空 `emptyDir`；长期查询以 Loki 和数据库回采记录为准。
 
 ## 7. 端到端联调验收
@@ -243,7 +249,9 @@ window.__HCI_RUNTIME_CONFIG__
 4. 确认 UI 收到 `exec_stdout`/`exec_stderr` 和最终 `exec_result`。
 5. 查询 `/terminal-bridge/status`，确认 `active_sessions` 与 WebSocket 数符合预期。
 6. 查询 Prometheus 指标，确认 SSH/命令计数增加，失败时 error counter 增加。
-7. 在 Loki 按 `app_kubernetes_io_name="terminal-bridge"` 查询程序日志。
+7. 在 Loki 按 `{namespace="hci-staging", service_name="terminal-bridge"}` 查询程序日志
+   （`service_name` 是真正的 stream 标签；`app_kubernetes_io_name` **不是** Loki label，
+   写它会返回 0 条且不报错——2026-10-31 实测）。
 8. 在 `bridge_execution_log` 表按 `case_id`/`trace_id` 验证工单回采日志。
 
 ### 7.3 故障注入
@@ -268,3 +276,10 @@ helm upgrade hci-platform deploy/helm/hci-platform \
 ```
 
 customer-ui 运行时配置随 Pod 重建恢复为空，前端重新回退到 `ws://localhost:9999`。关闭前确认当前联调工单不再依赖 Pod 内存中的 SSH 会话。
+
+## 变更历史
+
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|---|---|---|---|
+| 2026-10-31 | v1.1 | §6.3 与 §7.2 的 Loki 查询判据订正：原文写 `app_kubernetes_io_name="terminal-bridge"`，而该键在本环境 Loki 里**不是** label（`/loki/api/v1/labels` 全集只有 `app`/`container`/`filename`/`namespace`/`pod`/`service_name`/`stream` 七个），实测返回 **0 条流且 HTTP 200 不报错**，会被误读成「Pod 没写日志」；改用 `{namespace="hci-staging", service_name="terminal-bridge"}`（实测 1 条流）。同时补建本节（本文此前没有变更历史，按 `docs-governance` 的口径：实质修改必须留痕） | [网关空窗量化与观测持久化PDB覆盖](events/2026-10-31-网关空窗量化与观测持久化PDB覆盖.md) |
+| 2026-10-20 | v1.0 | 首版：Windows 本地与 K3s Pod 双运行形态、构建、Helm 配置、安全设计、可观测性与端到端验收 | — |

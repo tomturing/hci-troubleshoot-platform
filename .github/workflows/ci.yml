@@ -166,6 +166,10 @@ jobs:
               # §7.1 变更历史增量门禁脚本（V-036）：改动它必须跑其回归测试
               - 'scripts/ci/check_docs_changelog.py'
               - 'scripts/ci/test_check_docs_changelog.py'
+              # PDB 覆盖面门禁：它自己的回归测试必须跟它一起跑（2026-10-31 就是
+              # 靠这份自测抓出「文档声明了、代码只实现一半」的静默失效）
+              - 'scripts/ci/check_pdb_coverage.py'
+              - 'scripts/ci/test_check_pdb_coverage.py'
               - 'hci_sim/Dockerfile'
               - 'deploy/gitops/argo-apps/local/hci-sim-dev.yaml'
               - 'deploy/gitops/argo-apps/cloud/hci-sim-staging.yaml'
@@ -208,7 +212,9 @@ jobs:
             scripts/ci/check_docs_frontmatter.py \
             scripts/ci/test_check_docs_frontmatter.py \
             scripts/ci/check_docs_changelog.py \
-            scripts/ci/test_check_docs_changelog.py
+            scripts/ci/test_check_docs_changelog.py \
+            scripts/ci/check_pdb_coverage.py \
+            scripts/ci/test_check_pdb_coverage.py
           uvx ruff format --check \
             scripts/ci/resolve_release_baseline.py \
             scripts/ci/resolve_image_build_plan.py \
@@ -235,7 +241,9 @@ jobs:
             scripts/ci/check_docs_frontmatter.py \
             scripts/ci/test_check_docs_frontmatter.py \
             scripts/ci/check_docs_changelog.py \
-            scripts/ci/test_check_docs_changelog.py
+            scripts/ci/test_check_docs_changelog.py \
+            scripts/ci/check_pdb_coverage.py \
+            scripts/ci/test_check_pdb_coverage.py
           uv run --no-project --with pytest --with pytest-xdist pytest \
             scripts/ci/test_resolve_release_baseline.py \
             scripts/ci/test_resolve_image_build_plan.py \
@@ -252,6 +260,7 @@ jobs:
             scripts/ci/test_check_docs_naming.py \
             scripts/ci/test_check_docs_frontmatter.py \
             scripts/ci/test_check_docs_changelog.py \
+            scripts/ci/test_check_pdb_coverage.py \
             -q
 
       # 确定性前端改动判定（覆盖 dorny/paths-filter 的 frontend 输出）。
@@ -863,6 +872,77 @@ jobs:
             exit 1
           fi
 
+          # 观测栈另外三条不变量，用 python+yaml 按文档判（不靠 grep 隔窗猜行）：
+          #  1) prometheus 的 TSDB 必须是 PVC：2026-10-30 实测 emptyDir 重启后
+          #     TSDB 全清，FirstSeen 把 9 条存量 5xx 序列全判成「刚诞生」一次性 firing；
+          #  2) 单副本 + RWO PVC 必须 Recreate：RollingUpdate 会让两个实例同时挂
+          #     同一个数据目录，第二个直接起不来（同 chart 的 loki/tempo 已踩过）；
+          #  3) 网关 5xx 采集链只能把「有索引收益」的字段提为 structured metadata：
+          #     duration 每请求唯一、request_path 用户可控，它们在原始 JSON 行里本来
+          #     就有（`| json | Duration > 60000000000` 可查），再提一份只让查询结果
+          #     按行膨胀（2026-10-30 实测 3 次注入 = 3 条返回流，各自 duration 不同）。
+          python3 - /tmp/obs-rendered.yaml <<'PY'
+          import re, sys, yaml
+          docs = [d for d in yaml.safe_load_all(open(sys.argv[1], encoding="utf-8")) if isinstance(d, dict)]
+          problems = []
+          prom = next((d for d in docs if d.get("kind") == "Deployment"
+                       and d.get("metadata", {}).get("name") == "prometheus"), None)
+          if prom is None:
+              problems.append("渲染结果里没有 prometheus 的 Deployment，门禁对象丢了")
+          else:
+              vols = {v.get("name"): v for v in prom["spec"]["template"]["spec"].get("volumes", [])}
+              storage = vols.get("storage", {})
+              if storage.get("persistentVolumeClaim", {}).get("claimName") != "prometheus-data":
+                  problems.append(f"prometheus 的 storage 卷不是 PVC(prometheus-data)，而是 {sorted(storage) or '缺失'}"
+                                  f"（退回 emptyDir 等于关掉告警门控的判据来源）")
+              if prom["spec"].get("strategy", {}).get("type") != "Recreate":
+                  problems.append("prometheus Deployment 缺 strategy.type: Recreate"
+                                  "（RWO PVC + RollingUpdate = 两实例争用同一数据目录）")
+          pvcs = {d.get("metadata", {}).get("name") for d in docs if d.get("kind") == "PersistentVolumeClaim"}
+          if "prometheus-data" not in pvcs:
+              problems.append(f"缺 prometheus-data PVC，现有 PVC：{sorted(pvc for pvc in pvcs if pvc)}")
+          # Alloy 配置在 ConfigMap 的值里，不是一条独立文档，单独取出来判
+          alloy = "\n".join((d.get("data") or {}).get("config.alloy", "")
+                            for d in docs if d.get("kind") == "ConfigMap"
+                            and (d.get("data") or {}).get("config.alloy"))
+          # 先剔掉 // 注释行再定位锚点：2026-10-31 真实踩过——我在 pod_logs 块里加的
+          # 注释提到了 loki.process "ingress_logs" 这个字面量，直接使 find() 锚点
+          # 前移到 pod_logs，门禁于是去检查错误的块、对真负例返回「通过」。
+          alloy = "\n".join(l for l in alloy.splitlines() if not l.lstrip().startswith("//"))
+          mpos = re.search(r'(?m)^\s*loki\.process "ingress_logs"\s*\{\s*$', alloy)
+          block = alloy[mpos.start():] if mpos else ""
+          # 只盯 structured_metadata 的 values 表：stage.json 里抽而不提是无害的，
+          # 进了 values 表才会参与查询结果的分组。切片宽度必须刚好覆盖那几行，不能“越宽越安全”。
+          m = re.search(r"stage\.structured_metadata\s*\{\s*values\s*=\s*\{(.*?)\}", block, re.S)
+          labels_txt = m.group(1) if m else ""
+          # 锚点自证：取到的表里必须有已知的有界字段。少了就说明切片落在另一个块上，
+          # 必须把「门禁自己坏了」当作失败报出来，不能继续往检查项里走。
+          if labels_txt and "downstream_status" not in labels_txt:
+              problems.append("锚点失效：取到的 structured_metadata.values 里没有 downstream_status，"
+                              "说明切片落在别的块上，本步检查不可信")
+          for bad in ("duration", "request_path", "client_addr", "ClientAddr", "StartLocal", "StartUTC"):
+              # 只当「某行写成 <字段> = ""」才算进了 structured_metadata 的 values 表
+              if re.search(rf"^\s*{bad}\s*=\s*\"\"\s*$", labels_txt, re.M):
+                  problems.append(f"ingress_logs 把无界字段 {bad} 提成了 structured_metadata（它不在 label 索引里，"
+                                  f"但会按行拆碎查询结果：实测 3 条 5xx = 3 条返回流；且原始 JSON 行里本来就能查）")
+          # service_name 不是高基数问题，是语义冲突：pod_logs 的 discovery.relabel 已经把
+          # pod 标签 app.kubernetes.io/name 写成了同名 stream 标签（现网实测 kube-system/traefik
+          # 的 5xx 行带着 service_name="traefik"，而那条 JSON 里没有 ServiceName 键），
+          # 网关转发的后端服务必须用另一个名字（backend_service），否则「谁在 502」会给出错的答案。
+          if re.search(r'^\s*service_name\s*=\s*""\s*$', labels_txt, re.M):
+              problems.append("ingress_logs 不得把 service_name 用作 structured_metadata：它与 pod_logs "
+                              "继承来的同名 stream 标签语义冲突（一个是网关自己，一个是后端服务），"
+                              "应改用 backend_service = \"ServiceName\"")
+          if not labels_txt:
+              problems.append("渲染结果里找不到 ingress_logs 的 structured_metadata.values，网关 5xx 采集链丢了")
+          if problems:
+              print("观测栈持久化/采集链不变量未通过：")
+              for item in problems:
+                  print("  -", item)
+              sys.exit(1)
+          print("✅ TSDB 已落 PVC + Recreate，且 ingress_logs 的 metadata 集只含有界字段")
+          PY
+
       - name: Helm template 渲染检查
         run: |
           helm template hci-platform deploy/helm/hci-platform \
@@ -907,6 +987,89 @@ jobs:
       # 「主动 include」最容易在新服务上漏掉，所以源码与渲染结果两头都锁。
       - name: preStop 覆盖率（模板源码 + 渲染结果）
         run: python3 scripts/ci/check_prestop_coverage.py /tmp/hci-platform-rendered.yaml
+
+      # 2026-10-30 staging 实测现网 PDB 数为 0：pdb.yaml 是手工复制的，只覆盖 6/13
+      # 个服务，且条件全是 `gt replicaCount 1`，而 staging 副本数全为 1——源码看着
+      # 「有 PDB 模板」，渲染结果一个也没有。于是「节点驱逐/维护」这条非发布路径
+      # 没有任何保护（同日实测：并发删 Pod 产生 503×1971 + 502×187）。
+      # 两道检查都靠渲染结果，不靠数模板里的段落：
+      #   1) 默认 values（全单副本）：不得出现任何 PDB——单副本 + minAvailable=1
+      #      会让 kubectl drain 永久卡住，错方向的 PDB 比没有 PDB 难排查；
+      #   2) 把可无状态扩副本的服务拉到 2：每个都必须渲染出自己的 PDB。
+      # 另加一条守卫负例：不可多副本的服务把 replicaCount 改大必须渲染失败。
+      # 不测负例的门禁只会给出「全绿」这一种答案，那跟没有门禁等价。
+      - name: PDB 覆盖面 + 单副本守卫
+        run: |
+          set -euo pipefail
+          render() {
+            helm template hci-platform deploy/helm/hci-platform \
+              -f deploy/helm/hci-platform/values.yaml \
+              --set diagnosisService.enabled=true \
+              --set-string diagnosisService.directUploadBaseUrl=http://diagnosis-service:8008 \
+              --set-string diagnosisService.allowedOrigins=http://customer-ui \
+              --set-string secrets.collectorSigningPrivateKeyB64=Y2ktb25seS1ub3QtYS1yZWFsLWtleQ== \
+              --set-string secrets.collectorSigningKeyId=ci-template-check \
+              --set-string secrets.diagnosisEncryptionPrivateKeyB64=Y2ktb25seS1ub3QtYS1yZWFsLWtleQ== \
+              --set-string secrets.diagnosisEncryptionKeyId=ci-template-check \
+              "$@"
+          }
+
+          render >/tmp/hci-platform-default.yaml
+          render --set adminUI.replicaCount=2 \
+                 --set customerUI.replicaCount=2 \
+                 --set authService.replicaCount=2 \
+                 --set caseService.replicaCount=2 \
+                 --set conversationService.replicaCount=2 \
+                 >/tmp/hci-platform-scaled.yaml
+
+          python3 scripts/ci/check_pdb_coverage.py /tmp/hci-platform-default.yaml /tmp/hci-platform-scaled.yaml
+
+          # 副本数为 2 时渲染不出 PDB，就是「有模板但没保护」的那个坑重演
+          for name in admin-ui customer-ui auth-service case-service conversation-service; do
+            if ! awk -v n="name: ${name}-pdb" '/kind: PodDisruptionBudget/{f=1} f && $0 ~ n {ok=1} END{exit !ok}' /tmp/hci-platform-scaled.yaml; then
+              echo "scaled 渲染里缺少 ${name}-pdb"
+              exit 1
+            fi
+          done
+
+          # 守卫负例：会话/池状态在进程内存里的服务，扩副本必须 fail
+          for key in apiGateway schedulerService kbService; do
+            if out=$(render --set "${key}.replicaCount=2" 2>&1); then
+              echo "${key}.replicaCount=2 居然渲染成功了：replica-guards.yaml 的守卫被删了或写错了"
+              exit 1
+            elif ! printf '%s' "$out" | grep -q "${key}.replicaCount 必须为 1"; then
+              echo "${key} 渲染失败但不是因为单副本守卫：$out" | head -5
+              exit 1
+            fi
+          done
+
+          # terminal-bridge 是两层守卫，且**报错来源跟上面三个不一样**：
+          #   第一层 values.schema.json 的 `maximum: 1`（Helm 先做 schema 校验）；
+          #   第二层 _helpers.tpl 的 hci.terminalBridgeGuard（实测仅在
+          #   `--skip-schema-validation` 且 enabled=true 时才会触发）。
+          # 只测第二层等于默认第一层一定生效，只测第一层则没人知道第二层还存在，
+          # 所以这里验默认路径（schema）报的是 replicaCount 上限，下面单独验模板守卫。
+          if out=$(render --set terminalBridge.replicaCount=2 2>&1); then
+            echo "terminalBridge.replicaCount=2 居然渲染成功了：values.schema.json 的 maximum:1 被删了"
+            exit 1
+          #  比对文案时不能绑 Helm 版本：同一份 schema 越界，v3.20 输出
+          #  "- at '/terminalBridge/replicaCount': maximum: got 2, want 1"，
+          #  而 CI 的 v3.17.3 输出 "- terminalBridge.replicaCount: Must be less than
+          #  or equal to 1"。第一版只匹配本地文案 → 本地全绿、CI 红。
+          #  所以断言要求「键名 + 越界语义」同时出现，两种格式都盖得住。
+          elif ! printf '%s' "$out" | grep -Eq "terminalBridge[./]replicaCount.*(maximum|less than or equal to)"; then
+            echo "terminal-bridge 渲染失败但不是因为 schema 的副本上限：$out" | head -5
+            exit 1
+          fi
+          if out=$(render --set terminalBridge.enabled=true \
+                         --set terminalBridge.replicaCount=2 \
+                         --skip-schema-validation 2>&1); then
+            echo "跳过 schema 后 terminal-bridge 的模板守卫也没拦住：hci.terminalBridgeGuard 成了死代码"
+            exit 1
+          elif ! printf '%s' "$out" | grep -q "terminalBridge.replicaCount 必须为 1"; then
+            echo "terminal-bridge 模板守卫拦住了但不是这条原因：$out" | head -5
+            exit 1
+          fi
 
       # 数值型环境变量必须是纯十进制：Helm 把 values 里的数字解析为 float64，
       # 模板里直接 `| quote` 会用 %v 格式化，8388608 会变成 "8.388608e+06"。

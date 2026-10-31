@@ -89,6 +89,20 @@ tempo:
 prometheus:
   enabled: true
   image: prom/prometheus:v2.52.0
+  # TSDB 数据目录必须是 PVC，不得回退 emptyDir。
+  # 2026-10-30 那次成片误报的物理根因就在 emptyDir：checksum/rules 变化触发重启
+  # → TSDB 全清 → GatewayServerErrorFirstSeen 的 `offset 10m` 落进本实例没有的
+  # 数据区间 → 存量 5xx 序列全被判成「刚诞生」，一次性 firing 9 条。
+  # 持久化后，「配置变更重启」不再等于「丢掉判断依据」，告警语义才成立。
+  #
+  # 容量 10Gi 的来源（不是拍脑袋）：现网实测启动 78 分钟 TSDB 占用 13.7 MB
+  # ≈ 253 MB/天，retention 7d ≈ 1.8 GB；10Gi 留约 5 倍余量给服务与序列增长
+  # （每新增一个 5xx code/service/method 组合就多一条序列）。
+  # 单节点磁盘 2.1T / 可用 1010G，10Gi 占比可忽略。
+  # StorageClass 同 loki/tempo：存量安装保持 local-path（PVC storageClassName
+  # 创建后不可变，upgrade 改不了）；全新安装可换 local-path-retain。
+  storage: 10Gi
+  storageClass: local-path
   resources:
     requests:
       cpu: "100m"

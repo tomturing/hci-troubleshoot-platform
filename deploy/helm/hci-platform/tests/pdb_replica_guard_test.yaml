@@ -1,0 +1,66 @@
+# PDB 覆盖面 + 单副本守卫的渲染期断言。
+#
+# 为什么这几个行为要单独有 unittest（CI 里另有 shell 断言，两层不重复）：
+# 2026-10-30 的真实故障是「源码里看得到 PDB 模板，渲染结果里一个都没有」，
+# 而当时唯一的检查是人工看 values。shell 门禁查的是「整份渲染结果的一致性」，
+# 本文件查的是「单条模板的判定边界」——副本数跨阈值时渲染/不渲染必须精确翻转，
+# 守卫必须在正确的键上报错。两者缺一：只留 shell 的话，「列表漏了一个服务」和
+# 「阈值写成了 > 而不是 >=」在渲染结果上看起来是同一种错。
+suite: "PDB 覆盖面与单副本守卫"
+templates:
+  - pdb.yaml
+tests:
+  - it: "默认 values（全部单副本）不得渲染出任何 PDB"
+    set:
+      workloadDefaults.pdb.enabled: true
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "replicas=2 的服务必须渲染出自己的 PDB，且 minAvailable 取统一值"
+    set:
+      workloadDefaults.pdb.enabled: true
+      caseService.replicaCount: 2
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: PodDisruptionBudget
+      - equal:
+          path: metadata.name
+          value: case-service-pdb
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - exists:
+          path: spec.selector.matchLabels
+
+  - it: "阈值必须是 2：1 副本不渲染、3 副本渲染"
+    set:
+      workloadDefaults.pdb.enabled: true
+      conversationService.replicaCount: 3
+      agentService.replicaCount: 1
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: metadata.name
+          value: conversation-service-pdb
+
+  - it: "workloadDefaults.pdb.enabled=false 时整体关闭（一键停用而不必逐服务删）"
+    set:
+      workloadDefaults.pdb.enabled: false
+      caseService.replicaCount: 2
+      conversationService.replicaCount: 2
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: "被 enabled 开关关掉的服务不得渲染 PDB（否则孤儿 PDB 会挡住整场驱逐）"
+    set:
+      workloadDefaults.pdb.enabled: true
+      kbService.enabled: false
+      kbService.replicaCount: 2
+    asserts:
+      - hasDocuments:
+          count: 0
