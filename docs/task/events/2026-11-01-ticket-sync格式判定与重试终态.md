@@ -63,10 +63,10 @@ archive.unlink(missing_ok=True)  # 归档不再需要，先删掉腾空间
 
 | 问题 | 改动 | 位置 |
 |---|---|---|
-| P0-1 | 新增 `detect_archive_format()`：按魔数（zip/rar/7z/gzip/xz/bz2/tar@257）判定真实格式，扩展名只作兜底；`_untar` 按格式选 `-xf/-xzf/-xJf/-xjf`；新增 `7z` 解压通道 | `app/extractor.py` |
-| P0-2 | 归档保留到**解压全部成功后、publish 之前**才释放；顶层归档从 `_find_archives`/`_tree_stats` 显式排除；磁盘余量不足时才提前释放 | `app/extractor.py`、`app/main.py` |
-| P1-1 | `MAX_RETRY_ATTEMPTS=6` 转终态；`TERMINAL_ERROR_CODES` 首次即终态；终态不进 `retry_ticket_ids()`、`create_auto` 直接让路；`job.message` 追加"已停止自动重试，可手动重试"；`/artifacts` 暴露 `retry.exhausted` | `app/main.py` |
-| P1-2 | 7 天补扫按 `DEEP_SCAN_MIN_INTERVAL_SECONDS=300` 节流（`JobRegistry.last_deep_scan_at`） | `app/main.py` |
+| P0-1 | 新增 `detect_archive_format()`：按魔数（zip/rar/7z/gzip/xz/bz2/tar@257）判定真实格式，扩展名只作兜底；`_untar` 按格式选 `-xf/-xzf/-xJf/-xjf`；新增 `7z` 解压通道 | `tools/ticket-sync/app/extractor.py` |
+| P0-2 | 归档保留到**解压全部成功后、publish 之前**才释放；顶层归档从 `_find_archives`/`_tree_stats` 显式排除；磁盘余量不足时才提前释放 | `tools/ticket-sync/app/extractor.py`、`tools/ticket-sync/app/main.py` |
+| P1-1 | `MAX_RETRY_ATTEMPTS=6` 转终态；`TERMINAL_ERROR_CODES` 首次即终态；终态不进 `retry_ticket_ids()`、`create_auto` 直接让路；`job.message` 追加"已停止自动重试，可手动重试"；`/artifacts` 暴露 `retry.exhausted` | `tools/ticket-sync/app/main.py` |
+| P1-2 | 7 天补扫按 `DEEP_SCAN_MIN_INTERVAL_SECONDS=300` 节流（`JobRegistry.last_deep_scan_at`） | `tools/ticket-sync/app/main.py` |
 
 ### 关键设计取舍
 
@@ -85,7 +85,7 @@ archive.unlink(missing_ok=True)  # 归档不再需要，先删掉腾空间
   并在 `test_scan_guard.py` 补节流用例）。
 - 真实数据：`Q2026102800262.zip`（6 261 637 120 字节，与远端一致）`tar -tf` 可正常列出
   5 个 `.tgz`；修复后 `detect_archive_format` 返回 `("tar", "magic")`，不再走 `unzip`。
-- 待部署验证：宿主机升级走 `deploy/install-user.sh`（宠物部署，不走 ArgoCD），部署后
+- 待部署验证：宿主机升级走 `tools/ticket-sync/deploy/install-user.sh`（宠物部署，不走 ArgoCD），部署后
   三个 `archive-corrupt` 工单应转为 `ready`；6 个终态工单应从 `retries` 循环中退出。
 
 ## 遗留
