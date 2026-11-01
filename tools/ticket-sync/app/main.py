@@ -76,6 +76,11 @@ STALE_WORKSPACE_SECONDS = 2 * 3600
 # 不该立刻被拉回来"的余量。
 TOMBSTONE_RETENTION_DAYS = 30
 
+# 单轮自动入队的硬上限。2026-11-01 的事故里，扫描窗口一放宽就把 57 个从未同步
+# 过的历史归档一次性入队、吃掉 766 GiB。这个上限保证同类判据错误最多只放大成
+# 5 个任务，而正常一天的新工单量远小于它；未入队的顺延到 30 秒后的下一轮。
+MAX_AUTO_JOBS_PER_SCAN = 5
+
 
 class JobConflict(Exception):
     """同一工单已有任务在执行。"""
@@ -332,6 +337,14 @@ class JobRegistry:
 
     def active_ticket_ids(self) -> set[str]:
         return {job.ticket_id for job in self.jobs.values() if job.phase in RUNNING_PHASES}
+
+    def retry_ticket_ids(self) -> set[str]:
+        """有失败记录、处于退避中的工单号。
+
+        自动补扫只认这些——它们是"同步意图"的证据。窗口内的历史存量没有这条
+        记录，就不该被当成漏同步重新拉一遍。
+        """
+        return set(self._retries)
 
     def _forget_ticket(self, ticket_id: str) -> None:
         """产物被删除后清理记账与历史，并留下墓碑。
@@ -726,6 +739,52 @@ async def lifespan(app: FastAPI):
     logger.info("服务退出 已终止任务数=%d", len(pending))
 
 
+async def _auto_discover(cfg: Config, registry: JobRegistry, now: datetime) -> int:
+    """自动发现候选：当天新归档 + 有失败记录的旧归档，并做单轮限流。
+
+    为什么不能按「最近 N 天」一刀切：2026-11-01 把窗口放到 7 天后，第一轮就把
+    95 个归档里 57 个**从未同步过**的历史工单全部入队，一次吃掉 766 GiB。
+    历史存量不是"漏同步"——客户从来没要求同步它们。
+
+    真正要解决的是"昨天失败的任务今天还能重试"，所以第二路只认 `retries`
+    里有失败记录的工单：那才是"同步意图"的证据。
+    """
+    candidates: dict[str, RemoteArchive] = {
+        archive.ticket_id: archive for archive in await list_recent_archives(cfg, 1, now)
+    }
+
+    retry_ids = registry.retry_ticket_ids()
+    if retry_ids and cfg.auto_scan_days > 1:
+        looked_back = await list_recent_archives(cfg, cfg.auto_scan_days, now)
+        for archive in looked_back:
+            if archive.ticket_id in retry_ids:
+                candidates.setdefault(archive.ticket_id, archive)
+        logger.info(
+            "失败任务补扫 窗口=%d天 待重试=%d 候选合计=%d",
+            cfg.auto_scan_days,
+            len(retry_ids),
+            len(candidates),
+        )
+
+    created = 0
+    for archive in candidates.values():
+        if created >= MAX_AUTO_JOBS_PER_SCAN:
+            # 判据再出错，最多也只放大成这么多任务。
+            logger.warning(
+                "单轮自动入队已达上限 %d，本轮剩余 %d 个顺延到下一轮",
+                MAX_AUTO_JOBS_PER_SCAN,
+                len(candidates) - created,
+            )
+            break
+        try:
+            if await registry.create_auto(archive) is not None:
+                created += 1
+        except JobConflict:
+            # 手动按钮刚好先入队时，自动扫描只需跳过本轮。
+            continue
+    return created
+
+
 async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
     """每 30 秒扫描远端归档，并按本地时间每日执行保留期清理。"""
     last_cleanup_date = None
@@ -765,13 +824,7 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
                 last_cleanup_date = now.date()
 
             if cfg.auto_sync_enabled:
-                archives = await list_recent_archives(cfg, cfg.auto_scan_days, now)
-                for archive in archives:
-                    try:
-                        await registry.create_auto(archive)
-                    except JobConflict:
-                        # 手动按钮刚好先入队时，自动扫描只需跳过本轮。
-                        continue
+                await _auto_discover(cfg, registry, now)
         except asyncio.CancelledError:
             raise
         except TicketError as error:
