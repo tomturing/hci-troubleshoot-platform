@@ -399,6 +399,12 @@ def has_usable_logs(root: Path, max_depth: int = 2) -> bool:
         name = entry.name.lower()
         if name == "log_list.json" or name.startswith("sp_"):
             return True
+        # 采集端还有第二种形态：顶层是 `<IP>-<时间戳>/sf/log/...`，既没有
+        # log_list.json 也没有 sp_*，但日志齐全（实测 Q2026102800262 解出 5 个
+        # 节点目录、3753 个 .log、26.4 GiB，旧判据却报"可能仅含转储文件"）。
+        # 只查一层 `sf/log` 是否存在，成本与顶层目录数成正比，不做全树遍历。
+        if entry.is_dir() and (entry / "sf" / "log").is_dir():
+            return True
 
     if max_depth <= 0:
         return False
