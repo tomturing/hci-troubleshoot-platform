@@ -4,7 +4,8 @@
 这是有意的取舍——为内部工具引入持久化队列，复杂度远高于它解决的问题。
 
 单实例 + 内存状态带来两个必须显式处理的点：
-1. 重启后 .tmp 里的半成品必须清空，否则会一直占着磁盘；
+1. 重启后 .tmp 里的半成品**不能**无脑清空：保住已下载的归档才有 rsync 续传，
+   只回收超龄残留（STALE_WORKSPACE_SECONDS），否则一个坏包失败一次就要重拉几十 GiB；
 2. 取消要真的杀掉子进程，不能只把状态改成 cancelled。
 """
 
@@ -50,7 +51,7 @@ from .models import (
     TicketError,
     validate_ticket_id,
 )
-from .publisher import cleanup_workspace, prune_trash, publish
+from .publisher import cleanup_stale_workspaces, prepare_workspace, prune_trash, publish
 from .store import Store
 
 logger = logging.getLogger("ticket-sync")
@@ -64,6 +65,11 @@ VERSION = "1.0.0"
 # 一个必然失败的包（层数超限、体积超限、坏包）因此会被无限重拉：
 # 实测单工单 192 次、累计约 450 GiB 无效流量，并把正常工单挤在队列后面。
 RETRY_BACKOFF_SECONDS = (600, 1800, 7200, 21600)
+
+# `.tmp` 半成品的保留时长。work_dir 按工单号固定后，失败残留是"续传的本钱"，
+# 重启不该让 65 GiB 的下载从头再来；但也不能无限累积，超龄的由启动自检
+# 与每日维护回收。选 2 小时：覆盖一次正常的慢速下载，又不至于把垃圾留过夜。
+STALE_WORKSPACE_SECONDS = 2 * 3600
 
 
 class JobConflict(Exception):
@@ -380,7 +386,11 @@ class JobRegistry:
 
     async def _run(self, job: Job) -> None:
         ticket_id = job.ticket_id
-        work_dir = self.cfg.tmp_dir() / f"{ticket_id}-{job.job_id}"
+        # 目录名只用工单号、不带 job_id：带 job_id 意味着每次重试都是全新目录，
+        # rsync --partial 永远找不到上次的文件，65 GiB 级的包一旦失败就要从 0 重来。
+        # 同工单串行由 RUNNING_PHASES 保证，这里不会有两个任务共用同一目录。
+        work_dir = self.cfg.tmp_dir() / ticket_id
+        archive_name = f"{ticket_id}.zip"
 
         try:
             async with self._slots:
@@ -388,6 +398,10 @@ class JobRegistry:
                 job.phase = Phase.FETCHING
                 job.updated_at = _now()
                 self._persist(job)
+
+                # 上次失败留下的解压产物必须先清掉，只留归档供 rsync 续传，
+                # 否则新旧产物混在一起，发布会把脏目录推给用户。
+                prepare_workspace(work_dir, archive_name)
 
                 await self._reject_non_log_payload(job)
 
@@ -423,17 +437,9 @@ class JobRegistry:
                 replaced = publish(work_dir, self.cfg.root / ticket_id, self.cfg.trash_dir())
                 prune_trash(self.cfg.trash_dir())
 
-                # 把"何时同步完、多大、有没有日志"固化成显式事实：
-                # 清理与容量判断不再依赖目录 mtime，也不用每天全盘扫描。
-                has_logs = has_usable_logs(self.cfg.root / ticket_id)
-                write_sync_meta(
-                    self.cfg.root / ticket_id,
-                    completedAt=_now().timestamp(),
-                    bytes=stats.bytes,
-                    files=stats.files,
-                    hasLogs=has_logs,
-                )
-
+                # 产物已经原子落盘——从这一刻起「本次同步成功」是既成事实。
+                # 后面的元数据、记账都只是辅助事实，任何一步失败都不能把它改判成
+                # failed：用户看到 failed 会点重试，几十 GiB 的包就要再完整拉一遍。
                 job.extracted_bytes = stats.bytes
                 job.file_count = stats.files
                 job.current_archive = None
@@ -444,33 +450,50 @@ class JobRegistry:
                     job.message = (
                         f"{stats.unreadable_archives} 个归档工具无法解压，已保留原压缩文件"
                     )
-                # 「流程跑通」不等于「产物可用」：实测 Q2026102101911 解出 65 GiB
-                # 的 kasi/kasi.dump，状态却是 ready，用户点进去无日志可看。
-                if not has_logs:
-                    suffix = "产物中未发现日志清单（log_list.json / sp_*），可能仅含转储文件"
-                    job.message = f"{job.message}；{suffix}" if job.message else suffix
                 # 深度上限从「整单失败」改为「停止下钻」后，截断信息不能静默：
                 # 用户需要知道产物里少了更深层的附件，而不是以为日志齐了。
                 if stats.depth_truncated:
-                    suffix = (
-                        f"{stats.depth_truncated} 个归档超出嵌套层数上限，未继续解压"
-                    )
+                    suffix = f"{stats.depth_truncated} 个归档超出嵌套层数上限，未继续解压"
                     job.message = f"{job.message}；{suffix}" if job.message else suffix
+
+                try:
+                    # 把"何时同步完、多大、有没有日志"固化成显式事实：
+                    # 清理与容量判断不再依赖目录 mtime，也不用每天全盘扫描。
+                    has_logs = has_usable_logs(self.cfg.root / ticket_id)
+                    # 「流程跑通」不等于「产物可用」：实测 Q2026102101911 解出 65 GiB
+                    # 的 kasi/kasi.dump，状态却是 ready，用户点进去无日志可看。
+                    if not has_logs:
+                        suffix = "产物中未发现日志清单（log_list.json / sp_*），可能仅含转储文件"
+                        job.message = f"{job.message}；{suffix}" if job.message else suffix
+                    write_sync_meta(
+                        self.cfg.root / ticket_id,
+                        completedAt=_now().timestamp(),
+                        bytes=stats.bytes,
+                        files=stats.files,
+                        hasLogs=has_logs,
+                    )
+                    # 产物用量单独记账：容量判断只读这张表，不再遍历目录算体积。
+                    try:
+                        dir_mtime = (self.cfg.root / ticket_id).stat().st_mtime
+                    except OSError:
+                        dir_mtime = None
+                    self._store.upsert_artifact(
+                        ticket_id,
+                        stats.bytes,
+                        stats.files,
+                        has_logs,
+                        _now().timestamp(),
+                        dir_mtime,
+                    )
+                except Exception as error:  # noqa: BLE001 - 收尾失败不能否定已落盘的产物
+                    logger.exception(
+                        "ticket=%s job=%s 产物已就绪但收尾失败 %s", ticket_id, job.job_id, error
+                    )
+                    suffix = "产物已就绪，但同步元数据写入失败，请检查磁盘与目录权限"
+                    job.message = f"{job.message}；{suffix}" if job.message else suffix
+
                 job.updated_at = _now()
                 self._persist(job)
-                # 产物用量单独记账：容量判断只读这张表，不再遍历目录算体积。
-                try:
-                    dir_mtime = (self.cfg.root / ticket_id).stat().st_mtime
-                except OSError:
-                    dir_mtime = None
-                self._store.upsert_artifact(
-                    ticket_id,
-                    stats.bytes,
-                    stats.files,
-                    has_logs,
-                    _now().timestamp(),
-                    dir_mtime,
-                )
                 self._retries.pop(ticket_id, None)
                 logger.info(
                     "ticket=%s job=%s 完成 层数=%d 文件=%d 字节=%d 旧版本=%s",
@@ -508,9 +531,10 @@ class JobRegistry:
             logger.exception("ticket=%s job=%s 未预期异常 %s", ticket_id, job.job_id, error)
             self._note_failure(ticket_id)
         finally:
-            # 成功时 work_dir 已被 rename 走，这里是空操作；
-            # 失败与取消时清理半成品，避免 .tmp 累积。
-            cleanup_workspace(work_dir)
+            # 成功时 work_dir 已被 rename 走，这里是空操作。
+            # 失败与取消时只清解压产物、保留已下载的归档，下次重试才有得续传；
+            # 陈旧残留交给每日维护按年龄回收，不再"每次失败都删干净"。
+            prepare_workspace(work_dir, archive_name)
 
     async def _reject_non_log_payload(self, job: Job) -> None:
         """下载前识别非日志载荷（vmcore 等），避免为几十 GiB 的转储白耗资源。
@@ -643,6 +667,13 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
                 removed = await registry.prune_expired(now)
                 logger.info("本地保留期检查完成 retention_days=%d removed=%d", cfg.retention_days, removed)
                 cap_removed, cap_freed = await registry.prune_capacity(now)
+                # .tmp 残留按年龄回收：失败残留是续传的本钱，不能一失败就删，
+                # 但也不能无限累积。与容量检查同批执行，避免多开一趟遍历。
+                stale = await asyncio.to_thread(
+                    cleanup_stale_workspaces, cfg.tmp_dir(), STALE_WORKSPACE_SECONDS
+                )
+                if stale:
+                    logger.info("清理陈旧临时目录 count=%d", stale)
                 elapsed = time.monotonic() - started
                 logger.info(
                     "容量检查完成 上限=%.1fGiB 删除=%d 释放=%.1fGiB elapsed_ms=%.0f",
@@ -832,7 +863,11 @@ async def metrics(request: Request) -> Response:
 
 
 def _prepare_dirs(cfg: Config) -> None:
-    """启动自检：目录可写、.tmp 清空。任何一个不满足都直接启动失败。"""
+    """启动自检：目录可写、回收陈旧半成品。任何一个不满足都直接启动失败。
+
+    这里**不再无差别清空** `.tmp`：work_dir 按工单号固定后，保住已下载的归档
+    才能让 `rsync --partial` 跨重启续传。只回收超龄残留，避免边下边清。
+    """
     cfg.root.mkdir(parents=True, exist_ok=True)
     cfg.tmp_dir().mkdir(parents=True, exist_ok=True)
     cfg.trash_dir().mkdir(parents=True, exist_ok=True)
@@ -845,11 +880,9 @@ def _prepare_dirs(cfg: Config) -> None:
     finally:
         probe.unlink(missing_ok=True)
 
-    for entry in cfg.tmp_dir().iterdir():
-        if entry.is_dir():
-            shutil.rmtree(entry, ignore_errors=True)
-        else:
-            entry.unlink(missing_ok=True)
+    removed = cleanup_stale_workspaces(cfg.tmp_dir(), STALE_WORKSPACE_SECONDS)
+    if removed:
+        logger.info("启动自检：已回收陈旧临时目录 count=%d", removed)
 
 
 def _configure_logging() -> None:
