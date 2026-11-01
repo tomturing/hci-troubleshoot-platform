@@ -171,7 +171,7 @@ queued ──► fetching ──► extracting ──► ready
 | 归档 < 64 字节（采集端写坏的占位包） | 删除并跳过 | 日志 `跳过占位=N` |
 | `.rar` 解不开（unrar 与 p7zip 都不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
 | 归档只含转储（vmcore / kdump / `.core` / `.dump` / `.dmp`），无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
-| 解压后产物里既无 `log_list.json`、`sp_*`，也没有 `<节点目录>/sf/log/` | 仍发布，但 `job.message` 明确提示"可能仅含转储文件" | `job.message` |
+| 解压后产物里既无 `log_list.json`、`sp_*`，也没有任意层级的 `<节点目录>/sf/log/`（探测深度 ≤3、最多 200 个目录） | 仍发布，但 `job.message` 明确提示"可能仅含转储文件" | `job.message` |
 
 嵌套层数上限（`TICKET_MAX_DEPTH`）是**停止下钻的护栏，不是整单失败的判据**：
 达到上限时保留已解出的产物、把剩余归档计入 `depth_truncated` 并在 `job.message`

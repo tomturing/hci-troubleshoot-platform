@@ -172,6 +172,23 @@ class UsableLogsTest(unittest.TestCase):
         (node / "kubelet.log").write_text("x", encoding="utf-8")
         self.assertTrue(has_usable_logs(self.root))
 
+    def test_deep_vs_node_dir_is_usable(self) -> None:
+        """实测形态：`Q.../vs-<时间>/<IP>-<时间>/sf/log/...`（Q2026102700874）。
+
+        旧判据只认顶层 `sf/log`，三层嵌套的完整日志包同样被误报为"仅含转储文件"。
+        """
+        node = (
+            self.root
+            / "Q2026010100001"
+            / "vs-20261028-0951"
+            / "80.20.144.53-20261028-0953"
+            / "sf"
+            / "log"
+        )
+        node.mkdir(parents=True)
+        (node / "kblog.log").write_text("x", encoding="utf-8")
+        self.assertTrue(has_usable_logs(self.root))
+
     def test_dump_only_payload_is_not_usable(self) -> None:
         inner = self.root / "Q2026010100001" / "kasi"
         inner.mkdir(parents=True)
