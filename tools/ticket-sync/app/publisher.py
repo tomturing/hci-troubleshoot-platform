@@ -1,7 +1,7 @@
 """原子发布：把解压完成的临时目录切换到正式路径。
 
 唯一约束：work_dir 与 final_dir 必须在同一文件系统。
-两者都在 <root> 下（.tmp/<id>-<job> 与 <id>），因此 rename 是原子的，
+两者都在 <root> 下（.tmp/<id> 与 <id>），因此 rename 是原子的，
 且不需要额外空间——这是用户永远看不到半成品目录的根本保证。
 """
 
@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import stat
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -78,6 +79,71 @@ def cleanup_workspace(work_dir: Path) -> None:
         logger.error("清理临时目录失败 path=%s error=%s 残留需人工或下次启动处理", work_dir, exc)
         return
     logger.info("已清理临时目录 path=%s", work_dir)
+
+
+def prepare_workspace(work_dir: Path, keep: str) -> int:
+    """为「可续传」准备临时目录：只保留已下载的归档，其余解压产物全部清掉。
+
+    为什么必须清：work_dir 现在按工单号固定（不再带 job_id），上次失败留下的
+    半套解压产物会和这次解出来的混在一起，publish 出去的目录就是脏的。
+    为什么必须留归档：65 GiB 级的包重拉一次要几十分钟，`rsync --partial`
+    只有看到上次的文件才谈得上续传。
+
+    返回清理条目数。
+    """
+    if not work_dir.is_dir():
+        return 0
+
+    removed = 0
+    for entry in work_dir.iterdir():
+        # rsync --inplace 直接写目标文件；仍保留点开头的同名临时文件以防万一。
+        if entry.name == keep or entry.name.startswith(f".{keep}."):
+            continue
+        try:
+            if entry.is_dir():
+                _make_removable(entry)
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError as exc:
+            logger.warning("清理临时条目失败 path=%s error=%s", entry, exc)
+            continue
+        removed += 1
+    return removed
+
+
+def cleanup_stale_workspaces(tmp_root: Path, max_age_seconds: float) -> int:
+    """回收 `.tmp` 下超龄的半成品，返回清理条目数。
+
+    work_dir 按工单号固定之后，失败残留会一直留着供续传——这必须有回收阀门，
+    否则一个再也不会被重试的工单会永久占着几十 GiB。
+    判据用 mtime：`rsync --inplace` 持续写入会不断刷新它，
+    所以"正在下载"的目录不会被误判成陈旧。
+    """
+    if not tmp_root.is_dir():
+        return 0
+
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    for entry in tmp_root.iterdir():
+        try:
+            info = entry.stat()
+        except OSError:
+            continue
+        if info.st_mtime > cutoff:
+            continue
+        try:
+            if entry.is_dir():
+                _make_removable(entry)
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError as exc:
+            logger.error("回收陈旧临时目录失败 path=%s error=%s", entry, exc)
+            continue
+        removed += 1
+        logger.info("已回收陈旧临时目录 path=%s age_min=%.0f", entry, (time.time() - info.st_mtime) / 60)
+    return removed
 
 
 def _make_removable(root: Path) -> None:

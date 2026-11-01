@@ -32,7 +32,7 @@
       │
       ├─ 每 30s SSH 扫描 /sf/log 当天归档，本地缺失则自动入队
       ├─ 每天清理 /sf/tickets 下超过 7 天的工单目录
-      ├─ ① rsync over ssh 拉取 → /sf/tickets/.tmp/<id>-<uuid>/
+      ├─ ① rsync over ssh 拉取 → /sf/tickets/.tmp/<工单号>/（失败保留，供续传）
       ├─ ② 逐层解压、逃逸清理、配额校验
       └─ ③ rename 原子发布 → /sf/tickets/<工单号>/
       ▼
@@ -45,7 +45,7 @@
 /sf/tickets/
 ├── <工单号>/                 最终产物（不套额外层级，DSH 直接选这一层）
 │   └── .sync-meta.json       同步事实：completedAt / bytes / files / hasLogs
-├── .tmp/<id>-<uuid>/         解压中间态，服务启动时清空
+├── .tmp/<工单号>/            解压中间态；失败保留归档供续传，超 2 小时回收
 ├── .trash/<id>-<时间戳>/      被替换的旧版本（保留最近一次）
 └── .ticket-sync.db           SQLite：任务历史 + 产物用量
 ```
@@ -70,7 +70,13 @@ queued ──► fetching ──► extracting ──► ready
 - 任务状态落 SQLite（`<产物根>/.ticket-sync.db`），重启后 `/jobs`、`/artifacts` 仍能查到历史。
   重启时遗留的 `queued/fetching/extracting` 会被改写为 `interrupted`——它与 `failed`
   必须区分：前者重新触发通常就能成功，后者才需要排查日志源。
-- `.tmp` 半成品在启动时清空，但产物与历史不受影响。
+- `.tmp` 半成品**不再在启动时无差别清空**：目录按工单号固定，保住已下载的归档
+  才能让 `rsync --partial` 跨重启续传。只有超过 2 小时（`STALE_WORKSPACE_SECONDS`，
+  与 unit 里 `ExecStartPre` 的 `-mmin +120` 对齐）未更新的残留会被回收；
+  正在下载的目录 mtime 一直在刷新，不会被误删。
+- publish 返回之后「本次同步成功」就是既成事实：之后的写 meta、记账都属于收尾，
+  任一步失败只追加告警、状态保持 `ready`。若改判成 `failed`，用户点重试会把
+  几十 GiB 的包完整重拉一遍。
 
 ### 1.5 接口
 
@@ -79,7 +85,7 @@ queued ──► fetching ──► extracting ──► ready
 | `POST` | `/jobs` | 创建同步任务，body `{"ticketId":"Q2026102100147"}`，返回 202 / 400 / 409 |
 | `GET` | `/jobs/{ticketId}` | 查询阶段与进度（字节、文件数、当前归档、错误码） |
 | `GET` | `/artifacts` | 本地工单目录 + 自动/手动任务总览（DSH 控制台使用） |
-| `DELETE` | `/jobs/{ticketId}` | 取消任务并清理 `.tmp` |
+| `DELETE` | `/jobs/{ticketId}` | 取消任务（已下载归档保留，供下次续传） |
 | `GET` | `/health` | 健康、磁盘余量、活跃任务数 |
 | `GET` | `/metrics` | Prometheus 文本指标：磁盘余量、活跃任务、任务分布、维护耗时与累计淘汰量 |
 

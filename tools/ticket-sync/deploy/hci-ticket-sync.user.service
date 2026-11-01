@@ -19,8 +19,11 @@ Environment=TICKET_LISTEN_PORT=18080
 # shutil.which("unrar") 会静默落空，RAR5 又退回"保留原件"。
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
-# 重启后内存里的任务表已丢失，.tmp 里的半成品不会再有人处理，必须清空。
-ExecStartPre=/bin/sh -c 'rm -rf /sf/tickets/.tmp/* 2>/dev/null || true'
+# 重启不再无差别清空 .tmp：work_dir 按工单号固定，保住已下载的归档才能让
+# rsync --partial 续传——否则一个 65 GiB 的包失败一次就要从 0 重拉几十 GiB。
+# 只回收 2 小时未更新的残留，与代码里的 STALE_WORKSPACE_SECONDS 保持一致；
+# 正在下载的目录 mtime 一直在被刷新，不会被误删。
+ExecStartPre=/bin/sh -c 'find /sf/tickets/.tmp -mindepth 1 -maxdepth 1 -mmin +120 -exec rm -rf {} + 2>/dev/null || true'
 
 # 运行身份由用户管理器决定（当前登录用户 node），恰好满足 /sf/tickets 属主 node:node。
 ExecStart=%h/.local/share/hci-ticket-sync/.venv/bin/uvicorn app.main:app \
