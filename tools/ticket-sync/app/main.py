@@ -68,6 +68,34 @@ VERSION = "1.0.0"
 # 实测单工单 192 次、累计约 450 GiB 无效流量，并把正常工单挤在队列后面。
 RETRY_BACKOFF_SECONDS = (600, 1800, 7200, 21600)
 
+# 自动重试的硬上限。退避只降低频率，不改变"永远不成功"这件事：阶梯到 6h 封顶后
+# 实测仍有 6 个工单（12.2 GiB）在两小时一次的循环里空转，永久占用并发槽，
+# 而且只要 retries 非空，扫描就一直走 7 天宽窗口。达到上限转终态，
+# 由人在界面上决定要不要手动重试（手动 POST 永远不受限）。
+MAX_RETRY_ATTEMPTS = 6
+
+# 确定性失败：重试不会改变结果，直接转终态，不占用任何重试额度。
+# - non-log-payload：远端就是转储包，重下多少次都不是日志；
+# - bad-password：密码错是配置问题，重试等于用同一个错密码再试一次；
+# - too-large / quota-exceeded：归档本身超出服务能力，重试结果相同；
+# - invalid-ticket-id / not-found：远端状态确定。
+TERMINAL_ERROR_CODES: frozenset[ErrorCode] = frozenset(
+    {
+        ErrorCode.NON_LOG_PAYLOAD,
+        ErrorCode.BAD_PASSWORD,
+        ErrorCode.TOO_LARGE,
+        ErrorCode.QUOTA_EXCEEDED,
+        ErrorCode.INVALID_TICKET_ID,
+        ErrorCode.NOT_FOUND,
+    }
+)
+
+# 7 天宽窗口扫描的最小间隔。只要 retries 非空就会走宽窗口，而巡检本身是 30 秒
+# 一轮：实测每 31 秒 ssh 遍历一次 98 个归档（远端 /sf/log 共 1060 个目录），
+# 限流只挡住入队、挡不住这趟遍历。补扫的语义是"给失败任务第二次机会"，
+# 5 分钟粒度足够，且能把 ssh 压力降到原来的 1/10。
+DEEP_SCAN_MIN_INTERVAL_SECONDS = 300
+
 # `.tmp` 半成品的保留时长。work_dir 按工单号固定后，失败残留是"续传的本钱"，
 # 重启不该让 65 GiB 的下载从头再来；但也不能无限累积，超龄的由启动自检
 # 与每日维护回收。选 2 小时：覆盖一次正常的慢速下载，又不至于把垃圾留过夜。
@@ -114,11 +142,19 @@ class JobConflict(Exception):
 class RetryState:
     """按工单累计的失败退避状态。
 
-    存内存而非磁盘：与服务重启后任务表丢失的口径一致，重启即重新给一次机会。
+    内存 + SQLite 双写：退避跨重启存活，否则一次部署重启就让坏包再拉一遍。
+    `failures >= MAX_RETRY_ATTEMPTS` 表示**终态**——已达到重试上限或命中确定性
+    失败（登记时直接把次数推到上限），自动扫描不再考虑它，只有手动 POST 能重新触发。
     """
 
     failures: int = 0
     next_retry_at: datetime | None = None
+
+    @property
+    def exhausted(self) -> bool:
+        # 终态统一用"次数用尽"表达，不新增数据库字段：确定性失败在登记时
+        # 直接把次数推到上限，两种终态因此共用同一套判据与恢复路径。
+        return self.failures >= MAX_RETRY_ATTEMPTS
 
     def delay_for_next(self) -> int:
         index = min(self.failures, len(RETRY_BACKOFF_SECONDS) - 1)
@@ -182,6 +218,9 @@ class JobRegistry:
         # 已同步过、产物已按策略删除的工单。自动扫描靠它区分"没同步过"与
         # "同步过但已清理"，否则扫描窗口一放宽就会删了又拉。
         self._tombstones: set[str] = set()
+        # 上次 7 天宽窗口扫描的单调时钟时间戳。宽窗口只在有失败工单时启用，
+        # 但启用后若不节流，就退化成每轮巡检都全量遍历远端归档。
+        self.last_deep_scan_at: float = 0.0
         # 持久化：任务历史与产物用量。内存表仍是运行态权威，DB 只是镜像。
         self._store = Store(cfg.state_db())
         interrupted = self._store.mark_interrupted()
@@ -306,9 +345,14 @@ class JobRegistry:
                 return None
 
             state = self._retries.get(archive.ticket_id)
-            if state is not None and state.next_retry_at is not None and _now() < state.next_retry_at:
-                # 仍在退避窗口内：本轮巡检跳过，避免把同一个坏包反复重拉。
-                return None
+            if state is not None:
+                if state.exhausted:
+                    # 终态：自动扫描一律让路。这里必须显式挡，否则宽窗口每轮都会
+                    # 重新发现它——"已放弃"就等于没有放弃。
+                    return None
+                if state.next_retry_at is not None and _now() < state.next_retry_at:
+                    # 仍在退避窗口内：本轮巡检跳过，避免把同一个坏包反复重拉。
+                    return None
 
             job = self._create_locked(archive.ticket_id, ORIGIN_AUTO)
         self._start(job, "auto")
@@ -389,8 +433,11 @@ class JobRegistry:
 
         自动补扫只认这些——它们是"同步意图"的证据。窗口内的历史存量没有这条
         记录，就不该被当成漏同步重新拉一遍。
+
+        已转终态的工单不在其中：它们"有同步意图"但"已被判定重试无意义"，
+        再拉进补扫只会让 7 天宽窗口永久开着。
         """
-        return set(self._retries)
+        return {ticket_id for ticket_id, state in self._retries.items() if not state.exhausted}
 
     def _forget_ticket(self, ticket_id: str) -> None:
         """产物被删除后清理记账与历史，并留下墓碑。
@@ -496,6 +543,9 @@ class JobRegistry:
                             {
                                 "failures": retry.failures,
                                 "nextRetryAt": retry.next_retry_at.isoformat() if retry.next_retry_at else None,
+                                # exhausted=True 表示已放弃自动重试，页面据此把
+                                # "等待重试"改为"需人工处理"，否则用户会一直等它自愈。
+                                "exhausted": retry.exhausted,
                             }
                             if retry is not None
                             else None
@@ -552,6 +602,8 @@ class JobRegistry:
                 job.updated_at = _now()
                 self._persist(job)
 
+                self._release_archive_for_space(work_dir, archive)
+
                 stats = await extract(
                     ticket_id,
                     archive,
@@ -561,6 +613,10 @@ class JobRegistry:
                     on_progress=self._extract_writer(job),
                     on_archive=self._archive_writer(job),
                 )
+
+                # 解压已全部成功，归档的续传价值消失；必须在 publish 前删掉，
+                # 否则它会跟着 work_dir 一起 rename 进产物目录。
+                self._release_archive(work_dir, archive.name)
 
                 replaced = publish(work_dir, self.cfg.root / ticket_id, self.cfg.trash_dir())
                 prune_trash(self.cfg.trash_dir())
@@ -659,7 +715,8 @@ class JobRegistry:
             job.updated_at = _now()
             self._persist(job)
             logger.error("ticket=%s job=%s 失败 %s detail=%s", ticket_id, job.job_id, error, error.detail)
-            self._note_failure(ticket_id)
+            self._note_failure(ticket_id, error.code)
+            self._append_terminal_hint(job)
         except asyncio.CancelledError:
             job.phase = Phase.CANCELLED
             job.message = "已取消"
@@ -674,6 +731,7 @@ class JobRegistry:
             self._persist(job)
             logger.exception("ticket=%s job=%s 未预期异常 %s", ticket_id, job.job_id, error)
             self._note_failure(ticket_id)
+            self._append_terminal_hint(job)
         finally:
             # 成功时 work_dir 已被 rename 走，这里是空操作。
             # 失败与取消时只清解压产物、保留已下载的归档，下次重试才有得续传；
@@ -704,30 +762,103 @@ class JobRegistry:
                 f"entries={entries[:5]}",
             )
 
-    def _note_failure(self, ticket_id: str) -> None:
+    def _note_failure(self, ticket_id: str, code: ErrorCode | None = None) -> None:
         """登记一次失败并按阶梯推迟下一次自动重试。
 
         手动 POST /jobs 不受退避限制：用户显式点击代表新的判断，
         自动巡检则必须让路，否则坏包会把带宽和磁盘反复烧掉。
+
+        两条终态路径：确定性失败（重试结果不会变）与重试次数用尽。终态只是
+        "不再自动试"，不是"禁止同步"——用户仍可手动触发。
         """
         state = self._retries.setdefault(ticket_id, RetryState())
+        # delay 必须先于 failures 自增取，否则第一次失败就会跳到第二档。
         delay = state.delay_for_next()
         state.failures += 1
-        state.next_retry_at = _now() + timedelta(seconds=delay)
+        if code in TERMINAL_ERROR_CODES:
+            # 重试次数直接推到上限，与"次数用尽"共用同一个终态判据。
+            state.failures = MAX_RETRY_ATTEMPTS
+            state.next_retry_at = None
+            reason = f"确定性失败 code={code.value}，重试不会改变结果"
+        elif state.failures >= MAX_RETRY_ATTEMPTS:
+            state.next_retry_at = None
+            reason = f"已达自动重试上限 {MAX_RETRY_ATTEMPTS} 次"
+        else:
+            state.next_retry_at = _now() + timedelta(seconds=delay)
+            reason = f"间隔={delay}s 下次自动重试={state.next_retry_at.isoformat()}"
         # 落库：只存内存的话，重启就等于"重新给坏包一次全量拉取的机会"。
-        self._store.save_retry(ticket_id, state.failures, state.next_retry_at.timestamp())
-        logger.warning(
-            "ticket=%s 失败退避 第%d次 下次自动重试=%s 间隔=%ds",
+        self._store.save_retry(
             ticket_id,
             state.failures,
-            state.next_retry_at.isoformat(),
-            delay,
+            state.next_retry_at.timestamp() if state.next_retry_at else None,
+        )
+        logger.warning(
+            "ticket=%s 失败登记 第%d次 %s%s",
+            ticket_id,
+            state.failures,
+            reason,
+            "（自动重试已停止，可手动重试）" if state.exhausted else "",
         )
 
     def _clear_retry(self, ticket_id: str) -> None:
         """成功或无需再试时，同时清掉内存与库里的退避状态。"""
         self._retries.pop(ticket_id, None)
         self._store.clear_retry(ticket_id)
+
+    def _append_terminal_hint(self, job: Job) -> None:
+        """把"已停止自动重试"写进 job.message。
+
+        页面只渲染 message，退避详情在 /artifacts 的 retry 字段里；用户看到
+        failed 但不知道后台已经放弃，就会一直等它自愈。手动重试永远可用，
+        所以文案要给出这条路。
+        """
+        state = self._retries.get(job.ticket_id)
+        if state is None or not state.exhausted:
+            return
+        if "已停止自动重试" in (job.message or ""):
+            return
+        job.message = f"{job.message or '同步失败'}（已停止自动重试，可手动重试）"
+        self._persist(job)
+
+    def _release_archive(self, work_dir: Path, archive_name: str) -> None:
+        """释放 work_dir 里的顶层归档。
+
+        时机是"解压全部成功之后、发布之前"：
+        - 早于解压完成就会毁掉续传能力（旧实现在开始解压时就 unlink，导致
+          extract 阶段失败后 work_dir 全空，下轮重试只能全量重下）；
+        - 晚于发布会跟着 rename 进产物目录，污染用户可见的目录结构。
+        """
+        target = work_dir / archive_name
+        try:
+            size = target.stat().st_size
+            target.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            # 删不掉只影响磁盘占用，不影响正确性，不能因此让同步失败。
+            logger.warning("释放归档失败 path=%s error=%s", target, exc)
+            return
+        logger.info("已释放归档 path=%s bytes=%d", target, size)
+
+    def _release_archive_for_space(self, work_dir: Path, archive: Path) -> None:
+        """余量不足以同时容纳归档与解压产物时，提前释放归档。
+
+        默认优先保续传；只有磁盘放不下两份时才牺牲它——解压中途把磁盘写满，
+        代价比重下一次更大（还会触发 min_free_bytes 熔断）。
+        """
+        try:
+            size = archive.stat().st_size
+            free = shutil.disk_usage(work_dir).free
+        except OSError:
+            return
+        if free >= size:
+            return
+        logger.warning(
+            "磁盘余量不足 free=%d archive=%d，提前释放归档（本次失败将无法续传）",
+            free,
+            size,
+        )
+        self._release_archive(work_dir, archive.name)
 
     def _progress_writer(self, job: Job):
         def callback(received: int, total: int) -> None:
@@ -821,16 +952,29 @@ async def _auto_discover(cfg: Config, registry: JobRegistry, now: datetime) -> i
 
     retry_ids = registry.retry_ticket_ids()
     if retry_ids and cfg.auto_scan_days > 1:
-        looked_back = await list_recent_archives(cfg, cfg.auto_scan_days, now)
-        for archive in looked_back:
-            if archive.ticket_id in retry_ids:
-                candidates.setdefault(archive.ticket_id, archive)
-        logger.info(
-            "失败任务补扫 窗口=%d天 待重试=%d 候选合计=%d",
-            cfg.auto_scan_days,
-            len(retry_ids),
-            len(candidates),
-        )
+        # 宽窗口补扫按分钟级节流：巡检本身 30 秒一轮，若每轮都走 7 天窗口，
+        # 就变成每 31 秒 ssh 遍历一遍近百个归档（远端 /sf/log 有 1060 个目录），
+        # 而限流只挡住入队、挡不住这趟遍历。补扫的语义是"给失败任务第二次机会"，
+        # 5 分钟粒度完全够用。
+        since_last = time.monotonic() - registry.last_deep_scan_at
+        if since_last < DEEP_SCAN_MIN_INTERVAL_SECONDS:
+            logger.info(
+                "宽窗口补扫未到间隔，本轮跳过 待重试=%d 距上次=%.0fs",
+                len(retry_ids),
+                since_last,
+            )
+        else:
+            registry.last_deep_scan_at = time.monotonic()
+            looked_back = await list_recent_archives(cfg, cfg.auto_scan_days, now)
+            for archive in looked_back:
+                if archive.ticket_id in retry_ids:
+                    candidates.setdefault(archive.ticket_id, archive)
+            logger.info(
+                "失败任务补扫 窗口=%d天 待重试=%d 候选合计=%d",
+                cfg.auto_scan_days,
+                len(retry_ids),
+                len(candidates),
+            )
 
     created = 0
     for archive in candidates.values():

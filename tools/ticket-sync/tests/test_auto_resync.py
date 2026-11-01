@@ -25,6 +25,7 @@ from app.config import Config
 from app.fetcher import RemoteArchive
 from app.main import ORIGIN_MANUAL, JobRegistry, _now
 from app.maintenance import write_sync_meta
+from app.models import ErrorCode
 
 TICKET_ID = "Q2026110100001"
 REMOTE_MTIME = 1_760_000_000.0
@@ -134,6 +135,21 @@ class RemoteUpdateResyncTest(unittest.IsolatedAsyncioTestCase):
         job = await self.registry.create_auto(self._archive(TICKET_ID))
 
         self.assertIsNone(job)
+
+    async def test_remote_update_revives_exhausted_ticket(self) -> None:
+        """重试终态挡的是"同样的输入再试一次"，而远端换包说明输入已经变了。
+
+        典型场景：客户先把转储包传错位置（`non-log-payload` 一次即终态），
+        随后重传了真正的日志包——若换包不能清除终态，自动链路就永久放弃它。
+        """
+        self._publish(TICKET_ID, remoteMtime=REMOTE_MTIME, remoteSize=REMOTE_SIZE)
+        self.registry._note_failure(TICKET_ID, ErrorCode.NON_LOG_PAYLOAD)
+        self.assertTrue(self.registry._retries[TICKET_ID].exhausted)
+
+        job = await self.registry.create_auto(self._archive(TICKET_ID, size=REMOTE_SIZE + 1))
+
+        self.assertIsNotNone(job)
+        self.assertNotIn(TICKET_ID, self.registry._retries)
 
     async def test_manual_create_still_resyncs_same_version(self) -> None:
         """手动点击不受版本判据约束：用户可能就是想重建一次本地产物。"""

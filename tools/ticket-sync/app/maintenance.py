@@ -382,14 +382,26 @@ def cleanup_expired(
     return removed
 
 
-def has_usable_logs(root: Path, max_depth: int = 2) -> bool:
+# 探测日志时的目录访问预算。判据是"有没有 sf/log"，遍历深度与目录数都必须有上限：
+# 产物动辄 5 万个文件、30 GiB，每日对账都会调用一次，不能变成全树扫描。
+LOG_PROBE_MAX_DIRS = 200
+
+
+def has_usable_logs(root: Path, max_depth: int = 3, budget: list[int] | None = None) -> bool:
     """产物里是否有可用于诊断的日志。
 
-    判据对齐采集端约定：存在 `log_list.json` 或任意 `sp_*` 条目。
-    允许下探 max_depth 层，因为实测产物会再套一层与工单号同名的目录
-    （`Q2026102700323/Q2026102700323/1.rar`）；但只对工单号形态的目录下探，
-    不进入 sp_* 子树——那是几十万文件。
+    三条判据，按代价从低到高：
+    1. 存在 `log_list.json` 或任意 `sp_*` 条目——采集端约定的日志清单形态；
+    2. 任意层级存在 `<节点目录>/sf/log/`——HCI 采集包的实际结构，实测有
+       `Q.../vs-*/<IP>-<时间>/sf/log/...` 这类三层嵌套（Q2026102700874 就是）；
+    3. 工单号同名目录继续下探（`Q.../Q.../1.rar`）。
+
+    遍历只下探目录，且受 `LOG_PROBE_MAX_DIRS` 预算约束；命中 `sp_*` 立即返回，
+    因此不会进入几十万文件的 sp_* 子树。
     """
+    if budget is None:
+        budget = [LOG_PROBE_MAX_DIRS]
+
     try:
         entries = list(root.iterdir())
     except OSError:
@@ -399,13 +411,19 @@ def has_usable_logs(root: Path, max_depth: int = 2) -> bool:
         name = entry.name.lower()
         if name == "log_list.json" or name.startswith("sp_"):
             return True
+        if entry.is_dir() and (entry / "sf" / "log").is_dir():
+            return True
 
     if max_depth <= 0:
         return False
     for entry in entries:
-        if entry.is_dir() and _TICKET_DIR.fullmatch(entry.name):
-            if has_usable_logs(entry, max_depth - 1):
-                return True
+        if not entry.is_dir() or entry.is_symlink():
+            continue
+        if budget[0] <= 0:
+            return False
+        budget[0] -= 1
+        if has_usable_logs(entry, max_depth - 1, budget):
+            return True
     return False
 
 

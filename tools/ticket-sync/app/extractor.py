@@ -27,7 +27,73 @@ logger = logging.getLogger(__name__)
 # 顺序必须长后缀在前：.tar.gz 先于 .gz 判断，否则会得到错误的去后缀结果。
 # .rar 来自客户现场自行打包的转储（实测 Q2026102700323 是 RAR5）。
 # 解压优先用 rarlab 的 unrar（RAR5 全方法），回退 p7zip 的 Rar5 解码器。
-ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar", ".zip", ".rar")
+ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar", ".zip", ".rar", ".7z")
+
+# 扩展名 → 实际格式。只作为魔数失配时的兜底，不再作为唯一判据。
+_SUFFIX_FORMAT = {
+    ".tar.gz": "tar.gz",
+    ".tgz": "tar.gz",
+    ".tar.xz": "tar.xz",
+    ".tar.bz2": "tar.bz2",
+    ".tar": "tar",
+    ".zip": "zip",
+    ".rar": "rar",
+    ".7z": "7z",
+}
+
+# 归档格式的魔数判定。
+# 为什么必须看魔数：2026-11-01 实测 Q2026102700681 / Q2026102800262 / Q2026102801855
+# 三个工单的 `<工单号>.zip` 实际是**未压缩 tar**（offset 257 是 ustar magic，
+# 内容是 10.137.x.x-时间.tgz）。旧实现按扩展名调用 unzip，必然 exit=9，
+# 被归类为 archive-corrupt 后进入永不成功的重试循环，累计 12.2 GiB 卡死。
+_MAGIC_ZIP = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+_MAGIC_RAR = b"Rar!\x1a\x07"
+_MAGIC_7Z = b"7z\xbc\xaf\x27\x1c"
+_MAGIC_GZIP = b"\x1f\x8b"
+_MAGIC_XZ = b"\xfd7zXZ\x00"
+_MAGIC_BZ2 = b"BZh"
+_TAR_MAGIC_OFFSET = 257
+_TAR_MAGIC = b"ustar"
+
+
+def _format_from_suffix(path: Path) -> str | None:
+    name = path.name.lower()
+    for suffix, fmt in _SUFFIX_FORMAT.items():
+        if name.endswith(suffix):
+            return fmt
+    return None
+
+
+def detect_archive_format(path: Path) -> tuple[str | None, str]:
+    """按魔数判定归档真实格式，返回 (格式, 判据)。
+
+    判据取值 `magic` / `suffix`，用于日志区分"我们识别错了"与"文件本身异常"。
+    只读前 512 字节：tar 的 magic 固定在 offset 257，再往后没有识别价值。
+    """
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(512)
+    except OSError:
+        return _format_from_suffix(path), "suffix"
+
+    if head[:4] in _MAGIC_ZIP:
+        return "zip", "magic"
+    if head[: len(_MAGIC_RAR)] == _MAGIC_RAR:
+        return "rar", "magic"
+    if head[:6] == _MAGIC_7Z:
+        return "7z", "magic"
+    if head[:2] == _MAGIC_GZIP:
+        return "tar.gz", "magic"
+    if head[:6] == _MAGIC_XZ:
+        return "tar.xz", "magic"
+    if head[:3] == _MAGIC_BZ2:
+        return "tar.bz2", "magic"
+    if len(head) >= _TAR_MAGIC_OFFSET + len(_TAR_MAGIC) and (
+        head[_TAR_MAGIC_OFFSET : _TAR_MAGIC_OFFSET + len(_TAR_MAGIC)] == _TAR_MAGIC
+    ):
+        return "tar", "magic"
+    # 魔数无法识别（分卷 zip、加密容器、采集端半成品等）时才回退扩展名。
+    return _format_from_suffix(path), "suffix"
 
 # 占位包阈值：合法 zip 的最小体积是空归档的 22 字节（EOCD 记录），
 # 合法 tar.gz 至少含 10 字节 gzip 头 + 1024 字节 tar 结束块。
@@ -50,19 +116,24 @@ async def extract(
     work_dir 必须是调用方新建的空目录；成功后由调用方负责原子发布。
     """
     stats = ExtractStats()
+    # 顶层归档暂存在 work_dir 内（供失败续传），必须从扫描与统计里排除。
+    staged = frozenset({archive})
 
     # 第一层：工单 zip 直接解到 work_dir 根，不额外套目录。
     # 实测归档根就是 log_list.json，套一层会让用户在选择器里多点一次。
     logger.info("ticket=%s job=%s phase=extracting depth=1 开始解压顶层归档", ticket_id, job_id)
     _notify_archive(on_archive, archive.name)
-    await _unzip(archive, work_dir, cfg.archive_password)
-    archive.unlink(missing_ok=True)  # 归档不再需要，先删掉腾空间
+    # 顶层同样走魔数判定：工单包被采集端命名为 .zip 而实际是 tar 的情况真实存在。
+    await _extract_any(archive, work_dir, cfg.archive_password, ticket_id=ticket_id, job_id=job_id)
+    # 归档不在这里删除。旧实现在解压开始时 unlink 归档"腾空间"，导致解压中途失败时
+    # work_dir 里连归档都没有，下次重试只能全量重拉——#1408 想要的续传在 extract
+    # 阶段完全失效。改为由调用方在解压成功、发布之前释放（见 JobRegistry._release_archive）。
     stats.archives += 1
     stats.depth = 1
     # 必须在扫描嵌套归档之前补齐权限：源端目录可能缺执行位，
     # 不补的话下一轮 os.walk 进不去，里面的归档会被整片漏扫。
     stats.permissions_fixed += _normalize_permissions(work_dir)
-    _audit(work_dir, cfg, stats)
+    _audit(work_dir, cfg, stats, staged)
     _notify(on_progress, stats)
 
     depth = 1
@@ -74,7 +145,9 @@ async def extract(
         # 更不能因为留在原地而在下一轮被反复扫到。
         pending = [
             path
-            for path in _drop_placeholders(_find_archives(work_dir), ticket_id, job_id, stats)
+            for path in _drop_placeholders(
+                _find_archives(work_dir, staged), ticket_id, job_id, stats
+            )
             if path not in skipped_archives
         ]
         if not pending:
@@ -133,7 +206,7 @@ async def extract(
             stats.permissions_fixed += _normalize_permissions(target)
 
         stats.depth = depth
-        _audit(work_dir, cfg, stats)
+        _audit(work_dir, cfg, stats, staged)
         _notify(on_progress, stats)
 
     logger.info(
@@ -163,8 +236,12 @@ def _notify_archive(callback: Callable[[str], None] | None, name: str) -> None:
         callback(name)
 
 
-def _find_archives(root: Path) -> list[Path]:
-    """扫描待处理的归档。不跟随符号链接目录，避免遍历到根目录之外。"""
+def _find_archives(root: Path, exclude: frozenset[Path] = frozenset()) -> list[Path]:
+    """扫描待处理的归档。不跟随符号链接目录，避免遍历到根目录之外。
+
+    `exclude` 用于排除顶层工单包本身：它为了支持续传而保留在 work_dir 里，
+    若不过滤就会被当成嵌套归档再解一次（实测会在产物里多出一层同名目录）。
+    """
     found: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [
@@ -174,8 +251,11 @@ def _find_archives(root: Path) -> list[Path]:
             path = os.path.join(dirpath, name)
             if os.path.islink(path):
                 continue
+            candidate = Path(path)
+            if candidate in exclude:
+                continue
             if name.lower().endswith(ARCHIVE_SUFFIXES):
-                found.append(Path(path))
+                found.append(candidate)
     return sorted(found)
 
 
@@ -264,7 +344,13 @@ def _target_for(archive: Path) -> Path:
     return candidate
 
 
-async def _extract_any(archive: Path, target: Path, password: str) -> None:
+async def _extract_any(
+    archive: Path,
+    target: Path,
+    password: str,
+    ticket_id: str = "",
+    job_id: str = "",
+) -> None:
     try:
         target.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -274,12 +360,34 @@ async def _extract_any(archive: Path, target: Path, password: str) -> None:
             f"无法创建解压目录 {target.name}",
             f"path={target} error={exc}",
         ) from exc
-    if archive.name.lower().endswith(".zip"):
+
+    fmt, basis = detect_archive_format(archive)
+    suffix_fmt = _format_from_suffix(archive)
+    if fmt is None:
+        raise TicketError(
+            ErrorCode.EXTRACT_FAILED,
+            f"无法识别归档格式 {archive.name}",
+            f"path={archive} head=未知魔数 扩展名={suffix_fmt}",
+        )
+    if basis == "magic" and suffix_fmt is not None and suffix_fmt != fmt:
+        # 扩展名与真实格式不一致必须留痕：这不是"坏包"，是我们的格式判据错了。
+        logger.warning(
+            "ticket=%s job=%s 归档扩展名与实际格式不一致 path=%s 扩展名=%s 实际=%s 按实际格式解压",
+            ticket_id,
+            job_id,
+            archive.name,
+            suffix_fmt,
+            fmt,
+        )
+
+    if fmt == "zip":
         await _unzip(archive, target, password)
-    elif archive.name.lower().endswith(".rar"):
+    elif fmt == "rar":
         await _unrar(archive, target, password)
+    elif fmt == "7z":
+        await _seven_zip(archive, target, password)
     else:
-        await _untar(archive, target)
+        await _untar(archive, target, fmt)
 
 
 async def _unzip(archive: Path, target: Path, password: str) -> None:
@@ -335,7 +443,7 @@ async def _unrar(archive: Path, target: Path, password: str) -> None:
                 archive.name,
                 error.detail,
             )
-    await _unrar_7z(archive, target, password)
+    await _seven_zip(archive, target, password)
 
 
 async def _unrar_binary(unrar: str, archive: Path, target: Path, password: str) -> None:
@@ -372,8 +480,9 @@ async def _unrar_binary(unrar: str, archive: Path, target: Path, password: str) 
     )
 
 
-async def _unrar_7z(archive: Path, target: Path, password: str) -> None:
-    """回退路径：用 7z 解 RAR（p7zip 内置 RAR5 解码器）。
+async def _seven_zip(archive: Path, target: Path, password: str) -> None:
+    """用 7z 解压：既是 RAR 的回退通道（p7zip 内置 RAR5 解码器），
+    也是 .7z 格式的唯一通道。
 
     注意 -o 与路径之间不能有空格，-p 同理；密码走 argv 的既有风险与 unzip 一致。
     """
@@ -415,12 +524,26 @@ async def _unrar_7z(archive: Path, target: Path, password: str) -> None:
     )
 
 
-async def _untar(archive: Path, target: Path) -> None:
+_TAR_MODE = {
+    "tar": "-xf",
+    "tar.gz": "-xzf",
+    "tar.xz": "-xJf",
+    "tar.bz2": "-xjf",
+}
+
+
+async def _untar(archive: Path, target: Path, fmt: str = "tar.gz") -> None:
+    """解 tar 及其压缩变体。
+
+    必须按实际格式选参数：`-xzf` 对未压缩 tar 会因 gzip 头缺失直接失败
+    （实测 Q2026102800262 的 .zip 其实是未压缩 tar），而 `-xf` 对 gzip 流
+    依赖 tar 版本自动识别压缩，不做假设。
+    """
     # --no-same-owner / --no-same-permissions：非 root 用户下避免 chown 失败。
     # GNU tar 默认拒绝 ../ 路径，但我们仍在解压后做一次符号链接审查，双保险。
     proc = await asyncio.create_subprocess_exec(
         "tar",
-        "-xzf",
+        _TAR_MODE.get(fmt, "-xf"),
         str(archive),
         "-C",
         str(target),
@@ -486,11 +609,16 @@ def _unzip_message(code: ErrorCode) -> str:
     }.get(code, "解压失败")
 
 
-def _audit(root: Path, cfg: Config, stats: ExtractStats) -> None:
+def _audit(
+    root: Path,
+    cfg: Config,
+    stats: ExtractStats,
+    exclude: frozenset[Path] = frozenset(),
+) -> None:
     """每层解压后的四项审查。顺序有意为之：先清链接再做统计。"""
     stats.symlinks_removed += _strip_escaped_symlinks(root)
 
-    total, count = _tree_stats(root)
+    total, count = _tree_stats(root, exclude)
     stats.bytes, stats.files = total, count
 
     if count > cfg.max_files:
@@ -592,15 +720,21 @@ def _normalize_permissions(root: Path) -> int:
     return fixed
 
 
-def _tree_stats(root: Path) -> tuple[int, int]:
-    """统计真实文件的总字节与数量，不跟随、不统计符号链接。"""
+def _tree_stats(root: Path, exclude: frozenset[Path] = frozenset()) -> tuple[int, int]:
+    """统计真实文件的总字节与数量，不跟随、不统计符号链接。
+
+    `exclude` 同样用于剔除暂存的顶层归档：它是输入缓存，不是产物。若计入，
+    `.sync-meta.json` 的 bytes 会比真实产物大一个归档体积，容量淘汰随之失真。
+    """
     total = 0
     count = 0
     for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
         for name in filenames:
-            path = os.path.join(dirpath, name)
+            candidate = Path(os.path.join(dirpath, name))
+            if candidate in exclude:
+                continue
             try:
-                info = os.lstat(path)
+                info = os.lstat(candidate)
             except OSError:
                 continue
             if stat.S_ISLNK(info.st_mode):
