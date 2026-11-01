@@ -19,6 +19,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -39,6 +40,7 @@ from .maintenance import (
     cleanup_expired,
     enforce_capacity,
     has_usable_logs,
+    read_sync_meta,
     reconcile_artifacts,
     write_sync_meta,
 )
@@ -109,6 +111,28 @@ TOMBSTONE_RETENTION_DAYS = 30
 # 5 个任务，而正常一天的新工单量远小于它；未入队的顺延到 30 秒后的下一轮。
 MAX_AUTO_JOBS_PER_SCAN = 5
 
+# 任务来源。两者的差别不在执行逻辑，而在"要不要排队"：
+# - manual：用户当下的一次显式判断，必须立即开始，不占自动巡检的队列位置；
+# - auto：巡检成批产生，必须受 TICKET_CONCURRENCY 约束，否则 5 个 65 GiB 的
+#   rsync 会同时抢带宽与磁盘，把"2 并发 × 65 GiB"的容量假设直接打穿。
+ORIGIN_AUTO = "auto"
+ORIGIN_MANUAL = "manual"
+
+# 判定"远端归档换过一版"的容差（秒）。比较对象是同一台源机上同一个文件的
+# mtime（发布时写进 meta，扫描时原样读回），同源比较，理论上 0 容差即可；
+# 留 1 秒覆盖 %T@ 的浮点往返与文件系统精度差异。
+REMOTE_UPDATE_TOLERANCE_SECONDS = 1
+
+
+@asynccontextmanager
+async def _unlimited():
+    """立即通过的闸门：手动任务用它代替并发信号量。
+
+    不用 `if ...: await sem.acquire()` 手写配对——异常路径漏一次 release
+    就会永久吃掉一个槽位；`async with` 由解释器保证释放。
+    """
+    yield
+
 
 class JobConflict(Exception):
     """同一工单已有任务在执行。"""
@@ -146,6 +170,9 @@ class Job:
     phase: Phase
     accepted_at: datetime
     updated_at: datetime
+    # 谁产生了这个任务。决定执行时是否进入并发闸门，也是排障时的第一分岔点
+    # （"没人点过却自己跑起来了"→ 只能是 auto）。
+    origin: str = ORIGIN_AUTO
     started_at: datetime | None = None
     received_bytes: int = 0
     total_bytes: int = 0
@@ -160,6 +187,7 @@ class Job:
         return {
             "ticketId": self.ticket_id,
             "phase": self.phase.value,
+            "origin": self.origin,
             "receivedBytes": self.received_bytes,
             "totalBytes": self.total_bytes,
             "extractedBytes": self.extracted_bytes,
@@ -220,6 +248,9 @@ class JobRegistry:
                     phase=Phase(row["phase"]),
                     accepted_at=datetime.fromtimestamp(row["accepted_at"], TZ),
                     updated_at=datetime.fromtimestamp(row["updated_at"], TZ),
+                    # 老库没有 origin 列（迁移前写入的历史行），来源不可考时
+                    # 按 auto 展示：历史上绝大多数任务是巡检自动入队的。
+                    origin=row.get("origin") or ORIGIN_AUTO,
                     started_at=(
                         datetime.fromtimestamp(row["started_at"], TZ) if row["started_at"] else None
                     ),
@@ -269,16 +300,18 @@ class JobRegistry:
             current_archive=job.current_archive,
             error_code=job.error_code.value if job.error_code else None,
             started_at=job.started_at,
+            origin=job.origin,
         )
 
     async def create(self, ticket_id: str, request_id: str = "-") -> Job:
+        """手动触发：代表用户当下的显式判断，直接入队并立即开始。"""
         async with self._lock:
-            job = self._create_locked(ticket_id)
+            job = self._create_locked(ticket_id, ORIGIN_MANUAL)
         self._start(job, request_id)
         return job
 
     async def create_auto(self, archive: RemoteArchive) -> Job | None:
-        """为尚未同步或远端已更新的归档创建自动任务。
+        """为尚未同步、或远端已换过一版的归档创建自动任务。
 
         检查本地产物和注册任务与创建动作共用同一把锁，扫描轮询与手动按钮不会
         在检查与入队之间产生竞态。返回 None 表示当前无需创建任务。
@@ -290,14 +323,25 @@ class JobRegistry:
 
             final_dir = self.cfg.root / archive.ticket_id
             if final_dir.is_dir():
-                # 已经发布成功，历史退避记录可以清掉。
+                if not _remote_archive_changed(final_dir, archive):
+                    # 已发布且远端还是同一份：历史退避记录可以清掉。
+                    self._clear_retry(archive.ticket_id)
+                    return None
+                # 远端换了包（客户重传修复版）：本地产物已经不是当前版本，
+                # 必须重同步。旧实现的 docstring 声称支持这一点，代码里却只
+                # 判断 final_dir.is_dir() 就 return None，重传永远到不了本地。
+                # 远端换包同时是"上次失败原因可能已消失"的证据，退避一并清零。
                 self._clear_retry(archive.ticket_id)
-                return None
-
-            # 同步过、产物已按保留期或容量淘汰删掉的工单：扫描窗口现在覆盖 7 天，
-            # 远端归档很可能还在（保留期也是 7 天），没有墓碑就会删了又拉。
-            # 只挡自动扫描——手动 POST 代表用户新的判断，不该被墓碑拦下。
-            if archive.ticket_id in self._tombstones:
+                logger.info(
+                    "ticket=%s 远端归档已更新，重新同步 远端mtime=%.3f 远端size=%d",
+                    archive.ticket_id,
+                    archive.mtime,
+                    archive.size,
+                )
+            elif archive.ticket_id in self._tombstones:
+                # 同步过、产物已按保留期或容量淘汰删掉的工单：扫描窗口现在覆盖 7 天，
+                # 远端归档很可能还在（保留期也是 7 天），没有墓碑就会删了又拉。
+                # 只挡自动扫描——手动 POST 代表用户新的判断，不该被墓碑拦下。
                 return None
 
             state = self._retries.get(archive.ticket_id)
@@ -310,7 +354,7 @@ class JobRegistry:
                     # 仍在退避窗口内：本轮巡检跳过，避免把同一个坏包反复重拉。
                     return None
 
-            job = self._create_locked(archive.ticket_id)
+            job = self._create_locked(archive.ticket_id, ORIGIN_AUTO)
         self._start(job, "auto")
         logger.info(
             "ticket=%s job=%s 自动发现待同步归档 path=%s size=%d mtime=%.3f",
@@ -322,7 +366,7 @@ class JobRegistry:
         )
         return job
 
-    def _create_locked(self, ticket_id: str) -> Job:
+    def _create_locked(self, ticket_id: str, origin: str) -> Job:
         existing = self.jobs.get(ticket_id)
         if existing is not None and existing.phase in RUNNING_PHASES:
             raise JobConflict
@@ -334,6 +378,7 @@ class JobRegistry:
             phase=Phase.QUEUED,
             accepted_at=now,
             updated_at=now,
+            origin=origin,
         )
         self.jobs[ticket_id] = job
         self._persist(job)
@@ -342,10 +387,11 @@ class JobRegistry:
     def _start(self, job: Job, request_id: str) -> None:
         # request_id 一路带进任务日志，一次点击就能串起受理与执行两段。
         logger.info(
-            "request_id=%s ticket=%s job=%s 受理 排队中 当前任务数=%d",
+            "request_id=%s ticket=%s job=%s origin=%s 受理 排队中 当前任务数=%d",
             request_id,
             job.ticket_id,
             job.job_id,
+            job.origin,
             len(self.jobs),
         )
         job.task = asyncio.create_task(self._run(job), name=f"ticket-sync:{job.ticket_id}")
@@ -516,8 +562,13 @@ class JobRegistry:
         work_dir = self.cfg.tmp_dir() / ticket_id
         archive_name = f"{ticket_id}.zip"
 
+        # 手动任务不进并发闸门：用户点击代表"现在就要看到结果"，不该排在自动巡检
+        # 成批入队的 5 个 65 GiB 任务后面。自动任务仍必须受限——它们的数量由扫描
+        # 判据决定，判据一错就可能同时开满带宽，而手动是逐次点击、天然收敛。
+        gate = _unlimited() if job.origin == ORIGIN_MANUAL else self._slots
+
         try:
-            async with self._slots:
+            async with gate:
                 job.started_at = _now()
                 job.phase = Phase.FETCHING
                 job.updated_at = _now()
@@ -536,6 +587,9 @@ class JobRegistry:
                     job.job_id,
                     on_progress=self._progress_writer(job),
                 )
+                # 远端版本身份必须在解压/发布前取：解压可能删掉归档，发布还会把
+                # 整个 work_dir rename 走，之后就拿不到这个文件的 stat 了。
+                fetched_mtime, fetched_size = _file_identity(archive)
 
                 if not self.cfg.archive_password:
                     raise TicketError(
@@ -586,6 +640,14 @@ class JobRegistry:
                     suffix = f"{stats.depth_truncated} 个归档超出嵌套层数上限，未继续解压"
                     job.message = f"{job.message}；{suffix}" if job.message else suffix
 
+                # 只有两项都取到才写版本判据：只剩一半的判据会让"远端更新"永远
+                # 判不出来（甚至反过来每轮重拉），不如显式退化成"不判版本"。
+                identity_fields = (
+                    {"remoteMtime": fetched_mtime, "remoteSize": fetched_size}
+                    if fetched_mtime is not None and fetched_size is not None
+                    else {}
+                )
+
                 try:
                     # 把"何时同步完、多大、有没有日志"固化成显式事实：
                     # 清理与容量判断不再依赖目录 mtime，也不用每天全盘扫描。
@@ -601,6 +663,10 @@ class JobRegistry:
                         bytes=stats.bytes,
                         files=stats.files,
                         hasLogs=has_logs,
+                        # 记下"这份产物对应远端的哪个版本"。自动扫描据此判断
+                        # 远端有没有换包（客户重传修复版），而不是靠完成时间
+                        # 猜——完成时间会被收尾失败、时钟回拨污染，且不可重放。
+                        **(identity_fields or {}),
                     )
                     # 产物用量单独记账：容量判断只读这张表，不再遍历目录算体积。
                     try:
@@ -1103,6 +1169,13 @@ async def metrics(request: Request) -> Response:
         key = getattr(job.phase, "value", str(job.phase))
         phases[key] = phases.get(key, 0) + 1
 
+    # 手动任务绕过并发闸门，因此"同时跑了几个手动任务"必须单独可见：
+    # 总量指标无法区分"2 个自动任务"和"2 个自动 + 3 个人工点击"。
+    running_by_origin = {ORIGIN_AUTO: 0, ORIGIN_MANUAL: 0}
+    for job in registry.jobs.values():
+        if job.phase in RUNNING_PHASES:
+            running_by_origin[job.origin] = running_by_origin.get(job.origin, 0) + 1
+
     lines = [
         "# HELP ticket_sync_disk_free_bytes 产物根目录所在磁盘剩余字节",
         "# TYPE ticket_sync_disk_free_bytes gauge",
@@ -1110,6 +1183,10 @@ async def metrics(request: Request) -> Response:
         "# HELP ticket_sync_active_jobs 正在运行或排队中的任务数",
         "# TYPE ticket_sync_active_jobs gauge",
         f"ticket_sync_active_jobs {registry.active_count()}",
+        "# HELP ticket_sync_active_jobs_origin 正在运行或排队中的任务数（按来源）",
+        "# TYPE ticket_sync_active_jobs_origin gauge",
+        f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_AUTO}"}} {running_by_origin[ORIGIN_AUTO]}',
+        f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_MANUAL}"}} {running_by_origin[ORIGIN_MANUAL]}',
         "# HELP ticket_sync_jobs 内存中的任务数（按阶段）",
         "# TYPE ticket_sync_jobs gauge",
     ]
@@ -1132,6 +1209,55 @@ async def metrics(request: Request) -> Response:
         ]
     )
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
+def _file_identity(archive: Path) -> tuple[float | None, int | None]:
+    """取刚拉下来的归档 (mtime, size)，作为"远端版本身份"。
+
+    `fetch` 用的是 `rsync -rlt`，`-t` 保留源端修改时间，因此本地文件的 mtime/size
+    与远端一致（`find %T@` 拿到的也是源端 mtime）。取不到时不臆造值：调用方
+    会退化成"不写版本判据"，而不是把当前时间写成远端版本、导致后续每轮重判。
+    """
+    try:
+        info = archive.stat()
+    except OSError as exc:
+        logger.warning("读取归档身份失败 path=%s error=%s", archive, exc)
+        return None, None
+    return info.st_mtime, info.st_size
+
+
+def _remote_archive_changed(ticket_dir: Path, archive: RemoteArchive) -> bool:
+    """本地这份产物对应的远端版本，是否已不是扫描到的这一份。
+
+    判据是「与发布时记下的远端身份比对」，而不是「与完成时间比大小」：
+    完成时间会被收尾失败、时钟回拨污染，同一个输入可能得出不同结论；而
+    `remoteMtime`/`remoteSize` 是发布当时随产物一起写死的显式事实，判据幂等——
+    重复判断永远给出同一答案，不会因为一次元数据写失败就无限重拉。
+
+    历史目录（本次改造之前发布的）没有这两项，一律按「没变」处理：
+    升级首轮绝不能因此把存量产物重拉一遍（2026-11-01 的 766 GiB 教训）。
+    """
+    meta = read_sync_meta(ticket_dir)
+    recorded_mtime = meta.get("remoteMtime")
+    recorded_size = meta.get("remoteSize")
+
+    # bool 是 int 的子类，`true` 会被当成 1 秒/1 字节，必须显式排除。
+    size_known = isinstance(recorded_size, int) and not isinstance(recorded_size, bool)
+    mtime_known = (
+        isinstance(recorded_mtime, (int, float)) and not isinstance(recorded_mtime, bool)
+    )
+    if not size_known and not mtime_known:
+        return False
+
+    # 体积先比：客户重传通常会改包内容，而 rsync -a 可能把源文件的旧 mtime
+    # 原样带过来，只比 mtime 会漏判。
+    if size_known and recorded_size != archive.size:
+        return True
+    if mtime_known:
+        # 只认"远端变新"这一个方向。若哪天 rsync 不再保留 mtime（记录值被刷成
+        # 拉取时刻），这个方向的比较会稳定地判"没变"，不会退化成每轮重拉 65 GiB。
+        return archive.mtime > float(recorded_mtime) + REMOTE_UPDATE_TOLERANCE_SECONDS
+    return False
 
 
 def _prepare_dirs(cfg: Config) -> None:

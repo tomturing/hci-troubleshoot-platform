@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     ticket_id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL,
     phase TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'auto',
     message TEXT,
     received_bytes INTEGER NOT NULL DEFAULT 0,
     total_bytes INTEGER NOT NULL DEFAULT 0,
@@ -112,12 +113,20 @@ class Store:
         显式 ALTER，否则老库会在第一次写入时报 "no column named ..."。
         """
         try:
-            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(artifacts)")}
-            if columns and "dir_mtime" not in columns:
-                self._conn.execute("ALTER TABLE artifacts ADD COLUMN dir_mtime REAL")
-                self._conn.commit()
+            self._add_column_if_missing("artifacts", "dir_mtime", "REAL")
+            # jobs.origin：老库没有来源列。历史行的来源不可考，统一按 auto 展示
+            # （历史上绝大多数任务由巡检自动入队）；来源只影响执行时是否排队，
+            # 不影响任务语义，因此回填错方向的代价仅仅是历史展示不精确。
+            self._add_column_if_missing("jobs", "origin", "TEXT NOT NULL DEFAULT 'auto'")
+            self._conn.commit()
         except sqlite3.Error as exc:
             logger.warning("存储迁移失败 path=%s error=%s", self.path, exc)
+
+    def _add_column_if_missing(self, table: str, column: str, ddl: str) -> None:
+        """幂等补列。表名与列名都是代码内常量，不来自外部输入。"""
+        columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        if columns and column not in columns:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -141,19 +150,21 @@ class Store:
         current_archive: str | None = None,
         error_code: str | None = None,
         started_at: datetime | None = None,
+        origin: str = "auto",
     ) -> None:
         """写入一条任务快照。失败只记日志：持久化不能影响同步主流程。"""
         try:
             self._conn.execute(
                 """
                 INSERT INTO jobs (
-                    ticket_id, job_id, phase, message, received_bytes, total_bytes,
+                    ticket_id, job_id, phase, origin, message, received_bytes, total_bytes,
                     extracted_bytes, file_count, current_archive, error_code,
                     accepted_at, started_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(ticket_id) DO UPDATE SET
                     job_id=excluded.job_id,
                     phase=excluded.phase,
+                    origin=excluded.origin,
                     message=excluded.message,
                     received_bytes=excluded.received_bytes,
                     total_bytes=excluded.total_bytes,
@@ -169,6 +180,7 @@ class Store:
                     ticket_id,
                     job_id,
                     phase,
+                    origin,
                     message,
                     received_bytes,
                     total_bytes,

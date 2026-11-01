@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from app.config import Config
 from app.fetcher import RemoteArchive, list_recent_archives
-from app.main import JobRegistry
+from app.main import ORIGIN_AUTO, JobRegistry
 from app.models import Phase
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -94,7 +94,7 @@ class TombstoneTest(unittest.IsolatedAsyncioTestCase):
         """用户显式点击代表新的判断，墓碑不该拦手动重拉。"""
         self._publish_then_forget()
 
-        job = self.registry._create_locked(TICKET_ID)
+        job = self.registry._create_locked(TICKET_ID, ORIGIN_AUTO)
 
         self.assertEqual(job.phase, Phase.QUEUED)
         self.registry.jobs.pop(TICKET_ID, None)
