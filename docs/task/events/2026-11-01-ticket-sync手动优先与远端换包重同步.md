@@ -83,8 +83,8 @@ PYTHONPATH=. uv run --frozen pytest -o addopts="" -p no:cacheprovider -q
 
 | 文件 | 覆盖 |
 |---|---|
-| `tests/test_manual_priority.py` | 手动任务在自动任务占满唯一槽位时立即进入 `fetching`；第二个自动任务仍被挡；同工单仍 `409`；`origin` 落库可被新进程读回 |
-| `tests/test_auto_resync.py` | 同版本跳过；`size` 变化重同步；`mtime` 变新重同步；历史目录（无 `remoteMtime/remoteSize`）永不重拉；远端换包清退避；退避窗口内仍跳过；手动点击不受版本判据限制 |
+| `tools/ticket-sync/tests/test_manual_priority.py` | 手动任务在自动任务占满唯一槽位时立即进入 `fetching`；第二个自动任务仍被挡；同工单仍 `409`；`origin` 落库可被新进程读回 |
+| `tools/ticket-sync/tests/test_auto_resync.py` | 同版本跳过；`size` 变化重同步；`mtime` 变新重同步；历史目录（无 `remoteMtime/remoteSize`）永不重拉；远端换包清退避；退避窗口内仍跳过；手动点击不受版本判据限制 |
 
 ## 未做与后续
 
