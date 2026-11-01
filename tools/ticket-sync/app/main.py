@@ -87,6 +87,10 @@ TERMINAL_ERROR_CODES: frozenset[ErrorCode] = frozenset(
         ErrorCode.QUOTA_EXCEEDED,
         ErrorCode.INVALID_TICKET_ID,
         ErrorCode.NOT_FOUND,
+        # 归档损坏是数据事实，重拉多少次都是同一份坏数据（实测 Q2026102802029 的
+        # 内层 gzip 流在 1 GiB 边界截断，`unzip -t` 通过、md5 两端一致）。
+        # 能降级的截断在 extract 层已消化，走到这里的损坏无法通过重试改善。
+        ErrorCode.ARCHIVE_CORRUPT,
     }
 )
 
@@ -634,6 +638,11 @@ class JobRegistry:
                     job.message = (
                         f"{stats.unreadable_archives} 个归档工具无法解压，已保留原压缩文件"
                     )
+                # 截断与"工具不支持"是两种事实：前者解出了一部分、可用；后者一点都打不开。
+                # 混成一句话会让用户以为整份日志都不可信。
+                if stats.truncated_archives:
+                    suffix = f"{stats.truncated_archives} 个归档被截断，已保留可读部分"
+                    job.message = f"{job.message}；{suffix}" if job.message else suffix
                 # 深度上限从「整单失败」改为「停止下钻」后，截断信息不能静默：
                 # 用户需要知道产物里少了更深层的附件，而不是以为日志齐了。
                 if stats.depth_truncated:
