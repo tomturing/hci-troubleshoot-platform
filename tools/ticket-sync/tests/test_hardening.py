@@ -84,7 +84,7 @@ class UnrarPreferenceTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(extractor.shutil, "which", return_value="/usr/bin/unrar"),
             patch.object(extractor, "_unrar_binary", new=AsyncMock()) as binary,
-            patch.object(extractor, "_unrar_7z", new=AsyncMock()) as fallback,
+            patch.object(extractor, "_seven_zip", new=AsyncMock()) as fallback,
         ):
             await extractor._unrar(Path("/tmp/x.rar"), Path("/tmp/out"), "")
         binary.assert_awaited_once()
@@ -101,7 +101,7 @@ class UnrarPreferenceTest(unittest.IsolatedAsyncioTestCase):
                     side_effect=TicketError(ErrorCode.EXTRACT_FAILED, "解压失败", "unsupported")
                 ),
             ),
-            patch.object(extractor, "_unrar_7z", new=AsyncMock()) as fallback,
+            patch.object(extractor, "_seven_zip", new=AsyncMock()) as fallback,
         ):
             await extractor._unrar(Path("/tmp/x.rar"), Path("/tmp/out"), "")
         fallback.assert_awaited_once()
@@ -117,7 +117,7 @@ class UnrarPreferenceTest(unittest.IsolatedAsyncioTestCase):
                     side_effect=TicketError(ErrorCode.BAD_PASSWORD, "归档密码错误", "unrar exit=10")
                 ),
             ),
-            patch.object(extractor, "_unrar_7z", new=AsyncMock()) as fallback,
+            patch.object(extractor, "_seven_zip", new=AsyncMock()) as fallback,
         ):
             with self.assertRaises(TicketError):
                 await extractor._unrar(Path("/tmp/x.rar"), Path("/tmp/out"), "pw")
@@ -126,7 +126,7 @@ class UnrarPreferenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_no_unrar_falls_back_to_7z(self) -> None:
         with (
             patch.object(extractor.shutil, "which", return_value=None),
-            patch.object(extractor, "_unrar_7z", new=AsyncMock()) as fallback,
+            patch.object(extractor, "_seven_zip", new=AsyncMock()) as fallback,
         ):
             await extractor._unrar(Path("/tmp/x.rar"), Path("/tmp/out"), "")
         fallback.assert_awaited_once()
