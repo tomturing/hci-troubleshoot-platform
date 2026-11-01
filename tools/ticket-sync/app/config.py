@@ -36,6 +36,10 @@ DEFAULT_MAX_TOTAL_BYTES = 1024 * 1024**3
 # 容量淘汰的最短保留天数，避免"刚同步完就被容量逻辑删掉"。
 DEFAULT_MIN_KEEP_DAYS = 3
 
+# 自动扫描窗口默认与保留期一致：扫得比保留期还宽毫无意义（产物早被删了），
+# 扫得更窄则会漏掉昨天的失败任务。
+DEFAULT_AUTO_SCAN_DAYS = 7
+
 
 @dataclass(frozen=True)
 class Config:
@@ -64,6 +68,10 @@ class Config:
     max_total_bytes: int = 400 * 1024**3
     # 容量淘汰的最短保留天数：不足该天数即使超限也不删，避免刚同步就被清掉。
     min_keep_days: int = 3
+    # 自动扫描的归档窗口（天）。原实现只扫"当天"，导致前一天失败的任务第二天
+    # 再也不会被自动发现。放宽到与保留期对齐之后，"删了又被扫回来"才成为真实
+    # 风险，所以必须同时有墓碑记录挡住已同步过的工单。
+    auto_scan_days: int = DEFAULT_AUTO_SCAN_DAYS
 
     @property
     def source(self) -> str:
@@ -124,6 +132,7 @@ class Config:
                 optional("TICKET_AUTO_SYNC_INTERVAL_SECONDS", str(DEFAULT_AUTO_SYNC_INTERVAL_SECONDS))
             ),
             retention_days=int(optional("TICKET_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))),
+            auto_scan_days=int(optional("TICKET_AUTO_SCAN_DAYS", str(DEFAULT_AUTO_SCAN_DAYS))),
             max_total_bytes=int(optional("TICKET_MAX_TOTAL_BYTES", str(DEFAULT_MAX_TOTAL_BYTES))),
             min_keep_days=int(optional("TICKET_MIN_KEEP_DAYS", str(DEFAULT_MIN_KEEP_DAYS))),
         )

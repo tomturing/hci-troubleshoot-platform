@@ -151,15 +151,23 @@ async def _ssh_run(cfg: Config, command: str, message: str, timeout: float = 20)
     raise last_error
 
 
-async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[RemoteArchive]:
-    """列出日志源服务器当天生成的顶层工单 zip。
+async def list_recent_archives(
+    cfg: Config, days: int = 1, now: datetime | None = None
+) -> list[RemoteArchive]:
+    """列出日志源服务器最近 `days` 天内生成的顶层工单 zip。
 
     只接受固定的 `/sf/log/<ticket>/<ticket>.zip` 形态，避免远端目录中其他 zip
     被误当成工单任务。日期边界由本地 Asia/Shanghai 计算，与服务接口时间口径一致。
+
+    为什么不是"只扫当天"：昨天 23:50 失败、退避到 00:10 的任务，第二天就再也
+    不会被自动发现，退避阶梯等于白设。窗口默认与保留期对齐。
+    代价是历史归档会反复出现在扫描结果里，所以调用方必须能凭"目录已存在"
+    或"墓碑"把它们挡掉，否则就成了删了又拉的无限循环。
     """
+    span = max(1, days)
     current = (now or datetime.now(TZ)).astimezone(TZ)
-    start = current.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=1)
+    start = (current - timedelta(days=span - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=span)
     command = (
         "LC_ALL=C find /sf/log -mindepth 2 -maxdepth 2 -type f -name '*.zip' "
         f"-newermt '{start:%Y-%m-%d %H:%M:%S}' "
@@ -167,12 +175,17 @@ async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[
         "-printf '%p\\t%s\\t%T@\\n'"
     )
 
-    logger.info("自动扫描日志源服务器当天归档 source=%s", cfg.source)
+    logger.info("自动扫描日志源服务器归档 source=%s 窗口=%d天", cfg.source, span)
     stdout = await _ssh_run(cfg, command, "无法扫描日志源服务器")
 
     archives = _parse_remote_archives(stdout.decode("utf-8", errors="replace"))
-    logger.info("自动扫描完成 当天归档数=%d", len(archives))
+    logger.info("自动扫描完成 窗口=%d天 归档数=%d", span, len(archives))
     return archives
+
+
+async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[RemoteArchive]:
+    """只扫当天。保留这个入口是为了兼容既有调用与测试。"""
+    return await list_recent_archives(cfg, 1, now)
 
 
 async def list_remote_entries(cfg: Config, ticket_id: str, limit: int = 50) -> list[str]:

@@ -95,8 +95,18 @@ queued ──► fetching ──► extracting ──► ready
 ### 1.6 自动巡检与保留期清理
 
 - 维护协程**首次等待一个周期**（默认 30s），避免启动时与网络/挂载初始化争抢。
-- 之后按 `TICKET_AUTO_SYNC_INTERVAL_SECONDS` 扫描远端当天归档，仅当**本地工单目录
-  不存在**时才入队（避免时钟偏差导致重复拉取）；需要重拉仍用手动 `POST /jobs`。
+- 之后按 `TICKET_AUTO_SYNC_INTERVAL_SECONDS` 扫描远端**最近 `TICKET_AUTO_SCAN_DAYS`
+  （默认 7）天**的归档，仅当本地工单目录不存在**且没有墓碑**时才入队。
+  原实现只扫"当天"：昨天 23:50 失败、退避到 00:10 的任务，第二天就再也不会被
+  自动发现，退避阶梯等于白设。窗口放宽到与保留期对齐后，才真正需要墓碑。
+- **墓碑（`tombstones` 表）**：产物被保留期或容量淘汰删除时写一条
+  `(ticket_id, synced_at, removed_at)`。它是"这个工单同步成功过"的唯一证据——
+  删掉目录的同时如果把记忆也抹了，扫描就会把远端还在的归档重新拉回来，
+  变成"删了又拉"的无限循环。墓碑只挡自动扫描，**手动 `POST /jobs` 不受限制**
+  （用户显式点击代表新的判断）；重新同步成功后墓碑被抹掉。过期墓碑按
+  `TOMBSTONE_RETENTION_DAYS`（30 天）回收。
+- **失败退避持久化**：退避状态落 `retries` 表而不是只存内存。只存内存时重启即
+  清零，而每次重试都是完整重拉——一次部署重启就能让几十 GiB 的坏包再拉一遍。
 - 每天首次巡检时删除超过 `TICKET_RETENTION_DAYS`（默认 7）天的 `Q\d{13}` 目录及
   `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。判据是
   `<工单目录>/.sync-meta.json` 的 `completedAt`。
@@ -193,6 +203,7 @@ unit 里显式补了 `PATH`——否则 `shutil.which("unrar")` 会静默落空�
 | `TICKET_CONCURRENCY` | `2` | 全局并发任务数 |
 | `TICKET_AUTO_SYNC_ENABLED` | `true` | 是否启用远端自动扫描 |
 | `TICKET_AUTO_SYNC_INTERVAL_SECONDS` | `30` | 自动扫描间隔 |
+| `TICKET_AUTO_SCAN_DAYS` | `7` | 自动扫描回看的归档窗口（天），跨天才能重试昨天的失败任务 |
 | `TICKET_RETENTION_DAYS` | `7` | 本地工单目录保留天数 |
 | `TICKET_MAX_TOTAL_BYTES` | 1 TiB | 产物总量上限（盘已扩到 2.1T），超限时按最旧优先淘汰 |
 | `TICKET_MIN_KEEP_DAYS` | `3` | 容量淘汰的最短保留天数（不足则只告警不删） |
