@@ -88,6 +88,17 @@ class RetryTerminalTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state.exhausted)
         self.assertIsNone(await self.registry.create_auto(self.archive))
 
+    async def test_archive_corrupt_is_terminal(self) -> None:
+        """归档损坏是数据事实：重拉多少次都是同一份坏数据。
+
+        实测 Q2026102802029 的内层 gzip 流被截断，`unzip -t` 通过、两端 md5 一致，
+        这种包不可能靠重试变好。
+        """
+        self.registry._note_failure(self.archive.ticket_id, ErrorCode.ARCHIVE_CORRUPT)
+
+        self.assertTrue(self.registry._retries[self.archive.ticket_id].exhausted)
+        self.assertIsNone(await self.registry.create_auto(self.archive))
+
     async def test_terminal_state_survives_restart(self) -> None:
         """终态必须跨重启：否则每次部署都会把坏包重新拉一遍。"""
         self._fail_repeatedly(MAX_RETRY_ATTEMPTS)

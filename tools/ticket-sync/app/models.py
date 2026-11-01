@@ -48,11 +48,21 @@ class TicketError(Exception):
     detail 只进日志，不进接口响应：可能包含远端路径、stderr 片段等内部信息。
     """
 
-    def __init__(self, code: ErrorCode, message: str, detail: str = "") -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        detail: str = "",
+        degradable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.detail = detail
+        # 该错误是否允许"降级"：保留已解出的内容继续发布，而不是整单失败。
+        # 目前只有"压缩流被截断"用它——实测 Q2026102802029 的内层 tgz 缺尾部
+        # 8 字节，tar 报 Unexpected EOF，但报错前已解出 3 GB 可用日志。
+        self.degradable = degradable
 
     def __str__(self) -> str:
         return f"[{self.code}] {self.message}"
@@ -96,6 +106,7 @@ class ExtractStats:
         "permissions_fixed",
         "unreadable_archives",
         "depth_truncated",
+        "truncated_archives",
     )
 
     def __init__(self) -> None:
@@ -112,6 +123,9 @@ class ExtractStats:
         self.unreadable_archives = 0
         # 超出嵌套层数上限而停止下钻的归档数：日志主体仍可用，必须可观测。
         self.depth_truncated = 0
+        # 压缩流被截断、已保留可读内容的归档数。与 unreadable_archives 分开计数：
+        # 前者是"解出了一部分"，后者是"一点都解不开"，处置与用户预期都不同。
+        self.truncated_archives = 0
 
     def __repr__(self) -> str:
         return (
@@ -121,5 +135,6 @@ class ExtractStats:
             f"placeholders_skipped={self.placeholders_skipped}, "
             f"permissions_fixed={self.permissions_fixed}, "
             f"unreadable_archives={self.unreadable_archives}, "
-            f"depth_truncated={self.depth_truncated})"
+            f"depth_truncated={self.depth_truncated}, "
+            f"truncated_archives={self.truncated_archives})"
         )

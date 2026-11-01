@@ -124,7 +124,26 @@ async def extract(
     logger.info("ticket=%s job=%s phase=extracting depth=1 开始解压顶层归档", ticket_id, job_id)
     _notify_archive(on_archive, archive.name)
     # 顶层同样走魔数判定：工单包被采集端命名为 .zip 而实际是 tar 的情况真实存在。
-    await _extract_any(archive, work_dir, cfg.archive_password, ticket_id=ticket_id, job_id=job_id)
+    try:
+        await _extract_any(
+            archive, work_dir, cfg.archive_password, ticket_id=ticket_id, job_id=job_id
+        )
+    except TicketError as error:
+        if not error.degradable:
+            raise
+        # 顶层归档截断：与"层数超限只停不判死"同源——已解出的内容是可用日志，
+        # 为残缺的尾部丢掉整包不划算。若一点都没解出来，则仍按失败处理。
+        if _tree_stats(work_dir, staged)[1] == 0:
+            raise
+        stats.truncated_archives += 1
+        logger.warning(
+            "ticket=%s job=%s 顶层归档截断，保留已解出内容继续 path=%s code=%s detail=%s",
+            ticket_id,
+            job_id,
+            archive.name,
+            error.code,
+            error.detail,
+        )
     # 归档不在这里删除。旧实现在解压开始时 unlink 归档"腾空间"，导致解压中途失败时
     # work_dir 里连归档都没有，下次重试只能全量重拉——#1408 想要的续传在 extract
     # 阶段完全失效。改为由调用方在解压成功、发布之前释放（见 JobRegistry._release_archive）。
@@ -181,8 +200,34 @@ async def extract(
             )
             _notify_archive(on_archive, relative)
             try:
-                await _extract_any(nested, target, cfg.archive_password)
+                await _extract_any(
+                    nested, target, cfg.archive_password, ticket_id=ticket_id, job_id=job_id
+                )
             except TicketError as error:
+                if error.degradable:
+                    # 截断：保留已解出的目录（日志主体通常完整），删掉残缺压缩包
+                    # 否则它会在下一轮 _find_archives 被反复扫到、反复失败。
+                    skipped_archives.add(nested)
+                    try:
+                        nested.unlink()
+                    except OSError as unlink_error:
+                        logger.warning(
+                            "ticket=%s job=%s 删除截断归档失败 path=%s error=%s",
+                            ticket_id,
+                            job_id,
+                            relative,
+                            unlink_error,
+                        )
+                    stats.truncated_archives += 1
+                    logger.warning(
+                        "ticket=%s job=%s 归档截断，保留已解出内容 path=%s code=%s detail=%s",
+                        ticket_id,
+                        job_id,
+                        relative,
+                        error.code,
+                        error.detail,
+                    )
+                    continue
                 # .rar 降级：宿主的 p7zip 不支持部分 RAR5 压缩方法（实测报
                 # "Unsupported Method"），而这类包通常是客户自打的单个转储。
                 # 保留原件、记告警、继续走其它归档，避免一个解不开的附件
@@ -211,7 +256,7 @@ async def extract(
 
     logger.info(
         "ticket=%s job=%s phase=extracting 完成 depth=%d files=%d bytes=%d archives=%d "
-        "清理链接=%d 跳过占位=%d 补权限=%d 无法解压=%d",
+        "清理链接=%d 跳过占位=%d 补权限=%d 无法解压=%d 截断=%d",
         ticket_id,
         job_id,
         stats.depth,
@@ -222,6 +267,7 @@ async def extract(
         stats.placeholders_skipped,
         stats.permissions_fixed,
         stats.unreadable_archives,
+        stats.truncated_archives,
     )
     return stats
 
@@ -557,9 +603,25 @@ async def _untar(archive: Path, target: Path, fmt: str = "tar.gz") -> None:
     if code == 0:
         return
     text = stderr.decode("utf-8", errors="replace")
-    error_code = ErrorCode.NO_SPACE if "no space left" in text.lower() else ErrorCode.EXTRACT_FAILED
+    lowered = text.lower()
+    if "no space left" in lowered:
+        raise TicketError(
+            ErrorCode.NO_SPACE,
+            "服务器磁盘空间不足",
+            f"tar exit={code} archive={archive.name} stderr={text[:800]}",
+        )
+    if "unexpected end of file" in lowered or "unexpected eof" in lowered:
+        # 压缩流被截断：数据本身残缺，重试不可能变好（实测 Q2026102802029 的
+        # 内层 tgz 缺尾部 CRC+ISIZE，gzip 报 unexpected end of file）。
+        # 但报错之前的条目通常已完整解出，所以标记 degradable，由调用方决定保留。
+        raise TicketError(
+            ErrorCode.ARCHIVE_CORRUPT,
+            _unzip_message(ErrorCode.ARCHIVE_CORRUPT),
+            f"tar exit={code} archive={archive.name} truncated=1 stderr={text[:800]}",
+            degradable=True,
+        )
     raise TicketError(
-        error_code,
+        ErrorCode.EXTRACT_FAILED,
         "解压归档失败",
         f"tar exit={code} archive={archive.name} stderr={text[:800]}",
     )

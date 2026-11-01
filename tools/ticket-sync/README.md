@@ -141,7 +141,10 @@ queued ──► fetching ──► extracting ──► ready
   在两小时一次的循环里空转（2026-11-01 实测 6 个工单、12.2 GiB），并让 7 天宽窗口
   永久开着。现在累计失败 `MAX_RETRY_ATTEMPTS`（6）次即转终态；**确定性失败**
   （`non-log-payload`、`bad-password`、`too-large`、`quota-exceeded`、`invalid-ticket-id`、
-  `not-found`）第一次就转终态，不浪费重试额度。终态只约束自动扫描，手动
+  `not-found`、`archive-corrupt`）第一次就转终态，不浪费重试额度。
+  `archive-corrupt` 属于"数据事实"：源端压缩流被截断时，重拉多少次都是同一份坏数据
+  （实测 `Q2026102802029` 的 zip 能过 `unzip -t`、两端 md5 一致，但内层 gzip 流在
+  1 GiB 边界截断）。终态只约束自动扫描，手动
   `POST /jobs` 永远放行，`job.message` 会追加"已停止自动重试，可手动重试"，
   `/artifacts` 的 `retry.exhausted` 为 `true`。
 - **放弃自动重试必须走接口，不要直接改库**：`retries` 表只是镜像，内存才是运行态
@@ -201,6 +204,7 @@ queued ──► fetching ──► extracting ──► ready
 | `.rar` 解不开（unrar 与 p7zip 都不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
 | 归档只含转储（vmcore / kdump / `.core` / `.dump` / `.dmp`），无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
 | 解压后产物里既无 `log_list.json`、`sp_*`，也没有任意层级的 `<节点目录>/sf/log/`（探测深度 ≤3、最多 200 个目录） | 仍发布，但 `job.message` 明确提示"可能仅含转储文件" | `job.message` |
+| 压缩流被截断（gzip 缺尾部 CRC+ISIZE，`tar: Unexpected EOF`） | **保留已解出内容**并继续，计入截断数；残缺压缩包删除，避免反复扫描 | 日志 `截断=N`、`job.message`"N 个归档被截断，已保留可读部分" |
 
 嵌套层数上限（`TICKET_MAX_DEPTH`）是**停止下钻的护栏，不是整单失败的判据**：
 达到上限时保留已解出的产物、把剩余归档计入 `depth_truncated` 并在 `job.message`
