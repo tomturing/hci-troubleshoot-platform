@@ -45,7 +45,7 @@
 /sf/tickets/
 ├── <工单号>/                 最终产物（不套额外层级，DSH 直接选这一层）
 │   └── .sync-meta.json       同步事实：completedAt / bytes / files / hasLogs
-├── .tmp/<工单号>/            解压中间态；失败保留归档供续传，超 2 小时回收
+├── .tmp/<工单号>/            解压中间态；归档保留到解压成功，超 2 小时回收
 ├── .trash/<id>-<时间戳>/      被替换的旧版本（保留最近一次）
 └── .ticket-sync.db           SQLite：任务历史 + 产物用量
 ```
@@ -112,6 +112,16 @@ queued ──► fetching ──► extracting ──► ready
   `TOMBSTONE_RETENTION_DAYS`（30 天）回收。
 - **失败退避持久化**：退避状态落 `retries` 表而不是只存内存。只存内存时重启即
   清零，而每次重试都是完整重拉——一次部署重启就能让几十 GiB 的坏包再拉一遍。
+- **重试有终点**：退避阶梯到 6 小时就不再增长，若不设上限，必然失败的包会永远
+  在两小时一次的循环里空转（2026-11-01 实测 6 个工单、12.2 GiB），并让 7 天宽窗口
+  永久开着。现在累计失败 `MAX_RETRY_ATTEMPTS`（6）次即转终态；**确定性失败**
+  （`non-log-payload`、`bad-password`、`too-large`、`quota-exceeded`、`invalid-ticket-id`、
+  `not-found`）第一次就转终态，不浪费重试额度。终态只约束自动扫描，手动
+  `POST /jobs` 永远放行，`job.message` 会追加"已停止自动重试，可手动重试"，
+  `/artifacts` 的 `retry.exhausted` 为 `true`。
+- **宽窗口补扫按 5 分钟节流**（`DEEP_SCAN_MIN_INTERVAL_SECONDS`）：只要 `retries`
+  非空就启用 7 天窗口，而巡检是 30 秒一轮，不节流就退化成每 31 秒 ssh 遍历一遍
+  近百个归档（远端 `/sf/log` 有 1060 个目录）。单轮入队上限只挡入队，挡不住遍历。
 - 每天首次巡检时删除超过 `TICKET_RETENTION_DAYS`（默认 7）天的 `Q\d{13}` 目录及
   `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。判据是
   `<工单目录>/.sync-meta.json` 的 `completedAt`。
@@ -143,9 +153,16 @@ queued ──► fetching ──► extracting ──► ready
 
 | 格式 | 工具 | 说明 |
 |---|---|---|
-| `.zip` | `unzip -P` | 支持 ZipCrypto 密码 |
-| `.tar.gz` / `.tgz` / `.tar` | GNU `tar` | — |
-| `.rar` | `7z x` | 依赖 p7zip 内置 Rar/Rar5 解码器 |
+| zip（`PK\x03\x04`） | `unzip -P` | 支持 ZipCrypto 密码 |
+| tar / tar.gz / tar.xz / tar.bz2（`ustar`@257、`1f8b`、`fd 37 7a 58 5a`、`BZh`） | GNU `tar` | 按魔数选 `-xf` / `-xzf` / `-xJf` / `-xjf` |
+| rar（`Rar!\x1a\x07`） | `unrar`，回退 `7z x` | 依赖 rarlab 二进制或 p7zip 的 RAR5 解码器 |
+| 7z（`7z\xbc\xaf\x27\x1c`） | `7z x` | — |
+
+**格式按魔数判定，扩展名只作兜底**。2026-11-01 实测 `Q2026102700681` /
+`Q2026102800262` / `Q2026102801855` 三个工单的 `<工单号>.zip` 实际是**未压缩 tar**
+（内容是 `10.137.x.x-时间.tgz`）：按扩展名调 `unzip` 必然 `exit=9`，被归为
+`archive-corrupt` 后进入永不成功的重试循环，12.2 GiB 卡死。现在扩展名与真实格式
+不一致会在日志里留一条 `归档扩展名与实际格式不一致` 告警，并按真实格式解压。
 
 三类"单点问题"不会升级为整包失败，但都会留下可追踪的告警：
 
@@ -164,6 +181,14 @@ queued ──► fetching ──► extracting ──► ready
 RAR 解压走双通道：优先 `unrar`（rarlab 静态二进制，RAR5 全方法），失败再回退
 `7z`。宿主机没有 root，`tools/ticket-sync/deploy/install-user.sh` 会把 unrar 装到 `~/.local/bin`，
 unit 里显式补了 `PATH`——否则 `shutil.which("unrar")` 会静默落空。
+
+**归档的生命周期**：`rsync` 拉下来的顶层归档留在 `.tmp/<工单号>/` 里，直到**解压全部
+成功**才释放（释放时机在 `publish` 之前，否则会跟着 `rename` 进产物目录）。旧实现在
+开始解压时就 `unlink` 归档"腾空间"，解压中途失败后 work_dir 里连归档都没有
+（实测三个失败工单的目录全空），下一轮重试只能从 0 重拉 16–65 GiB——`rsync --partial`
+形同虚设。归档暂存期间，`_find_archives` 与 `_tree_stats` 都显式排除它：否则它会被
+当成嵌套归档再解一次（产物里多出一层同名目录），还会把归档体积算进产物大小。
+只有磁盘余量放不下"归档 + 产物"两份时才提前释放（日志会写明"本次失败将无法续传"）。
 
 此外每层解压后都会补权限：文件补属主读写位、目录补执行位。源端
 `sf/log/kubelet`、`sf/log/containerd` 等目录权限常是 `drw-r--r--`，

@@ -130,6 +130,28 @@ class AutoDiscoverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(created, 0)
         self.assertEqual(len(self.enqueued), len(many))
 
+    async def test_deep_scan_is_throttled(self) -> None:
+        """宽窗口补扫必须按分钟级节流。
+
+        巡检本身 30 秒一轮；只要 retries 非空就走 7 天窗口的话，就退化成每 31 秒
+        ssh 遍历一遍近百个归档（远端 /sf/log 有 1060 个目录）。限流只挡住入队，
+        挡不住这趟遍历。
+        """
+        self.registry._retries["Q2026010100009"] = RetryState(failures=1)
+        self._install(today=[TODAY], recent=[TODAY, "Q2026010100009"], returns_job=True)
+        try:
+            await _auto_discover(self.cfg, self.registry, self.now)
+            await _auto_discover(self.cfg, self.registry, self.now)
+            # 第二轮只有当天扫描，没有 7 天窗口
+            self.assertEqual(self.calls, [1, 7, 1])
+
+            # 间隔到期后恢复宽窗口
+            self.registry.last_deep_scan_at = 0.0
+            await _auto_discover(self.cfg, self.registry, self.now)
+            self.assertEqual(self.calls, [1, 7, 1, 1, 7])
+        finally:
+            self._uninstall()
+
 
 if __name__ == "__main__":
     unittest.main()
