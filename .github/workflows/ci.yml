@@ -972,6 +972,17 @@ jobs:
               if "checksum/config" not in (loki["spec"]["template"]["metadata"].get("annotations") or {}):
                   problems.append("loki 的 Pod 模板必须带 checksum/config：Loki 只在启动时读配置，"
                                   "改了配置不重启 = 配置合入变假象")
+              # Loki 自己也必须被抓取：开放项「structured metadata 的分组到底发生在写入侧
+              # 还是只在查询响应侧」的判据，就是 loki_ingester_memory_streams 这类写入侧指标。
+              # 2026-11-01 实测 count(loki_ingester_memory_streams) 返回**空向量**（不是 0）
+              # ——序列从未被抓取过，而此前一直被读成「Loki 没有这个指标」。
+              lannot = loki["spec"]["template"]["metadata"].get("annotations") or {}
+              if lannot.get("prometheus.io/scrape") != "true":
+                  problems.append("loki 的 Pod 模板缺 prometheus.io/scrape: \"true\"：Prometheus 的 "
+                                  "kubernetes_sd 只认这个注解，缺了它 Loki 的写入侧指标永远为空，"
+                                  "于是「拿不到数字」会被反复误读成「没有这个指标」")
+              if lannot.get("prometheus.io/port") != "3100":
+                  problems.append(f"loki 的抓取端口必须是 3100，实际 {lannot.get('prometheus.io/port')}")
           loki_cfg = "\n".join((d.get("data") or {}).get("local-config.yaml", "")
                                for d in docs if d.get("kind") == "ConfigMap"
                                and d.get("metadata", {}).get("name") == "loki-config")
@@ -1017,17 +1028,57 @@ jobs:
                                       f"`:latest` 会变成 Always，在无外网集群里重建必挂")
                   elif pol == "Always":
                       problems.append(f"{where} 的 imagePullPolicy 是 Always：镜像 tag 固定时"
-                                      f"Always 只多一次 digest 校验，却让无外网集群的 Pod 重建必失败")
+                                      f"Always 只多一次 digest 校验，却让无外网 集群的 Pod 重建必失败")
+          # 6) 网关 5xx 的第二个度量维度：service 维度结构性地看不见「请求没走到后端」的 5xx。
+          #    2026-11-01 staging 实测：Service 没有 endpoint 的 Ingress 请求 3 次 →
+          #    Loki 里 3 条 503 有记录、入口维度计数上涨，而
+          #    traefik_service_requests_total 的 5xx 序列数为 0 → 既有三条网关告警全静默。
+          #    对照组：后端 targetPort 打错（真实转发失败）→ service 维度立刻有 502，
+          #    GatewayServerErrorFirstSeen 正常 firing。所以「0 告警」不是「无故障」。
+          #    表达式逻辑由下一步的 promtool 单测钉住，这里只查它没被删掉。
+          rules_txt = "\n".join((d.get("data") or {}).get("hci-rules.yml", "")
+                                for d in docs if d.get("kind") == "ConfigMap"
+                                and d.get("metadata", {}).get("name") == "prometheus-alert-rules")
+          if "alert: GatewayRouterServerErrorFirstSeen" not in rules_txt:
+              problems.append("缺 GatewayRouterServerErrorFirstSeen：service 维度看不见「路由未匹配 / "
+                              "Service 无 endpoint」这类没走到后端的 5xx，删掉它等于放 弃这类故障")
+          elif "traefik_entrypoint_requests_total" not in rules_txt.split("alert: GatewayRouterServerErrorFirstSeen")[1]:
+              problems.append("GatewayRouterServerErrorFirstSeen 没引用 traefik_entrypoint_requests_total，"
+                              "维度又退回 service，盲区原样存在")
           if problems:
               print("观测栈持久化/采集链不变量未通过：")
               for item in problems:
                   print("  -", item)
               sys.exit(1)
-          print("✅ TSDB 已落 PVC + Recreate；ingress_logs 的 metadata 集只含有界字段；"
-                "Loki 配置已入 Git 且未开启删除；所有容器的 imagePullPolicy 均已显式声明且非 Always")
+          print("✅ TSDB 已落 PVC + Recreate；ingress_logs 的 metadata 集只含 有界字段；"
+                "Loki 配置已入 Git 且未开启删除、且已被 Prometheus 抓取；"
+                "网关 5xx 覆盖入口与 service 两个维度；"
+                "所有容器的 imagePullPolicy 均已显式声明且非 Always")
           PY
 
-      # 2026-10-31 staging 事故：合并后 alloy 立刻 CrashLoopBackOff，日志采集中断约
+      # GatewayRouterServerErrorFirstSeen 的判据是「序列刚诞生」，这个现场在集群里
+      # 造不出来也没有可重复性：某个 5xx code 的序列一旦存在过，就再也回不到「不存在」，
+      # 规则退化成永不触发也没人会发现（0 告警看起来和健康一样）。
+      # 所以把规则逻辑用 promtool 单测钉住：正例必须 firing，两个反例
+      # （service 维度也有该 code、序列早已存在）必须保持静默。
+      # promtool 版本从 values 里的镜像 tag 取，与线上抓取方同版本，避免因版本差异假红。
+      - name: 告警规则单测（promtool，正例 + 两个反例）
+        run: |
+          set -euo pipefail
+          PROM_VERSION=$(sed -n 's|.*prom/prometheus:v\([0-9][0-9.]*\).*|\1|p' \
+            deploy/helm/hci-platform-obs/values.yaml | head -1)
+          if [ -z "${PROM_VERSION}" ]; then
+            echo "无法从 values.yaml 提取 prometheus 版本，拒绝静默跳过单测"
+            exit 1
+          fi
+          echo "prometheus 版本（取自 values.yaml）：${PROM_VERSION}"
+          curl -sSL -o /tmp/prom.tar.gz \
+            "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz"
+          tar -xzf /tmp/prom.tar.gz -C /tmp
+          /tmp/prometheus-${PROM_VERSION}.linux-amd64/promtool test rules \
+            deploy/helm/hci-platform-obs/rules/alert_rules_test.yml
+      
+      # 2026-10-31 staging 事故：合并后 alloy 立刻 CrashLoopBackOff，日志采集中 断约
       # 3 分钟。根因是重写 loki.process "ingress_logs" 时删掉了两张表的尾逗号
       # （River 表项必须逗号分隔）。上面那条正则检查全程绿着 —— 它只查「键在不在」，
       # 查不出「这串字解析器收不收」。正则证明不了语法，只有解析器能。

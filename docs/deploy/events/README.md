@@ -34,6 +34,8 @@ owner: team
 | 2026-04-27-k3s重启后prod-TLS与Grafana入口点修复.md | 2026-04-27 | k3s 重启后 prod TLS 证书丢失与 Grafana 入口点修复 |
 | 2026-04-27-staging-prometheus-reload-hook修复.md | 2026-04-27 | staging 环境 Prometheus reload Hook 卡死修复 |
 | 2026-10-31-网关空窗量化与观测持久化PDB覆盖.md | 2026-10-31 | 入口网关重启空窗客户端实测（1.07 s / 157 次拒连 / 0 次 5xx）与「网关自身重启对 5xx 指标与 accesslog 是结构性盲区」；Prometheus TSDB 从 emptyDir 改 10Gi PVC + Recreate；Traefik 5xx accesslog 入 Loki；PDB 列表化覆盖 12 个 values 可控副本的服务（第 13 个 ops-agent-service 副本数写死）+ 不可扩副本渲染期守卫 + CI 门禁。含两项对旧文档的订正（§8.1 「无状态服务」清单、Loki structured_metadata 不等于 label） |
+| 2026-10-31-prod误同步与镜像拉取策略固化.md | 2026-10-31 | 关键词通配批量触发 ArgoCD 同步时误命中手工同步的 prod 应用，把积压 8 周的 39 个资源推上生产并触发重建 → Loki ImagePullBackOff 不可用 2 分 28 秒（数据无损、Prometheus 历史指标按设计丢失）。根因：`imagePullPolicy` 缺省时由 tag 推导且写入即固化，Chart 十个容器一个都没声明 → ArgoCD 无从纠正；无外网集群里 `Always` = 重建必挂。修法：顶层默认 + 逐容器显式渲染 + CI 禁止 `Always`（不变量四） |
+| 2026-11-01-网关5xx度量维度盲区与Loki抓取补齐.md | 2026-11-01 | 复核 staging 时发现：Service 无 endpoint 的 503 只进入口维度（`traefik_entrypoint_requests_total`），service 维度序列数为 0 → 既有三条网关告警对整类配置故障结构性失明，且表现为「0 告警」。新增 `GatewayRouterServerErrorFirstSeen` + `promtool test rules` 单元测试（正例 + 两个反例）；给 Loki 补 `prometheus.io/scrape` 注解，使「metadata 分组发生在写入侧还是查询侧」这个开放项终于可查（此前「拿不到数字」一直被读成「没有该指标」）。含一次自写假验证的记录（文本替换删错对象） |
 
 ---
 
@@ -46,4 +48,4 @@ owner: team
 
 ---
 
-*更新日期: 2026-04-27*
+*更新日期: 2026-11-01*
