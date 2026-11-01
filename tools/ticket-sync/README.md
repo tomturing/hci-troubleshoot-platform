@@ -45,6 +45,7 @@
 /sf/tickets/
 ├── <工单号>/                 最终产物（不套额外层级，DSH 直接选这一层）
 │   └── .sync-meta.json       同步事实：completedAt / bytes / files / hasLogs
+│                             + remoteMtime / remoteSize（这份产物对应的远端版本）
 ├── .tmp/<工单号>/            解压中间态；失败保留归档供续传，超 2 小时回收
 ├── .trash/<id>-<时间戳>/      被替换的旧版本（保留最近一次）
 └── .ticket-sync.db           SQLite：任务历史 + 产物用量
@@ -66,7 +67,18 @@ queued ──► fetching ──► extracting ──► ready
    └──► cancelled
 ```
 
-- 同一工单串行：重复提交返回 `409 job-running`；全局并发信号量默认 `2`。
+- 同一工单串行：重复提交返回 `409 job-running`。
+- **并发闸门只约束自动任务**（`TICKET_CONCURRENCY`，默认 `2`）。手动任务代表用户
+  当下的一次显式判断，**立即开始、不排队**：一轮巡检入队 5 个 60 GiB 级的包之后，
+  用户点击"同步日志"仍会马上进入 `fetching`，不必排在队尾等两批跑完。
+  - 代价必须说清：并发上限不再是全局硬上限。N 个用户同时点 N 个不同工单，就是
+    N 个 rsync 同时跑。"2 并发 × 65 GiB"的磁盘余量假设只覆盖自动路径；
+    `TICKET_MIN_FREE_BYTES`（磁盘红线）与 `TICKET_MAX_EXTRACT_BYTES`（展开上限）
+    仍然对两条路径一视同仁，是不会被绕过的硬护栏。
+  - 可观测：`/metrics` 的 `ticket_sync_active_jobs_origin{origin="manual"|"auto"}`
+    单独暴露，任务日志带 `origin=`，SQLite `jobs.origin` 可回溯。
+- 任务来源落库（`jobs.origin`，`auto` / `manual`）：重启后 `/artifacts` 仍能回答
+  "这个任务是人工点出来的吗"，也是排查"没人点过却自己跑起来"的第一分岔点。
 - 任务状态落 SQLite（`<产物根>/.ticket-sync.db`），重启后 `/jobs`、`/artifacts` 仍能查到历史。
   重启时遗留的 `queued/fetching/extracting` 会被改写为 `interrupted`——它与 `failed`
   必须区分：前者重新触发通常就能成功，后者才需要排查日志源。
@@ -82,7 +94,7 @@ queued ──► fetching ──► extracting ──► ready
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `POST` | `/jobs` | 创建同步任务，body `{"ticketId":"Q2026102100147"}`，返回 202 / 400 / 409 |
+| `POST` | `/jobs` | 创建手动同步任务（立即开始，不受并发上限/退避/墓碑限制，仅受同工单串行约束），body `{"ticketId":"Q2026102100147"}`，返回 202 / 400 / 409 |
 | `GET` | `/jobs/{ticketId}` | 查询阶段与进度（字节、文件数、当前归档、错误码） |
 | `GET` | `/artifacts` | 本地工单目录 + 自动/手动任务总览（DSH 控制台使用） |
 | `DELETE` | `/jobs/{ticketId}` | 取消任务（已下载归档保留，供下次续传） |
@@ -112,6 +124,17 @@ queued ──► fetching ──► extracting ──► ready
   `TOMBSTONE_RETENTION_DAYS`（30 天）回收。
 - **失败退避持久化**：退避状态落 `retries` 表而不是只存内存。只存内存时重启即
   清零，而每次重试都是完整重拉——一次部署重启就能让几十 GiB 的坏包再拉一遍。
+- **远端换包会重同步**：本地已有产物时不再一律跳过，而是拿扫描到的
+  `(mtime, size)` 与发布时写进 `.sync-meta.json` 的 `remoteMtime`/`remoteSize`
+  比对；远端变新或体积变化才算"换了一版"，并同时清掉该工单的失败退避（客户重传
+  说明上次失败的原因可能已经消失）。旧实现的 docstring 声称支持远端更新，代码却只
+  判断目录存在就 `return None` —— 客户重传修复版永远到不了本地。
+  - 判据幂等：比的是"我上次拉的是哪一版"，不是"完成时间与 mtime 谁大"，同一个
+    输入永远给出同一结论，不会因为一次元数据写失败退化成每轮重拉。
+  - 历史目录（改造前发布，meta 里没有这两项）一律按"没变"处理：升级首轮绝不能
+    因此把存量产物重拉一遍（2026-11-01 的 766 GiB 教训）。
+  - 只认"远端变新"方向：即便哪天 rsync 不再保留 mtime，也只会漏判，不会变成
+    每轮重拉；体积变化仍然能兜住重传。
 - 每天首次巡检时删除超过 `TICKET_RETENTION_DAYS`（默认 7）天的 `Q\d{13}` 目录及
   `.trash` 旧版本，跳过 `.tmp`、非工单目录和正在同步的工单。判据是
   `<工单目录>/.sync-meta.json` 的 `completedAt`。
@@ -205,7 +228,7 @@ unit 里显式补了 `PATH`——否则 `shutil.which("unrar")` 会静默落空�
 | `TICKET_MIN_FREE_BYTES` | 60 GiB | 剩余空间红线 |
 | `TICKET_MAX_FILES` | `500000` | 文件数上限（实测单工单最多 176,562） |
 | `TICKET_MAX_DEPTH` | `12` | 解压嵌套层数上限（实测最深 7 层；超限只停止下钻） |
-| `TICKET_CONCURRENCY` | `2` | 全局并发任务数 |
+| `TICKET_CONCURRENCY` | `2` | 自动任务并发上限（手动任务立即执行，不计入此闸门） |
 | `TICKET_AUTO_SYNC_ENABLED` | `true` | 是否启用远端自动扫描 |
 | `TICKET_AUTO_SYNC_INTERVAL_SECONDS` | `30` | 自动扫描间隔 |
 | `TICKET_AUTO_SCAN_DAYS` | `7` | 自动扫描回看的归档窗口（天），跨天才能重试昨天的失败任务 |
