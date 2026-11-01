@@ -770,7 +770,19 @@ class JobRegistry:
 
         两条终态路径：确定性失败（重试结果不会变）与重试次数用尽。终态只是
         "不再自动试"，不是"禁止同步"——用户仍可手动触发。
+
+        已处于终态的工单不再被失败改写：用户手动"放弃自动重试"后，正在跑或
+        排队中的那次任务若失败，不能把它拉回退避循环。
         """
+        existing = self._retries.get(ticket_id)
+        if existing is not None and existing.exhausted:
+            logger.info(
+                "ticket=%s 已处于终态（failures=%d），本次失败不改写退避状态",
+                ticket_id,
+                existing.failures,
+            )
+            return
+
         state = self._retries.setdefault(ticket_id, RetryState())
         # delay 必须先于 failures 自增取，否则第一次失败就会跳到第二档。
         delay = state.delay_for_next()
@@ -804,6 +816,30 @@ class JobRegistry:
         """成功或无需再试时，同时清掉内存与库里的退避状态。"""
         self._retries.pop(ticket_id, None)
         self._store.clear_retry(ticket_id)
+
+    def abandon_retry(self, ticket_id: str) -> RetryState:
+        """把工单置为终态：放弃自动重试，保留产物与历史。
+
+        必须**同时**改内存与 SQLite。只改库是无效的——内存才是运行态权威：
+        2026-11-02 实测直接 `sqlite3 update retries set failures=6`，
+        被运行中进程的下一次写入覆盖回 4，只能停服改库再启动。
+        手动 POST /jobs 不受影响，成功同步后终态会自动清除。
+        """
+        state = self._retries.setdefault(ticket_id, RetryState())
+        state.failures = max(state.failures, MAX_RETRY_ATTEMPTS)
+        state.next_retry_at = None
+        self._store.save_retry(ticket_id, state.failures, None)
+        logger.warning("ticket=%s 手动放弃自动重试 failures=%d", ticket_id, state.failures)
+        return state
+
+    def resume_retry(self, ticket_id: str) -> None:
+        """恢复自动重试：清掉终态与退避记录，下一轮巡检重新考虑它。
+
+        只清退避，不碰墓碑：墓碑管的是"同步过又按保留期删掉"的工单，
+        语义不同，混在一起会让已清理的工单被重新拉回来。
+        """
+        self._clear_retry(ticket_id)
+        logger.info("ticket=%s 手动恢复自动重试", ticket_id)
 
     def _append_terminal_hint(self, job: Job) -> None:
         """把"已停止自动重试"写进 job.message。
@@ -1128,6 +1164,35 @@ async def cancel_job(ticket_id: str, request: Request):
             status_code=404,
             content={"error": "not-found", "message": "没有该工单的同步任务"},
         )
+    return Response(status_code=204)
+
+
+@app.post("/jobs/{ticket_id}/abandon", status_code=202)
+async def abandon_ticket(ticket_id: str, request: Request):
+    """放弃该工单的自动重试（置终态）。
+
+    只影响自动巡检：产物与历史都保留，手动 `POST /jobs` 仍可随时重新同步，
+    成功后终态记录会被清掉。用于"确定不会成功、不想再等 6 次退避"的场景
+    （如源端归档本身损坏）。
+    """
+    registry: JobRegistry = request.app.state.registry
+    ticket_id = validate_ticket_id(ticket_id)
+    state = registry.abandon_retry(ticket_id)
+    return {
+        "ticketId": ticket_id,
+        "retry": {
+            "failures": state.failures,
+            "nextRetryAt": state.next_retry_at.isoformat() if state.next_retry_at else None,
+            "exhausted": state.exhausted,
+        },
+    }
+
+
+@app.delete("/jobs/{ticket_id}/abandon", status_code=204)
+async def resume_ticket(ticket_id: str, request: Request):
+    """恢复该工单的自动重试：清掉终态与退避记录。"""
+    registry: JobRegistry = request.app.state.registry
+    registry.resume_retry(validate_ticket_id(ticket_id))
     return Response(status_code=204)
 
 

@@ -98,6 +98,8 @@ queued ──► fetching ──► extracting ──► ready
 | `GET` | `/jobs/{ticketId}` | 查询阶段与进度（字节、文件数、当前归档、错误码） |
 | `GET` | `/artifacts` | 本地工单目录 + 自动/手动任务总览（DSH 控制台使用） |
 | `DELETE` | `/jobs/{ticketId}` | 取消任务（已下载归档保留，供下次续传） |
+| `POST` | `/jobs/{ticketId}/abandon` | **放弃该工单的自动重试**（置终态）：保留产物与历史，手动同步不受影响 |
+| `DELETE` | `/jobs/{ticketId}/abandon` | 恢复自动重试（清掉终态与退避记录） |
 | `GET` | `/health` | 健康、磁盘余量、活跃任务数 |
 | `GET` | `/metrics` | Prometheus 文本指标：磁盘余量、活跃任务、任务分布、维护耗时与累计淘汰量 |
 
@@ -142,6 +144,10 @@ queued ──► fetching ──► extracting ──► ready
   `not-found`）第一次就转终态，不浪费重试额度。终态只约束自动扫描，手动
   `POST /jobs` 永远放行，`job.message` 会追加"已停止自动重试，可手动重试"，
   `/artifacts` 的 `retry.exhausted` 为 `true`。
+- **放弃自动重试必须走接口，不要直接改库**：`retries` 表只是镜像，内存才是运行态
+  权威——2026-11-02 实测 `sqlite3 update retries set failures=6` 被运行中进程下一次
+  写入覆盖回 4，只能停服改库再启动。`POST /jobs/{ticketId}/abandon` 同时改内存与库，
+  不需要停服；`DELETE` 同路径恢复自动重试。已处于终态的工单不会再被后续失败改写。
 - **宽窗口补扫按 5 分钟节流**（`DEEP_SCAN_MIN_INTERVAL_SECONDS`）：只要 `retries`
   非空就启用 7 天窗口，而巡检是 30 秒一轮，不节流就退化成每 31 秒 ssh 遍历一遍
   近百个归档（远端 `/sf/log` 有 1060 个目录）。单轮入队上限只挡入队，挡不住遍历。
