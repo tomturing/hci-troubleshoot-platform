@@ -1,0 +1,72 @@
+---
+# GatewayRouterServerErrorFirstSeen 的单元测试（promtool test rules）。
+#
+# 为什么要单测而不是只在集群里注入：这条规则的判据是「序列刚诞生」，
+# 而在真实环境里制造一个「全新的 5xx code」需要同时操纵入口与 service 两个维度，
+# 成本高且不可重复；一旦哪天 503 序列已经存在，就再也造不出「刚诞生」的现场。
+# 单测能精确构造时间轴，并把正例与两个反例固定下来。
+#
+# 运行：promtool test rules deploy/helm/hci-platform-obs/rules/alert_rules_test.yml
+# CI 里由 helm-validate 的「告警规则单测」步骤执行。
+rule_files:
+  - alert_rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── 正例：入口出现新的 503、service 维度从未有过 503 → 必须 firing ──
+  # 这正是 2026-11-01 staging 实测的那类故障（Service 没有 endpoint），
+  # 旧的三条规则对它是全静默的。
+  - interval: 1m
+    input_series:
+      # 背景流量：保证 offset 门控（count by () (entrypoint offset 10m) > 0）能开
+      - series: 'traefik_entrypoint_requests_total{code="200",entrypoint="websecure"}'
+        values: '1000+10x30'
+      # 503 序列在 t=10m 才诞生：前 10 分钟该序列不存在
+      - series: 'traefik_entrypoint_requests_total{code="503",entrypoint="websecure"}'
+        values: '_x10 3 3 3 3 3 3 3 3'
+      # service 维度只有 200，从来没有 503 —— 这是本规则的前置条件
+      - series: 'traefik_service_requests_total{code="200",service="hci-staging-customer-ui-80@kubernetes"}'
+        values: '500+5x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: GatewayRouterServerErrorFirstSeen
+        exp_alerts:
+          - exp_labels:
+              code: "503"
+              severity: warning
+              team: platform
+            exp_annotations:
+              summary: "网关自身返回 503，未落到任何后端"
+              description: "该 5xx 只出现在入口维度、service 维度没有这个 code 的序列，说明请求没走到后端 就失败了：常见成因是路由未匹配（host/path 写错）、Service 没有 endpoint（selector 不 匹配 Pod）、middleware 直接拒绝。这类故障此前完全不进告警，因为 service 维度结构性 地看不见它。排查看对应 Ingress 的 host/path 与 Service 的 endpoints 是否为空。"
+
+  # ── 反例一：service 维度也有 503 → 不是「网关自身」产生的，本规则不得 firing ──
+  # 这个反例同时证明新规则不会与 GatewayServerErrorFirstSeen 重复告警。
+  - interval: 1m
+    input_series:
+      - series: 'traefik_entrypoint_requests_total{code="200",entrypoint="websecure"}'
+        values: '1000+10x30'
+      - series: 'traefik_entrypoint_requests_total{code="503",entrypoint="websecure"}'
+        values: '_x10 3 3 3 3 3 3 3 3'
+      # 关键差异：service 维度也存在 503 序列
+      - series: 'traefik_service_requests_total{code="503",service="hci-staging-probe-backend-down-80@kubernetes"}'
+        values: '_x10 3 3 3 3 3 3 3 3'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: GatewayRouterServerErrorFirstSeen
+        exp_alerts: []
+
+  # ── 反例二：503 序列早已存在（不是刚诞生）→ 不得 firing ──
+  # 防止规则退化成「只要 service 缺该 code 就永久告警」的噪声源。
+  - interval: 1m
+    input_series:
+      - series: 'traefik_entrypoint_requests_total{code="200",entrypoint="websecure"}'
+        values: '1000+10x30'
+      - series: 'traefik_entrypoint_requests_total{code="503",entrypoint="websecure"}'
+        values: '2+1x30'
+      - series: 'traefik_service_requests_total{code="200",service="hci-staging-customer-ui-80@kubernetes"}'
+        values: '500+5x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: GatewayRouterServerErrorFirstSeen
+        exp_alerts: []

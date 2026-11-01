@@ -26,6 +26,17 @@ spec:
         # 用 hci.lokiConfig 算校验和（与 ConfigMap 同源），只有 Loki 配置本身变了才会重启，
         # 不会因为同文件里 alloy/grafana 的改动被连带重启。
         checksum/config: {{ include "hci.lokiConfig" . | sha256sum }}
+        # 让 Prometheus 抓 Loki 自己的 /metrics。
+        # 为什么必须加：开放项「structured metadata 的分组到底发生在写入侧还是只在查询
+        # 响应侧」一直无法定论，它的判据就是 loki_ingester_memory_streams 这类写入侧指标。
+        # 但 Loki 此前没有 prometheus.io/scrape 注解，Prometheus 的 kubernetes_sd 直接
+        # 跳过它，于是“拿不到数字”被反复误读成“没有这个指标”。
+        # 2026-11-01 实测：count(loki_ingester_memory_streams) 返回空向量（不是 0），
+        # 即序列从未被抓取过，而不是 Loki 没有该指标。
+        # 注意：加注解会改变 podTemplate → Loki 会滚动一次，Recreate + PVC，数据不丢。
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+        prometheus.io/path: "/metrics"
     spec:
       containers:
         - name: loki

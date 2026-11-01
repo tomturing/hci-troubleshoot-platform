@@ -276,7 +276,7 @@ groups:
           team: platform
         annotations:
           summary: "网关 {{ $labels.service }} 出现新的 5xx 序列（{{ $labels.code }}/{{ $labels.method }}）"
-          description: "该 5xx 计数器刚出现，当前值 {{ $value | humanize }} 全部发生在首次抓取之前，rate()/increase() 看不到它们。这通常是一次发布/重启窗口：先看对应 Deployment 的 Pod 是否在此时重启，以及 preStop 是否生效。若整批 5xx 序列在同一时刻集体 firing，则更可能是 Prometheus 自身重启导致 TSDB 历史丢失（数据目录目前为 emptyDir），门控已排除这种成片假象。"
+          description: "该 5xx 计数器刚出现，当前值 {{ $value | humanize }} 全部发生在首次抓取之前，rate()/increase() 看不到它们。这通常是一次发布/重启窗口：先 看对应 Deployment 的 Pod 是否在此时重启，以及 preStop 是否生效。若整批 5xx 序列 在同一时刻集体 firing，则更可能是 Prometheus 实例自己的数据目录被清空（早期用 emptyDir 时必然如此；2026-10-31 起改为 PVC，出现时应先查 prometheus-data 是否被重建而不是怀疑业务），门控已排除这种成片假象。"
 
       # 反向自守：监控自己"静默瘫掉"比任何业务告警都危险。
       # 2026-10-30 前，staging 就是因为命名空间白名单漏了而没有任何指标，
@@ -290,3 +290,47 @@ groups:
         annotations:
           summary: "网关指标已消失（可用性度量失效）"
           description: "traefik_service_requests_total 已 15 分钟无数据：可能是 Traefik 未开 metrics/prometheus 或注解端口不对，此时发布窗口无法被度量。"
+
+      # ── 网关自身产生的 5xx：service 维度结构性地看不见 ──
+      # 上面三条都建立在 traefik_service_requests_total 上，而它只统计「已经落到某个
+      # Service 上」的请求。路由未匹配、Service 没有 endpoint、middleware 直接拒绝——
+      # 这几类 5xx 根本走不到 service 层，只存在于 traefik_entrypoint_requests_total。
+      #
+      # 2026-11-01 staging 实测（同一时刻、同一类故障，两个维度结论相反）：
+      #   · Service 没有 endpoint 的 Ingress，请求 3 次 → Loki 里 3 条 503 有记录、
+      #     入口维度 code=503 计数上涨，而 `count(traefik_service_requests_total{code=~"5.."})`
+      #     恒为 0 → 上面三条告警全部静默；
+      #   · 对照组：Service 有 endpoint 但 targetPort 打错（真实转发失败）→ service
+      #     维度立刻出现 code="502" v=3，GatewayServerErrorFirstSeen 正常 firing。
+      # 所以前者的「0 告警」不是「没有故障」，是维度选错了。
+      #
+      # 判据取「该 5xx code 在入口刚出现，而 service 维度从来没有这个 code 的序列」。
+      # 不用两个计数器的数值差，是因为差值在「service 侧完全缺该 code」时会因找不到
+      # 匹配的右操作数而把整条序列丢掉——丢掉的恰好是本规则要抓的那一类。
+      # 口径对齐的前提已实测：200/201/401/403 两维度差值全为 0，只有 404 差 184
+      # （路由未匹配，正是同类现象），说明 service 维度是入口维度的真子集。
+      #
+      # 与 GatewayServerErrorFirstSeen 同构（一次性事件，序列满 10 分钟后自动消解），
+      # 且因为「service 维度没有该 code」是硬前提，不会与它重复告警。
+      #
+      # 已知漏报边界：同一个 code 如果既然后端产生、又有网关自身产生，service 维度
+      # 就存在该 code，本规则会因 unless 而放弃。混合场景目前看不出来，需要时再补
+      # increase() 差值（低流量下 increase 有首样本盲区，另议）。
+      - alert: GatewayRouterServerErrorFirstSeen
+        expr: |
+          (
+            (sum by (code) (traefik_entrypoint_requests_total{code=~"5.."}) > 0)
+            unless on (code)
+            (sum by (code) (traefik_entrypoint_requests_total{code=~"5.."} offset 10m) > 0)
+            unless on (code)
+            (sum by (code) (traefik_service_requests_total{code=~"5.."}) > 0)
+          )
+          and on()
+          (count by () (traefik_entrypoint_requests_total offset 10m) > 0)
+        for: 0m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "网关自身返回 {{ $labels.code }}，未落到任何后端"
+          description: "该 5xx 只出现在入口维度、service 维度没有这个 code 的序列，说明请求没走到后端 就失败了：常见成因是路由未匹配（host/path 写错）、Service 没有 endpoint（selector 不 匹配 Pod）、middleware 直接拒绝。这类故障此前完全不进告警，因为 service 维度结构性 地看不见它。排查看对应 Ingress 的 host/path 与 Service 的 endpoints 是否为空。"
