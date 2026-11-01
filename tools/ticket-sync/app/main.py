@@ -31,8 +31,8 @@ from .extractor import extract
 from .fetcher import (
     RemoteArchive,
     fetch,
+    list_recent_archives,
     list_remote_entries,
-    list_today_archives,
     looks_like_non_log_bundle,
 )
 from .maintenance import (
@@ -70,6 +70,11 @@ RETRY_BACKOFF_SECONDS = (600, 1800, 7200, 21600)
 # 重启不该让 65 GiB 的下载从头再来；但也不能无限累积，超龄的由启动自检
 # 与每日维护回收。选 2 小时：覆盖一次正常的慢速下载，又不至于把垃圾留过夜。
 STALE_WORKSPACE_SECONDS = 2 * 3600
+
+# 墓碑的保留时长。墓碑不是永久资产：远端归档本身有保留窗口，过了窗口它既不会
+# 被扫到，留着只会让表无限增长。取 30 天，远大于 7 天保留期，留足"删掉之后
+# 不该立刻被拉回来"的余量。
+TOMBSTONE_RETENTION_DAYS = 30
 
 
 class JobConflict(Exception):
@@ -141,6 +146,9 @@ class JobRegistry:
         self._lock = asyncio.Lock()
         # 退避状态按工单保留，跨任务生命周期，直到该工单成功发布。
         self._retries: dict[str, RetryState] = {}
+        # 已同步过、产物已按策略删除的工单。自动扫描靠它区分"没同步过"与
+        # "同步过但已清理"，否则扫描窗口一放宽就会删了又拉。
+        self._tombstones: set[str] = set()
         # 持久化：任务历史与产物用量。内存表仍是运行态权威，DB 只是镜像。
         self._store = Store(cfg.state_db())
         interrupted = self._store.mark_interrupted()
@@ -149,6 +157,8 @@ class JobRegistry:
         self._store.prune_jobs()
         self._history: dict[str, Job] = {}
         self._load_history()
+        self._load_retries()
+        self._tombstones = set(self._store.tombstone_map())
 
     def close(self) -> None:
         self._store.close()
@@ -181,6 +191,23 @@ class JobRegistry:
                 logger.warning("跳过无法还原的历史任务 ticket=%s error=%s", row.get("ticket_id"), exc)
                 continue
             self._history[job.ticket_id] = job
+
+    def _load_retries(self) -> None:
+        """从 SQLite 恢复失败退避状态。
+
+        只存内存时"重启即重新给一次机会"，而每次重试都是完整重拉——一次部署
+        重启就能让几十 GiB 的坏包再拉一遍。退避必须跨重启存活才有意义。
+        """
+        for ticket_id, row in self._store.load_retries().items():
+            next_at = row.get("next_retry_at")
+            self._retries[ticket_id] = RetryState(
+                failures=int(row.get("failures") or 0),
+                next_retry_at=(
+                    datetime.fromtimestamp(float(next_at), TZ) if next_at is not None else None
+                ),
+            )
+        if self._retries:
+            logger.info("已恢复失败退避状态 工单数=%d", len(self._retries))
 
     def _persist(self, job: Job) -> None:
         """把任务快照镜像到 SQLite。写失败只记日志，不影响同步主流程。"""
@@ -220,7 +247,13 @@ class JobRegistry:
             final_dir = self.cfg.root / archive.ticket_id
             if final_dir.is_dir():
                 # 已经发布成功，历史退避记录可以清掉。
-                self._retries.pop(archive.ticket_id, None)
+                self._clear_retry(archive.ticket_id)
+                return None
+
+            # 同步过、产物已按保留期或容量淘汰删掉的工单：扫描窗口现在覆盖 7 天，
+            # 远端归档很可能还在（保留期也是 7 天），没有墓碑就会删了又拉。
+            # 只挡自动扫描——手动 POST 代表用户新的判断，不该被墓碑拦下。
+            if archive.ticket_id in self._tombstones:
                 return None
 
             state = self._retries.get(archive.ticket_id)
@@ -301,8 +334,23 @@ class JobRegistry:
         return {job.ticket_id for job in self.jobs.values() if job.phase in RUNNING_PHASES}
 
     def _forget_ticket(self, ticket_id: str) -> None:
-        """产物被删除后同步清理记账与历史，避免 DB 与磁盘长期漂移。"""
+        """产物被删除后清理记账与历史，并留下墓碑。
+
+        墓碑是"这个工单同步成功过"的唯一证据。不留的话，删除与自动扫描之间
+        没有任何东西能区分"从没同步过"和"同步过但已清理"，扫描窗口一放宽
+        就是删了又拉的无限循环。
+        """
+        row = self._store.get_artifact(ticket_id)
+        synced_at = row.get("completed_at") if row else None
+        self._store.add_tombstone(
+            ticket_id,
+            float(synced_at) if synced_at else _now().timestamp(),
+            "retention",
+        )
+        self._tombstones.add(ticket_id)
         self._store.delete_artifact(ticket_id)
+        self._store.clear_retry(ticket_id)
+        self._retries.pop(ticket_id, None)
         self._history.pop(ticket_id, None)
 
     def _prune_expired_sync(self, now: datetime) -> int:
@@ -345,6 +393,19 @@ class JobRegistry:
             self._store,
             self._forget_ticket,
         )
+
+    def prune_tombstones(self, now: datetime) -> int:
+        """回收过期墓碑，返回删除条数。
+
+        同步实现（单条 DELETE，微秒级），但由调用方放进线程池，
+        与容量检查保持同一种执行模型，避免以后有人在这里加 IO 阻塞事件循环。
+        """
+        cutoff = now.timestamp() - TOMBSTONE_RETENTION_DAYS * 86400
+        removed = self._store.prune_tombstones(cutoff)
+        if removed:
+            # 内存集合与库对齐：否则被回收的工单号仍会挡住自动扫描。
+            self._tombstones = set(self._store.tombstone_map())
+        return removed
 
     async def list_artifacts(self) -> list[dict[str, Any]]:
         """合并本地已发布目录与内存任务，供 DSH 控制台展示。"""
@@ -494,7 +555,11 @@ class JobRegistry:
 
                 job.updated_at = _now()
                 self._persist(job)
-                self._retries.pop(ticket_id, None)
+                self._clear_retry(ticket_id)
+                # 重新同步成功，墓碑必须抹掉：否则它下次被清理后会被当成"仍已同步过"
+                # 而不再进入自动扫描，等于把用户显式要求的重拉结果又丢掉。
+                self._store.clear_tombstone(ticket_id)
+                self._tombstones.discard(ticket_id)
                 logger.info(
                     "ticket=%s job=%s 完成 层数=%d 文件=%d 字节=%d 旧版本=%s",
                     ticket_id,
@@ -570,6 +635,8 @@ class JobRegistry:
         delay = state.delay_for_next()
         state.failures += 1
         state.next_retry_at = _now() + timedelta(seconds=delay)
+        # 落库：只存内存的话，重启就等于"重新给坏包一次全量拉取的机会"。
+        self._store.save_retry(ticket_id, state.failures, state.next_retry_at.timestamp())
         logger.warning(
             "ticket=%s 失败退避 第%d次 下次自动重试=%s 间隔=%ds",
             ticket_id,
@@ -577,6 +644,11 @@ class JobRegistry:
             state.next_retry_at.isoformat(),
             delay,
         )
+
+    def _clear_retry(self, ticket_id: str) -> None:
+        """成功或无需再试时，同时清掉内存与库里的退避状态。"""
+        self._retries.pop(ticket_id, None)
+        self._store.clear_retry(ticket_id)
 
     def _progress_writer(self, job: Job):
         def callback(received: int, total: int) -> None:
@@ -674,6 +746,9 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
                 )
                 if stale:
                     logger.info("清理陈旧临时目录 count=%d", stale)
+                tombstones = await asyncio.to_thread(registry.prune_tombstones, now)
+                if tombstones:
+                    logger.info("回收过期墓碑 count=%d", tombstones)
                 elapsed = time.monotonic() - started
                 logger.info(
                     "容量检查完成 上限=%.1fGiB 删除=%d 释放=%.1fGiB elapsed_ms=%.0f",
@@ -690,7 +765,7 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
                 last_cleanup_date = now.date()
 
             if cfg.auto_sync_enabled:
-                archives = await list_today_archives(cfg, now)
+                archives = await list_recent_archives(cfg, cfg.auto_scan_days, now)
                 for archive in archives:
                     try:
                         await registry.create_auto(archive)

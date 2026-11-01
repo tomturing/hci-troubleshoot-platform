@@ -56,6 +56,19 @@ CREATE TABLE IF NOT EXISTS artifacts (
     dir_mtime REAL
 );
 CREATE INDEX IF NOT EXISTS idx_artifacts_order ON artifacts(has_logs, completed_at);
+CREATE TABLE IF NOT EXISTS tombstones (
+    ticket_id TEXT PRIMARY KEY,
+    synced_at REAL NOT NULL,
+    removed_at REAL NOT NULL,
+    reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tombstones_removed ON tombstones(removed_at);
+CREATE TABLE IF NOT EXISTS retries (
+    ticket_id TEXT PRIMARY KEY,
+    failures INTEGER NOT NULL DEFAULT 0,
+    next_retry_at REAL,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -299,3 +312,118 @@ class Store:
             logger.warning("读取淘汰候选失败 error=%s", exc)
             return []
         return [dict(row) for row in rows]
+
+    @_locked
+    def get_artifact(self, ticket_id: str) -> dict[str, Any] | None:
+        """按工单号取单行记账（墓碑需要拿到 synced_at，不能为此全表扫一遍）。"""
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM artifacts WHERE ticket_id=?", (ticket_id,)
+            ).fetchone()
+        except sqlite3.Error as exc:
+            logger.warning("读取单条产物用量失败 ticket=%s error=%s", ticket_id, exc)
+            return None
+        return dict(row) if row else None
+
+    # ---------------- 墓碑（已同步标记） ----------------
+
+    @_locked
+    def add_tombstone(self, ticket_id: str, synced_at: float, reason: str = "") -> None:
+        """记录"这个工单同步成功过，产物已被按策略删除"。
+
+        存在的唯一理由：自动扫描放宽到跨天之后，删掉产物的工单会被再次发现，
+        于是"删了又拉"变成无限循环。墓碑让扫描能区分"没同步过"与"同步过但已清理"。
+        它只约束自动扫描——用户手动 POST 代表新的判断，不该被墓碑挡住。
+        """
+        try:
+            now = datetime.now().timestamp()
+            self._conn.execute(
+                """
+                INSERT INTO tombstones (ticket_id, synced_at, removed_at, reason)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(ticket_id) DO UPDATE SET
+                    synced_at=excluded.synced_at,
+                    removed_at=excluded.removed_at,
+                    reason=excluded.reason
+                """,
+                (ticket_id, synced_at, now, reason),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("写入墓碑失败 ticket=%s error=%s", ticket_id, exc)
+
+    @_locked
+    def tombstone_map(self) -> dict[str, dict[str, Any]]:
+        """一次取回全部墓碑，供自动扫描批量判断，避免每工单一次查询。"""
+        try:
+            rows = self._conn.execute("SELECT * FROM tombstones").fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("读取墓碑失败 error=%s", exc)
+            return {}
+        return {row["ticket_id"]: dict(row) for row in rows}
+
+    @_locked
+    def clear_tombstone(self, ticket_id: str) -> None:
+        """重新同步成功后抹掉墓碑，否则下一次清理又会把它当成"已同步过"。"""
+        try:
+            self._conn.execute("DELETE FROM tombstones WHERE ticket_id=?", (ticket_id,))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("删除墓碑失败 ticket=%s error=%s", ticket_id, exc)
+
+    @_locked
+    def prune_tombstones(self, before: float) -> int:
+        """回收过期墓碑，返回删除条数。
+
+        墓碑不是永久资产：远端归档本身也有保留窗口，过了窗口它既不会被扫到，
+        留着只会让表无限增长。
+        """
+        try:
+            cursor = self._conn.execute("DELETE FROM tombstones WHERE removed_at < ?", (before,))
+            self._conn.commit()
+            return cursor.rowcount
+        except sqlite3.Error as exc:
+            logger.warning("回收墓碑失败 error=%s", exc)
+            return 0
+
+    # ---------------- 失败退避 ----------------
+
+    @_locked
+    def load_retries(self) -> dict[str, dict[str, Any]]:
+        """读回退避状态。
+
+        原本退避只存内存，重启就等于"重新给坏包一次机会"——配合每次重试都是
+        全量拉取，一次部署重启就能让几十 GiB 的坏包再拉一遍。
+        """
+        try:
+            rows = self._conn.execute("SELECT * FROM retries").fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("读取退避状态失败 error=%s", exc)
+            return {}
+        return {row["ticket_id"]: dict(row) for row in rows}
+
+    @_locked
+    def save_retry(self, ticket_id: str, failures: int, next_retry_at: float | None) -> None:
+        try:
+            self._conn.execute(
+                """
+                INSERT INTO retries (ticket_id, failures, next_retry_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(ticket_id) DO UPDATE SET
+                    failures=excluded.failures,
+                    next_retry_at=excluded.next_retry_at,
+                    updated_at=excluded.updated_at
+                """,
+                (ticket_id, failures, next_retry_at, datetime.now().timestamp()),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("写入退避状态失败 ticket=%s error=%s", ticket_id, exc)
+
+    @_locked
+    def clear_retry(self, ticket_id: str) -> None:
+        try:
+            self._conn.execute("DELETE FROM retries WHERE ticket_id=?", (ticket_id,))
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("删除退避状态失败 ticket=%s error=%s", ticket_id, exc)
