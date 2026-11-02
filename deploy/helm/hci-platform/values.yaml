@@ -282,8 +282,11 @@ caseService:
   # 单节点前提与 customerLogs / tickets 相同；多节点需换共享存储并加节点亲和。
   dshSessions:
     enabled: false
-    # DSH Chart 的 home.hostPath 下的 sessions 子目录（不是家目录本身）
-    hostPath: /sf/dsh-home/sessions
+    # DSH Chart 的 home.hostPath 下的 .dsh/sessions —— 注意是**两层**：
+    # home 卷挂载在容器 /home/dsh，而 DSH_HOME=$HOME/.dsh，会话写入 $DSH_HOME/sessions。
+    # 只写到 sessions 会挂到空目录，页面表现为「没有诊断记录」而不是报错
+    # （2026-11-02 staging 实测过一次，故路径写死在这里并加注释）。
+    hostPath: /sf/dsh-home/.dsh/sessions
     mountPath: /var/lib/hci/dsh-sessions
   resources:
     requests:

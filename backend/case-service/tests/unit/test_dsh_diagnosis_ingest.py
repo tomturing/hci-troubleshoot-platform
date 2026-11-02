@@ -18,12 +18,15 @@ import pytest
 import zstandard
 from app.config import settings
 from app.main import app
+from app.routes import case_insights
 from app.services.dsh_diagnosis_service import (
     decode_zstd_frames,
     parse_session_text,
     resolve_binding,
 )
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from starlette.requests import Request
 
 pytestmark = pytest.mark.unit
 
@@ -215,3 +218,32 @@ async def test_log_collect_evidence_endpoint_requires_admin_token():
 
     assert resp.status_code in (401, 403)
     assert settings.INTERNAL_API_TOKEN  # 防止测试环境未加载配置时静默通过
+
+
+@pytest.mark.asyncio
+async def test_get_session_prefers_app_state_manager():
+    """数据库必须优先从 app.state 取。
+
+    2026-11-02 staging 现场：lifespan 漏调 `case_insights.set_database_manager()`，
+    两个管理端点恒返 500「Database not initialized」，而启动日志与健康检查全绿。
+    这条用例锁住 app.state 兜底，避免同类漏接再次静默。
+    """
+    class _Manager:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def get_session(self):
+            self.called = True
+            yield "sentinel-session"
+
+    manager = _Manager()
+    fake_app = FastAPI()
+    fake_app.state.database_manager = manager
+    request = Request({"type": "http", "app": fake_app, "headers": []})
+
+    generator = case_insights.get_session(request)
+    session = await generator.__anext__()
+
+    assert session == "sentinel-session"
+    assert manager.called
+    await generator.aclose()

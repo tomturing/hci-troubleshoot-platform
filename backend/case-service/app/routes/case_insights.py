@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
 from sqlalchemy import text
@@ -39,10 +39,14 @@ def set_database_manager(db_manager: DatabaseManager) -> None:
     database_manager = db_manager
 
 
-async def get_session():
-    if database_manager is None:
+async def get_session(request: Request):
+    # 优先取 app.state（lifespan 已写入，是唯一真源），模块级变量只作兼容兜底：
+    # 只依赖模块级 set_*() 的话，一旦 lifespan 少调一行，端点会恒返 500
+    # 「Database not initialized」，而启动/健康检查全绿——正是 2026-11-02 staging 的现场。
+    manager = getattr(request.app.state, "database_manager", None) or database_manager
+    if manager is None:
         raise HTTPException(status_code=500, detail="Database not initialized")
-    async for session in database_manager.get_session():
+    async for session in manager.get_session():
         yield session
 
 

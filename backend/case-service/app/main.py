@@ -48,6 +48,10 @@ async def lifespan(app: FastAPI):
     environments.set_database_manager(database_manager)
     log_collect.set_database_manager(database_manager)
     log_collect_scenarios.set_database_manager(database_manager)
+    # 工单证据聚合端点：漏掉这一行不会报错，只会让两个管理端点恒返 500
+    # 「Database not initialized」（2026-11-02 staging 实测），故同时保留
+    # get_session 里从 app.state 兜底的逻辑，双保险。
+    case_insights.set_database_manager(database_manager)
 
     # 接管上一个进程遗留的代传（发布/重启/OOM 后不靠人工干预）：
     # 租约过期的 running 与优雅退出时交还的 pending 都会在这里被重新拉起。
