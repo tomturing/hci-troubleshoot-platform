@@ -124,6 +124,9 @@ async def extract(
     logger.info("ticket=%s job=%s phase=extracting depth=1 开始解压顶层归档", ticket_id, job_id)
     _notify_archive(on_archive, archive.name)
     # 顶层同样走魔数判定：工单包被采集端命名为 .zip 而实际是 tar 的情况真实存在。
+    # 降级判据必须是"本次是否解出了东西"，不能用"目录里有文件"——work_dir 可能
+    # 留有上一次的残留，否则坏包会被误判成"可降级成功"并发布出去。
+    before = _tree_stats(work_dir, staged)[1]
     try:
         await _extract_any(
             archive, work_dir, cfg.archive_password, ticket_id=ticket_id, job_id=job_id
@@ -132,8 +135,8 @@ async def extract(
         if not error.degradable:
             raise
         # 顶层归档截断：与"层数超限只停不判死"同源——已解出的内容是可用日志，
-        # 为残缺的尾部丢掉整包不划算。若一点都没解出来，则仍按失败处理。
-        if _tree_stats(work_dir, staged)[1] == 0:
+        # 为残缺的尾部丢掉整包不划算。若本次一条都没解出来，则仍按失败处理。
+        if _tree_stats(work_dir, staged)[1] <= before:
             raise
         stats.truncated_archives += 1
         logger.warning(
@@ -464,6 +467,9 @@ async def _unzip(archive: Path, target: Path, password: str) -> None:
         error_code,
         _unzip_message(error_code),
         f"unzip exit={code} archive={archive.name} stderr={text[:800]}",
+        # 成员级数据损坏允许降级：报错前已解出的成员仍然可用。
+        # 顶层归档若一条都没解出，由 extract() 的零输出检查重新判定失败。
+        degradable=error_code is ErrorCode.ARCHIVE_CORRUPT,
     )
 
 
@@ -654,6 +660,12 @@ def _classify_unzip(code: int, stderr: str) -> ErrorCode:
         or "cannot find zipfile directory" in text
         or "not a zipfile" in text
         or "unexpected end of file" in text
+        # exit=80 是"成员数据无法解压"（invalid compressed data / bad CRC）：
+        # 打包时该成员就没写完整。实测 Q2026102802029 的 LOG_tcpstat.txt.zip
+        # 就是这种——坏的是单个成员，不该让整包（26 GB 已解出内容）失败。
+        or code == 80
+        or "invalid compressed data" in text
+        or "bad crc" in text
     ):
         return ErrorCode.ARCHIVE_CORRUPT
     if code == 50 or "no space left" in text:

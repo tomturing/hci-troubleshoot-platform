@@ -66,6 +66,18 @@ def _truncate(payload: bytes, drop: int = 8) -> bytes:
     return payload[:-drop]
 
 
+def _zip_with_bad_member() -> bytes:
+    """构造一个"成员数据被写坏"的 zip：中央目录完好，但某成员内容被篡改。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("ok.log", b"a" * 512)
+        zf.writestr("bad.log", b"b" * 512)
+    data = bytearray(buf.getvalue())
+    offset = data.find(b"b" * 512)
+    data[offset + 100] ^= 0xFF
+    return bytes(data)
+
+
 class TruncatedTarTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="ticket-sync-trunc-"))
@@ -135,6 +147,22 @@ class TruncatedTarTest(unittest.IsolatedAsyncioTestCase):
             await extractor.extract(
                 TICKET_ID, archive, work_dir, self.cfg, "job-empty-trunc"
             )
+
+    async def test_corrupt_member_is_degraded(self) -> None:
+        """成员级坏数据（unzip exit=80 / bad CRC）同样降级。
+
+        实测 Q2026102802029 除了 tgz 截断，还有 `LOG_tcpstat.txt.zip` 成员数据损坏：
+        `unzip exit=80`，坏的是单个成员，而当时已经解出 26 GB 内容。
+        """
+        work_dir = self.root / ".tmp" / TICKET_ID
+        work_dir.mkdir(parents=True)
+        archive = work_dir / f"{TICKET_ID}.zip"
+        archive.write_bytes(_zip_with_bad_member())
+
+        stats = await extractor.extract(TICKET_ID, archive, work_dir, self.cfg, "job-bad-member")
+
+        self.assertEqual(stats.truncated_archives, 1)
+        self.assertTrue((work_dir / "ok.log").is_file())
 
     async def test_clean_archive_reports_no_truncation(self) -> None:
         work_dir = self.root / ".tmp" / TICKET_ID

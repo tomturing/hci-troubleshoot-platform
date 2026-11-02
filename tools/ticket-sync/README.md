@@ -208,7 +208,7 @@ queued ──► fetching ──► extracting ──► ready
 | `.rar` 解不开（unrar 与 p7zip 都不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
 | 归档只含转储（vmcore / kdump / `.core` / `.dump` / `.dmp`），无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
 | 解压后产物里既无 `log_list.json`、`sp_*`，也没有任意层级的 `<节点目录>/sf/log/`（探测深度 ≤3、最多 200 个目录） | 仍发布，但 `job.message` 明确提示"可能仅含转储文件" | `job.message` |
-| 压缩流被截断（gzip 缺尾部 CRC+ISIZE，`tar: Unexpected EOF`） | **保留已解出内容**并继续，计入截断数；残缺压缩包删除，避免反复扫描 | 日志 `截断=N`、`job.message`"N 个归档被截断，已保留可读部分" |
+| 压缩流被截断（gzip 缺尾部 CRC+ISIZE，`tar: Unexpected EOF`）或成员级数据损坏（`unzip exit=80`、bad CRC） | **保留已解出内容**并继续，计入截断数；残缺压缩包删除，避免反复扫描 | 日志 `截断=N`、`job.message`"N 个归档被截断，已保留可读部分" |
 
 嵌套层数上限（`TICKET_MAX_DEPTH`）是**停止下钻的护栏，不是整单失败的判据**：
 达到上限时保留已解出的产物、把剩余归档计入 `depth_truncated` 并在 `job.message`
