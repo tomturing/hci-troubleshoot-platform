@@ -202,6 +202,54 @@ def test_parse_returns_none_without_session_header():
     assert parse_session_text('{"type":"user/message","data":{"content":[{"type":"text","text":"hi"}]}}') is None
 
 
+def test_parse_strips_nul_bytes():
+    """NUL（U+0000）会被 PostgreSQL 拒绝，必须在归档侧清洗。
+
+    2026-11-02 staging 现场：一条会话的工具输出里含 NUL（读了二进制文件），
+    整条 session 入库失败，端点 500，日志只有 asyncpg 的
+    `unsupported Unicode escape sequence`，没有业务线索。
+    """
+    payload = "正常文本\x00被污染的输出\x00"
+    lines = [
+        json.dumps({"type": "session", "version": 4, "id": "session-nul", "cwd": "/data/tickets"}),
+        json.dumps(
+            {
+                "type": "tool/call",
+                "seq": 1,
+                "data": {"callId": "c1", "name": "bash", "arguments": "{}"},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "tool/result",
+                "seq": 2,
+                "data": {"message": {"toolCallId": "c1", "content": [{"type": "text", "text": payload}]}},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant/message",
+                "seq": 3,
+                "data": {
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "结论：磁盘\x00正常"}],
+                    }
+                },
+            }
+        ),
+    ]
+    parsed = parse_session_text("\n".join(lines))
+
+    assert parsed is not None
+    assert parsed.conclusion_markdown == "结论：磁盘正常"
+    for item in parsed.messages:
+        assert "\x00" not in (item.get("text") or "")
+        assert "\x00" not in (item.get("name") or "")
+    # 序列化后也不能出现 PostgreSQL 拒绝的转义字面量
+    assert "\\u0000" not in json.dumps(parsed.messages, ensure_ascii=False)
+
+
 @pytest.mark.asyncio
 async def test_dsh_sessions_endpoint_requires_admin_token():
     """管理端点必须验管理员凭证：DSH 会话含完整客户日志内容，不能匿名读。"""

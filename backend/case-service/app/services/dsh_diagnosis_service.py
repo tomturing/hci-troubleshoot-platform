@@ -153,7 +153,22 @@ def _text_blocks(content: Any) -> str:
     return "\n".join(parts).strip()
 
 
+def _sanitize(value: str) -> str:
+    """去掉 NUL（U+0000）。
+
+    第一性原理：PostgreSQL 的 text/jsonb **物理上不接受** `\\u0000`，写入时报
+    `UntranslatableCharacterError: unsupported Unicode escape sequence`。
+    而 DSH 的工具输出里确实会出现 NUL（`cat` 二进制文件、`hexdump` 片段），
+    一个字节就能让整条会话入库失败（2026-11-02 staging 实测：端点 500，日志里只有
+    asyncpg 的这条错误，没有任何业务线索）。宁可在归档侧丢这个不可见字符，
+    也不能丢整条诊断证据。
+    """
+    return value.replace("\x00", "") if "\x00" in value else value
+
+
 def _clip(value: str, limit: int) -> str:
+    # 所有入库字符串都经过这里，因此把 NUL 清洗放在入口处，避免漏网
+    value = _sanitize(value)
     if len(value) <= limit:
         return value
     return value[:limit] + "…（已截断）"
@@ -504,7 +519,10 @@ class DshDiagnosisService:
                         "message_count": parsed.message_count,
                         "tool_call_count": parsed.tool_call_count,
                         "conclusion_markdown": parsed.conclusion_markdown,
-                        "messages": json.dumps(parsed.messages, ensure_ascii=False),
+                        # 双保险：_clip 已清洗 NUL，但 messages 里还有 name/tool_calls 等
+                        # 未经 _clip 的字段；json.dumps 会把 NUL 转义成字面量 \\u0000，
+                        # 而 PostgreSQL 同样拒绝该转义，故在序列化后再剥一次。
+                        "messages": json.dumps(parsed.messages, ensure_ascii=False).replace("\\u0000", ""),
                         "truncated": parsed.truncated,
                         "binding_source": parsed.binding_source,
                         "source_path": str(path),
