@@ -20,6 +20,8 @@ dependencies = [
     "opentelemetry-instrumentation-sqlalchemy",
     "opentelemetry-instrumentation-logging",
     "prometheus-client>=0.19.0",
+    # DSH 会话文件是多帧 zstd 流（实测 session.v4.jsonl.zstd），stdout 解压需要标准库外的实现
+    "zstandard>=0.23.0,<1.0",
 ]
 
 [tool.uv]

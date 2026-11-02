@@ -271,6 +271,20 @@ caseService:
       # 单节点上 maxSurge 只能是 1（再加一个 Pod 同节点共享 RWO 卷）；
       # maxUnavailable 不在 values 里开放：它必须恒为 0，否则又回到「先杀后起」。
       maxSurge: 1
+  # DSH 诊断会话归档（只读）。
+  #
+  # 第一性原理：DSH 没有给平台留 API，也没有回调，会话真源就是它家目录下的
+  # sessions/**/session.v4.jsonl.zstd。要把它变成工单证据，唯一可靠的通道是
+  # 「同一份宿主机目录，DSH 写、case-service 只读解析」，不引入任何跨服务调用。
+  #
+  # 默认关闭：宿主目录必须由运维先创建，且属主为容器 uid(1000)、权限允许 0700 子目录
+  # 被同 uid 读取。开启而目录不存在会让 case-service 卡在 ContainerCreating。
+  # 单节点前提与 customerLogs / tickets 相同；多节点需换共享存储并加节点亲和。
+  dshSessions:
+    enabled: false
+    # DSH Chart 的 home.hostPath 下的 sessions 子目录（不是家目录本身）
+    hostPath: /sf/dsh-home/sessions
+    mountPath: /var/lib/hci/dsh-sessions
   resources:
     requests:
       cpu: "50m"

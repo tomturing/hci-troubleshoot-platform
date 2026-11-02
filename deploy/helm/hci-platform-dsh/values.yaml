@@ -198,3 +198,13 @@ workspace:
 #     不影响可用性（丢失的只是历史会话，属于已知取舍）。
 home:
   sizeLimit: 2Gi
+  # 可选：把家目录落到宿主机目录（hostPath），留空则用 emptyDir。
+  #
+  # 为什么需要它：DSH 的会话文件（$DSH_HOME/sessions/**/session.v4.jsonl.zstd）是
+  # 唯一能回答「AI 当时怎么诊断的」的证据。emptyDir 下 Pod 重建即丢，平台也无从读取；
+  # 落到宿主目录后，case-service 以只读方式挂载同一目录做归档，接上工单详情。
+  #
+  # ⚠️ 目录必须事先存在，且属主为容器运行用户（uid/gid=1000），例如：
+  #   install -d -o 1000 -g 1000 -m 0755 /sf/dsh-home
+  # 不能用 DirectoryOrCreate：kubelet 建成 root:root 后 DSH 无法写入 profile/session。
+  hostPath: ""

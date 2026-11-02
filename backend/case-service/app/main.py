@@ -18,7 +18,13 @@ from shared.observability.otel import init_telemetry, instrument_app
 from shared.utils.exception_handlers import register_exception_handlers
 
 from app.config import settings
-from app.routes import cases, environments, log_collect, log_collect_scenarios
+from app.routes import (
+    case_insights,
+    cases,
+    environments,
+    log_collect,
+    log_collect_scenarios,
+)
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -78,6 +84,8 @@ app.include_router(log_collect.upload_router)
 # 故障场景字典：客户读（/api/log-collect/scenarios）+ 管理端读写（/internal/log-collect/scenarios）
 app.include_router(log_collect_scenarios.router)
 app.include_router(log_collect_scenarios.admin_router)
+# 工单详情证据聚合：日志收集选项/元数据 + DSH 诊断会话（只对管理端开放）
+app.include_router(case_insights.router)
 
 
 @app.get("/metrics")

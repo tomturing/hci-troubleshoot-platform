@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     # 「进程已死但没人写终态」的判定窗口。默认 120s 对应 30s 心跳。
     LOG_COLLECT_RELAY_STALE_SECONDS: int = 120
 
+    # DSH 诊断会话归档：只读挂载 DSH 容器内 $DSH_HOME/sessions 的副本。
+    # 目录不存在时（未部署 DSH / 未配挂载）静默跳过，不能让工单详情接口因此 500。
+    DSH_SESSIONS_DIR: str = "/var/lib/hci/dsh-sessions"
+    DSH_SESSIONS_INGEST_ENABLED: bool = True
+    # 单次请求最多扫多少个会话文件：文件按 mtime 倒序，新会话优先；
+    # 上限的意义是给「首次访问一个全新部署」设一个可预期的耗时天花板。
+    DSH_SESSIONS_MAX_FILES: int = 60
+    # 单个会话解压后的正文上限。DSH 会话实测 0.1–3 MB，16 MiB 足够覆盖长会话，
+    # 又能避免一个异常文件把内存吃穿。
+    DSH_SESSIONS_MAX_BYTES: int = 16 * 1024 * 1024
+
     model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 

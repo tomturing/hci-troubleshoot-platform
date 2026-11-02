@@ -3967,3 +3967,77 @@ COMMENT ON COLUMN log_collect_scenario.updated_by IS '最近一次修改者（�
 
 CREATE INDEX IF NOT EXISTS idx_log_collect_scenario_order
     ON log_collect_scenario (enabled, sort_order);
+
+
+-- ------------------------------------------------------------
+-- 表: dsh_diagnosis_session  [模块: case-service]
+-- 说明: DSH（DeepSeek Harness）诊断会话的只读归档，把「AI 到底怎么诊断的」变成工单证据。
+--       DSH 是 Agent 运行时而非诊断服务：会话唯一真源是容器内
+--       $DSH_HOME/sessions/<workspace>/<session-id>/session.v4.jsonl.zstd（多帧 zstd 流），
+--       平台不参与推理，只负责解析成「完整对话（含工具调用摘要）+ 最终结论」并挂到工单上。
+-- 约束: session_id 全局唯一，是重复解析的幂等键；case_id 允许为空——会话内容里找不到工单号时
+--       宁可保留「未关联」，也不猜一个工单把别人的诊断挂错。
+--       case_id 刻意不建外键：DSH 会话可能引用本平台不存在的工单号（现场测试号、其他环境号），
+--       外键会让这类会话整条入库失败，从而丢掉诊断证据本身。
+--       messages 是快照而非日志：写入侧按条数与总字节截断，保留可读性优先于全量。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dsh_diagnosis_session (
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    session_id varchar(120) NOT NULL,
+    case_id varchar(20),
+    title text,
+    workspace varchar(255),
+    agent_preset varchar(64),
+    started_at timestamptz,
+    last_activity_at timestamptz,
+    message_count integer NOT NULL DEFAULT 0,
+    tool_call_count integer NOT NULL DEFAULT 0,
+    conclusion_markdown text,
+    messages jsonb NOT NULL DEFAULT '[]'::jsonb,
+    truncated boolean NOT NULL DEFAULT false,
+    binding_source varchar(16) NOT NULL DEFAULT 'none',
+    source_path text NOT NULL,
+    source_size bigint NOT NULL DEFAULT 0,
+    source_mtime timestamptz,
+    content_sha256 varchar(64),
+    trace_id varchar(64),
+    ingested_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT dsh_diagnosis_session_pkey PRIMARY KEY (id),
+    CONSTRAINT uq_dsh_diagnosis_session_session_id UNIQUE (session_id),
+    CONSTRAINT ck_dsh_diagnosis_session_binding_source CHECK ((binding_source)::text = ANY ((ARRAY['wecom_marker'::character varying, 'cwd'::character varying, 'first_user'::character varying, 'title'::character varying, 'none'::character varying])::text[]))
+);
+
+COMMENT ON TABLE dsh_diagnosis_session IS 'DSH 诊断会话归档 — 平台侧唯一的「AI 诊断过程与结论」证据；真源为 DSH 会话文件，本表是可检索投影';
+COMMENT ON COLUMN dsh_diagnosis_session.session_id IS 'DSH 会话 ID（sessions/<workspace>/<session-id> 的最后一段），重复解析的幂等键';
+COMMENT ON COLUMN dsh_diagnosis_session.case_id IS '关联工单号；为空表示未识别，不展示在工单详情（避免错挂）';
+COMMENT ON COLUMN dsh_diagnosis_session.title IS 'DSH 会话标题（session/title 事件）；用户未命名时可能只是首条消息摘要';
+COMMENT ON COLUMN dsh_diagnosis_session.workspace IS '会话工作目录（session 头的 cwd）；当前为 /data/tickets';
+COMMENT ON COLUMN dsh_diagnosis_session.agent_preset IS 'DSH agent preset（session 头的 agentPreset）';
+COMMENT ON COLUMN dsh_diagnosis_session.started_at IS '会话创建时间（session 头 createdAt）';
+COMMENT ON COLUMN dsh_diagnosis_session.last_activity_at IS '最后一条事件时间，用于判断会话是否仍在进行';
+COMMENT ON COLUMN dsh_diagnosis_session.message_count IS '归档的用户/助手消息条数（不含工具调用事件）';
+COMMENT ON COLUMN dsh_diagnosis_session.tool_call_count IS '归档的工具调用次数，用于快速判断「有没有真的看过日志」';
+COMMENT ON COLUMN dsh_diagnosis_session.conclusion_markdown IS '最终结论：最后一条助手回复全文（DSH 05-report 阶段输出 Markdown 报告）';
+COMMENT ON COLUMN dsh_diagnosis_session.messages IS '完整对话快照：[{seq,role,text,name,tool_calls,is_error,time}]；写入侧按单条长度与总条数上限截断';
+COMMENT ON COLUMN dsh_diagnosis_session.truncated IS '对话是否因超限被截断；true 时快照末尾会有一条 system 提示，结论不受影响';
+COMMENT ON COLUMN dsh_diagnosis_session.binding_source IS '工单号识别依据：wecom_marker=首条消息里的 log task directory；cwd=工作目录；first_user/title=文本唯一命中；none=未识别';
+COMMENT ON COLUMN dsh_diagnosis_session.source_path IS '会话文件绝对路径（宿主挂载点下），用于增量重解析';
+COMMENT ON COLUMN dsh_diagnosis_session.source_size IS '上次解析时的压缩文件字节数';
+COMMENT ON COLUMN dsh_diagnosis_session.source_mtime IS '上次解析时的文件 mtime；size+mtime 未变即跳过';
+COMMENT ON COLUMN dsh_diagnosis_session.content_sha256 IS '解压后正文 sha256，用于判断「文件变了但内容没变」';
+COMMENT ON COLUMN dsh_diagnosis_session.trace_id IS '入库链路的 trace_id，便于与日志对照';
+COMMENT ON COLUMN dsh_diagnosis_session.ingested_at IS '最后一次成功解析入库时间';
+COMMENT ON COLUMN dsh_diagnosis_session.created_at IS '记录创建时间';
+COMMENT ON COLUMN dsh_diagnosis_session.updated_at IS '记录更新时间（由服务端写入）';
+
+CREATE INDEX IF NOT EXISTS idx_dsh_diagnosis_session_case
+    ON dsh_diagnosis_session (case_id, started_at DESC)
+    WHERE case_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_dsh_diagnosis_session_source_path
+    ON dsh_diagnosis_session (source_path);
+
+CREATE INDEX IF NOT EXISTS idx_dsh_diagnosis_session_activity
+    ON dsh_diagnosis_session (last_activity_at DESC);

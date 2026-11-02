@@ -13,6 +13,14 @@ import {
 } from '@hci/shared'
 import type { CaseResponse, MessageResponse } from '@hci/shared'
 import TerminalReplay from '@/components/TerminalReplay.vue'
+import CaseLogCollectPanel from '@/components/CaseLogCollectPanel.vue'
+import CaseDshDiagnosisPanel from '@/components/CaseDshDiagnosisPanel.vue'
+import {
+  getCaseDshSessions,
+  getCaseLogCollect,
+  type DshSessionListResponse,
+  type LogCollectCaseEvidence,
+} from '@/api/caseInsights'
 import { getAccessToken } from '@/utils/auth'
 
 const route = useRoute()
@@ -35,7 +43,38 @@ const loading = ref(true)
 const loadedConversationId = ref<string | null>(null)
 
 // AI 上下文标签页数据
-const activeTab = ref('dialogue') // dialogue | ai-context
+const activeTab = ref('dialogue') // dialogue | log-collect | dsh | ai-context | terminal-history
+
+// ── 日志收集证据 / DSH 诊断记录 ──
+// 两段数据都与工单详情主请求解耦：主请求失败也要能看证据，反之亦然。
+// DSH 首次加载刻意用 refresh=false（只读已归档记录），避免一次页面打开就解压全部会话文件；
+// 真正需要「把新会话抓进来」时，由标签页切换或「刷新并归档」按钮触发 refresh=true。
+const logCollectEvidence = ref<LogCollectCaseEvidence | null>(null)
+const logCollectLoading = ref(false)
+const dshData = ref<DshSessionListResponse | null>(null)
+const dshLoading = ref(false)
+
+async function loadLogCollect() {
+  logCollectLoading.value = true
+  try {
+    logCollectEvidence.value = await getCaseLogCollect(caseId)
+  } catch (e) {
+    console.error('加载日志收集证据失败', e)
+  } finally {
+    logCollectLoading.value = false
+  }
+}
+
+async function loadDsh(refresh: boolean) {
+  dshLoading.value = true
+  try {
+    dshData.value = await getCaseDshSessions(caseId, { refresh })
+  } catch (e) {
+    console.error('加载 DSH 诊断记录失败', e)
+  } finally {
+    dshLoading.value = false
+  }
+}
 const promptAuditRecords = ref<any[]>([])
 const promptAuditLoading = ref(false)
 
@@ -88,6 +127,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+
+  // 证据类数据并行加载，互不阻塞：任一失败只影响自己的标签页
+  void loadLogCollect()
+  void loadDsh(false)
 })
 
 // 加载 AI 上下文数据
@@ -126,6 +169,10 @@ async function loadAiContext() {
 function onTabChange(tabName: string) {
   if (tabName === 'ai-context') {
     loadAiContext()
+  }
+  if (tabName === 'dsh') {
+    // 切到该标签页才做增量归档：页面打开成本留给真正要看的人
+    void loadDsh(true)
   }
 }
 
@@ -365,6 +412,39 @@ function getRiskLabel(level: number): { text: string; type: '' | 'success' | 'wa
                 <div class="msg-content">{{ msg.content }}</div>
               </div>
             </div>
+          </el-tab-pane>
+
+          <!-- 日志收集标签页：用户选项 + 环境元数据 + 交付事实 -->
+          <el-tab-pane label="日志收集" name="log-collect">
+            <template #label>
+              <span>
+                <el-icon><Files /></el-icon>
+                日志收集<template v-if="logCollectEvidence"> ({{ logCollectEvidence.task_total }})</template>
+              </span>
+            </template>
+            <div v-loading="logCollectLoading">
+              <el-empty
+                v-if="!logCollectEvidence"
+                description="暂无日志收集数据（该工单不是由日志收集入口创建，或接口不可用）"
+              />
+              <CaseLogCollectPanel v-else :evidence="logCollectEvidence" />
+            </div>
+          </el-tab-pane>
+
+          <!-- DSH 诊断标签页：完整对话 + 最终结论 -->
+          <el-tab-pane label="DSH 诊断" name="dsh">
+            <template #label>
+              <span>
+                <el-icon><Monitor /></el-icon>
+                DSH 诊断<template v-if="dshData"> ({{ dshData.total }})</template>
+              </span>
+            </template>
+            <CaseDshDiagnosisPanel
+              :case-id="caseId"
+              :data="dshData"
+              :loading="dshLoading"
+              @refresh="loadDsh(true)"
+            />
           </el-tab-pane>
 
           <!-- AI 上下文标签页 -->
