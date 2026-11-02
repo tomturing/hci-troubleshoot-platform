@@ -47,6 +47,7 @@ bash scripts/ops/argocd-apply-apps.sh --scope local --yes
 | 文件 | Application | 目标集群 |
 |------|-------------|---------|
 | `hci-platform-infra-staging.yaml` | hci-platform-infra-staging | staging（本集群） |
+| `hci-platform-dns-staging.yaml` | hci-platform-dns-staging | staging（CoreDNS 显式上游，`kube-system/coredns-custom`） |
 | `hci-platform-data-staging.yaml` | hci-platform-data-staging | staging |
 | `hci-platform-obs-staging.yaml` | hci-platform-obs-staging | staging |
 | `hci-platform-staging.yaml` | hci-platform-staging | staging |
