@@ -237,6 +237,23 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 # BridgeRelayExecutor.execute(tool_name, args) → Redis + SSE → terminal_bridge → SSH → HCI
 ```
 
+### 2.3 工具面可用性的前置条件：前端门禁
+
+「Bridge Relay 是唯一可行路径」还有一条容易被忽略的推论：**没有 SSH 会话时，
+工具面整体不可用**，而后端不校验这一点——会话服务照常接受消息，Agent 照常下发
+工具调用，只是永远等不到节点回包。表现是 SOP 卡在「执行中」，而不是明确的「未连接」。
+
+因此前端在**进入排障动作前**做一次门禁（`stores/chat.ts` 的 `requireTroubleshootReady`）：
+
+| 前提 | 判据 | 不满足时 |
+|---|---|---|
+| bridge 进程在跑 | WS 能收到 `bridge_hello`/`bridge_ready`（桌面 9999 → 47324） | 弹窗引导下载并运行 terminal_bridge，附本次探测地址 |
+| 本工单有 SSH 会话 | 前端 `sshConnectionState === 'connected'` | 弹窗内嵌统一 SSH 登录区 |
+| 或用户显式选择 | 「无 SSH 排障」 | 跳离线诊断（平台不连现场，客户自行采集上传） |
+
+已连接时零探测直接放行；刷新后 bridge 侧残留会话**不复用**（协议无查询能力，
+见 [排障前置 Bridge 与 SSH 门禁设计](../../custom-ui/events/2026-11-02-排障前置Bridge与SSH门禁设计.md)）。
+
 ---
 
 ## 三、核心架构决策记录
@@ -1060,6 +1077,7 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 
 | 日期 | 版本 | 摘要 |
 |------|------|------|
+| 2026-11-02 | v3.7 | **排障前置 Bridge 与 SSH 门禁（工具面可用性的前置条件）**：Agent 的全部节点侧工具（`acli_exec`/`bash_exec`/`sftp`）都依赖 terminal_bridge 的 SSH 会话，缺会话时后端仍会接受消息并把 SOP 推到「执行中」，直到超时才暴露。前端 `stores/chat.ts` 新增 `requireTroubleshootReady` 门禁，「继续处理未关闭工单 / 切换历史工单 / 已有工单内发消息」三个入口在动作前统一校验「bridge 可握手 + `sshConnectionState === 'connected'`」，未满足时弹 `TroubleshootGateDialog`（下载并运行 bridge / SSH 登录 / 无 SSH 排障=离线诊断 / 暂不排障）；已连接时零探测放行，并发入口共用同一结论。新增 `troubleshootGateBlockedSend` 把「消息未发出」的两种原因（流式守卫 / 门禁）分开，避免交互卡片误报「诊断仍在进行中」。详见 [排障前置 Bridge 与 SSH 门禁设计](../../custom-ui/events/2026-11-02-排障前置Bridge与SSH门禁设计.md) |
 | 2026-10-29 | v3.6 | **`database/seeds/` 不再只装 Agent 侧种子，并明确 seeds 与 data-migrations 的分工**：新增 `06_log_collect_scenarios.sql`（日志收集「故障场景」字典，非 Agent 工具面数据），与 `01_tool_definitions.sql`/`02_system_prompts.sql`/`03_skill_definitions.sql` 同一策略（`ON CONFLICT DO NOTHING`，不回滚运营在管理台的修改）。该文件原本放在 `data-migrations/056`，合并后 staging 的 `db-migrate` PreSync 必然失败（存量库 Step 1 DML 早于 Step 3 atlas apply，新表尚不存在）——故确立分工：**新表的初始数据 → `seeds/`（PostSync db-seed）；既有表的数据搬迁/纠正 → `data-migrations/`（PreSync）**，并写入 `database/README.md` 铁律第 6 条。详见 [事件文档](../../events/2026-10-29-日志收集场景字典与Agent不联动.md) §七 |
 | 2026-10-29 | v3.5 | **日志收集不在 Agent 工具面之内（澄清边界）**：排障 Agent **没有** `log_collect` 类工具，日志包采集由用户在右栏 SSH 终端执行 `acli log_collect` 完成，Agent 不下发、不感知进度。此前两者并排展示，现场用户误以为可以让 Agent 去收日志。前端 `stores/chat.ts` 新增 `isAgentChatHidden = logCollectVisible && isTerminalVisible`：采集打开且终端就绪时中央会话收起（`v-show`，会话状态与滚动位置保留），SSH 未就绪时改为标题栏显式提示「与排障 Agent 不联动」。`GET /api/log-collect/scenarios` 提供的场景字典只用于勾选项文案，**不注册为 Agent 工具、不进 ReAct 工具列表**。详见 [日志收集场景字典与 Agent 不联动](../../events/2026-10-29-日志收集场景字典与Agent不联动.md) |
 | 2026-05-28 | v1.0 | 初版。确立 bridge-relay-only 架构，废弃 AcliClient 直连路径；新增 bash_exec/acli_exec 工具设计；定义 BridgeRelayExecutor 执行机制 and terminal_bridge 协议扩展 |
@@ -1155,4 +1173,5 @@ sequenceDiagram
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-11-02 | v3.7 | 新增 §2.3「工具面可用性的前置条件」：阐明缺 SSH 会话时后端仍接受消息、SOP 却永远等不到回包，并记录前端排障前置门禁（bridge 可握手 + `sshConnectionState==='connected'`，或用户选择「无 SSH 排障」） | [排障前置 Bridge 与 SSH 门禁设计](../../custom-ui/events/2026-11-02-排障前置Bridge与SSH门禁设计.md) |
 | 2026-10-26 | — | T3/T4 两处 `frontend/src/` 补全为 `frontend/customer/src/` | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

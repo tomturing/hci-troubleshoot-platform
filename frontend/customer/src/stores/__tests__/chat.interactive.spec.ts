@@ -162,6 +162,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             const eventPayload = makeInteractiveEvent()
             vi.stubGlobal('fetch', makeInteractiveFetchMock(eventPayload))
@@ -184,6 +186,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             const eventPayload = makeInteractiveEvent({ kind: 'sop_step', requestId: 'req-sop-001' })
             vi.stubGlobal('fetch', makeInteractiveFetchMock(eventPayload))
@@ -210,6 +214,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             const eventPayload = makeInteractiveEvent({
                 kind: 'tool_confirm',
@@ -239,6 +245,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             const eventPayload = makeInteractiveEvent({ requestId: 'req-abc-123' })
             vi.stubGlobal('fetch', makeInteractiveFetchMock(eventPayload))
@@ -258,6 +266,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             const eventPayload = makeInteractiveEvent()
             vi.stubGlobal('fetch', makeInteractiveFetchMock(eventPayload))
@@ -279,6 +289,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             const eventPayload = makeInteractiveEvent({ prompt: '请确认主机状态' })
             vi.stubGlobal('fetch', makeInteractiveFetchMock(eventPayload))
@@ -302,6 +314,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
             store.isStreaming = true
 
             const fetchMock = vi.fn()
@@ -320,6 +334,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             vi.stubGlobal('fetch', makeInteractiveFetchMock(makeInteractiveEvent()))
 
@@ -340,6 +356,8 @@ describe('chat store — interactive_request 气泡行为', () => {
 
             store.currentCase = makeCase() as any
             store.conversationId = 'conv-ir-1'
+            // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心气泡行为）
+            store.sshConnectionState = 'connected'
 
             vi.stubGlobal('fetch', makeInteractiveFetchMock(makeInteractiveEvent()))
             await store.sendMessage('测试')
