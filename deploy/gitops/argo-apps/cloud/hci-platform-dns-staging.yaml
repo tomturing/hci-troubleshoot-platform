@@ -1,0 +1,44 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-dns-staging
+#
+# 目标集群：云端 staging VM（kubernetes.default.svc = ArgoCD 所在集群）
+# 管理对象：ConfigMap coredns-custom（kube-system），即 CoreDNS 的显式上游配置
+#
+# 为什么单独一个 Application 而不并入 hci-platform-infra：
+#   - DNS 上游是环境相关配置（各环境网络出口不同，prod 在 192.168.0.3 独立集群，
+#     是否需要该配置需单独评估），独立 Application 才能按环境开关；
+#   - 变更影响面被限制在 DNS 解析这一件事上，回滚粒度更细。
+#
+# 前置依赖：k3s 内置 CoreDNS 的 Corefile 必须包含
+#   import /etc/coredns/custom/*.override（k3s 全版本默认包含）
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-dns-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "staging CoreDNS 显式上游，阻断节点 Clash fake-ip 污染"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    # coredns-custom 必须与 CoreDNS 同 namespace
+    namespace: kube-system
+  source:
+    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+    targetRevision: main
+    path: deploy/helm/hci-platform-dns
+    helm:
+      releaseName: hci-platform-dns
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      # 规则 3（docs/deploy/部署设计.md §9.6）：带 selfHeal 必须显式声明 retry
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m

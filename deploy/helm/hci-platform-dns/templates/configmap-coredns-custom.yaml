@@ -1,0 +1,47 @@
+# =============================================================================
+# ConfigMap: coredns-custom
+#
+# 作用：通过 k3s 官方扩展点覆盖 CoreDNS 的 forward 上游。
+#
+# 原理（顺序敏感，勿改）：
+#   k3s 内置 Corefile 的 `.:53` 块内容为
+#       ...
+#       import /etc/coredns/custom/*.override
+#       forward . /etc/resolv.conf
+#       }
+#   `*.override` 的 import 位于内置 forward **之前**。CoreDNS 的 forward 是终止
+#   插件（匹配到 zone 后不再调用后续插件），因此这里先注册的 forward 会生效，
+#   内置的 `forward . /etc/resolv.conf` 被屏蔽 —— 从而不再继承节点 DNS。
+#
+# 违反上述前提的表现：CoreDNS 日志出现 duplicate/conflict 报错，或解析结果中
+# 再次出现 198.18.0.x。排查命令见 docs/deploy/集群DNS上游治理.md
+# =============================================================================
+{{- if .Values.enabled }}
+{{- if not .Values.upstreams }}
+{{- fail "upstreams 不能为空：空的上游会让集群无法解析任何外部域名" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: coredns-custom
+    app.kubernetes.io/component: dns
+    app.kubernetes.io/part-of: hci-platform
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    # 删除 Application 时不连带删除本对象：DNS 配置消失会让 CoreDNS 回退到
+    # 继承节点 resolv.conf，静默恢复 fake-ip 污染。宁可残留，也不要静默降级。
+    argocd.argoproj.io/sync-options: Prune=false
+data:
+  forward.override: |
+    # 由 ArgoCD（hci-platform-dns）托管，手工 kubectl edit 会被 selfHeal 还原。
+    # 严禁改回 /etc/resolv.conf —— 那会重新引入节点透明代理的 fake-ip 污染。
+    # 修改上游请改 deploy/helm/hci-platform-dns/values.yaml。
+    forward . {{ join " " .Values.upstreams }} {
+        policy {{ .Values.forward.policy }}
+        health_check {{ .Values.forward.healthCheck }}
+        max_fails {{ .Values.forward.maxFails }}
+    }
+{{- end }}

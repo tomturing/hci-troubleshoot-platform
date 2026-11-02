@@ -1,0 +1,43 @@
+# =============================================================================
+# hci-platform-dns — 集群 DNS 上游治理
+#
+# 解决的问题：k3s 自带 CoreDNS 的 Corefile 写的是 `forward . /etc/resolv.conf`，
+# 即「继承节点 DNS 上游」。当节点同时运行透明代理（Clash/Mihomo 的 TUN + fake-ip
+# 模式）时，节点 /etc/resolv.conf 会被写入形如 198.18.0.2 的 fake-ip DNS；Pod 网段
+# 无法路由 198.18.0.0/15，于是「解析成功但目标不可达」，表现为 TCP 建连超时
+# （应用侧常见 ConnectTimeout / AI_TIMEOUT），且上游健康检查完全无感——因为
+# DNS 服务本身是健康的，只是答案不可路由。
+#
+# 本 Chart 通过 k3s 官方扩展点 coredns-custom + forward.override 显式声明上游，
+# 切断对节点 resolv.conf 的继承。刻意不修改 /var/lib/rancher/k3s/server/manifests/
+# 下的内置清单——k3s 官方明确「打包组件清单由 k3s 管理、不应被修改」，重启或升级
+# k3s 会重新初始化并覆盖手工修改。
+# =============================================================================
+
+# 是否渲染资源。关闭后本 Chart 不产生任何对象；CoreDNS 会回退到继承节点 DNS。
+# 仅在确认节点 DNS 干净（无 fake-ip 上游）时才允许关闭。
+enabled: true
+
+# coredns-custom 必须与 CoreDNS 位于同一 namespace（k3s 默认 kube-system）
+namespace: kube-system
+
+# 上游 DNS 列表。顺序即 sequential 策略的优先级顺序，第一个为首选。
+# 选型约束（务必保留多个不同运营商的地址）：
+#   - 全部为国内可达的公共 DNS，避免依赖单一运营商；
+#   - 不要把节点本机地址、或任何代理软件监听的地址写进来（那就是要规避的东西）；
+#   - 集群内部域名（*.cluster.local）由 kubernetes 插件直接应答，不经过该上游。
+upstreams:
+  - 223.5.5.5        # 阿里公共 DNS
+  - 119.29.29.29     # 腾讯 DNSPod
+  - 114.114.114.114  # 114DNS
+
+# forward 插件参数。取值依据见 docs/deploy/集群DNS上游治理.md
+forward:
+  # 必须保持 sequential。
+  # random（CoreDNS 默认）会在多个上游间随机选择，任何一个上游返回坏数据都会造成
+  # 概率性故障；sequential 让行为可预测，并配合 health_check 自动摘除故障上游。
+  policy: sequential
+  # 上游存活探测间隔。低于 5s 在高延迟链路上容易误摘。
+  healthCheck: 5s
+  # 连续失败多少次后标记上游不可用。
+  maxFails: 2
