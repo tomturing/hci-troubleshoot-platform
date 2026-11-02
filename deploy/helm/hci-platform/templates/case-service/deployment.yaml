@@ -86,6 +86,14 @@ spec:
               # schema 里该字段是 int，容器启动即 pydantic ValidationError
               # （2026-10-30 staging 上 case-service 因此 CrashLoopBackOff）。
               value: {{ .Values.caseService.logCollectStorage.chunkSizeBytes | int64 | quote }}
+            - name: DSH_SESSIONS_DIR
+              # 与下面的只读卷挂载点必须同一处声明，否则「解析路径」和「实际挂载」
+              # 会各说各话：服务读到空目录只会静默返回 0 条，界面上看不出是配置错了。
+              #
+              # 无条件渲染：未开启挂载时该路径不存在，服务会明确返回 root_missing，
+              # 页面因此能区分「没开启」与「没有诊断记录」——条件渲染会让两者都表现为
+              # 一个空标签页，运维无从判断。
+              value: {{ .Values.caseService.dshSessions.mountPath | quote }}
           livenessProbe:
             httpGet:
               path: /health
@@ -112,14 +120,33 @@ spec:
           {{- include "hci.preStopLifecycle" (dict "root" . "key" "caseService") | nindent 10 }}
           resources:
             {{- toYaml .Values.caseService.resources | nindent 12 }}
-          {{- if .Values.caseService.logCollectStorage.enabled }}
+          {{- if or .Values.caseService.logCollectStorage.enabled .Values.caseService.dshSessions.enabled }}
           volumeMounts:
+            {{- if .Values.caseService.logCollectStorage.enabled }}
             - name: case-service-log-collect
               mountPath: {{ .Values.caseService.logCollectStorage.mountPath | quote }}
+            {{- end }}
+            {{- if .Values.caseService.dshSessions.enabled }}
+            # DSH 会话目录只读挂载：平台只解析、不回写，避免与 DSH 争抢会话文件
+            - name: case-service-dsh-sessions
+              mountPath: {{ .Values.caseService.dshSessions.mountPath | quote }}
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if .Values.caseService.logCollectStorage.enabled }}
+      {{- if or .Values.caseService.logCollectStorage.enabled .Values.caseService.dshSessions.enabled }}
       volumes:
+        {{- if .Values.caseService.logCollectStorage.enabled }}
         - name: case-service-log-collect
           persistentVolumeClaim:
             claimName: case-service-log-collect
+        {{- end }}
+        {{- if .Values.caseService.dshSessions.enabled }}
+        # 刻意不用 DirectoryOrCreate：kubelet 创建出来的是 root:root，而子目录由
+        # DSH 以 uid=1000 建成 0700；属主/权限对不上时目录存在也读不到，
+        # 失败点会变成「页面永远没有诊断记录」这种无声故障。目录由运维先建。
+        - name: case-service-dsh-sessions
+          hostPath:
+            path: {{ .Values.caseService.dshSessions.hostPath }}
+            type: Directory
+        {{- end }}
       {{- end }}

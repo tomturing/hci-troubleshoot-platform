@@ -102,6 +102,39 @@ async def admin_get_case(case_id: str, request: Request, _: None = Depends(requi
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.get("/admin/{case_id}/log-collect")
+async def admin_get_case_log_collect(case_id: str, request: Request, _: None = Depends(require_admin)):
+    """[Admin] 工单的日志收集证据（用户选项 + 探测元数据 + 交付事实）。
+
+    走 admin 前缀而不是复用 ``/api/log-collect``：那条代理把 X-Client-ID 重签给下游，
+    任务按 created_by 过滤；管理端没有客户身份，复用只会拿到空列表。
+    """
+    response = await proxy_request(
+        "GET", f"/admin/{case_id}/log-collect", params=dict(request.query_params), headers=_admin_headers(request)
+    )
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
+@router.get("/admin/{case_id}/dsh-sessions")
+async def admin_get_case_dsh_sessions(case_id: str, request: Request, _: None = Depends(require_admin)):
+    """[Admin] 工单的 DSH 诊断会话（完整对话 + 最终结论）。
+
+    单独设置 60s 超时：首次访问会增量解压会话文件（多帧 zstd，单会话最大十几 MB），
+    用默认 5s 会把「正在解析」误报成 503。
+    """
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            response = await client.get(
+                f"{CASE_SERVICE_URL}/admin/{case_id}/dsh-sessions",
+                params=dict(request.query_params),
+                headers=_admin_headers(request),
+            )
+        except httpx.RequestError as exc:
+            logger.error(f"Error requesting {exc.request.url!r}.")
+            raise HTTPException(status_code=503, detail="Service unavailable")
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 # ============ 客户端路由 ============
 
 

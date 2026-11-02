@@ -78,6 +78,11 @@ helm_equivalents:
   LOG_COLLECT_CHUNK_SIZE_BYTES:
     value_paths: [caseService.logCollectStorage.chunkSizeBytes]
     template_env: [LOG_COLLECT_CHUNK_SIZE_BYTES]
+  # DSH 会话归档目录：解析路径必须与 hostPath 挂载点同源，否则服务读到空目录却
+  # 静默返回 0 条（页面只是「没有诊断记录」，看不出配置错了），故由 values 驱动。
+  DSH_SESSIONS_DIR:
+    value_paths: [caseService.dshSessions.mountPath]
+    template_env: [DSH_SESSIONS_DIR]
   CONVERSATION_SERVICE_PORT:
     value_paths: [conversationService.port]
     template_env: [SERVICE_PORT]

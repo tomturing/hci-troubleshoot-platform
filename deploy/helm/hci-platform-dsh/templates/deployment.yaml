@@ -209,8 +209,16 @@ spec:
           emptyDir:
             sizeLimit: {{ .Values.workspace.sizeLimit }}
         - name: home
+          {{- if .Values.home.hostPath }}
+          # 会话/凭据落宿主目录：Pod 重建不丢历史会话，也供 case-service 只读归档
+          hostPath:
+            path: {{ .Values.home.hostPath }}
+            # 不用 DirectoryOrCreate：kubelet 建成 root:root，uid=1000 的 DSH 写不进去
+            type: Directory
+          {{- else }}
           emptyDir:
             sizeLimit: {{ .Values.home.sizeLimit }}
+          {{- end }}
         - name: token
           emptyDir:
             sizeLimit: 1Mi
