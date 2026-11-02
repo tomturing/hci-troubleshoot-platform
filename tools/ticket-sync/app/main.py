@@ -327,6 +327,15 @@ class JobRegistry:
 
             final_dir = self.cfg.root / archive.ticket_id
             if final_dir.is_dir():
+                # 终态优先于一切自动判据。`retries` 里 failures 到上限有两种来源：
+                # 用户点了「放弃自动重试」（#1416），或重试次数真的用尽。两者共用
+                # 同一个标记，因此都必须在这里让路——尤其不能因为"远端换包"就把它
+                # 清掉：清掉之后 `_note_failure` 的终态护栏也跟着失效，结果是既抹掉
+                # 了人工选择，又让坏包重新进入退避循环。要恢复必须显式 resume 或手动
+                # `POST /jobs`（两条路都代表人的新判断）。
+                state = self._retries.get(archive.ticket_id)
+                if state is not None and state.exhausted:
+                    return None
                 if not _remote_archive_changed(final_dir, archive):
                     # 已发布且远端还是同一份：历史退避记录可以清掉。
                     self._clear_retry(archive.ticket_id)
@@ -334,7 +343,8 @@ class JobRegistry:
                 # 远端换了包（客户重传修复版）：本地产物已经不是当前版本，
                 # 必须重同步。旧实现的 docstring 声称支持这一点，代码里却只
                 # 判断 final_dir.is_dir() 就 return None，重传永远到不了本地。
-                # 远端换包同时是"上次失败原因可能已消失"的证据，退避一并清零。
+                # 远端换包同时是"上次失败原因可能已消失"的证据，退避一并清零
+                # （终态已在上面让路，这里清掉的只会是普通退避）。
                 self._clear_retry(archive.ticket_id)
                 logger.info(
                     "ticket=%s 远端归档已更新，重新同步 远端mtime=%.3f 远端size=%d",
