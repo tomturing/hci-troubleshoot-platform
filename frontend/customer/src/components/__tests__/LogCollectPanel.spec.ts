@@ -16,6 +16,7 @@ import { h, inject, provide } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
 import { logCollectApi, type LogCollectTask } from '@/api/logCollect'
+import { checkBridgeBeforeOpen } from '@/api/terminal'
 
 const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
   const sent: string[] = []
@@ -41,6 +42,9 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
       sshCurrentConfig: null as null | { host: string; port: number; username: string },
       logCollectActiveTask: null,
       openLogCollectCaseDialog: vi.fn(),
+      // 未连接时主按钮要打开统一 SSH 登录框（与右侧终端同一个弹框）
+      sshConnectDialogBridgeStatus: 'checking',
+      openSshFlowDialog: vi.fn(),
       // 抽屉宽度由工作区布局求解器给出，面板只读不再自持
       leftPanelWidth: 520,
       workspaceLayout: {
@@ -66,6 +70,8 @@ vi.mock('@/api/terminal', async () => {
   return {
     ...actual,
     resolveBridgeUrl: vi.fn().mockResolvedValue('ws://localhost:9999'),
+    // 「连接 SSH」的前置检测：桩成 running，登录框才会呈现表单而不是 Bridge 引导
+    checkBridgeBeforeOpen: vi.fn().mockResolvedValue('running'),
     createBridgeSocket: vi.fn(() => {
       // 真实 WebSocket 每次 new 都是一条**新**连接，不可能返回一个已 CLOSED 的实例。
       // 这里复用单例，就必须在每次「建连」时把 readyState 复位：前一个用例 unmount
@@ -302,6 +308,9 @@ describe('LogCollectPanel', () => {
     vi.mocked(logCollectApi.listScenarios).mockReset()
     vi.mocked(logCollectApi.listScenarios).mockResolvedValue([])
     vi.mocked(logCollectApi.getTask).mockReset()
+    mockStore.openSshFlowDialog.mockClear()
+    mockStore.sshConnectDialogBridgeStatus = 'checking'
+    vi.mocked(checkBridgeBeforeOpen).mockClear()
   })
 
   const taskFixture = (patch: Partial<LogCollectTask> = {}): LogCollectTask => ({
@@ -373,14 +382,14 @@ describe('LogCollectPanel', () => {
    * 桥侧 SSH 会话已销毁、但前端 sshConnectionState 仍显示 connected（面板这条 WS 未必是
    * 会话属主，可能没收到 ssh_disconnected）。用户点开始收集会反复误发请求拿 session_missing。
    * 契约：前端收到桥侧权威判定 LC-ENV-006 时，必须立即把 sshConnectionState 置否，
-   * 让按钮禁用、提示出现，避免重复误发。
+   * 让按钮退出「开始收集」并重新给出连接入口，避免重复误发。
    */
   it('收到桥侧 LC-ENV-006 时立即把 sshConnectionState 置为 disconnected（自愈陈旧状态）', async () => {
     // 模拟 UI 仍显示已连接、但桥侧会话其实已销毁的陈旧状态
     mockStore.sshConnectionState = 'connected'
     mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
 
-    mountPanel()
+    const wrapper = mountPanel()
     await flushPromises()
     await new Promise((resolve) => setTimeout(resolve, 5))
     await flushPromises()
@@ -398,6 +407,48 @@ describe('LogCollectPanel', () => {
     await flushPromises()
 
     expect(mockStore.sshConnectionState).toBe('disconnected')
+    wrapper.unmount()
+  })
+
+  /**
+   * 2026-11-02 现场反馈：未连接时按钮写着「请先连接 SSH」却是 disabled，
+   * 用户被要求做一件事却没有入口，只能自己发现右侧终端里还有一个同名按钮。
+   *
+   * 契约：主按钮永远可点。未连接时点击 = 打开与右侧终端同一个 SSH 登录框，
+   * 且必须带**本面板绑定的工单号**（bridge 会话键是 `caseID@nodeIP`，单号错了登录也白登）
+   * 与 `log-collect` 模式（成功后不弹右侧终端，用户下一步是采集）。
+   */
+  it('未连接时主按钮可点，点击弹出统一 SSH 登录框并带上本面板工单号', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const connectBtn = wrapper.findAll('button').find((item) => item.text() === '连接 SSH')
+    expect(connectBtn).toBeTruthy()
+
+    await connectBtn!.trigger('click')
+    await flushPromises()
+
+    // bridge 前置检测照旧：未运行时要由弹框给出下载引导，而不是把用户丢进表单
+    expect(vi.mocked(checkBridgeBeforeOpen)).toHaveBeenCalledTimes(1)
+    expect(mockStore.sshConnectDialogBridgeStatus).toBe('running')
+    expect(mockStore.openSshFlowDialog).toHaveBeenCalledWith('Q2026102300001', 'log-collect')
+  })
+
+  it('已连接且能定位节点时按钮回到「开始收集」，不再弹登录框', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await flushPromises()
+
+    const labels = wrapper.findAll('button').map((item) => item.text())
+    expect(labels.some((text) => text.includes('开始收集') || text.includes('正在读取环境'))).toBe(
+      true,
+    )
+    expect(labels).not.toContain('连接 SSH')
+    expect(mockStore.openSshFlowDialog).not.toHaveBeenCalled()
   })
 
   // 面板化之后外壳（标题/收起/拖拽）由 PanelShell 负责，
@@ -1254,9 +1305,15 @@ describe('LogCollectPanel', () => {
 
     expect(wrapper.find('.lc-result').exists()).toBe(false)
     expect(wrapper.find('.lc-module-group').exists()).toBe(true)
-    // 回到表单后会立刻重新探测，按钮文案可能是"正在读取环境…"
+    // 回到表单后会立刻重新探测，按钮文案可能是"正在读取环境…"；
+    // 本用例未连接 SSH，主按钮此时是可执行的「连接 SSH」（不再是禁用态）
     const labels = wrapper.findAll('button').map((item) => item.text())
-    expect(labels.some((text) => text.includes('开始收集') || text.includes('正在读取环境'))).toBe(true)
+    expect(
+      labels.some(
+        (text) =>
+          text.includes('开始收集') || text.includes('正在读取环境') || text === '连接 SSH',
+      ),
+    ).toBe(true)
     wrapper.unmount()
   })
 

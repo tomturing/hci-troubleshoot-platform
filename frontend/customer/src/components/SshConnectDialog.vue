@@ -7,6 +7,7 @@
  * - 与「日志收集 → 指定工单号」弹框内的内嵌登录共用同一份实现；
  * - 本组件只负责 el-dialog 的开关与取消后的清理语义。
  */
+import { computed } from 'vue'
 import { useChatStore } from '@/stores/chat'
 import SshConnectSection from './SshConnectSection.vue'
 
@@ -34,14 +35,26 @@ async function handleCancelled() {
   }
   await chatStore.closeSshFlowDialog()
 }
+
+const DIALOG_TITLE: Record<'create-case' | 'terminal-only' | 'log-collect', string> = {
+  'create-case': '连接 SSH 并采集环境数据',
+  'terminal-only': '连接 SSH 终端',
+  'log-collect': '连接 SSH（日志收集需要会话）',
+}
+const dialogTitle = computed(() => DIALOG_TITLE[chatStore.sshFlowDialogMode])
+/**
+ * 登录成功后是否打开右侧终端抽屉。
+ *
+ * 由模式决定而不是由调用方各自传参：日志收集面板的下一步是「开始收集」，
+ * 再弹一个终端只会多一层要关的窗口（与 LogCollectCaseDialog 的内嵌登录口径一致）。
+ */
+const openTerminalAfterConnect = computed(() => chatStore.sshFlowDialogMode !== 'log-collect')
 </script>
 
 <template>
   <el-dialog
     v-model="chatStore.sshFlowDialogVisible"
-    :title="
-      chatStore.sshFlowDialogMode === 'create-case' ? '连接 SSH 并采集环境数据' : '连接 SSH 终端'
-    "
+    :title="dialogTitle"
     width="500px"
     :close-on-click-modal="false"
     align-center
@@ -52,6 +65,7 @@ async function handleCancelled() {
       :bridge-status="props.bridgeStatus"
       mode="dialog"
       :case-id="chatStore.sshFlowDialogCaseId"
+      :open-terminal="openTerminalAfterConnect"
       auto-close
       @cancelled="handleCancelRequest"
     />

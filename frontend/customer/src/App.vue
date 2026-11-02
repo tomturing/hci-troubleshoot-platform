@@ -423,7 +423,7 @@ function handleDownloadBridge() {
       @click="collapseOverlayPanel()"
     ></div>
 
-<!-- SSH 连接弹框（create-case / terminal-only 统一入口） -->
+<!-- SSH 连接弹框（create-case / terminal-only / log-collect 统一入口） -->
     <SshConnectDialog :bridge-status="chatStore.sshConnectDialogBridgeStatus" />
 
     <!-- 无活跃工单时人工指定归档工单号 -->

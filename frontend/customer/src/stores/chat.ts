@@ -2676,15 +2676,21 @@ export const useChatStore = defineStore('chat', () => {
   const sshFlowDialogVisible = ref(false)
   /** 关联的工单 ID（terminal-only 模式下可能为 null） */
   const sshFlowDialogCaseId = ref<string | null>(null)
-  /** 弹框模式：create-case 或 terminal-only */
-  const sshFlowDialogMode = ref<'create-case' | 'terminal-only'>('terminal-only')
+  /**
+   * 弹框模式：
+   * - create-case ：新建工单流程中的 SSH 采集环境（取消即转离线诊断）
+   * - terminal-only：右侧终端/文件下载的「连接 SSH」
+   * - log-collect ：日志收集面板的「连接 SSH」——同样只建会话，
+   *   但用户下一步是采集而不是看终端，因此成功后不打开右侧终端（见 SshConnectDialog）
+   */
+  const sshFlowDialogMode = ref<'create-case' | 'terminal-only' | 'log-collect'>('terminal-only')
   /** 创建工单时选择的助手类型（供弹框用于 completeCaseCreationFlow） */
   const sshFlowDialogAssistantType = ref<string | undefined>(undefined)
 
   /** 打开统一 SSH 弹框 */
   function openSshFlowDialog(
     caseId: string | null,
-    mode: 'create-case' | 'terminal-only',
+    mode: 'create-case' | 'terminal-only' | 'log-collect',
     assistantType?: string,
   ) {
     devLog('SSH-FLOW-DIALOG', '打开弹框', { caseId, mode, assistantType })

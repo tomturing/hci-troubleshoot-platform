@@ -16,7 +16,7 @@ const { mockStore } = vi.hoisted(() => ({
   mockStore: {
     sshConnectionState: 'disconnected' as 'disconnected' | 'connecting' | 'connected' | 'error',
     sshFlowDialogVisible: true,
-    sshFlowDialogMode: 'terminal-only' as 'create-case' | 'terminal-only',
+    sshFlowDialogMode: 'terminal-only' as 'create-case' | 'terminal-only' | 'log-collect',
     sshFlowDialogCaseId: null as string | null,
     disconnectSSH: vi.fn().mockResolvedValue(undefined),
     closeSshFlowDialog: vi.fn().mockResolvedValue(undefined),
@@ -29,8 +29,10 @@ vi.mock('@/stores/chat', () => ({ useChatStore: () => mockStore }))
 const ElDialogStub = {
   props: ['modelValue', 'title'],
   emits: ['update:modelValue', 'close'],
-  setup(_: any, { slots }: any) {
-    return () => h('div', { class: 'el-dialog-stub' }, slots.default?.())
+  setup(props: any, { slots }: any) {
+    // 标题落成 data 属性：不同入口打开的是同一个弹框，标题是唯一能区分入口的可见证据
+    return () =>
+      h('div', { class: 'el-dialog-stub', 'data-title': props.title }, slots.default?.())
   },
 }
 
@@ -49,10 +51,20 @@ const ElAlertStub = {
 
 /** 模拟 section 的取消按钮：点击即 emit('cancelled') */
 const SectionStub = {
-  props: ['bridgeStatus', 'mode', 'caseId', 'autoClose'],
+  props: ['bridgeStatus', 'mode', 'caseId', 'autoClose', 'openTerminal'],
   emits: ['cancelled', 'connected', 'state-change'],
-  setup(_: any, { emit }: any) {
-    return () => h('button', { class: 'section-cancel', onClick: () => emit('cancelled') }, '取消')
+  setup(props: any, { emit }: any) {
+    return () =>
+      h(
+        'button',
+        {
+          class: 'section-cancel',
+          'data-open-terminal': String(props.openTerminal),
+          'data-case-id': String(props.caseId ?? ''),
+          onClick: () => emit('cancelled'),
+        },
+        '取消',
+      )
   },
 }
 
@@ -108,6 +120,33 @@ describe('SshConnectDialog', () => {
 
     expect(mockStore.disconnectSSH).not.toHaveBeenCalled()
     expect(mockStore.closeSshFlowDialog).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  /**
+   * 日志收集面板的「连接 SSH」与右侧终端用的是同一个弹框，但两者的下一步不同：
+   * 终端要看见终端，日志收集要回到表单点「开始收集」。因此模式必须同时决定
+   * 标题（用户得知道自己从哪来）与「成功后是否弹右侧终端」。
+   */
+  it('log-collect 模式：标题指向日志收集，且成功后不打开右侧终端', async () => {
+    mockStore.sshFlowDialogMode = 'log-collect'
+    mockStore.sshFlowDialogCaseId = 'Q2026102300001'
+    const wrapper = await mountDialog('running')
+
+    const dialog = wrapper.findComponent(ElDialogStub)
+    expect(dialog.attributes('data-title')).toBe('连接 SSH（日志收集需要会话）')
+    const section = wrapper.find('.section-cancel')
+    expect(section.attributes('data-open-terminal')).toBe('false')
+    // 会话键是 caseID@nodeIP：弹框必须把面板绑定的工单号交给 section
+    expect(section.attributes('data-case-id')).toBe('Q2026102300001')
+    wrapper.unmount()
+  })
+
+  it('terminal-only 模式：标题与"成功后打开终端"保持原样', async () => {
+    const wrapper = await mountDialog('running')
+
+    expect(wrapper.findComponent(ElDialogStub).attributes('data-title')).toBe('连接 SSH 终端')
+    expect(wrapper.find('.section-cancel').attributes('data-open-terminal')).toBe('true')
     wrapper.unmount()
   })
 })
