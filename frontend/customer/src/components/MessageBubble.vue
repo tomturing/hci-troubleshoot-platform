@@ -737,8 +737,10 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
         sourceRequestId: ev.requestId,
         sourceMessageId: props.message.id,
       })
-      // 流式期间被守卫吞掉时选择会丢失：不标记已提交，提示用户稍后重选
-      if (sent === false) {
+      // 流式期间被守卫吞掉时选择会丢失：不标记已提交，提示用户稍后重选。
+      // sent===false 也可能来自"排障前置门禁未通过"（bridge/SSH 未就绪），
+      // 那种情况由门禁弹框自己解释，不能再报"诊断仍在进行中"（事实相反的提示）。
+      if (sent === false && !chatStore.troubleshootGateBlockedSend) {
         ElMessage.warning('当前诊断仍在进行中，请稍后再选择')
       }
     } finally {
@@ -775,7 +777,7 @@ async function handleInteractiveOption(optionId: string, optionName: string) {
           kind: 'interactive_response',
           selectedOptionId: optionId,
         })
-        if (sent === false) {
+        if (sent === false && !chatStore.troubleshootGateBlockedSend) {
           ElMessage.info('变量值已提交成功，当前诊断仍在进行中，系统将自动使用该值继续')
         }
       } else {
@@ -882,7 +884,7 @@ async function handleInteractiveFreeText() {
         const sent = await chatStore.sendMessage(text, {
           kind: 'interactive_response',
         })
-        if (sent === false) {
+        if (sent === false && !chatStore.troubleshootGateBlockedSend) {
           // 提交瞬间仍在流式收尾：不能只提示"系统会自动继续"，因为后端在
           // variable_input 路径上并不主动续跑（Q2026102600003 的直接成因）。
           ElMessage.info('变量值已提交，正在等待当前诊断轮次结束后自动继续…')
@@ -1228,7 +1230,7 @@ async function handleConfirmRecommendValue() {
       const sent = await chatStore.sendMessage(val, {
         kind: 'interactive_response',
       })
-      if (sent === false) {
+      if (sent === false && !chatStore.troubleshootGateBlockedSend) {
         ElMessage.info('已确认推荐值，当前诊断仍在进行中，系统将自动使用该值继续')
       }
     } else {

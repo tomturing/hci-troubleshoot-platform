@@ -205,6 +205,8 @@ describe('chat store — 助手选择行为', () => {
       store.selectedAssistant = 'qwen'
       store.currentCase = makeCase({ case_id: 'case-1', assistant_type: 'ops-agent' })
       store.conversationId = 'conv-1'
+      // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心助手路由）
+      store.sshConnectionState = 'connected'
 
       const capturedBodies: string[] = []
       vi.stubGlobal('fetch', makeStreamFetchMock(capturedBodies))
@@ -229,6 +231,8 @@ describe('chat store — 助手选择行为', () => {
       // 旧工单可能没有 assistant_type 字段
       store.currentCase = makeCase({ case_id: 'case-old', assistant_type: undefined })
       store.conversationId = 'conv-1'
+      // 排障前置门禁：已连接 SSH 时发消息直接放行（本文件只关心助手路由）
+      store.sshConnectionState = 'connected'
 
       const capturedBodies: string[] = []
       vi.stubGlobal('fetch', makeStreamFetchMock(capturedBodies))

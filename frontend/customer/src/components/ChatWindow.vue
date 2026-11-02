@@ -7,6 +7,7 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import InteractiveRequestCard from './InteractiveRequestCard.vue'
 import DiagnosticProgress from './DiagnosticProgress.vue'
 import CaseCreateDialog from './CaseCreateDialog.vue'
+import TroubleshootGateDialog from './TroubleshootGateDialog.vue'
 import BridgeLogUploader from './BridgeLogUploader.vue'
 import LogCollectEntryCard from './LogCollectEntryCard.vue'
 import EnvironmentSummary from './EnvironmentSummary.vue'
@@ -119,6 +120,9 @@ function handleQuoteToChat(content: string) {
 
     <!-- SSH 集成创建工单对话框 -->
     <CaseCreateDialog :bridge-status="chatStore.caseCreateDialogBridgeStatus" />
+
+    <!-- 排障前置门禁：新增/继续工单排障前必须确认 bridge 可打开且 SSH 已连接 -->
+    <TroubleshootGateDialog />
 
     <!-- SSE 网络中断可重试提示（长耗时诊断期间连接被代理掐断时） -->
     <el-alert

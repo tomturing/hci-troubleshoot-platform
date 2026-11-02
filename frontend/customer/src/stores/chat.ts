@@ -75,6 +75,20 @@ export interface CaseTemplate {
   description: string
 }
 
+/** 排障前置门禁的触发原因（决定弹框里的动作文案） */
+export type TroubleshootGateReason = 'resume' | 'switch' | 'send'
+
+/**
+ * 排障前置门禁结论：
+ * - ready     ：bridge 可用且 SSH 已连接，可以继续排障
+ * - offline   ：用户选择「无 SSH 排障」→ 跳离线诊断
+ * - cancelled ：用户选择「暂不排障」
+ */
+export type TroubleshootGateVerdict = 'ready' | 'offline' | 'cancelled'
+
+/** 门禁阶段（弹框视图） */
+export type TroubleshootGateStage = 'idle' | 'checking' | 'bridge-down' | 'ssh-required'
+
 /** SSH 创建工单流程日志 */
 export interface SshCreationLogEntry {
   id: string
@@ -1129,6 +1143,200 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // === 排障前置门禁（bridge 可打开 + SSH 已连接，或显式选择无 SSH 排障）===
+  /**
+   * 为什么门禁必须挡在「排障动作之前」，而不是失败后报错（第一性原理）：
+   *
+   * 排障的物理本质是「Agent 通过 terminal_bridge 的 SSH 会话在节点上执行命令」。
+   * 这个链路只有两个可观测前提：① 本机 bridge 进程在跑（WS 能握手）；
+   * ② 本工单已建立 SSH 会话。缺任意一个，消息仍会被后端接受并把 SOP 推到"执行中"，
+   * 然后永远等不到节点回包——2026-10-29 Q2026102901522 就是这样：刷新页面后直接点
+   * 「继续处理」，没有检查 bridge/SSH，SOP 卡在「正在等待输出」十几分钟。
+   *
+   * 口径与日志收集完全一致（`docs/solution/events/2026-10-23-日志收集SSH统一登录与探测式准备阶段.md`）：
+   * 先 probe bridge（`checkBridgeBeforeOpen`，桌面双端口 9999/47324），再要求
+   * `sshConnectionState === 'connected'`；任一不满足就弹同一个弹框，给出
+   * 「下载并运行 terminal_bridge」「SSH 登录」「无 SSH 排障（离线诊断）」三条出路。
+   *
+   * 刷新后为什么不复用 bridge 侧残留会话：bridge 只按 `caseID@nodeIP` 存会话、没有
+   * 查询协议，前端无法证明它还活着；按"未连接"处理并要求重新登录是可验证的事实，
+   * 且重新登录会走 `destroyOrDetachSession`，不会腰斩进行中的长任务。
+   */
+  const troubleshootGateVisible = ref(false)
+  const troubleshootGateStage = ref<TroubleshootGateStage>('idle')
+  // 注意：这里刻意不用 api/terminal 的 BridgeStatus（那里的值是 'not_running'），
+  // 弹框内容与 SshConnectSection 的入参都按 'running' | 'not-running' 消费。
+  const troubleshootGateBridgeStatus = ref<'checking' | 'running' | 'not-running'>('checking')
+  const troubleshootGateReason = ref<TroubleshootGateReason>('send')
+  const troubleshootGateCaseId = ref<string | null>(null)
+  /** 本次探测的目标地址：给客户自证"到底连的是哪个端口"，端口冲突时唯一线索 */
+  const troubleshootGateBridgeUrl = ref('')
+  /** 门禁结论的等待者；非空表示此刻已有弹框在等用户，多个入口必须共用它 */
+  let troubleshootGateSettle: ((verdict: TroubleshootGateVerdict) => void) | null = null
+  let troubleshootGatePending: Promise<TroubleshootGateVerdict> | null = null
+  /**
+   * 本次「消息未发出」是不是门禁拦的。
+   *
+   * 交互卡片把 `sendMessage === false` 一律解释成"流式期间被守卫吞掉"，
+   * 于是提示"诊断仍在进行中，请稍后再选择"——在门禁场景下这句话与事实相反。
+   * 用这个标记把两种原因分开：门禁拦下的，提示交给门禁弹框本身。
+   */
+  const troubleshootGateBlockedSend = ref(false)
+
+  const TROUBLESHOOT_GATE_REASON_TEXT: Record<TroubleshootGateReason, string> = {
+    resume: '继续处理未关闭的工单',
+    switch: '切换到历史工单继续排障',
+    send: '继续排障（发送消息会让 Agent 在节点上执行命令）',
+  }
+  const troubleshootGateReasonText = computed(() => TROUBLESHOOT_GATE_REASON_TEXT[troubleshootGateReason.value])
+
+  /** 关闭弹框并把结论交回所有等待者（唯一出口，避免阶段/可见性各自漂移） */
+  function settleTroubleshootGate(verdict: TroubleshootGateVerdict): void {
+    const settle = troubleshootGateSettle
+    troubleshootGateSettle = null
+    troubleshootGatePending = null
+    troubleshootGateVisible.value = false
+    troubleshootGateStage.value = 'idle'
+    troubleshootGateBridgeStatus.value = 'checking'
+    settle?.(verdict)
+  }
+
+  /** 探测地址只是自证线索；运行时配置异常时不允许连坐整条门禁 */
+  function safeBridgeUrl(): string {
+    try {
+      return getBridgeUrl()
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * 探测一次 bridge。
+   *
+   * 探测自身失败（抛错/超时）一律按「未运行」处理：门禁的语义是
+   * 「无法证明桥可用就不能开始排障」，而不是把异常抛给调用方——
+   * 后者会让 refresh 恢复路径产生未捕获拒绝，用户只看到页面没反应。
+   */
+  async function probeBridgeForGate(): Promise<'running' | 'not-running'> {
+    try {
+      const status = await checkBridgeBeforeOpen()
+      troubleshootGateBridgeUrl.value = safeBridgeUrl()
+      return status === 'running' ? 'running' : 'not-running'
+    } catch {
+      troubleshootGateBridgeUrl.value = safeBridgeUrl()
+      return 'not-running'
+    }
+  }
+
+  /**
+   * 打开门禁并等待用户处理完成。
+   * 已连接 SSH 时直接放行：会话本身就是「bridge 存活 + 会话可用」的充分证据，
+   * 再 probe 一次只会白等 1.5~3s（且终端抖动时会误判成"bridge 未运行"）。
+   */
+  async function openTroubleshootGate(
+    caseId: string | null,
+    reason: TroubleshootGateReason,
+  ): Promise<TroubleshootGateVerdict> {
+    if (sshConnectionState.value === 'connected') return 'ready'
+    if (troubleshootGatePending) return troubleshootGatePending
+
+    const pending = new Promise<TroubleshootGateVerdict>((resolve) => {
+      troubleshootGateSettle = resolve
+    })
+    troubleshootGatePending = pending
+    troubleshootGateCaseId.value = caseId
+    troubleshootGateReason.value = reason
+    troubleshootGateBridgeUrl.value = safeBridgeUrl()
+    troubleshootGateStage.value = 'checking'
+    troubleshootGateBridgeStatus.value = 'checking'
+    troubleshootGateVisible.value = true
+
+    // 探测异步进行：弹框先以"检查中"呈现，避免点了没反应
+    void (async () => {
+      const status = await probeBridgeForGate()
+      // 探测期间用户可能已经点了「暂不排障」：不要把人又拽回弹框
+      if (!troubleshootGateSettle) return
+      if (status === 'running') {
+        troubleshootGateBridgeStatus.value = 'running'
+        if (sshConnectionState.value === 'connected') {
+          settleTroubleshootGate('ready')
+          return
+        }
+        troubleshootGateStage.value = 'ssh-required'
+        return
+      }
+      troubleshootGateBridgeStatus.value = 'not-running'
+      troubleshootGateStage.value = 'bridge-down'
+    })()
+
+    return pending
+  }
+
+  /** 「已启动 bridge，点击刷新」：只重探 bridge，不动已填的 SSH 表单 */
+  async function recheckTroubleshootGateBridge(): Promise<void> {
+    troubleshootGateBridgeStatus.value = 'checking'
+    const status = await probeBridgeForGate()
+    if (!troubleshootGateSettle) return
+    if (status !== 'running') {
+      troubleshootGateBridgeStatus.value = 'not-running'
+      troubleshootGateStage.value = 'bridge-down'
+      return
+    }
+    troubleshootGateBridgeStatus.value = 'running'
+    if (sshConnectionState.value === 'connected') {
+      settleTroubleshootGate('ready')
+      return
+    }
+    troubleshootGateStage.value = 'ssh-required'
+  }
+
+  /** SSH 登录成功（SshConnectSection 的 connected 事件）→ 放行 */
+  function confirmTroubleshootGate(): void {
+    settleTroubleshootGate('ready')
+  }
+
+  /**
+   * 会话从别的入口建立（顶栏 SSH 终端、日志收集、文件下载）时同样要放行。
+   *
+   * 只看弹框内那一个「连接」按钮是不够的：门禁是模态的，但右侧终端等入口
+   * 在别处也可能已把会话建起来——条件一旦成立就该继续，而不是逼用户
+   * 在弹框里再登一次（重复登录会覆盖同键会话）。
+   */
+  watch(sshConnectionState, (state) => {
+    if (state !== 'connected') return
+    if (troubleshootGateStage.value !== 'ssh-required') return
+    settleTroubleshootGate('ready')
+  })
+
+  /** 「暂不排障」：不改变工单状态，只是本次不进排障流程 */
+  function cancelTroubleshootGate(): void {
+    settleTroubleshootGate('cancelled')
+  }
+
+  /** 「无 SSH 排障」：跳离线诊断（平台不连现场，由客户自行采集上传） */
+  function chooseOfflineTroubleshoot(): void {
+    settleTroubleshootGate('offline')
+  }
+
+  /**
+   * 门禁的唯一消费端：返回 true 表示可以继续排障。
+   *
+   * `offline` 直接跳离线诊断页——这是「无 SSH 排障」的唯一实现路径
+   * （`docs/solution/diagnosis/离线诊断模式业务设计.md`），调用方不必各自再判断。
+   */
+  async function requireTroubleshootReady(
+    caseId: string | null,
+    reason: TroubleshootGateReason,
+  ): Promise<boolean> {
+    const verdict = await openTroubleshootGate(caseId, reason)
+    if (verdict === 'ready') return true
+    if (verdict === 'offline') {
+      const target = caseId ?? troubleshootGateCaseId.value
+      if (target) navigateToOfflineDiagnosis(target)
+    }
+    return false
+  }
+
   /** 获取可用 AI 助手列表（v2.1：从响应获取显示决策）*/
   async function fetchAssistants() {
     try {
@@ -1227,6 +1435,9 @@ export const useChatStore = defineStore('chat', () => {
     pendingCase.value = null
     // 恢复工单时同步加载环境数据（fire-and-forget，不阻塞对话恢复）
     collectEnvironmentData(caseId).catch(() => { })
+    // 「继续处理」= 继续排障：先过 bridge + SSH 门禁。
+    // 不 await：历史消息要先呈现，门禁弹框叠加在上层，用户确认后才进入排障动作。
+    void requireTroubleshootReady(caseId, 'resume')
   }
 
   async function closePendingCase() {
@@ -1377,6 +1588,16 @@ export const useChatStore = defineStore('chat', () => {
       const bridgeStatus = await checkBridgeBeforeOpen()
       caseCreateDialogBridgeStatus.value = bridgeStatus
       showCaseTemplate.value = true
+      return false
+    }
+
+    // 已有工单 = 继续排障：先过「bridge 可打开 + SSH 已连接」门禁，
+    // 满足后才把消息交给 Agent（否则 SOP 会被推到"执行中"却永远收不到节点回包）。
+    troubleshootGateBlockedSend.value = false
+    if (!(await requireTroubleshootReady(currentCase.value.case_id, 'send'))) {
+      troubleshootGateBlockedSend.value = true
+      // 取消：把内容还给输入框，避免用户白打一遍（ChatWindow 的 watch 会回填并聚焦）
+      setAssistantDraftText(content)
       return false
     }
 
@@ -2278,6 +2499,8 @@ export const useChatStore = defineStore('chat', () => {
       await loadConversationHistory(caseItem.case_id)
       // 切换工单时同步加载对应环境数据（fire-and-forget）
       collectEnvironmentData(caseItem.case_id).catch(() => { })
+      // 切换到此工单 = 继续排障：同样先过 bridge + SSH 门禁（不 await，先呈现历史）
+      void requireTroubleshootReady(caseItem.case_id, 'switch')
     }
   }
 
@@ -4314,6 +4537,18 @@ export const useChatStore = defineStore('chat', () => {
     isCaseClosed,
     // 诊断阶段
     diagnosticStage,
+    // 排障前置门禁（bridge 可打开 + SSH 已连接）
+    troubleshootGateVisible,
+    troubleshootGateStage,
+    troubleshootGateBridgeStatus,
+    troubleshootGateBridgeUrl,
+    troubleshootGateCaseId,
+    troubleshootGateReasonText,
+    recheckTroubleshootGateBridge,
+    confirmTroubleshootGate,
+    cancelTroubleshootGate,
+    chooseOfflineTroubleshoot,
+    troubleshootGateBlockedSend,
     // 日志收集（HCI 侧 acli log_collect）
     logCollectVisible,
     // 工作区三栏布局（中央 / 左面板 / 右面板）
