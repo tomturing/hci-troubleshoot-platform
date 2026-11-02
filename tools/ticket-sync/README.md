@@ -206,9 +206,16 @@ queued ──► fetching ──► extracting ──► ready
 |---|---|---|
 | 归档 < 64 字节（采集端写坏的占位包） | 删除并跳过 | 日志 `跳过占位=N` |
 | `.rar` 解不开（unrar 与 p7zip 都不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
-| 归档只含转储（vmcore / kdump / `.core` / `.dump` / `.dmp`），无日志清单 | 下载前识别，直接跳过 | 错误码 `non-log-payload` |
+| 归档只含转储（vmcore / kdump / `.core` / `.dump` / `.dmp`），无日志清单 | 下载前识别（按魔数选列举器），直接跳过 | 错误码 `non-log-payload` |
 | 解压后产物里既无 `log_list.json`、`sp_*`，也没有任意层级的 `<节点目录>/sf/log/`（探测深度 ≤3、最多 200 个目录） | 仍发布，但 `job.message` 明确提示"可能仅含转储文件" | `job.message` |
 | 压缩流被截断（gzip 缺尾部 CRC+ISIZE，`tar: Unexpected EOF`）或成员级数据损坏（`unzip exit=80`、bad CRC） | **保留已解出内容**并继续，计入截断数；残缺压缩包删除，避免反复扫描 | 日志 `截断=N`、`job.message`"N 个归档被截断，已保留可读部分" |
+
+下载前的"是不是日志包"探测只读归档条目名，不解压、不下载。远端按**魔数**选列举器：
+`PK\x03\x04` 走 `unzip -Z1`、`1f8b` 走 `tar -tzf`、offset 257 的 `ustar` 走 `tar -tf`。
+不能按扩展名——实测 `Q2026102700681` / `Q2026102800262` / `Q2026102801855` 的顶层包名为
+`.zip`、内容却是裸 tar（文件头就是首个成员名 `172.…` / `10.1…`），按扩展名调 `unzip`
+必然 `exit=9`/`3`，7 天内 10 次探测失败放行，前置拦截形同虚设。探测失败（格式未知、
+ssh 不可用、超时 20s）一律按日志包放行，绝不因此拦下正常工单。
 
 嵌套层数上限（`TICKET_MAX_DEPTH`）是**停止下钻的护栏，不是整单失败的判据**：
 达到上限时保留已解出的产物、把剩余归档计入 `depth_truncated` 并在 `job.message`
@@ -431,6 +438,13 @@ cd tools/ticket-sync
 # 注意：需 PYTHONPATH=.；并覆盖仓库根 pyproject 的 `-n`(xdist)，否则无 xdist 的 venv 会报错
 PYTHONPATH=. uv run --frozen pytest -o addopts="" -p no:cacheprovider -q
 ```
+
+写用例时**不要把"现在"钉成具体日期**：`store.add_tombstone` 的 `removed_at` 写的是
+`datetime.now()` 的真实时刻，而清理的 cutoff 由测试传入的"现在"推导。基准日期一旦写成常量，
+两者就用了不同时钟源，过期判定会随日历漂移——`self.now = datetime(2026, 11, 1, 12, 0)`
+曾让 `test_prune_drops_tombstone_and_unblocks_scan` 在 2026-11-02 12:00 之后每天必然失败。
+需要"过期 / 未过期"两侧覆盖时，用 `datetime.now(TZ) + timedelta(days=TOMBSTONE_RETENTION_DAYS ± 1)`，
+并与保留期常量绑定而不是写死天数。
 
 ## 4. 安全边界
 

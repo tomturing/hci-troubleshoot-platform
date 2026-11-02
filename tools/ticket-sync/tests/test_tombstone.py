@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from app.config import Config
 from app.fetcher import RemoteArchive, list_recent_archives
-from app.main import ORIGIN_AUTO, JobRegistry
+from app.main import ORIGIN_AUTO, TOMBSTONE_RETENTION_DAYS, JobRegistry
 from app.models import Phase
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -55,7 +55,13 @@ class TombstoneTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.root = tempfile.mkdtemp(prefix="ticket-sync-tombstone-")
         self.cfg = _make_config(self.root)
-        self.now = datetime(2026, 11, 1, 12, 0, tzinfo=TZ)
+        # 不能钉死具体日期：`store.add_tombstone` 的 removed_at 用的是
+        # `datetime.now()`（产物被删的真实时刻），而 prune 的 cutoff 由测试传入的
+        # "现在"推导。两者一旦用不同基准，断言就随日历漂移——曾经写成
+        # `datetime(2026, 11, 1, 12, 0)`，真实时间越过 2026-11-02 12:00 后
+        # `cutoff = self.now + (31-30) 天` 被真实 removed_at 反超，该用例每天
+        # 12:00 之后必然删 0 行。以真实时钟为基准即可保持"相对过期"语义。
+        self.now = datetime.now(TZ)
         self.registry = JobRegistry(self.cfg)
 
     async def asyncTearDown(self) -> None:
@@ -113,11 +119,24 @@ class TombstoneTest(unittest.IsolatedAsyncioTestCase):
     async def test_prune_drops_tombstone_and_unblocks_scan(self) -> None:
         """墓碑过期后应该放行，否则一个工单被永久判死。"""
         self._publish_then_forget()
-        later = self.now + timedelta(days=31)
+        # 与保留期常量绑定而不是写死天数：调整保留期时用例不该跟着改
+        later = self.now + timedelta(days=TOMBSTONE_RETENTION_DAYS + 1)
 
         self.assertEqual(self.registry.prune_tombstones(later), 1)
 
         self.assertNotIn(TICKET_ID, self.registry._tombstones)
+
+    async def test_prune_keeps_tombstone_before_expiry(self) -> None:
+        """未过期的墓碑不能被删：删了等于放行，"删了又拉"的循环会回来。
+
+        与上一条构成边界两侧——只测"过期会删"时，把 cutoff 写反的实现
+        （永远删不到）也能被误判为通过。
+        """
+        self._publish_then_forget()
+        soon = self.now + timedelta(days=TOMBSTONE_RETENTION_DAYS - 1)
+
+        self.assertEqual(self.registry.prune_tombstones(soon), 0)
+        self.assertIn(TICKET_ID, self.registry._tombstones)
 
 
 class RetryPersistenceTest(unittest.IsolatedAsyncioTestCase):
