@@ -439,6 +439,13 @@ cd tools/ticket-sync
 PYTHONPATH=. uv run --frozen pytest -o addopts="" -p no:cacheprovider -q
 ```
 
+写用例时**不要把"现在"钉成具体日期**：`store.add_tombstone` 的 `removed_at` 写的是
+`datetime.now()` 的真实时刻，而清理的 cutoff 由测试传入的"现在"推导。基准日期一旦写成常量，
+两者就用了不同时钟源，过期判定会随日历漂移——`self.now = datetime(2026, 11, 1, 12, 0)`
+曾让 `test_prune_drops_tombstone_and_unblocks_scan` 在 2026-11-02 12:00 之后每天必然失败。
+需要"过期 / 未过期"两侧覆盖时，用 `datetime.now(TZ) + timedelta(days=TOMBSTONE_RETENTION_DAYS ± 1)`，
+并与保留期常量绑定而不是写死天数。
+
 ## 4. 安全边界
 
 - 只监听内网地址（默认 `192.168.0.4`），不监听 `0.0.0.0`；入口经 admin-ui 同源反代。
