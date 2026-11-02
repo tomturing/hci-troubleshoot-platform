@@ -136,20 +136,62 @@ class RemoteUpdateResyncTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(job)
 
-    async def test_remote_update_revives_exhausted_ticket(self) -> None:
-        """重试终态挡的是"同样的输入再试一次"，而远端换包说明输入已经变了。
+    async def test_abandoned_ticket_is_not_resynced_even_if_remote_changed(self) -> None:
+        """人工放弃优先于"远端换包"（2026-11-02 决策 A）。
 
-        典型场景：客户先把转储包传错位置（`non-log-payload` 一次即终态），
-        随后重传了真正的日志包——若换包不能清除终态，自动链路就永久放弃它。
+        `retries` 里 failures 到上限既是"重试用尽"，也是 #1416 里「放弃自动重试」
+        的实现方式。远端换包再像新输入，也不能把它清掉：清掉之后 `_note_failure`
+        的终态护栏同时失效，用户点的"放弃"等于没点。
         """
+        self._publish(TICKET_ID, remoteMtime=REMOTE_MTIME, remoteSize=REMOTE_SIZE)
+        self.registry.abandon_retry(TICKET_ID)
+        self.assertTrue(self.registry._retries[TICKET_ID].exhausted)
+
+        job = await self.registry.create_auto(self._archive(TICKET_ID, size=REMOTE_SIZE + 1))
+
+        self.assertIsNone(job, "已放弃自动重试的工单不该被远端换包复活")
+        self.assertTrue(self.registry._retries[TICKET_ID].exhausted)
+        self.assertNotIn(TICKET_ID, self.registry.jobs)
+
+    async def test_abandoned_ticket_stays_terminal_when_remote_unchanged(self) -> None:
+        """另一条清退避的分支（远端未变）同样不能让放弃标记消失。"""
+        self._publish(TICKET_ID, remoteMtime=REMOTE_MTIME, remoteSize=REMOTE_SIZE)
+        self.registry.abandon_retry(TICKET_ID)
+
+        job = await self.registry.create_auto(self._archive(TICKET_ID))
+
+        self.assertIsNone(job)
+        self.assertTrue(self.registry._retries[TICKET_ID].exhausted)
+
+    async def test_exhausted_by_failures_also_blocks_remote_resync(self) -> None:
+        """重试用尽与人工放弃共用同一个终态判据，行为必须一致。"""
         self._publish(TICKET_ID, remoteMtime=REMOTE_MTIME, remoteSize=REMOTE_SIZE)
         self.registry._note_failure(TICKET_ID, ErrorCode.NON_LOG_PAYLOAD)
         self.assertTrue(self.registry._retries[TICKET_ID].exhausted)
 
         job = await self.registry.create_auto(self._archive(TICKET_ID, size=REMOTE_SIZE + 1))
 
+        self.assertIsNone(job)
+
+    async def test_resume_then_remote_change_resyncs(self) -> None:
+        """恢复自动重试后，远端换包应重新生效——放弃不是永久死刑。"""
+        self._publish(TICKET_ID, remoteMtime=REMOTE_MTIME, remoteSize=REMOTE_SIZE)
+        self.registry.abandon_retry(TICKET_ID)
+        self.registry.resume_retry(TICKET_ID)
+
+        job = await self.registry.create_auto(self._archive(TICKET_ID, size=REMOTE_SIZE + 1))
+
         self.assertIsNotNone(job)
-        self.assertNotIn(TICKET_ID, self.registry._retries)
+        self.assertEqual(job.ticket_id, TICKET_ID)
+
+    async def test_manual_create_ignores_abandon(self) -> None:
+        """放弃只约束自动扫描；手动点击是人的新判断，必须放行（#1416 口径）。"""
+        self._publish(TICKET_ID, remoteMtime=REMOTE_MTIME, remoteSize=REMOTE_SIZE)
+        self.registry.abandon_retry(TICKET_ID)
+
+        job = await self.registry.create(TICKET_ID, "req-manual")
+
+        self.assertEqual(job.ticket_id, TICKET_ID)
 
     async def test_manual_create_still_resyncs_same_version(self) -> None:
         """手动点击不受版本判据约束：用户可能就是想重建一次本地产物。"""
