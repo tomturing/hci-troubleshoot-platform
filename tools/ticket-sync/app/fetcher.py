@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import shlex
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -188,15 +189,55 @@ async def list_today_archives(cfg: Config, now: datetime | None = None) -> list[
     return await list_recent_archives(cfg, 1, now)
 
 
-async def list_remote_entries(cfg: Config, ticket_id: str, limit: int = 50) -> list[str]:
-    """只读远端归档的中央目录，返回条目名（不解压、不下载）。
+# 远端列目录的超时上限。裸 tar 靠 seek 跳过成员很快，gzip 必须顺序解压，
+# 对超大包可能来不及——超时就当探测失败放行，绝不能因此拦下正常工单。
+_LIST_TIMEOUT_SECONDS = 20
+# 未知格式的退出码：交给上层按"探测失败"放行，但要在日志里留下痕迹。
+_UNSUPPORTED_FORMAT_EXIT = 3
 
-    zip 的中央目录不加密，所以不需要归档密码就能列出内容——这是唯一能在
-    "下载 30 GiB 之前"判断包里到底是什么的手段（实测有工单只含 vmcore）。
+
+def _list_entries_command(remote: str, limit: int) -> str:
+    """拼远端列目录命令：**按魔数选解压器，不看扩展名**。
+
+    为什么必须看魔数：实测 Q2026102700681 / Q2026102800262 / Q2026102801855 的
+    `/sf/log/<工单号>/<工单号>.zip` 内容是**裸 tar**——文件头直接就是首个成员名
+    （`31 37 32 2e` = `"172."`、`31 30 2e 31` = `"10.1"`），首个成员是
+    `<节点IP>-<时间>.tgz`。按扩展名调 `unzip` 必然 `exit=9`/`exit=3`，
+    探测每次失败放行（7 天内 10 次），既刷告警噪声，也让前置拦截形同虚设：
+    若这类包只装转储，就会白拉几个 GiB 才发现没有日志。
+
+    退出码必须收敛为 0：`head` 读满 limit 行后关闭管道，`unzip`/`tar` 会吃
+    SIGPIPE 以非零码退出，而 `_ssh_run` 把非零码当失败、连带丢掉已经拿到的条目。
+    """
+    target = shlex.quote(remote)
+    return (
+        f"f={target}; "
+        'm=$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d " \\n"); '
+        # PK.. → zip；1f8b → gzip；offset 257 的 ustar → 未压缩 tar
+        'if [ "${m#504b}" != "$m" ]; then set -- unzip -Z1 "$f"; '
+        f'elif [ "${{m#1f8b}}" != "$m" ]; then set -- timeout {_LIST_TIMEOUT_SECONDS} tar -tzf "$f"; '
+        'elif [ "$(dd if="$f" bs=1 skip=257 count=5 2>/dev/null)" = ustar ]; then '
+        f'set -- timeout {_LIST_TIMEOUT_SECONDS} tar -tf "$f"; '
+        f"else exit {_UNSUPPORTED_FORMAT_EXIT}; fi; "
+        f'"$@" 2>/dev/null | head -n {limit}'
+    )
+
+
+async def list_remote_entries(cfg: Config, ticket_id: str, limit: int = 50) -> list[str]:
+    """只读远端归档的条目名（不解压、不下载），返回条目名。
+
+    这是唯一能在"下载 30 GiB 之前"判断包里到底是什么的手段（实测有工单只含
+    vmcore）。格式按魔数识别，见 `_list_entries_command`。
     """
     remote = cfg.remote_archive(ticket_id)
-    command = f"unzip -Z1 {remote} 2>/dev/null | head -n {limit}"
-    stdout = await _ssh_run(cfg, command, "无法读取归档目录")
+    # 本地超时比远端宽 10s：让远端的 timeout 先结束、交回空结果正常退出，
+    # 而不是被本地 kill 成 ssh-failed（两者相等时会出现莫名其妙的连接级报错）。
+    stdout = await _ssh_run(
+        cfg,
+        _list_entries_command(remote, limit),
+        "无法读取归档目录",
+        timeout=_LIST_TIMEOUT_SECONDS + 10,
+    )
     return [line.strip() for line in stdout.decode("utf-8", errors="replace").splitlines() if line.strip()]
 
 

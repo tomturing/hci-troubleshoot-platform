@@ -13,11 +13,12 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app import extractor
 from app.config import Config
-from app.fetcher import looks_like_non_log_bundle
+from app.fetcher import _list_entries_command, list_remote_entries, looks_like_non_log_bundle
 from app.models import ErrorCode, TicketError
 
 
@@ -42,6 +43,52 @@ class NonLogPayloadTest(unittest.TestCase):
 
     def test_empty_listing_is_not_skipped(self) -> None:
         self.assertFalse(looks_like_non_log_bundle([]))
+
+
+class RemoteListCommandTest(unittest.TestCase):
+    """远端列目录必须按魔数选解压器，不能按扩展名。
+
+    生产背景：Q2026102700681 / Q2026102800262 / Q2026102801855 的
+    `/sf/log/<工单号>/<工单号>.zip` 内容是**裸 tar**（文件头直接是首个成员名
+    `172.…` / `10.1…`），`unzip -Z1` 必然 exit=9/3。7 天内 10 次探测失败放行，
+    前置拦截等于没生效。
+    """
+
+    def test_dispatches_by_magic_instead_of_extension(self) -> None:
+        cmd = _list_entries_command("/sf/log/Q2026110200001/Q2026110200001.zip", 50)
+        self.assertIn("504b", cmd, "zip 应按 PK 魔数走 unzip")
+        self.assertIn("1f8b", cmd, "gzip 应按 1f8b 魔数走 tar -tzf")
+        self.assertIn("skip=257", cmd, "裸 tar 应按 offset 257 的 ustar 标记识别")
+        self.assertNotIn("unzip -Z1 /sf/log", cmd, "不能退回到无条件 unzip")
+
+    def test_limit_is_passed_through(self) -> None:
+        self.assertIn("head -n 7", _list_entries_command("/sf/log/Q1/Q1.zip", 7))
+
+    def test_path_is_quoted_at_use_site(self) -> None:
+        cmd = _list_entries_command("/sf/log/Q1/Q1.zip", 5)
+        self.assertIn('"$f"', cmd, "命令里对路径的引用必须带引号")
+
+    def test_unsupported_format_exits_with_dedicated_code(self) -> None:
+        """未知格式以非零码退出：上层据此判定"探测失败"并降级放行。"""
+        self.assertIn("else exit 3", _list_entries_command("/sf/log/Q1/Q1.zip", 5))
+
+
+class RemoteListEntriesTest(unittest.IsolatedAsyncioTestCase):
+    async def test_uses_magic_command_and_parses_lines(self) -> None:
+        seen: list[str] = []
+
+        async def fake_ssh_run(cfg, command, message, timeout=20):
+            seen.append(command)
+            return b"vmdumpcore\n  \nlog_list.json\n"
+
+        cfg = SimpleNamespace(remote_archive=lambda tid: f"/sf/log/{tid}/{tid}.zip")
+        with patch("app.fetcher._ssh_run", fake_ssh_run):
+            entries = await list_remote_entries(cfg, "Q2026110200001", limit=12)
+
+        self.assertEqual(entries, ["vmdumpcore", "log_list.json"])
+        self.assertIn("head -n 12", seen[0])
+        # 命令里必须带魔数分支，否则裸 tar 的包又会探测失败
+        self.assertIn("1f8b", seen[0])
 
 
 @unittest.skipUnless(shutil.which("7z"), "宿主机未安装 7z")
