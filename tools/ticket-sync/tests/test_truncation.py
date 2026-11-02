@@ -15,6 +15,7 @@ from __future__ import annotations
 import gzip
 import io
 import shutil
+import stat
 import tarfile
 import tempfile
 import unittest
@@ -54,6 +55,25 @@ def _tar_gz(entries: dict[str, bytes]) -> bytes:
     """构造 tar.gz 的字节内容。"""
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w:gz") as tf:
+        for name, data in entries.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return raw.getvalue()
+
+
+def _tar_gz_with_dir_modes(dirs: dict[str, int], entries: dict[str, bytes]) -> bytes:
+    """构造带自定义目录权限的 tar.gz。
+
+    目录条目先写：与真实归档一致，也保证解压时目录先于其内容出现。
+    """
+    raw = io.BytesIO()
+    with tarfile.open(fileobj=raw, mode="w:gz") as tf:
+        for name, mode in dirs.items():
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.DIRTYPE
+            info.mode = mode
+            tf.addfile(info)
         for name, data in entries.items():
             info = tarfile.TarInfo(name)
             info.size = len(data)
@@ -135,6 +155,41 @@ class TruncatedTarTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(stats.truncated_archives, 1)
         self.assertTrue((work_dir / "sf/log/tgtd.log").is_file())
+
+    async def test_truncated_archive_subtree_permissions_normalized(self) -> None:
+        """截断包里保留的目录同样要补执行位。
+
+        实测 Q2026102802029：截断的 `172.28.64.133-*.tgz` 里 `sf/log/vs/iscsi`
+        权限是 0664（源端就没有 x），tar 的 `--no-same-permissions` 只与 umask
+        求交、不会补回 x。旧实现只在正常归档解压后调权限归一，截断分支直接
+        continue，于是整棵子树连属主都进不去（18 个 iscsi 日志全部 EACCES，
+        os.walk 也遍历不进，深层归档会被整片漏扫）。
+        """
+        work_dir = self.root / ".tmp" / TICKET_ID
+        work_dir.mkdir(parents=True)
+        archive = work_dir / f"{TICKET_ID}.zip"
+        truncated = _truncate(
+            _tar_gz_with_dir_modes(
+                {"sf/log/vs/iscsi": 0o664},
+                {"sf/log/vs/iscsi/tgtd.log": b"log-line\n" * 512},
+            )
+        )
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("10.0.0.2-20261102-1000.tgz", truncated)
+
+        stats = await extractor.extract(
+            TICKET_ID, archive, work_dir, self.cfg, "job-trunc-perm"
+        )
+
+        self.assertEqual(stats.truncated_archives, 1)
+        # 补权限动作必须发生在截断分支内，计数可查
+        self.assertGreaterEqual(stats.permissions_fixed, 1)
+        iscsi = work_dir / "10.0.0.2-20261102-1000" / "sf/log/vs/iscsi"
+        self.assertTrue((iscsi / "tgtd.log").is_file())
+        self.assertTrue(
+            iscsi.stat().st_mode & stat.S_IXUSR,
+            "截断包内保留的目录必须补上属主执行位，否则整棵子树不可读",
+        )
 
     async def test_truncation_without_any_output_still_fails(self) -> None:
         """一点都没解出来就不该"降级成功"——那会发布一个空目录。"""
