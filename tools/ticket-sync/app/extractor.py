@@ -230,6 +230,12 @@ async def extract(
                         error.code,
                         error.detail,
                     )
+                    # 保留下来的是产物，就必须和正常归档走同一套收尾：不补权限的话，
+                    # 包内缺执行位的目录会让整棵子树对属主也不可读。
+                    # 实测 Q2026102802029 的 172.28.64.133-*.tgz 截断后保留了
+                    # 3 GB 内容，其中 sf/log/vs/iscsi 是 0664，18 个 iscsi 日志
+                    # 全部 EACCES，os.walk 也进不去、深层归档会被整片漏扫。
+                    stats.permissions_fixed += _normalize_permissions(target)
                     continue
                 # .rar 降级：宿主的 p7zip 不支持部分 RAR5 压缩方法（实测报
                 # "Unsupported Method"），而这类包通常是客户自打的单个转储。

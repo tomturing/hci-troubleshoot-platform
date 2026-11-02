@@ -45,3 +45,60 @@ gzip 流少了尾部 CRC32 + ISIZE 8 字节，但打包时按实际写入量记�
   零输出仍失败、正常包不误报）与 `test_retry_terminal.py` 的 `archive-corrupt` 终态用例。
 - 生产数据对照：`Q2026102802029` 的内层 tgz 在本地复现 `tar -xzf` 报 `Unexpected EOF`，
   报错前解出 3.0 GB 内容——正是本改动要保留的部分。
+
+## 追加修复（同日）：降级分支漏做权限归一化
+
+### 现象
+
+`Q2026102802029` 降级成功后，产物里 `sf/log/vs/iscsi/` 下的 18 个日志
+（`tgtd.log`、`tgt-mgrd.log` 及 `.log.1~9.gz`）对 uid 1000 全部 `EACCES`：
+
+```
+ls -ld  .../sf/log/vs/iscsi   ->  drw-r--r--
+cd      .../sf/log/vs/iscsi   ->  Permission denied
+du      .../sf/log/vs/iscsi   ->  18 条 cannot access
+```
+
+`du` 跳过该子树，因此 `du -sh` 报 34G，比 `.sync-meta.json` 的 35.5 GB 少。
+
+### 根因
+
+目录缺执行位（`0664`）本身不是新问题——`_normalize_permissions` 就是为它写的。
+漏的是**调用点**：正常归档在解压后执行 `_normalize_permissions(target)`，
+而截断归档走 `degradable` 分支后直接 `continue`（保留内容、删残缺包），
+跳过了这一步。于是"截断包里解出来的那部分"成为唯一没有补权限的产物。
+
+证据链：
+
+| 证据 | 值 |
+|---|---|
+| 截断告警 | `09:53:28 归档截断 path=...172.28.64.133-20261029-0032.tgz` |
+| 该目录 `ctime` | `09:53:07`（解压时刻，此后**没有任何 chmod 触碰**） |
+| 同 job 完成日志 | `depth=5 archives=209 补权限=114 截断=1`——114 全部来自正常归档 |
+
+`ctime` 是关键判据：chmod 会更新 ctime，若截断分支补过权限，ctime 必然晚于 09:53:28。
+
+### 改动
+
+| 问题 | 改动 | 位置 |
+|---|---|---|
+| 降级保留下来的内容不补权限 | 在 `degradable` 分支 `continue` 前调用 `_normalize_permissions(target)`，与正常路径对齐 | `tools/ticket-sync/app/extractor.py` |
+
+### 影响面
+
+不只是"几个日志读不到"。目录缺 `x` 时 `os.walk` 进不去，会连带：
+
+1. `_tree_stats` 少算字节与文件数（`bytes`/`files` 偏低）；
+2. 下一轮 `_find_archives` 扫不到该子树里的嵌套归档，**整片漏扫**；
+3. `_audit` 的容量统计偏低，淘汰判断失真。
+
+### 验证
+
+- 新增 `test_truncated_archive_subtree_permissions_normalized`：构造 `0664` 目录的截断包，
+  断言 `permissions_fixed >= 1` 且目录具备 `S_IXUSR`。
+- 反向验证：临时移除该行，用例即失败（`1 failed, 6 passed`），确认不是假测试。
+- 全量 152 passed。
+- 现场修复：对 `Q2026102802029` 的 `iscsi` 目录补 `u+rwx` 后，
+  `tgtd.log`（41.7 MB）、`tgt-mgrd.log`（50.2 MB）等 18 个文件恢复可读，
+  全库 `find -type d ! -perm -u+x` 归零。
+
