@@ -13,6 +13,7 @@ import {
   buildAcliSyncMessage,
   buildDeliveryMessage,
   buildLogCollectMessage,
+  checkBridgeBeforeOpen,
   createBridgeSocket,
   parseAcliSyncFacts,
   resolveBridgeUrl,
@@ -447,6 +448,14 @@ function probeRetryDelay(index: number): number {
 }
 
 /**
+ * 「没有可用会话」的唯一文案。
+ *
+ * 措辞必须指向**本面板里就能完成的动作**（底部「连接 SSH」），而不是让用户自己去
+ * 右侧终端找入口——这正是 2026-11-02 现场反馈的症结：按钮禁用、文案却只说"请连接"。
+ */
+const NODE_MISSING_MESSAGE = 'SSH 会话未连接：请点击面板底部「连接 SSH」登录后再读取环境'
+
+/**
  * 该失败是否值得重试。
  *
  * 只有「重连 SSH 才能解决」的失败被排除：session_missing / LC-ENV-006 / 未连接节点。
@@ -455,7 +464,7 @@ function probeRetryDelay(index: number): number {
  */
 function isRetryableProbeError(error: unknown): boolean {
   const text = String((error as any)?.message || error || '')
-  if (text.includes('请先在 SSH 终端连接')) return false
+  if (text.includes('SSH 会话未连接')) return false
   if (text.includes('LC-ENV-006') || text.includes('session_missing')) return false
   if (text.includes('会话不存在')) return false
   return true
@@ -517,6 +526,15 @@ function scheduleFactRecheck() {
 }
 
 const nodeIpReady = computed(() => Boolean(nodeIp.value))
+
+/**
+ * 「开始收集」此刻是否真的能下发：会话活着 **且** 能确定发起节点。
+ *
+ * 两个条件缺一不可：会话断了谈不上采集；会话在但读不到主机时，
+ * 采集消息没有 `node_ip`，bridge 的 `caseID@nodeIP` 一定查不到会话（LC-ENV-006）。
+ * 这个派生值同时决定主按钮的语义（见 handlePrimaryAction）。
+ */
+const canCollect = computed(() => sshConnected.value && nodeIpReady.value)
 
 /**
  * 目标主机选择器与 form.ips 的双向桥。
@@ -1190,7 +1208,7 @@ async function prepare(
   const targetNode = nodeIp.value
   if (!targetNode) {
     prepareState.value = 'failed'
-    prepareError.value = '请先在 SSH 终端连接 HCI 节点'
+    prepareError.value = NODE_MISSING_MESSAGE
     return false
   }
   // 注意：不能用 running 挡在这里。handleStart 在 stage='probing' 之后会调用本函数
@@ -1881,6 +1899,48 @@ function startRecollect() {
 
 // ── 主流程 ──────────────────────────────────────────────────────────────────
 
+/**
+ * 未连接时的主按钮 = 「连接 SSH」，直接弹与右侧终端同一个登录框。
+ *
+ * 第一性原理：按钮上的动作必须可执行。旧实现把「请先连接 SSH」写成一个 disabled 按钮，
+ * 等于把唯一的前置条件变成一个死胡同：用户被要求做一件事，却不给出做这件事的入口，
+ * 只能自己发现右侧终端里还有一个「连接 SSH」（2026-11-02 现场反馈）。
+ *
+ * 对抗性审查：
+ * - 会话键是 `caseID@nodeIP`，因此登录必须带**本面板绑定的工单号**。带错单号登录后，
+ *   probe 照样会拿到 session_missing，表现为"连上了却读不到环境"。
+ * - 登录成功后本面板不必手动刷新：`nodeIp`（会话主机）从空变有，watch 会重探，
+ *   按钮随之从「连接 SSH」变回「开始收集」。
+ * - bridge 未运行时不能直接把用户丢进表单：先探一次，未运行则由弹框给出下载引导。
+ */
+const sshConnectOpening = ref(false)
+
+async function requestSshConnect(): Promise<void> {
+  if (sshConnectOpening.value) return
+  sshConnectOpening.value = true
+  try {
+    const status = await checkBridgeBeforeOpen()
+    chatStore.sshConnectDialogBridgeStatus = status
+    chatStore.openSshFlowDialog(props.caseId || null, 'log-collect')
+  } finally {
+    sshConnectOpening.value = false
+  }
+}
+
+/**
+ * 底部主按钮的唯一入口：能采集就采集，不能采集就把"缺的那一步"变成可点的动作。
+ *
+ * 保留 handleStart 内的守卫作为兜底：弹框开着期间会话可能又断开，
+ * 或用户用键盘触发，都不能把注定失败的请求发出去。
+ */
+async function handlePrimaryAction(): Promise<void> {
+  if (!canCollect.value) {
+    await requestSshConnect()
+    return
+  }
+  await handleStart()
+}
+
 async function handleStart() {
   if (!form.dateRange || form.dateRange.length !== 2) {
     ElMessage.warning('请选择时间范围')
@@ -1891,13 +1951,13 @@ async function handleStart() {
   // 面板开着期间 SSH 可能已经断开，此时任何 bridge 动作都只会拿到 session_missing——
   // 与其把注定失败的请求发出去，不如当场告诉用户去重连。
   if (!sshConnected.value) {
-    ElMessage.warning('SSH 会话已断开，请先在 SSH 终端重新连接节点')
+    ElMessage.warning('SSH 会话已断开，请点击面板底部「连接 SSH」重新登录后再开始收集')
     return
   }
 
   const targetNode = nodeIp.value
   if (!targetNode) {
-    ElMessage.warning('请先在 SSH 终端连接 HCI 节点')
+    ElMessage.warning(NODE_MISSING_MESSAGE)
     return
   }
 
@@ -2187,7 +2247,7 @@ async function confirmInstall(ws: WebSocket) {
 async function retryAcliSync(retryStage: AcliRetryStage) {
   if (acliRetrying.value) return
   if (!nodeIp.value) {
-    ElMessage.warning('请先在 SSH 终端连接 HCI 节点')
+    ElMessage.warning(NODE_MISSING_MESSAGE)
     return
   }
   let ws: WebSocket
@@ -3862,14 +3922,21 @@ onBeforeUnmount(() => {
           :title="`以下参数来自平台任务记录（发起节点 ${currentTask?.origin_node_ip ?? '—'}）：任务进行中不可修改，结束后可「重新收集」`"
         />
 
-        <!-- 准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么" -->
+        <!--
+          准备状态的唯一出口：用户在填表之前就能看见"能不能收、可选什么"。
+          文案必须点名面板内就能完成的动作（底部「连接 SSH」），不再把用户指去右侧终端。
+        -->
         <el-alert
           v-if="!nodeIpReady"
           class="lc-prepare"
           type="info"
           :closable="false"
           show-icon
-          title="请先在 SSH 终端连接 HCI 节点；连接后才能读取场景目录与节点清单"
+          :title="
+            sshConnected
+              ? '已连接 SSH，但读不到会话主机：请点击「连接 SSH」重新登录以确认发起节点'
+              : '尚未连接 HCI 节点：点击底部「连接 SSH」登录后即可读取场景目录与节点清单'
+          "
         />
         <el-alert
           v-else-if="prepareState === 'probing' && !probeRetry"
@@ -4073,6 +4140,9 @@ onBeforeUnmount(() => {
         <template v-if="viewMode === 'result'">
           上次采集 {{ resultFinishedText }} · 本工单共 {{ historyTotal }} 条记录
         </template>
+        <template v-else-if="!canCollect">
+          采集依赖 SSH 会话：点「连接 SSH」登录后即可开始收集
+        </template>
         <template v-else-if="lastRefreshText">{{ lastRefreshText }}</template>
         <template v-else>选择时间范围与采集模块后开始收集</template>
       </div>
@@ -4089,13 +4159,26 @@ onBeforeUnmount(() => {
             </el-button>
           </template>
           <template v-else>
+            <!--
+              未连接时按钮**不禁用**，文案变成可执行的「连接 SSH」并弹出统一登录框。
+              禁用 + "请先连接 SSH" 是把前置条件写成了状态：用户被要求做一件事却没有入口，
+              只能自己发现右侧终端里还有同名按钮（2026-11-02 现场反馈）。
+              仅在「已连接但正在探测」时禁用：此刻再点没有第二条路可走。
+            -->
             <el-button
               v-if="!running"
               type="primary"
-              :disabled="prepareState === 'probing' || !sshConnected"
-              @click="handleStart"
+              :disabled="canCollect && prepareState === 'probing'"
+              :loading="sshConnectOpening"
+              @click="handlePrimaryAction"
             >
-              {{ prepareState === 'probing' ? '正在读取环境…' : (!sshConnected ? '请先连接 SSH' : '开始收集') }}
+              {{
+                !canCollect
+                  ? '连接 SSH'
+                  : prepareState === 'probing'
+                    ? '正在读取环境…'
+                    : '开始收集'
+              }}
             </el-button>
             <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>
           </template>
