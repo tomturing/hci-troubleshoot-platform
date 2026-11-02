@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 from app import extractor
 from app.config import Config
-from app.models import ErrorCode, TicketError
+
 
 TICKET_ID = "Q2026010100001"
 
@@ -93,18 +93,21 @@ class PlaceholderArchiveTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats.depth, 1)
         self.assertEqual(stats.placeholders_skipped, 1)
 
-    async def test_broken_archive_still_reported_without_guard(self) -> None:
-        """对照组：关闭占位包守卫后，同一个包必须仍然报 archive-corrupt。
+    async def test_broken_member_is_degraded_without_guard(self) -> None:
+        """对照组：关闭占位包守卫后，坏成员降级并计数，而不是整单失败。
 
-        这条测试把「旧行为」钉住，防止守卫被误删或阈值被改大到失去意义。
+        旧实现会让整包报 archive-corrupt；成员级损坏一律降级之后（#1417 / 本 PR），
+        坏的是一个 1 字节占位包，主体日志仍然可用，不该连累整包。
         """
         archive = _build_archive(self.work_dir)
 
-        with self.assertRaises(TicketError) as ctx:
-            with patch.object(extractor, "PLACEHOLDER_MAX_BYTES", 0):
-                await extractor.extract(TICKET_ID, archive, self.work_dir, self.cfg, "job-test")
+        with patch.object(extractor, "PLACEHOLDER_MAX_BYTES", 0):
+            stats = await extractor.extract(
+                TICKET_ID, archive, self.work_dir, self.cfg, "job-test"
+            )
 
-        self.assertEqual(ctx.exception.code, ErrorCode.ARCHIVE_CORRUPT)
+        self.assertEqual(stats.truncated_archives, 1)
+        self.assertTrue((self.work_dir / "log_list.json").is_file())
 
 
 class PermissionNormalizeTest(unittest.TestCase):
