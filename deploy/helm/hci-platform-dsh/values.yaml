@@ -192,10 +192,12 @@ workspace:
   sizeLimit: 5Gi
 
 # ======================== DSH 家目录 =========================================
-# 存放 DSH 的凭据与会话。刻意使用 emptyDir 而非 PVC：
+# 存放 DSH 的凭据与会话。默认 emptyDir：
 #   - 避免为 PVC 引入 fsGroup（会波及只读的 /sf/log，见上）；
 #   - 本方案的前端每次进入页面都重新索取 token，Pod 重建导致会话丢失
 #     不影响可用性（丢失的只是历史会话，属于已知取舍）。
+# 需要把诊断记录沉淀为工单证据时，改用下面可选的 hostPath（跨 namespace 共享
+# 只有 hostPath 可行：PVC 无法跨 namespace 挂载）。
 home:
   sizeLimit: 2Gi
   # 可选：把家目录落到宿主机目录（hostPath），留空则用 emptyDir。
@@ -207,4 +209,8 @@ home:
   # ⚠️ 目录必须事先存在，且属主为容器运行用户（uid/gid=1000），例如：
   #   install -d -o 1000 -g 1000 -m 0755 /sf/dsh-home
   # 不能用 DirectoryOrCreate：kubelet 建成 root:root 后 DSH 无法写入 profile/session。
+  #
+  # ⚠️ 本值是**容器家目录**（/home/dsh），会话实际落在 <hostPath>/.dsh/sessions：
+  # 因为 DSH_HOME=$HOME/.dsh。消费方 caseService.dshSessions.hostPath 必须多写
+  # .dsh 这一层——少写会挂到空目录，页面只显示「没有诊断记录」而不报错。
   hostPath: ""
