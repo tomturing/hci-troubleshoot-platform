@@ -35,7 +35,6 @@ const (
 	// 20 GiB @100 Mbps ≈ 27 分钟；留足余量覆盖弱网与重试。
 	logCollectTransferTimeout = 2 * time.Hour
 	logCollectPullBlock       = 4 * 1024 * 1024
-	logCollectProgressEvery   = 64 * 1024 * 1024
 	logCollectPartRetries     = 3
 	logCollectPartTimeout     = 5 * time.Minute
 	logCollectMaxChunkSize    = 64 * 1024 * 1024
@@ -194,6 +193,28 @@ func hashFilePrefixStrict(path string, n int64, hasher hash.Hash) error {
 	return nil
 }
 
+// progressStep 决定进度上报的字节步进。
+//
+// 固定 64 MiB 在小包上等于"全程不上报"：88 MB 的包从头到尾一次都不会触发，
+// 失败时 job.PulledBytes 恒为 0，而错误文案里却写着"已拉 9.3 MB"
+// （2026-11-03 Q2026110300988）。按总量的 1% 计算并夹在 [4 MiB, 64 MiB]：
+// 小包有足够粒度，20 GiB 的包也不会产生上万次 WS 消息与 job 落盘。
+func progressStep(total int64) int64 {
+	const minStep int64 = 4 << 20
+	const maxStep int64 = 64 << 20
+	if total <= 0 {
+		return maxStep
+	}
+	step := total / 100
+	if step < minStep {
+		return minStep
+	}
+	if step > maxStep {
+		return maxStep
+	}
+	return step
+}
+
 // pullArchive 把 HCI 上的压缩包续传到本地，同时返回整包 SHA-256。
 //
 // 断点依据是「本地文件已有大小」：HCI 侧用 `tail -c +offset+1` 从断点继续读，
@@ -260,6 +281,9 @@ func (s *SSHSession) pullArchive(
 	writer := io.MultiWriter(file, hasher)
 	written := offset
 	lastReport := offset
+	// 步进按总量自适应：固定 64 MiB 对 88 MB 的包等于全程不上报，
+	// 失败时 job.PulledBytes 恒为 0，与错误文案里的"已拉 9.3 MB"自相矛盾。
+	step := progressStep(totalSize)
 	buffer := make([]byte, logCollectPullBlock)
 
 	for {
@@ -274,7 +298,7 @@ func (s *SSHSession) pullArchive(
 				return written, "", fmt.Errorf("写入本地文件失败: %w", err)
 			}
 			written += int64(n)
-			if written-lastReport >= logCollectProgressEvery {
+			if written-lastReport >= step {
 				lastReport = written
 				onProgress(written, totalSize)
 			}
