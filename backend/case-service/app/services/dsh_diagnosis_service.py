@@ -33,6 +33,7 @@ from typing import Any
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger("dsh-diagnosis")
@@ -154,16 +155,42 @@ def _text_blocks(content: Any) -> str:
 
 
 def _sanitize(value: str) -> str:
-    """去掉 NUL（U+0000）。
+    """去掉 PostgreSQL 无法存储的字符（NUL 与孤立代理项）。
 
-    第一性原理：PostgreSQL 的 text/jsonb **物理上不接受** `\\u0000`，写入时报
+    第一性原理：PostgreSQL 的 text/jsonb **物理上不接受** NUL，写入时报
     `UntranslatableCharacterError: unsupported Unicode escape sequence`。
     而 DSH 的工具输出里确实会出现 NUL（`cat` 二进制文件、`hexdump` 片段），
     一个字节就能让整条会话入库失败（2026-11-02 staging 实测：端点 500，日志里只有
     asyncpg 的这条错误，没有任何业务线索）。宁可在归档侧丢这个不可见字符，
     也不能丢整条诊断证据。
+
+    ⚠️ 只清洗**数据**，绝不清洗序列化后的 JSON 文本：`json.dumps` 会把 NUL 转成
+    字面量 `\\u0000`，而正文里本来就可能出现 `\\u0000` 这 6 个字符（例如日志里贴的
+    JS 正则 `/[\\\\-\\u0008]/g`）。对序列化结果做字符串替换会打断转义序列
+    （`\\\\u0000` → 只剩 `\\`），生成非法 JSON（2026-11-03 实测：
+    `Escape sequence "\\-" is invalid`）。正确做法是清洗结构里的每个字符串，
+    再整体序列化。
     """
-    return value.replace("\x00", "") if "\x00" in value else value
+    if not value:
+        return value
+    value = value.replace("\x00", "")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # 孤立代理项（JSON 里 `\\ud800` 之类的转义）无法编码为 UTF-8
+        value = value.encode("utf-8", "ignore").decode("utf-8")
+    return value
+
+
+def _scrub(value: Any) -> Any:
+    """递归清洗待入库结构里的所有字符串，保证后续 `json.dumps` 产出合法 JSON。"""
+    if isinstance(value, str):
+        return _sanitize(value)
+    if isinstance(value, list):
+        return [_scrub(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _scrub(item) for key, item in value.items()}
+    return value
 
 
 def _clip(value: str, limit: int) -> str:
@@ -506,33 +533,46 @@ class DshDiagnosisService:
                     await self._touch(str(path), stat.st_size, stat.st_mtime, digest)
                     stats.skipped += 1
                     continue
-                await self.session.execute(
-                    _UPSERT_SQL,
-                    {
-                        "session_id": parsed.session_id,
-                        "case_id": parsed.case_id,
-                        "title": parsed.title,
-                        "workspace": parsed.workspace,
-                        "agent_preset": parsed.agent_preset,
-                        "started_at": parsed.started_at,
-                        "last_activity_at": parsed.last_activity_at,
-                        "message_count": parsed.message_count,
-                        "tool_call_count": parsed.tool_call_count,
-                        "conclusion_markdown": parsed.conclusion_markdown,
-                        # 双保险：_clip 已清洗 NUL，但 messages 里还有 name/tool_calls 等
-                        # 未经 _clip 的字段；json.dumps 会把 NUL 转义成字面量 \\u0000，
-                        # 而 PostgreSQL 同样拒绝该转义，故在序列化后再剥一次。
-                        "messages": json.dumps(parsed.messages, ensure_ascii=False).replace("\\u0000", ""),
-                        "truncated": parsed.truncated,
-                        "binding_source": parsed.binding_source,
-                        "source_path": str(path),
-                        "source_size": stat.st_size,
-                        "source_mtime": datetime.fromtimestamp(stat.st_mtime, tz=UTC),
-                        "content_sha256": digest,
-                        "trace_id": trace_id,
-                        "ingested_at": datetime.now(UTC),
-                    },
-                )
+                # 每条会话一个 SAVEPOINT：任一条数据被数据库拒绝时只丢这条，
+                # 不能把同批其它会话一起回滚。2026-11-02/03 两次 500 都是
+                # 「一条会话有问题 → 整批入库失败 → 页面显示没有诊断记录」。
+                try:
+                    async with self.session.begin_nested():
+                        await self.session.execute(
+                            _UPSERT_SQL,
+                            {
+                                "session_id": parsed.session_id,
+                                "case_id": parsed.case_id,
+                                "title": parsed.title,
+                                "workspace": parsed.workspace,
+                                "agent_preset": parsed.agent_preset,
+                                "started_at": parsed.started_at,
+                                "last_activity_at": parsed.last_activity_at,
+                                "message_count": parsed.message_count,
+                                "tool_call_count": parsed.tool_call_count,
+                                "conclusion_markdown": parsed.conclusion_markdown,
+                                # 只清洗结构中的字符串再序列化（见 _sanitize 文档：
+                                # 对序列化结果做替换会打断转义、生成非法 JSON）
+                                "messages": json.dumps(_scrub(parsed.messages), ensure_ascii=False),
+                                "truncated": parsed.truncated,
+                                "binding_source": parsed.binding_source,
+                                "source_path": str(path),
+                                "source_size": stat.st_size,
+                                "source_mtime": datetime.fromtimestamp(stat.st_mtime, tz=UTC),
+                                "content_sha256": digest,
+                                "trace_id": trace_id,
+                                "ingested_at": datetime.now(UTC),
+                            },
+                        )
+                except SQLAlchemyError as exc:
+                    stats.failed += 1
+                    logger.warning(
+                        event="dsh_session_store_failed",
+                        message=str(exc)[:500],
+                        path=str(path),
+                        session_id=parsed.session_id,
+                    )
+                    continue
                 stats.parsed += 1
                 if parsed.case_id is None:
                     stats.unbounded += 1

@@ -51,14 +51,31 @@ const activeTab = ref('dialogue') // dialogue | log-collect | dsh | ai-context |
 // 真正需要「把新会话抓进来」时，由标签页切换或「刷新并归档」按钮触发 refresh=true。
 const logCollectEvidence = ref<LogCollectCaseEvidence | null>(null)
 const logCollectLoading = ref(false)
+// 失败原因必须落到界面上：静默 catch 会让「接口 500」看起来和「没有数据」完全一样
+// （2026-11-03 现场：后端 500，页面显示「该工单还没有 DSH 诊断记录」）。
+const logCollectError = ref('')
 const dshData = ref<DshSessionListResponse | null>(null)
 const dshLoading = ref(false)
+const dshError = ref('')
+
+function errorText(e: unknown): string {
+  const response = (e as { response?: { status?: number; data?: { detail?: unknown } } })?.response
+  const detail = response?.data?.detail
+  if (typeof detail === 'string' && detail) return `HTTP ${response?.status}: ${detail}`
+  if (typeof detail === 'object' && detail && 'message' in detail) {
+    return `HTTP ${response?.status}: ${String((detail as { message?: unknown }).message ?? '')}`
+  }
+  if (response?.status) return `HTTP ${response.status}`
+  return (e as Error)?.message || '未知错误'
+}
 
 async function loadLogCollect() {
   logCollectLoading.value = true
+  logCollectError.value = ''
   try {
     logCollectEvidence.value = await getCaseLogCollect(caseId)
   } catch (e) {
+    logCollectError.value = errorText(e)
     console.error('加载日志收集证据失败', e)
   } finally {
     logCollectLoading.value = false
@@ -67,9 +84,11 @@ async function loadLogCollect() {
 
 async function loadDsh(refresh: boolean) {
   dshLoading.value = true
+  dshError.value = ''
   try {
     dshData.value = await getCaseDshSessions(caseId, { refresh })
   } catch (e) {
+    dshError.value = errorText(e)
     console.error('加载 DSH 诊断记录失败', e)
   } finally {
     dshLoading.value = false
@@ -423,9 +442,22 @@ function getRiskLabel(level: number): { text: string; type: '' | 'success' | 'wa
               </span>
             </template>
             <div v-loading="logCollectLoading">
+              <el-alert
+                v-if="logCollectError"
+                type="error"
+                :closable="false"
+                show-icon
+                title="日志收集信息加载失败"
+                :description="`${logCollectError}（这会与「该工单没有采集任务」混淆，请刷新页面重试）`"
+                style="margin-bottom: 12px"
+              />
               <el-empty
                 v-if="!logCollectEvidence"
-                description="暂无日志收集数据（该工单不是由日志收集入口创建，或接口不可用）"
+                :description="
+                  logCollectError
+                    ? '加载失败，无法判断是否存在采集任务'
+                    : '暂无日志收集数据（该工单不是由日志收集入口创建）'
+                "
               />
               <CaseLogCollectPanel v-else :evidence="logCollectEvidence" />
             </div>
@@ -443,6 +475,7 @@ function getRiskLabel(level: number): { text: string; type: '' | 'success' | 'wa
               :case-id="caseId"
               :data="dshData"
               :loading="dshLoading"
+              :error="dshError"
               @refresh="loadDsh(true)"
             />
           </el-tab-pane>

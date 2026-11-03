@@ -20,6 +20,7 @@ from app.config import settings
 from app.main import app
 from app.routes import case_insights
 from app.services.dsh_diagnosis_service import (
+    _scrub,
     decode_zstd_frames,
     parse_session_text,
     resolve_binding,
@@ -295,3 +296,64 @@ async def test_get_session_prefers_app_state_manager():
     assert session == "sentinel-session"
     assert manager.called
     await generator.aclose()
+
+
+def test_scrub_keeps_json_valid_when_text_contains_literal_escape_sequences():
+    """正文里的字面量 `\\u0000` 不能被当成 NUL 处理。
+
+    2026-11-03 staging 现场：工具输出里贴了一段 JS 正则 `/[\\\\-\\u0008]/g`。
+    上一版把「序列化后的 JSON」做 `.replace("\\u0000", "")`，正好切断了
+    `\\\\u...` 的转义，生成非法 JSON —— PostgreSQL 报
+    `Escape sequence "\\-" is invalid`，整批会话入库失败，页面显示「没有诊断记录」。
+    正确做法是清洗结构里的字符串，再整体序列化（本用例锁定该契约）。
+    """
+    tricky = "const re=/[\\\\\\-\\u0008]/g; // 还有真实 NUL:\x00 结束"
+    lines = [
+        json.dumps({"type": "session", "version": 4, "id": "session-tricky", "cwd": "/data/tickets"}),
+        json.dumps(
+            {
+                "type": "tool/call",
+                "seq": 1,
+                "data": {"callId": "c1", "name": "bash", "arguments": "{}"},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "tool/result",
+                "seq": 2,
+                "data": {"message": {"toolCallId": "c1", "content": [{"type": "text", "text": tricky}]}},
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant/message",
+                "seq": 3,
+                "data": {"message": {"role": "assistant", "content": [{"type": "text", "text": "结论：正常"}]}},
+            }
+        ),
+    ]
+    parsed = parse_session_text("\n".join(lines))
+    assert parsed is not None
+
+    payload = json.dumps(_scrub(parsed.messages), ensure_ascii=False)
+    # 1) 必须是合法 JSON（上一版会在这里抛 JSONDecodeError）
+    decoded = json.loads(payload)
+    assert decoded
+    # 2) 真实 NUL 被清掉
+    assert "\x00" not in payload
+    # 3) 字面量转义原样保留（反斜杠在 JSON 里被转义成两个）
+    assert "\\\\u0008" in payload
+    assert "\\\\-" in payload
+
+
+def test_scrub_handles_nested_structures():
+    """messages 里的 name / tool_calls 等非文本字段也要清洗。"""
+    payload = _scrub(
+        [
+            {"role": "assistant", "text": "a\x00b", "tool_calls": [{"name": "bash\x00", "arguments": "x\x00y"}]}
+        ]
+    )
+
+    assert payload[0]["text"] == "ab"
+    assert payload[0]["tool_calls"][0]["name"] == "bash"
+    assert payload[0]["tool_calls"][0]["arguments"] == "xy"
