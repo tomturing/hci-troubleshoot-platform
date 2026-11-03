@@ -847,3 +847,106 @@ func TestLogCollectProgressArchiveExistsJSON(t *testing.T) {
 		t.Fatalf("未探测时不得输出 archive_exists（前端会把 false 误读为已删除）: %s", b)
 	}
 }
+
+// TestBuildLogCollectCreateCommandP1Ticket 覆盖 P1 票据注入。
+//
+// 锁三件事：票据只以 -L 形式出现（不能是全局 -H）、没有上传地址时拒绝、
+// 脱敏后的命令里不能留票据原文。
+func TestBuildLogCollectCreateCommandP1Ticket(t *testing.T) {
+	const ticket = "p1.v1.eyJ2IjoxLCJjaWQiOiJRMjAyNjExMDMwMDI3OCJ9.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+	base := InMessage{
+		TicketNo:     "Q2026110300278",
+		Modules:      []string{"system"},
+		DateFrom:     "2026-11-02",
+		DateTo:       "2026-11-03",
+		IPs:          "all",
+		RemoteURL:    "http://acli.sangfor.com.cn:5888/",
+		UploadTicket: ticket,
+	}
+
+	t.Run("带票据时注入 URL 特定请求头", func(t *testing.T) {
+		command, errType, errMsg := buildLogCollectCreateCommand(base)
+		if errType != "" {
+			t.Fatalf("不应拒绝：%s %s", errType, errMsg)
+		}
+		want := "-L '0:Authorization:Bearer " + ticket + "'"
+		if !strings.Contains(command, want) {
+			t.Fatalf("命令缺少 %q，实际：%s", want, command)
+		}
+		if strings.Contains(command, " -H ") {
+			t.Fatalf("必须用 -L 而不是全局 -H：%s", command)
+		}
+	})
+
+	t.Run("无票据时不得出现 -L", func(t *testing.T) {
+		req := base
+		req.UploadTicket = ""
+		command, errType, _ := buildLogCollectCreateCommand(req)
+		if errType != "" {
+			t.Fatalf("不应拒绝：%s", errType)
+		}
+		if strings.Contains(command, " -L ") {
+			t.Fatalf("无票据时不应注入请求头：%s", command)
+		}
+	})
+
+	t.Run("票据字符集非法被拒", func(t *testing.T) {
+		req := base
+		req.UploadTicket = "p1.v1.bad;rm -rf /"
+		_, errType, _ := buildLogCollectCreateCommand(req)
+		if errType != "invalid_upload_ticket" {
+			t.Fatalf("应拒绝注入型票据，实际 errType=%s", errType)
+		}
+	})
+
+	t.Run("只有票据没有上传地址被拒", func(t *testing.T) {
+		req := base
+		req.RemoteURL = ""
+		_, errType, _ := buildLogCollectCreateCommand(req)
+		if errType != "invalid_upload_ticket" {
+			t.Fatalf("票据必须与上传地址同时出现，实际 errType=%s", errType)
+		}
+	})
+
+	t.Run("脱敏后不留票据原文", func(t *testing.T) {
+		command, _, _ := buildLogCollectCreateCommand(base)
+		redacted := redactUploadTicket(command, ticket)
+		if strings.Contains(redacted, ticket) {
+			t.Fatalf("脱敏失败，仍含票据：%s", redacted)
+		}
+		if !strings.Contains(redacted, "[REDACTED]") {
+			t.Fatalf("应标记被脱敏的位置：%s", redacted)
+		}
+	})
+}
+
+// TestParseLogCollectProgressUploadError 覆盖上传失败的定因线索。
+//
+// 现场 Q2026110300278 的 upload_state 只有"失败"，平台与桥侧都无法区分
+// 401 / 超时 / 网络；这两个字段就是为了让下一次不必再去 5888 翻日志。
+func TestParseLogCollectProgressUploadError(t *testing.T) {
+	raw := strings.Join([]string{
+		"收集任务已完成！",
+		"发送地址：http://acli.sangfor.com.cn:5888",
+		"状态：失败",
+		"错误：401 Unauthorized",
+	}, "\n")
+
+	progress := parseLogCollectProgress(raw)
+	if progress.UploadState != "失败" {
+		t.Fatalf("上传状态解析错误：%q", progress.UploadState)
+	}
+	if !strings.Contains(progress.UploadError, "401") {
+		t.Fatalf("应抓取首个失败原因行，实际：%q", progress.UploadError)
+	}
+	if progress.UploadRawTail == "" {
+		t.Fatal("出现上传状态时必须保留原文尾部")
+	}
+
+	// 没有上传块时不得把采集阶段的"失败"误当成上传原因。
+	collectOnly := parseLogCollectProgress("状态：收集失败")
+	if collectOnly.UploadError != "" {
+		t.Fatalf("采集阶段的失败不应写入 upload_error：%q", collectOnly.UploadError)
+	}
+}

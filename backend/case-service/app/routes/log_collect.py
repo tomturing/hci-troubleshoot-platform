@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from shared.database.postgres import DatabaseManager
 from sqlalchemy import text
@@ -24,6 +26,8 @@ from ..schemas.log_collect import (
     LogCollectTaskListResponse,
     LogCollectTaskPatch,
     LogCollectTaskResponse,
+    P1ArchiveVerifyRequest,
+    P1ArchiveVerifyResponse,
     UploadCompleteRequest,
     UploadCompleteResponse,
     UploadInitRequest,
@@ -34,6 +38,7 @@ from ..schemas.log_collect import (
 from ..schemas.log_collect_errors import build_problem
 from ..security.auth import get_client_id, verify_case_exists
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
+from ..services.p1_ticket import P1TicketError, P1TicketService, archive_filename_for
 from ..services.log_collect_service import (
     InvalidTransitionError,
     LogCollectService,
@@ -142,6 +147,18 @@ async def get_relay_service() -> LogCollectRelayService:
     return _build_relay_service()
 
 
+def get_p1_ticket_service() -> P1TicketService:
+    """P1 直传票据服务。
+
+    刻意不做进程级缓存：构造只是两次字符串处理的开销，而缓存会让"配置改了
+    但进程不重启"变成一类难以复现的现场问题（密钥轮换时必须立刻生效）。
+    """
+    return P1TicketService(
+        settings.LOG_COLLECT_P1_TICKET_SECRET,
+        ttl_seconds=settings.LOG_COLLECT_P1_TICKET_TTL_HOURS * 3600,
+    )
+
+
 # task → task_id：优雅退出时必须知道该把哪些「在飞」代传交还给下一个实例。
 _running_relays: dict[asyncio.Task, UUID] = {}
 
@@ -207,6 +224,7 @@ async def create_task(
     payload: LogCollectTaskCreate,
     client_id: str = Depends(get_client_id),
     service: LogCollectService = Depends(get_log_collect_service),
+    tickets: P1TicketService = Depends(get_p1_ticket_service),
 ):
     """创建日志收集任务（同一工单只允许一个活跃任务）。
 
@@ -249,7 +267,188 @@ async def create_task(
             },
             trace_id=task.trace_id,
         )
-    return task
+
+    response = LogCollectTaskResponse.model_validate(task)
+    _attach_p1_ticket(response, tickets)
+    return response
+
+
+def _attach_p1_ticket(response: LogCollectTaskResponse, tickets: P1TicketService) -> None:
+    """给 P1 任务附上直传票据；不满足条件时留空，由调用方决定是否降级。
+
+    为什么不在缺票据时直接改 ``upload_mode``：路径是用户在创建那一刻做出的
+    决策，落库后就不再改写（现有 P1→P2 降级也只在真的失败时发生）。这里只
+    回答"这次能不能带凭据出门"，把降级交给真正会发包的一方。
+
+    票据不进库：它 12 小时就过期，存下来只会让后续读到一张废票。
+    """
+    if response.upload_mode != "acli_direct":
+        return
+    filename = archive_filename_for(response.case_id)
+    try:
+        response.p1_ticket = tickets.issue(response.case_id, filename)
+        response.p1_ticket_expires_at = tickets.verify(
+            response.p1_ticket, filename=filename
+        ).expires_at
+    except P1TicketError as exc:
+        # 未配置密钥 / 输入异常都不阻断建任务：任务仍可走 P2。
+        # 但必须在日志里说清是哪一类，否则 P1 全量 401 时会显得毫无征兆。
+        logger.warning(
+            "P1 票据签发失败 case=%s reason=%s（本次直传将不可用，应走 P2）",
+            response.case_id,
+            exc.code,
+        )
+        response.p1_ticket = None
+        response.p1_ticket_expires_at = None
+
+
+# 归档件的 mtime 允许比任务创建时间早多久：5888 与平台未必严格对时，
+# 而"包在任务创建之前就存在"才是要拦的错配（历史同名包被当成本次结果）。
+P1_ARCHIVE_LOOKBACK_SECONDS = 300
+
+
+def _judge_p1_archive(
+    task,
+    archive: dict,
+    expected_size: int | None,
+) -> tuple[bool, str, int | None, datetime | None]:
+    """判定 P1 归档是否可信，返回 (是否通过, 原因, 实际大小, 归档时间)。
+
+    判据刻意只用 O(1) 可得的落盘事实：P1 链路上平台没有源包副本，重算 sha256
+    既拿不到源端基准、又会让 5888 在读大包时卡住别的上传。因此用
+    「存在 + 大小一致 + 不是历史遗留」三条，足以拦住截断上传与错包；
+    更弱的完整性只能靠 P2（或重新采集）。
+    """
+    if not archive.get("found"):
+        return False, "archive_missing", None, None
+
+    archived_size = archive.get("size")
+    if not isinstance(archived_size, int) or archived_size <= 0:
+        return False, "archive_size_invalid", None, None
+    if expected_size is not None and archived_size != expected_size:
+        return False, "size_mismatch", archived_size, None
+
+    mtime = archive.get("mtime")
+    archived_at: datetime | None = None
+    if isinstance(mtime, (int, float)):
+        archived_at = datetime.fromtimestamp(int(mtime), tz=timezone.utc)
+
+    created_at = task.created_at
+    if created_at is not None:
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if archived_at is not None and archived_at < created_at - timedelta(
+            seconds=P1_ARCHIVE_LOOKBACK_SECONDS
+        ):
+            return False, "stale_archive", archived_size, archived_at
+
+    return True, "verified", archived_size, archived_at
+
+
+@router.post("/{task_id}/verify-archive", response_model=P1ArchiveVerifyResponse)
+async def verify_p1_archive(
+    task_id: UUID,
+    payload: P1ArchiveVerifyRequest,
+    service: LogCollectService = Depends(get_log_collect_service),
+    tickets: P1TicketService = Depends(get_p1_ticket_service),
+) -> P1ArchiveVerifyResponse:
+    """核验 P1 直传是否真的落到了日志服务器。
+
+    为什么必须存在：P1 的成功判据此前完全由 acli 单方面宣告
+    （``upload_state=成功``），而平台连包都不留。一旦节点侧判错，就会出现
+    "平台显示已交付、日志服务器上没有包，且节点已自动删包"这种不可恢复状态。
+
+    这里只对 ``acli_direct`` 生效：P2 在分片合并阶段已有 sha256 全链路校验，
+    用更弱的判据覆盖更强的结论只会制造假阳性。
+    """
+    try:
+        task = await service.get_task(task_id)
+    except TaskNotFoundError as exc:
+        raise _problem(TaskNotFoundError.code, "Task not found") from exc
+
+    if task.upload_mode != "acli_direct":
+        raise _problem(
+            "LC-TRANSFER-003",
+            "只有 P1 直传任务需要归档核验：P2 在合并阶段已做过 sha256 校验",
+        )
+    if not tickets.enabled:
+        raise _problem(
+            "LC-TRANSFER-007",
+            "平台未配置 P1 票据密钥，无法向日志服务器核验归档",
+        )
+
+    filename = archive_filename_for(task.case_id)
+    expected_size = payload.archive_size if payload.archive_size is not None else task.archive_size
+
+    client = SangforRelayClient(
+        settings.LOG_COLLECT_RELAY_URL,
+        token=settings.LOG_COLLECT_RELAY_TOKEN,
+    )
+    # 复核用的票据现签现用：不复用建任务时下发的那张，避免"前端拿到的票过期
+    # 导致核验也一并失败"这种把两个环节耦合起来的故障模式。
+    ticket = tickets.issue(task.case_id, filename)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as http:
+            archive = await client.archive_status(http, filename, ticket=ticket)
+    except httpx.HTTPError as exc:
+        logger.warning("P1 归档查询失败 task=%s: %s", task_id, exc)
+        raise _problem("LC-TRANSFER-007", f"查询日志服务器归档失败：{exc}") from exc
+
+    verified, reason, archived_size, archived_at = _judge_p1_archive(
+        task, archive, expected_size
+    )
+
+    checked_at = datetime.now(timezone.utc)
+    detail = {
+        "p1_archive_check": {
+            "verified": verified,
+            "reason": reason,
+            "filename": filename,
+            "stored_name": archive.get("stored_name"),
+            "expected_size": expected_size,
+            "archived_size": archived_size,
+            "checked_at": checked_at.isoformat(),
+        },
+        "delivery_evidence": "archive_verified" if verified else "archive_unverified",
+        "delivery_evidence_note": (
+            "P1 直传：已由日志服务器按产物名回查归档件，大小与任务记录一致"
+            if verified
+            else f"P1 直传：日志服务器归档核验未通过（{reason}）；"
+            "节点侧插件在上传成功后会自删压缩包，此时通常无法补交付"
+        ),
+    }
+    patch = LogCollectTaskPatch(
+        delivery_status="delivered" if verified else "failed",
+        delivery_error=None if verified else f"P1 归档核验未通过：{reason}",
+        delivery_finished_at=checked_at,
+        detail=detail,
+    )
+    if not verified:
+        patch.error_code = "LC-TRANSFER-007"
+        patch.error_message = f"P1 归档核验未通过：{reason}"
+
+    await service.update_task(task_id, patch)
+
+    logger.info(
+        "P1 归档核验 task=%s verified=%s reason=%s expected=%s archived=%s",
+        task_id,
+        verified,
+        reason,
+        expected_size,
+        archived_size,
+    )
+
+    return P1ArchiveVerifyResponse(
+        task_id=task_id,
+        verified=verified,
+        reason=reason,
+        filename=filename,
+        expected_size=expected_size,
+        archived_size=archived_size,
+        archived_at=archived_at,
+        target_path=archive.get("target_path"),
+        detail=detail,
+    )
 
 
 @router.get("/artifacts")

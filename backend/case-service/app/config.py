@@ -56,6 +56,20 @@ class Settings(BaseSettings):
     # 「进程已死但没人写终态」的判定窗口。默认 120s 对应 30s 心跳。
     LOG_COLLECT_RELAY_STALE_SECONDS: int = 120
 
+    # P1 直传票据（2026-11-03）：5888 启用 ACLI_UPLOAD_TOKEN 后，节点 acli 的
+    # 直传（P1）因为没有认证头而被 401 全量打回。acli 1.0.0 起支持
+    # `-L|--url-header`，可由 bridge 注入请求头，所以平台改为签发 per-task
+    # 短期票据，5888 只验签、不回查平台。
+    #
+    # 留空 = 票据能力未启用：P1 必须自动降级为 P2，**不能**把无凭据的直传放出去
+    # （那等于让 5888 再吃一次 401，用户看到的是"上传失败"）。
+    # 与 5888 的 ACLI_P1_TICKET_SECRET 必须是同一个值；切换顺序：
+    # 先在两处都配上 → 再让前端/ bridge 开始下发票据，反过来只是继续走旧路径。
+    LOG_COLLECT_P1_TICKET_SECRET: str = ""
+    # 票据有效期要盖住「采集 30 分钟 + 上传 2 小时」的最坏情况，同时短到
+    # 泄露后无法长期复用。12 小时与 P1 采集窗口同量级。
+    LOG_COLLECT_P1_TICKET_TTL_HOURS: int = 12
+
     # DSH 诊断会话归档：只读挂载 DSH 容器内 $DSH_HOME/sessions 的副本。
     # 目录不存在时（未部署 DSH / 未配挂载）静默跳过，不能让工单详情接口因此 500。
     DSH_SESSIONS_DIR: str = "/var/lib/hci/dsh-sessions"

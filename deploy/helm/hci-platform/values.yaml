@@ -709,6 +709,9 @@ secrets:
   # 5888 日志服务器上传鉴权（对应 5888 的 ACLI_UPLOAD_TOKEN）。
   # 留空 = 对方未启用鉴权，Secret 不注入该键，case-service 不发认证头。
   logCollectRelayToken: ""
+  # P1 直传票据密钥（对应 5888 的 ACLI_P1_TICKET_SECRET），建议 64 位十六进制。
+  # 留空 = 不启用票据能力：P1 会整体降级为 P2 平台中转。
+  p1TicketSecret: ""
   # auth-service RS256 固定签名私钥（Base64(PEM) 单行，避免多行 PEM 被 values 合并截断）。
   # 为空时 auth-service 用启动期临时密钥（仅 dev/test，重启即失效→JWKS 变更→全员掉线）。
   # staging/prod 必须注入，并配合 authService.requirePersistentKey=true：缺失则 auth-service 拒绝启动。
