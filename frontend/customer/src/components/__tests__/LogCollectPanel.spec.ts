@@ -1323,6 +1323,38 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  /**
+   * 并发准入（2026-11-03 补齐）：
+   * 同机多个交付作业叠加占盘时，处置动作是"等其它任务完成"，不是"清盘"。
+   * 两者若共用一套文案，用户会反复清理一个清不出空间的目录。
+   */
+  it('交付失败原因是并发容量不足时给出等待指引（LC-TRANSFER-009）', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          upload_mode: 'bridge_relay',
+          delivery_status: 'failed',
+          error_code: 'LC-TRANSFER-009',
+          // 不提供 error_message，验证 009 分支自己的兜底文案
+          error_message: '',
+        } as Partial<LogCollectTask>),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('其它交付任务在占用本地空间')
+    expect(text).toContain('等待其完成')
+    expect(text).toContain('无需重新采集')
+    // 不能退化成 008 的清盘指引
+    expect(text).not.toContain('请清理临时目录')
+    wrapper.unmount()
+  })
+
   it('结果态点「重新收集」回到表单，并保留重新收集入口', async () => {
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [taskFixture()] })
 

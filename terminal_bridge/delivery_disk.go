@@ -101,6 +101,36 @@ func precheckDisk(localPath string, sourceSize, existing int64) diskPrecheck {
 	return diskPrecheck{Need: need, Free: free, Probed: true, OK: free >= need}
 }
 
+// admissionVerdict 是并发准入的结论：在单任务预检之上叠加"同盘其它作业还要占的字节"。
+type admissionVerdict struct {
+	diskPrecheck
+	// Reserved 是其它进行中作业预计还要写入的字节数。
+	Reserved int64
+	// Concurrent 表示失败只因叠加了其它作业（单任务本来能通过）。
+	// 用于区分 008（清盘）与 009（等其它作业完成），两者处置动作不同。
+	Concurrent bool
+}
+
+// admissionCheck 在单任务预检的基础上叠加 reserved 再做判定。
+//
+// 第一性原理：客户机的盘是共享资源，一次交付能不能写成，
+// 取决于"这块盘上所有进行中交付的未落地字节之和"，而不是只看自己。
+// 只做单任务预检时，两个 20 GiB 作业各自都"够"，一起写就满了——
+// 那时失败点已经推后到 write() 的 ENOSPC，用户又回到"拉了 20 分钟才失败"。
+func admissionCheck(localPath string, sourceSize, existing, reserved int64) admissionVerdict {
+	base := precheckDisk(localPath, sourceSize, existing)
+	verdict := admissionVerdict{diskPrecheck: base, Reserved: reserved}
+	if reserved <= 0 || !base.Probed || !base.OK {
+		// 单任务就不够（或探测不可用）时，结论与单任务预检一致，
+		// 不能把"本来就没空间"错报成"并发占满"。
+		return verdict
+	}
+	need := base.Need + reserved
+	verdict.diskPrecheck = diskPrecheck{Need: need, Free: base.Free, Probed: true, OK: base.Free >= need}
+	verdict.Concurrent = !verdict.OK
+	return verdict
+}
+
 // isLocalDiskFull 识别"本地盘写满"。
 //
 // 为什么不能只比字符串：Windows 返回 *os.PathError 包着 syscall.Errno(112)，
@@ -173,16 +203,51 @@ func isDeliveryDiskFull(err error) bool {
 	return errors.As(err, &target)
 }
 
+// deliveryAdmissionError 表示并发准入失败：本地空间被其它交付作业占着。
+//
+// 与 deliveryDiskFullError 分开的理由：两者对用户的处置动作完全不同——
+// 008 要用户清目录，009 要用户等其它作业完成。合并成一个类型会让前端
+// 只能回显一句"空间不足"，用户清完盘再传仍然失败。
+type deliveryAdmissionError struct {
+	// Need 是本次作业需要的空间（含余量）。
+	Need int64
+	// Free 是探测到的可用空间。
+	Free int64
+	// Reserved 是其它进行中作业预计还要写入的字节数。
+	Reserved int64
+	// LocalPath 是本地副本路径，便于用户与运维定位目录。
+	LocalPath string
+}
+
+func (e *deliveryAdmissionError) Error() string {
+	return fmt.Sprintf(
+		"客户机交付并发容量不足：还有其它交付任务未完成，预计还需占用 %s；"+
+			"本次还需 %s，目标目录当前可用 %s（%s）；"+
+			"请等待其它任务完成后再点「上传到平台」重试，无需重新采集",
+		formatBytesForLog(e.Reserved), formatBytesForLog(e.Need),
+		formatBytesForLog(e.Free), e.LocalPath,
+	)
+}
+
+// isDeliveryAdmission 用 errors.As 穿透包装。
+func isDeliveryAdmission(err error) bool {
+	var target *deliveryAdmissionError
+	return errors.As(err, &target)
+}
+
 // deliveryErrorCode 把交付错误映射成平台能落库、前端能分支的错误码。
 //
-// 目前只有磁盘满需要专属码：其余失败（网络/平台/凭据）已有各自的语义与文案，
-// 强行给它们编新码只会让码表膨胀而无人使用。
+// 只有磁盘满与并发准入需要专属码：其余失败（网络/平台/凭据）已有各自的
+// 语义与文案，强行给它们编新码只会让码表膨胀而无人使用。
 func deliveryErrorCode(err error) string {
 	if err == nil {
 		return ""
 	}
 	if isDeliveryDiskFull(err) {
 		return ErrTransferLocalDiskFull
+	}
+	if isDeliveryAdmission(err) {
+		return ErrTransferAdmissionExceeded
 	}
 	return ""
 }

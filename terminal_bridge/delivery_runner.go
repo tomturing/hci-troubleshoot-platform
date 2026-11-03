@@ -253,6 +253,12 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	if isDeliveryTransientError(err) {
 		budget = maxDeliveryTransientAttempts
 	}
+	// 磁盘满与并发容量不足是"重试不会变好"的两类：清盘要人做，
+	// 等别的作业完成按分钟计，5 次秒级退避只会在 30 秒内把同样的失败
+	// 重放 5 遍（2026-11-03 现场正是 33 秒空转），用户还没看清提示就已终态。
+	if isDeliveryDiskFull(err) || isDeliveryAdmission(err) {
+		budget = 1
+	}
 	r.mu.Lock()
 	if err != nil {
 		job.Attempt++
@@ -658,6 +664,37 @@ func (j *deliveryJob) startedAt() (time.Time, bool) {
 }
 
 // pull 把包从 HCI 拉到本地；断点依据是本地文件大小（tail -c +N）。
+// pendingLocalBytes 汇总"同目录其它进行中作业还没落地的字节"。
+//
+// 只算同目录：不同卷的作业互不挤占，算进来会凭空放大需求。
+// 不算终态作业：副本要么已删（交付成功），要么不再增长（失败终态）。
+// SourceSize<=0 的作业无法估算，按 0 处理——宁可少算（放行），
+// 也不要把"未知"当成"已占满"，误拦一次本来能完成的交付。
+func (r *deliveryRunner) pendingLocalBytes(excludeJobID, dir string) int64 {
+	if dir == "" {
+		return 0
+	}
+	cleaned := filepath.Clean(dir)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int64
+	for id, other := range r.jobs {
+		if other == nil || id == excludeJobID || other.Phase.terminal() {
+			continue
+		}
+		if other.SourceSize <= 0 || other.LocalPath == "" {
+			continue
+		}
+		if filepath.Clean(filepath.Dir(other.LocalPath)) != cleaned {
+			continue
+		}
+		if remaining := other.SourceSize - other.PulledBytes; remaining > 0 {
+			total += remaining
+		}
+	}
+	return total
+}
+
 func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *deliveryJob) error {
 	if strings.TrimSpace(job.SourcePath) == "" {
 		return fmt.Errorf("缺少源包路径，无法拉取")
@@ -697,15 +734,26 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 				existing = info.Size()
 			}
 			if need := job.SourceSize - existing; need > 0 {
-				check := precheckDisk(job.LocalPath, job.SourceSize, existing)
+				// 同盘还可能躺着别的交付作业：把它们的未落地字节叠加进来，
+				// 否则两个 20 GiB 作业各自预检都"够"，一起写就把盘写满。
+				reserved := r.pendingLocalBytes(job.JobID, dir)
+				verdict := admissionCheck(job.LocalPath, job.SourceSize, existing, reserved)
 				blog("INFO", "delivery.disk_precheck", "交付前磁盘预检", "", job.CaseID, job.NodeIP, "", map[string]any{
 					"job_id": job.JobID, "local_path": job.LocalPath, "dir": dir,
-					"need_bytes": check.Need, "free_bytes": check.Free,
-					"probed": check.Probed, "ok": check.OK,
+					"need_bytes": verdict.Need, "free_bytes": verdict.Free,
+					"reserved_bytes": reserved, "probed": verdict.Probed, "ok": verdict.OK,
 				})
-				if !check.OK {
+				if !verdict.OK {
+					if verdict.Concurrent {
+						// 单任务本来能通过，是别的作业把空间占走了：
+						// 让用户等，而不是让他去清一个清不出来的盘。
+						return &deliveryAdmissionError{
+							Need: verdict.Need - verdict.Reserved, Free: verdict.Free,
+							Reserved: verdict.Reserved, LocalPath: job.LocalPath,
+						}
+					}
 					return &deliveryDiskFullError{
-						Written: existing, Need: check.Need, Free: check.Free, LocalPath: job.LocalPath,
+						Written: existing, Need: verdict.Need, Free: verdict.Free, LocalPath: job.LocalPath,
 					}
 				}
 			}

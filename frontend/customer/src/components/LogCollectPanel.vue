@@ -961,11 +961,15 @@ const resultArchiveText = computed(() => {
     return `归档失败：${formatFailureReason(task, '平台未记录原因（可在桥日志中按工单号检索）')}`
   }
   if (task.delivery_status === 'failed') {
-    // 磁盘满是唯一能给出"清哪个目录、还差多少"的交付失败：原因由 bridge 生成
+    // 磁盘满与并发容量不足都能给出可操作原因：原因由 bridge 生成
     // （含 need/free/path），前端只转述，不自己编数字。
     // 历史文案只有一句"交付失败"，用户照着去清盘却不知道清哪里（2026-11-03 Q2026110300988）。
     if (task.error_code === 'LC-TRANSFER-008') {
       return `交付失败：${formatFailureReason(task, '客户机磁盘空间不足，请清理临时目录后重试，无需重新采集')}`
+    }
+    if (task.error_code === 'LC-TRANSFER-009') {
+      // 与 008 的处置动作不同：让用户等其它交付任务结束，而不是去清一个清不出来的盘。
+      return `交付失败：${formatFailureReason(task, '客户机还有其它交付任务在占用本地空间，请等待其完成后再重试，无需重新采集')}`
     }
     return '交付失败（可点「上传到平台」重传，无需重新采集）'
   }
@@ -3394,7 +3398,7 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
     }
     if (isTerminalDeliveryFailure(view.phase)) {
       // 与节点侧失败同一套约定：先把规范码留住，再由 catch 统一写库。
-      // 磁盘满是唯一需要前端分支提示的交付失败（LC-TRANSFER-008），
+      // 磁盘满/并发容量不足需要前端分支提示（LC-TRANSFER-008/009），
       // 只回显整句 last_error 会让平台记录里永远没有可统计的码。
       if (view.error_code) lastNodeErrorCode = String(view.error_code)
       throw new Error(view.last_error || '交付失败（作业进度已保留，可重试）')
