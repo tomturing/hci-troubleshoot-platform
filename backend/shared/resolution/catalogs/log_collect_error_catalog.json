@@ -479,6 +479,17 @@
       "ops_hint": "P2 中转副本默认位于 %TEMP%/hci-log-collect（Windows: C:\\Users\\<user>\\AppData\\Local\\Temp\\hci-log-collect）。清理历史 zip 后重试；bridge 侧 delivery.job_finished 会带 need/free/path。"
     },
     {
+      "code": "LC-TRANSFER-009",
+      "layer": "TRANSFER",
+      "stage": "package",
+      "title_zh": "客户机交付并发容量不足",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 507,
+      "user_hint": "客户机上还有其它交付任务未完成，本地临时空间不足以同时容纳本次交付；请等待其它任务完成后再重试，或分批交付，无需重新采集。",
+      "ops_hint": "并发准入：同目录进行中作业未落地字节之和 + 本次需求 > 可用空间。可调低 HCI_BRIDGE_DELIVERY_CONCURRENCY 或清理 %TEMP%/hci-log-collect；delivery.disk_precheck 事件带 reserved_bytes。"
+    },
+    {
       "code": "LC-PLATFORM-001",
       "layer": "PLATFORM",
       "stage": "api",

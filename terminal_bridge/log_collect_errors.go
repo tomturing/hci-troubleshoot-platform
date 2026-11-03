@@ -74,6 +74,11 @@ const (
 	// 也要与 ENV-004（节点侧 /sf/data/local 不足）区分：那是 HCI 节点，这是客户机。
 	// 码号避让：LC-TRANSFER-007 已被 main 的 ErrTransferArchiveUnverified 占用。
 	ErrTransferLocalDiskFull = "LC-TRANSFER-008"
+	// 并发准入：同盘还有其它交付作业未落地，叠加后本地空间不够本次交付。
+	// 与 008 的区别：008 是"这台机器本身就没空间了"，清盘即可；
+	// 009 是"空间被别的交付作业占着"，等它完成即可，清盘往往无济于事——
+	// 混用会把用户引向错误的处置动作（2026-11-03 并发叠加场景）。
+	ErrTransferAdmissionExceeded = "LC-TRANSFER-009"
 	// P1 直传后按产物名回查 5888 归档未通过（不存在/大小不一致/时间窗外）。
 	// 与 001/006 的区别：001 是包没生成，006 是探测不了，本码是包生成了、
 	// 也（据 acli 说）传完了，但落盘侧没有一致的归档件。
@@ -153,6 +158,8 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrTransferArchiveProbe:   {"TRANSFER", "customer", "true", "package"},
 	// 磁盘满不可自动重试：清盘是人做的事，重试只会在同一位置再失败一次。
 	ErrTransferLocalDiskFull: {"TRANSFER", "customer", "manual", "package"},
+	// 等其它作业完成即可，不是人手工清盘能解决的；重试同样不会自己变好。
+	ErrTransferAdmissionExceeded: {"TRANSFER", "customer", "manual", "package"},
 	// 不可自动重试：P1 成功后插件已删源包，重试没有输入。
 	ErrTransferArchiveUnverified: {"TRANSFER", "customer", "false", "upload"},
 

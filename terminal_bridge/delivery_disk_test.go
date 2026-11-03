@@ -165,3 +165,98 @@ func TestProgressStepAdaptsToTotal(t *testing.T) {
 		t.Fatalf("未知总量应取上限，实际 %d", got)
 	}
 }
+
+// ── 并发准入（2026-11-03 补齐）─────────────────────────────────────────────
+//
+// 现场形态：一台客户机上同时有多个交付作业，各自预检都"够"，
+// 于是都放行、一起把 %TEMP%/hci-log-collect 写满。单任务预检看不到
+// "别人还要占多少"，必须把同盘进行中作业的未落地字节叠加进来。
+
+func TestAdmissionCheckStacksReservedBytes(t *testing.T) {
+	const total = int64(100 << 20)
+	local := filepath.Join(t.TempDir(), "task.zip")
+	// 单任务：剩余 100 MiB + 64 MiB 余量 = 164 MiB；可用 200 MiB，本来能过。
+	withDiskFree(t, 200<<20, true)
+	if v := admissionCheck(local, total, 0, 0); !v.OK || v.Concurrent {
+		t.Fatalf("无并发时应通过: %+v", v)
+	}
+	// 另一个作业还要占 60 MiB：需要 224 MiB > 200 MiB，必须拒绝且归因为并发。
+	v := admissionCheck(local, total, 0, 60<<20)
+	if v.OK {
+		t.Fatal("叠加占用后空间不足，必须拒绝")
+	}
+	if !v.Concurrent {
+		t.Fatal("单任务本来能过、只因叠加而失败，必须标记 Concurrent")
+	}
+	if want := diskNeed(total) + 60<<20; v.Need != want {
+		t.Fatalf("需求应包含预留: got=%d want=%d", v.Need, want)
+	}
+	if v.Reserved != 60<<20 {
+		t.Fatalf("预留字节未回传: %d", v.Reserved)
+	}
+}
+
+func TestAdmissionCheckKeepsSingleJobVerdictWhenAlreadyShort(t *testing.T) {
+	// 单任务本身就不够（现场只剩 8.9 MiB）：即使有并发占用，
+	// 也不能说成"并发导致"——否则用户被告知去等，等完依然失败。
+	withDiskFree(t, 9<<20, true)
+	check := admissionCheck(filepath.Join(t.TempDir(), "t.zip"), 92325257, 0, 1<<20)
+	if check.OK {
+		t.Fatal("空间不足必须拒绝")
+	}
+	if check.Concurrent {
+		t.Fatal("单任务本身就不够时不能归因为并发")
+	}
+}
+
+func TestAdmissionCheckPassesWhenProbeUnavailable(t *testing.T) {
+	withDiskFree(t, 0, false)
+	v := admissionCheck(filepath.Join(t.TempDir(), "t.zip"), 92325257, 0, 10<<30)
+	if !v.OK || v.Concurrent {
+		t.Fatalf("探测不可用必须放行，且不得归因为并发: %+v", v)
+	}
+}
+
+func TestDeliveryAdmissionErrorMapsToCode(t *testing.T) {
+	failure := &deliveryAdmissionError{
+		Need: 100 << 20, Free: 90 << 20, Reserved: 50 << 20,
+		LocalPath: `C:\Users\luo\AppData\Local\Temp\hci-log-collect\x.zip`,
+	}
+	if !isDeliveryAdmission(failure) {
+		t.Fatal("isDeliveryAdmission 应识别自身类型")
+	}
+	if got := deliveryErrorCode(failure); got != ErrTransferAdmissionExceeded {
+		t.Fatalf("并发准入必须映射成 %s，实际 %q", ErrTransferAdmissionExceeded, got)
+	}
+	message := failure.Error()
+	for _, fragment := range []string{"并发", "等待其它任务", "无需重新采集", "50.0 MiB"} {
+		if !strings.Contains(message, fragment) {
+			t.Fatalf("文案缺少 %q: %s", fragment, message)
+		}
+	}
+}
+
+func TestPendingLocalBytesCountsOnlyActiveSameDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "hci-log-collect")
+	elsewhere := filepath.Join(t.TempDir(), "other")
+	r := &deliveryRunner{jobs: map[string]*deliveryJob{
+		// 自己不算
+		"self": {JobID: "self", Phase: phasePulling, SourceSize: 100, PulledBytes: 10, LocalPath: filepath.Join(dir, "self.zip")},
+		// 同目录进行中：80-20=60
+		"other": {JobID: "other", Phase: phasePulling, SourceSize: 80, PulledBytes: 20, LocalPath: filepath.Join(dir, "other.zip")},
+		// 终态不算
+		"done": {JobID: "done", Phase: phaseDone, SourceSize: 70, LocalPath: filepath.Join(dir, "done.zip")},
+		// 大小未知不估算
+		"unknown": {JobID: "unknown", Phase: phasePulling, SourceSize: 0, LocalPath: filepath.Join(dir, "u.zip")},
+		// 不同目录不算
+		"elsewhere": {JobID: "elsewhere", Phase: phasePulling, SourceSize: 60, LocalPath: filepath.Join(elsewhere, "x.zip")},
+	}}
+	if got, want := r.pendingLocalBytes("self", dir), int64(60); got != want {
+		t.Fatalf("只应统计同目录进行中作业的未落地字节: got=%d want=%d", got, want)
+	}
+	// 已有部分落地时按剩余算，不按总量算（否则会把已写的字节重复预留一次）。
+	r.jobs["other"].PulledBytes = 80
+	if got := r.pendingLocalBytes("self", dir); got != 0 {
+		t.Fatalf("已落地完的作业不应再预留: got=%d", got)
+	}
+}
