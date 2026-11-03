@@ -937,7 +937,15 @@ const resultArchiveText = computed(() => {
   if (task.relay_status === 'failed') {
     return `归档失败：${formatFailureReason(task, '平台未记录原因（可在桥日志中按工单号检索）')}`
   }
-  if (task.delivery_status === 'failed') return '交付失败（可点「上传到平台」重传，无需重新采集）'
+  if (task.delivery_status === 'failed') {
+    // 磁盘满是唯一能给出"清哪个目录、还差多少"的交付失败：原因由 bridge 生成
+    // （含 need/free/path），前端只转述，不自己编数字。
+    // 历史文案只有一句"交付失败"，用户照着去清盘却不知道清哪里（2026-11-03 Q2026110300988）。
+    if (task.error_code === 'LC-TRANSFER-007') {
+      return `交付失败：${formatFailureReason(task, '客户机磁盘空间不足，请清理临时目录后重试，无需重新采集')}`
+    }
+    return '交付失败（可点「上传到平台」重传，无需重新采集）'
+  }
   // queued = 平台已登记一次交付尝试但没走到终态（提交阶段中断/失败）。
   // 不显式化的话，这里只会显示"采集完成，尚未交付"，用户无从知道已经试过一次、
   // 试到哪一步了（Q2026102701193 现场库里就有一条 queued 卡了两天）。
@@ -2836,6 +2844,9 @@ async function adoptNodeTask() {
 
   if (nodeAdoptMode.value === 'deliver') {
     stage.value = 'pulling'
+    // 上一次失败的码不能带进本次重试：否则"第一次磁盘满、第二次网络断"
+    // 会把旧码写到新一次失败上，用户照着磁盘指引去清盘，问题却在网络上。
+    lastNodeErrorCode = ''
     ElMessage.success('正在经平台中转上传节点上已有的压缩包（不会重新采集）')
     try {
       await uploadExistingPackage(ws, task, token)
@@ -2858,8 +2869,12 @@ async function adoptNodeTask() {
       const fresh = await logCollectApi.getTask(task.task_id).catch(() => null)
       const alreadyRecorded = Boolean(String(fresh?.error_message ?? '').trim())
       const failurePatch: Partial<LogCollectTask> = { delivery_status: 'failed' }
+      // 码与文案分开处理：码是结构化归因，每次终态失败都应以最新一次为准
+      // （否则第一次的码会永久粘住，用户第二次遇到的磁盘满反而看不到）；
+      // 只有 error_message 需要"平台已记录则不覆盖"的保护。
+      const failureCode = lastNodeErrorCode || platformErrorCode(error) || undefined
+      if (failureCode) failurePatch.error_code = failureCode
       if (!alreadyRecorded) {
-        failurePatch.error_code = lastNodeErrorCode || platformErrorCode(error) || undefined
         failurePatch.error_message = errorMessage.value.slice(0, 2000)
       }
       await logCollectApi.patchTask(task.task_id, failurePatch).catch(() => undefined)
@@ -3235,6 +3250,15 @@ interface DeliveryJobView {
   part_count?: number
   needs_reauth?: boolean
   last_error?: string
+  /**
+   * bridge 给出的结构化失败归因（如 LC-TRANSFER-007 客户机磁盘满）。
+   *
+   * 必须单独传：last_error 是给人看的整句中文，前端若靠文本匹配来分支，
+   * 文案一改就失效；码才是稳定的契约。
+   */
+  error_code?: string
+  /** 本地中转副本是否已被清理（交付成功后自动删除）。 */
+  local_deleted?: boolean
 }
 
 /**
@@ -3290,6 +3314,10 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
       continue
     }
     if (isTerminalDeliveryFailure(view.phase)) {
+      // 与节点侧失败同一套约定：先把规范码留住，再由 catch 统一写库。
+      // 磁盘满是唯一需要前端分支提示的交付失败（LC-TRANSFER-007），
+      // 只回显整句 last_error 会让平台记录里永远没有可统计的码。
+      if (view.error_code) lastNodeErrorCode = String(view.error_code)
       throw new Error(view.last_error || '交付失败（作业进度已保留，可重试）')
     }
     await sleep(attempt < DELIVERY_POLL_FAST_ROUNDS ? DELIVERY_POLL_FAST_MS : DELIVERY_POLL_SLOW_MS)

@@ -468,6 +468,17 @@
       "ops_hint": "aSV 受限 shell 可能没有 stat（exit 127），必须走 ls -l 兜底；各级 exit/stderr 写入 archive_probe_diag。"
     },
     {
+      "code": "LC-TRANSFER-007",
+      "layer": "TRANSFER",
+      "stage": "package",
+      "title_zh": "客户机磁盘空间不足",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 507,
+      "user_hint": "日志包需要先落到客户机临时目录再上传，当前磁盘可用空间不足；请清理临时副本后重试，无需重新采集。",
+      "ops_hint": "P2 中转副本默认位于 %TEMP%/hci-log-collect（Windows: C:\\Users\\<user>\\AppData\\Local\\Temp\\hci-log-collect）。清理历史 zip 后重试；bridge 侧 delivery.job_finished 会带 need/free/path。"
+    },
+    {
       "code": "LC-PLATFORM-001",
       "layer": "PLATFORM",
       "stage": "api",

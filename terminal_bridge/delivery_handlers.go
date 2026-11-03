@@ -26,6 +26,9 @@ type deliveryJobView struct {
 	Attempt       int    `json:"attempt"`
 	NeedsReauth   bool   `json:"needs_reauth"`
 	LastError     string `json:"last_error"`
+	// ErrorCode 让前端不必解析 LastError 文本就能分支（如 LC-TRANSFER-007 → 磁盘清理指引）。
+	ErrorCode    string `json:"error_code,omitempty"`
+	LocalDeleted bool   `json:"local_deleted,omitempty"`
 	// 完整性结论随作业一起回传：前端据此显示"已校验/未校验"，
 	// 不允许把 unverified 渲染成成功徽标。
 	Integrity     string `json:"integrity,omitempty"`
@@ -43,6 +46,7 @@ func toDeliveryJobView(job *deliveryJob) deliveryJobView {
 		Progress: job.progress(), SourceSize: job.SourceSize, PulledBytes: job.PulledBytes,
 		PartCount: job.PartCount, UploadedParts: len(job.UploadedParts),
 		Attempt: job.Attempt, NeedsReauth: job.NeedsReauth, LastError: job.LastError,
+		ErrorCode: job.LastErrorCode, LocalDeleted: job.LocalDeletedAt != "",
 		Integrity: job.Integrity, IntegrityNote: job.IntegrityNote,
 		SourceSHA256: job.SourceSHA256, LocalSHA256: job.LocalSHA256,
 	}

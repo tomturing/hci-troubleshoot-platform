@@ -136,6 +136,14 @@ type deliveryJob struct {
 	UploadedParts []int  `json:"uploaded_parts"`
 	Attempt       int    `json:"attempt"`
 	LastError     string `json:"last_error"`
+	// LastErrorCode 是失败的结构化归因（如 LC-TRANSFER-007 客户机磁盘满）。
+	//
+	// 为什么不能只靠 LastError 文本：前端要按码决定展示哪条可操作指引，
+	// 而"拉取中断（已拉 N 字节）"这类文本既不稳定也无法分支（2026-11-03 现场）。
+	LastErrorCode string `json:"last_error_code,omitempty"`
+	// LocalDeletedAt 记录本地中转副本被清理的时间（RFC3339）。
+	// 空值表示副本仍在盘上；排障时需要区分"交付成功且已清理"与"从没写下来"。
+	LocalDeletedAt string `json:"local_deleted_at,omitempty"`
 	// NeedsReauth 表示 SSH 凭据或上传令牌已失效，需要前端重新下发后才能继续。
 	// 这是明确承认的边界：凭据不能明文落盘，进程重启后必然要重新认证。
 	NeedsReauth bool `json:"needs_reauth"`
@@ -320,6 +328,40 @@ func (s *deliveryStore) list() []*deliveryJob {
 			continue
 		}
 		if job.Phase.terminal() {
+			continue
+		}
+		jobs = append(jobs, &job)
+	}
+	return jobs
+}
+
+// listAll 扫描目录内所有 job（含终态）。
+//
+// 与 list 的差别：本地副本清理器需要知道"这个 zip 属于哪个已交付/已失败的作业"，
+// 只读非终态会把已完成的引用当成孤儿——虽然清理结果相同，
+// 但 delivered/ttl 的统计会失真，排障时无法解释"这个 GB 级包为什么被删"。
+func (s *deliveryStore) listAll() []*deliveryJob {
+	if !s.enabled() {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil
+	}
+	jobs := make([]*deliveryJob, 0, len(entries))
+	for _, entry := range entries {
+		// .json.tmp 不会被误读：原子写的中间文件不以 .json 结尾。
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(s.dir, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var job deliveryJob
+		if jsonErr := json.Unmarshal(raw, &job); jsonErr != nil {
 			continue
 		}
 		jobs = append(jobs, &job)

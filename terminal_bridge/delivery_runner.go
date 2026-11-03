@@ -121,6 +121,9 @@ func (r *deliveryRunner) start() {
 	if removed := r.store.purgeOlderThan(7 * 24 * time.Hour); removed > 0 {
 		blog("INFO", "delivery.purged", "清理过期交付作业记录", "", "", "", "", map[string]any{"removed": removed})
 	}
+	// 本地中转副本的回收与 job 记录回收是两条独立生命周期：
+	// 记录留 7 天是为了取证，副本留 3 天是为了给重试机会——GB 级副本不能跟着记录一起攒。
+	r.startLocalCopyCleanup()
 }
 
 // enqueue 非阻塞入队；队列满时保持 job 在 store 里等下一轮启动，不丢。
@@ -272,6 +275,7 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	} else {
 		job.Attempt = 0
 		job.LastError = ""
+		job.LastErrorCode = ""
 	}
 	finalPhase := job.Phase
 	finalAttempt := job.Attempt
@@ -357,6 +361,10 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 			return err
 		}
 	}
+
+	// 平台已确认收到完整包（complete 返回 2xx），本地副本再无用途。
+	// 留着只会挤占下一次交付的空间：P2 中转盘就是客户机 C 盘（2026-11-03 Q2026110300988）。
+	r.discardDeliveredCopy(job)
 
 	r.mu.Lock()
 	job.Phase = phaseDone
@@ -678,6 +686,9 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 
 	// 空间预检：12.8 GiB 要完整落地再分片上传，写满一半才失败的话
 	// 用户已经白等 20 分钟，而且报错会伪装成"拉取中断"。
+	//
+	// 判定式必须带余量（见 diskNeed）：写盘期间同盘还要写 job json、日志与
+	// 平台响应体，只按"剩余字节"卡边界会刚好在最后一刻失败。
 	if job.SourceSize > 0 {
 		if dir := filepath.Dir(job.LocalPath); dir != "" {
 			_ = os.MkdirAll(dir, 0o700)
@@ -686,11 +697,16 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 				existing = info.Size()
 			}
 			if need := job.SourceSize - existing; need > 0 {
-				if free := freeDiskBytes(dir); free > 0 && free < need {
-					return fmt.Errorf(
-						"客户机磁盘空间不足：本地副本还需 %d 字节，目标目录可用 %d 字节（%s）",
-						need, free, dir,
-					)
+				check := precheckDisk(job.LocalPath, job.SourceSize, existing)
+				blog("INFO", "delivery.disk_precheck", "交付前磁盘预检", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "local_path": job.LocalPath, "dir": dir,
+					"need_bytes": check.Need, "free_bytes": check.Free,
+					"probed": check.Probed, "ok": check.OK,
+				})
+				if !check.OK {
+					return &deliveryDiskFullError{
+						Written: existing, Need: check.Need, Free: check.Free, LocalPath: job.LocalPath,
+					}
 				}
 			}
 		}
@@ -706,6 +722,30 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 		_ = r.store.save(job)
 	})
 	if err != nil {
+		// 失败时也必须回填真实已写字节：进度上报按块步进（见 progressStep），
+		// 88 MB 的包在 64 MiB 步进下从头到尾一次都不上报，库里 pulled_bytes 恒为 0，
+		// 用户看到"已拉 9.3 MB"、作业记录却写着 0（2026-11-03 Q2026110300988）。
+		r.mu.Lock()
+		job.PulledBytes = written
+		remaining := job.SourceSize - written
+		r.mu.Unlock()
+		_ = r.store.save(job)
+
+		if isLocalDiskFull(err) {
+			// ENOSPC 之后重新探测一次：此刻的可用值才是用户真正需要看到的证据。
+			// 探测失败留 -1（文案显示"未知"），不得伪造成 0。
+			free := int64(-1)
+			if dir := filepath.Dir(job.LocalPath); dir != "" {
+				if probed, ok := probeDisk(dir); ok {
+					free = probed
+				}
+			}
+			return &deliveryDiskFullError{
+				Written: written, Need: diskNeed(remaining),
+				Free: free, LocalPath: job.LocalPath, Cause: err,
+			}
+		}
+
 		wrapped := fmt.Errorf("拉取中断（已拉 %d 字节）: %w", written, err)
 		if errors.Is(err, errPullSizeMismatch) {
 			// 源包字节数变了：继续重试只会重复拉一遍，直接终态等人处理。
