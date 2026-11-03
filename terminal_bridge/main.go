@@ -389,6 +389,16 @@ type InMessage struct {
 	// RemoteURL 在 log_collect 中语义为：probe 时作为被探测的日志服务器地址；
 	// create 时作为 -u 上传目标（仅 http/https，且只认官方日志服务器白名单）。
 	RemoteURL string `json:"remote_url,omitempty"`
+	// UploadTicket 是平台签发的 P1 直传票据（仅创建时下发，短时效、绑定工单）。
+	//
+	// 为什么需要它：5888 启用 ACLI_UPLOAD_TOKEN 后，acli 直传不带任何认证头，
+	// /init_upload 全量 401（2026-11-03 Q2026110300278）。acli 1.0.0 起支持
+	// `-L|--url-header`，因此 bridge 把票据注入成一个**只对第 0 个上传地址生效**
+	// 的请求头，而不改动 acli。
+	//
+	// 为空表示不带凭据：此时应走 P2——不要用空票据去发 P1，那只会换来一次 401
+	// 和一条"直传失败"的假故障。
+	UploadTicket string `json:"upload_ticket,omitempty"`
 
 	// ── bridge_log_token（日志直传凭据）专用字段 ──
 	// 前端向平台换取的短期令牌，只允许写绑定工单的日志；

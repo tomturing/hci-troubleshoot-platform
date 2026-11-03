@@ -136,7 +136,7 @@ type deliveryJob struct {
 	UploadedParts []int  `json:"uploaded_parts"`
 	Attempt       int    `json:"attempt"`
 	LastError     string `json:"last_error"`
-	// LastErrorCode 是失败的结构化归因（如 LC-TRANSFER-007 客户机磁盘满）。
+	// LastErrorCode 是失败的结构化归因（如 LC-TRANSFER-008 客户机磁盘满）。
 	//
 	// 为什么不能只靠 LastError 文本：前端要按码决定展示哪条可操作指引，
 	// 而"拉取中断（已拉 N 字节）"这类文本既不稳定也无法分支（2026-11-03 现场）。

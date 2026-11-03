@@ -70,9 +70,14 @@ const (
 	// 与 001（包确定不存在）严格区分：混用会让平台对着盘上的包报“已被删除”。
 	ErrTransferArchiveProbe = "LC-TRANSFER-006"
 	// 客户机本地盘写满：P2 中转必须先整包落地再分片上传，盘满时一个字节都传不出去。
-	// 必须与 003（分片上传失败）区分：003 重试可能成功，007 重试只会再写满一次；
+	// 必须与 003（分片上传失败）区分：003 重试可能成功，008 重试只会再写满一次；
 	// 也要与 ENV-004（节点侧 /sf/data/local 不足）区分：那是 HCI 节点，这是客户机。
-	ErrTransferLocalDiskFull = "LC-TRANSFER-007"
+	// 码号避让：LC-TRANSFER-007 已被 main 的 ErrTransferArchiveUnverified 占用。
+	ErrTransferLocalDiskFull = "LC-TRANSFER-008"
+	// P1 直传后按产物名回查 5888 归档未通过（不存在/大小不一致/时间窗外）。
+	// 与 001/006 的区别：001 是包没生成，006 是探测不了，本码是包生成了、
+	// 也（据 acli 说）传完了，但落盘侧没有一致的归档件。
+	ErrTransferArchiveUnverified = "LC-TRANSFER-007"
 
 	ErrPlatUnauthorized = "LC-PLATFORM-001"
 	ErrPlatForbidden    = "LC-PLATFORM-002"
@@ -148,6 +153,8 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrTransferArchiveProbe:   {"TRANSFER", "customer", "true", "package"},
 	// 磁盘满不可自动重试：清盘是人做的事，重试只会在同一位置再失败一次。
 	ErrTransferLocalDiskFull: {"TRANSFER", "customer", "manual", "package"},
+	// 不可自动重试：P1 成功后插件已删源包，重试没有输入。
+	ErrTransferArchiveUnverified: {"TRANSFER", "customer", "false", "upload"},
 
 	ErrPlatUnauthorized: {"PLATFORM", "platform", "true", "api"},
 	ErrPlatForbidden:    {"PLATFORM", "platform", "false", "api"},

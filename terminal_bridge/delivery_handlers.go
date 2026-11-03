@@ -26,7 +26,7 @@ type deliveryJobView struct {
 	Attempt       int    `json:"attempt"`
 	NeedsReauth   bool   `json:"needs_reauth"`
 	LastError     string `json:"last_error"`
-	// ErrorCode 让前端不必解析 LastError 文本就能分支（如 LC-TRANSFER-007 → 磁盘清理指引）。
+	// ErrorCode 让前端不必解析 LastError 文本就能分支（如 LC-TRANSFER-008 → 磁盘清理指引）。
 	ErrorCode    string `json:"error_code,omitempty"`
 	LocalDeleted bool   `json:"local_deleted,omitempty"`
 	// 完整性结论随作业一起回传：前端据此显示"已校验/未校验"，

@@ -119,8 +119,29 @@ export interface LogCollectTaskCreate {
     catalog_note?: string
     log_server_reachable?: boolean
     http_code?: number
+    /**
+     * 节点 acli 是否支持注入上传请求头（`-L|--url-header`）。
+     *
+     * 这是 P1 能否带凭据上传的节点侧前提：不支持就只能走 P2。
+     * 判据取 acli help 原文而非版本号——同版本号的不同构建参数集并不一致。
+     */
+    acli_supports_upload_header?: boolean
     note?: string
   }
+}
+
+/** P1 归档核验结论：由平台回查日志服务器得出，不是节点自述。 */
+export interface P1ArchiveVerifyResult {
+  task_id: string
+  verified: boolean
+  /** verified=false 时给出原因：archive_missing / size_mismatch / stale_archive 等 */
+  reason: string
+  filename: string
+  expected_size?: number | null
+  archived_size?: number | null
+  archived_at?: string | null
+  target_path?: string | null
+  detail?: Record<string, unknown>
 }
 
 export interface LogCollectTask {
@@ -151,6 +172,16 @@ export interface LogCollectTask {
   /** 交付状态（与 status 正交）：判断"采完了但没传上去"的唯一权威字段 */
   delivery_status?: DeliveryStatus | null
   delivery_error?: string | null
+  /**
+   * P1 直传票据：只在创建响应里下发，且只在平台已配置票据密钥时存在。
+   *
+   * 它是 per-task 短期凭据，必须透传给 bridge 注入成 acli 的
+   * `-L 0:Authorization:Bearer <ticket>`。为空说明这次直传带不出凭据，
+   * 应当走 P2——不要用空票据去发 P1，那只会换来一次 401。
+   */
+  p1_ticket?: string | null
+  /** 票据过期时间（Unix 秒）；过期后需要重新创建任务才能再走 P1 */
+  p1_ticket_expires_at?: number | null
   relay_chunk_index?: number | null
   relay_chunk_total?: number | null
   relay_restarts: number
@@ -311,6 +342,23 @@ export const logCollectApi = {
 
   async patchTask(taskId: string, patch: Partial<LogCollectTask>): Promise<LogCollectTask> {
     const { data } = await client.patch(`/log-collect/tasks/${taskId}`, patch)
+    return data
+  },
+
+  /**
+   * 核验 P1 直传是否真的落到日志服务器。
+   *
+   * 为什么必须由服务端做：P1 链路上平台没有源包副本，节点报"发送成功"是唯一
+   * 证据；而插件在上传成功后会自删压缩包，一旦判错就永久不可恢复。
+   * 归档件是否存在、多大、什么时候落地，只能在落盘侧回答。
+   */
+  async verifyP1Archive(
+    taskId: string,
+    archiveSize?: number | null,
+  ): Promise<P1ArchiveVerifyResult> {
+    const { data } = await client.post(`/log-collect/tasks/${taskId}/verify-archive`, {
+      archive_size: archiveSize ?? null,
+    })
     return data
   },
 

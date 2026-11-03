@@ -1297,14 +1297,14 @@ describe('LogCollectPanel', () => {
    * 「交付失败（可点「上传到平台」重传）」——用户不知道要清哪台机器的哪个目录。
    * 契约：磁盘满必须把清理路径与所需空间摆到眼前，且明确"不会重新采集"。
    */
-  it('交付失败原因是客户机磁盘满时展示清理指引（LC-TRANSFER-007）', async () => {
+  it('交付失败原因是客户机磁盘满时展示清理指引（LC-TRANSFER-008）', async () => {
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({
       total: 1,
       items: [
         taskFixture({
           upload_mode: 'bridge_relay',
           delivery_status: 'failed',
-          error_code: 'LC-TRANSFER-007',
+          error_code: 'LC-TRANSFER-008',
           error_message:
             '客户机磁盘空间不足：本地副本还需 92.1 MiB，目标目录当前可用 8.9 MiB（C:\\Users\\luo\\AppData\\Local\\Temp\\hci-log-collect\\c4b64715.zip），已写入 8.9 MiB；请清理该目录后点「上传到平台」重试，无需重新采集',
         } as Partial<LogCollectTask>),
@@ -1741,11 +1741,11 @@ describe('LogCollectPanel', () => {
 
   /**
    * 现场回归（工单 Q2026110300988，2026-11-03）：
-   * 交付作业失败时 bridge 已带回规范码（LC-TRANSFER-007 客户机磁盘满），
+   * 交付作业失败时 bridge 已带回规范码（LC-TRANSFER-008 客户机磁盘满），
    * 但前端只把整句中文写库、码丢失，平台侧无法统计与分支展示。
    * 契约：终态失败必须把 view.error_code 落库；且重试时不能沿用上一次的旧码。
    */
-  it('交付作业失败时把桥侧错误码落库（磁盘满 LC-TRANSFER-007）', async () => {
+  it('交付作业失败时把桥侧错误码落库（磁盘满 LC-TRANSFER-008）', async () => {
     mockStore.sshConnectionState = 'connected'
     mockStore.sshCurrentConfig = { host: '192.19.4.248', port: 22, username: 'admin' }
     const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026110300988.zip'
@@ -1844,7 +1844,7 @@ describe('LogCollectPanel', () => {
         log_data: {
           job_id: 'dj-task-disk-full',
           phase: 'failed',
-          error_code: 'LC-TRANSFER-007',
+          error_code: 'LC-TRANSFER-008',
           last_error:
             '客户机磁盘空间不足：本地副本还需 92.1 MiB，目标目录当前可用 8.9 MiB（C:\\Users\\luo\\AppData\\Local\\Temp\\hci-log-collect\\x.zip），已写入 8.9 MiB；请清理该目录后点「上传到平台」重试，无需重新采集',
         },
@@ -1862,7 +1862,7 @@ describe('LogCollectPanel', () => {
     const failure = vi
       .mocked(logCollectApi.patchTask)
       .mock.calls.find(([, body]: any) => body?.delivery_status === 'failed')!
-    expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-007' })
+    expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-008' })
     expect(String((failure[1] as any).error_message)).toContain('客户机磁盘空间不足')
     wrapper.unmount()
   })
