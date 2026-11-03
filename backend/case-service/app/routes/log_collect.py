@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
@@ -38,7 +38,6 @@ from ..schemas.log_collect import (
 from ..schemas.log_collect_errors import build_problem
 from ..security.auth import get_client_id, verify_case_exists
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
-from ..services.p1_ticket import P1TicketError, P1TicketService, archive_filename_for
 from ..services.log_collect_service import (
     InvalidTransitionError,
     LogCollectService,
@@ -51,6 +50,7 @@ from ..services.log_collect_storage import (
 )
 from ..services.log_collect_upload_service import LogCollectUploadError, LogCollectUploadService
 from ..services.operation_audit import write_operation_audit
+from ..services.p1_ticket import P1TicketError, P1TicketService, archive_filename_for
 
 logger = logging.getLogger(__name__)
 
@@ -331,12 +331,12 @@ def _judge_p1_archive(
     mtime = archive.get("mtime")
     archived_at: datetime | None = None
     if isinstance(mtime, (int, float)):
-        archived_at = datetime.fromtimestamp(int(mtime), tz=timezone.utc)
+        archived_at = datetime.fromtimestamp(int(mtime), tz=UTC)
 
     created_at = task.created_at
     if created_at is not None:
         if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+            created_at = created_at.replace(tzinfo=UTC)
         if archived_at is not None and archived_at < created_at - timedelta(
             seconds=P1_ARCHIVE_LOOKBACK_SECONDS
         ):
@@ -398,7 +398,7 @@ async def verify_p1_archive(
         task, archive, expected_size
     )
 
-    checked_at = datetime.now(timezone.utc)
+    checked_at = datetime.now(UTC)
     detail = {
         "p1_archive_check": {
             "verified": verified,
