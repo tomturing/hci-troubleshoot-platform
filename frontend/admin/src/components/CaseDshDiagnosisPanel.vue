@@ -19,6 +19,8 @@ const props = defineProps<{
   caseId: string
   data: DshSessionListResponse | null
   loading: boolean
+  /** 加载失败原因；非空时必须显式报错，不能表现成「没有诊断记录」 */
+  error?: string
 }>()
 
 const emit = defineEmits<{ refresh: [] }>()
@@ -94,9 +96,23 @@ function roleTagType(role: DshMessage['role']): 'success' | 'warning' | 'info' |
       style="margin-bottom: 12px"
     />
 
+    <el-alert
+      v-if="error"
+      type="error"
+      :closable="false"
+      show-icon
+      title="DSH 诊断记录加载失败"
+      :description="`${error}。这不等于「没有诊断记录」——请点右上角「刷新并归档」重试；持续失败请把请求编号提供给管理员。`"
+      style="margin-bottom: 12px"
+    />
+
     <el-empty
       v-if="sessions.length === 0"
-      description="该工单还没有 DSH 诊断记录（在 DSH 工作台诊断并产生会话后，点「刷新并归档」即可看到）"
+      :description="
+        error
+          ? '加载失败，无法判断是否存在诊断记录'
+          : '该工单还没有 DSH 诊断记录（在 DSH 工作台诊断并产生会话后，点「刷新并归档」即可看到）'
+      "
     />
 
     <div v-else class="dsh-body">
