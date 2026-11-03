@@ -1291,6 +1291,38 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  /**
+   * 现场回归（工单 Q2026110300988，2026-11-03）：
+   * 客户机 C 盘写满，88 MB 的包只写进 9.3 MB 就 ENOSPC，界面却只显示
+   * 「交付失败（可点「上传到平台」重传）」——用户不知道要清哪台机器的哪个目录。
+   * 契约：磁盘满必须把清理路径与所需空间摆到眼前，且明确"不会重新采集"。
+   */
+  it('交付失败原因是客户机磁盘满时展示清理指引（LC-TRANSFER-008）', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          upload_mode: 'bridge_relay',
+          delivery_status: 'failed',
+          error_code: 'LC-TRANSFER-008',
+          error_message:
+            '客户机磁盘空间不足：本地副本还需 92.1 MiB，目标目录当前可用 8.9 MiB（C:\\Users\\luo\\AppData\\Local\\Temp\\hci-log-collect\\c4b64715.zip），已写入 8.9 MiB；请清理该目录后点「上传到平台」重试，无需重新采集',
+        } as Partial<LogCollectTask>),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('客户机磁盘空间不足')
+    expect(text).toContain('hci-log-collect')
+    expect(text).toContain('无需重新采集')
+    // 非磁盘类交付失败仍走原本文案，不能被这条分支吞掉
+    wrapper.unmount()
+  })
+
   it('结果态点「重新收集」回到表单，并保留重新收集入口', async () => {
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [taskFixture()] })
 
@@ -1704,6 +1736,134 @@ describe('LogCollectPanel', () => {
     expect(sentMessages.some((m) => m.includes('"log_action":"create"'))).toBe(false)
     expect(sentMessages.some((m) => m.includes('"log_action":"progress"'))).toBe(false)
     expect(wrapper.text()).toContain('该工单已完成日志收集')
+    wrapper.unmount()
+  })
+
+  /**
+   * 现场回归（工单 Q2026110300988，2026-11-03）：
+   * 交付作业失败时 bridge 已带回规范码（LC-TRANSFER-008 客户机磁盘满），
+   * 但前端只把整句中文写库、码丢失，平台侧无法统计与分支展示。
+   * 契约：终态失败必须把 view.error_code 落库；且重试时不能沿用上一次的旧码。
+   */
+  it('交付作业失败时把桥侧错误码落库（磁盘满 LC-TRANSFER-008）', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '192.19.4.248', port: 22, username: 'admin' }
+    const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026110300988.zip'
+    const done = taskFixture({
+      task_id: 'task-disk-full',
+      status: 'completed',
+      progress: 100,
+      archive_path: archivePath,
+      upload_mode: 'bridge_relay',
+      relay_status: 'none',
+      delivery_status: 'none',
+      ips: ['192.19.4.248'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.deliverTask).mockResolvedValue({
+      already_delivered: false,
+      delivery_status: 'queued',
+      delivery_attempts: 1,
+      source_path: archivePath,
+      upload: {
+        upload_id: 'up-disk',
+        upload_token: 'token-123456',
+        chunk_size: 8388608,
+        part_count: 12,
+        total_size: 92325257,
+        uploaded_parts: [],
+        missing_parts: [1],
+      },
+    } as any)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务已完成！',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: archivePath,
+          archive_exists: true,
+          upload_state: '',
+          hosts: [{ ip: '192.19.4.248', status: '收集完成', percent: 100 }],
+          raw: '状态：收集任务已完成！\n总进度：100% - 1/1',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const upload = wrapper.findAll('button').find((item) => item.text() === '上传到平台')
+    expect(upload).toBeTruthy()
+    vi.mocked(logCollectApi.patchTask).mockClear()
+    sentMessages.length = 0
+    await upload!.trigger('click')
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'stat',
+        status: 'ok',
+        log_data: { size: 92325257, exists: true },
+      }),
+    })
+    await flushPromises()
+    await vi.waitFor(() => expect(logCollectApi.deliverTask).toHaveBeenCalled())
+    await vi.waitFor(() =>
+      expect(sentMessages.some((m) => m.includes('"type":"delivery_submit"'))).toBe(true),
+    )
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'submit',
+        status: 'ok',
+        log_data: { job_id: 'dj-task-disk-full' },
+      }),
+    })
+    await flushPromises()
+    await vi.waitFor(() => expect(sentMessages.some((m) => m.includes('"log_action":"status"'))).toBe(true))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'status',
+        status: 'ok',
+        log_data: {
+          job_id: 'dj-task-disk-full',
+          phase: 'failed',
+          error_code: 'LC-TRANSFER-008',
+          last_error:
+            '客户机磁盘空间不足：本地副本还需 92.1 MiB，目标目录当前可用 8.9 MiB（C:\\Users\\luo\\AppData\\Local\\Temp\\hci-log-collect\\x.zip），已写入 8.9 MiB；请清理该目录后点「上传到平台」重试，无需重新采集',
+        },
+      }),
+    })
+    await flushPromises()
+
+    await vi.waitFor(() =>
+      expect(
+        vi
+          .mocked(logCollectApi.patchTask)
+          .mock.calls.some(([, body]: any) => body?.delivery_status === 'failed'),
+      ).toBe(true),
+    )
+    const failure = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.find(([, body]: any) => body?.delivery_status === 'failed')!
+    expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-008' })
+    expect(String((failure[1] as any).error_message)).toContain('客户机磁盘空间不足')
     wrapper.unmount()
   })
 

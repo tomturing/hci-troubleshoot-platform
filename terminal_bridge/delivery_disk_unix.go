@@ -11,6 +11,9 @@ package main
 import "syscall"
 
 // freeDiskBytes 返回 path 所在文件系统的可用字节数；探测失败返回 0（调用方跳过预检）。
+//
+// 用 Bavail 而不是 Bfree：前者是"非特权用户可用块"，才对应本进程真正能写多少；
+// Bfree 含 root 保留块，在客户机以普通用户运行时会把需求误判成满足。
 func freeDiskBytes(path string) int64 {
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
