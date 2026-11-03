@@ -232,6 +232,9 @@ class LogCollectTaskPatch(BaseModel):
     # 交付状态可由前端/bridge 回写；与 status 正交，因此不参与状态机校验
     delivery_status: DeliveryStatus | None = None
     delivery_error: str | None = None
+    # 交付结束时刻由服务端在核验通过/失败时写入，不交给客户端自报——
+    # P1 归档核验是一次服务端确认，时间戳必须与结论同源。
+    delivery_finished_at: datetime | None = None
     detail: dict | None = None
     error_code: str | None = Field(default=None, max_length=64)
     error_message: str | None = None
@@ -301,11 +304,54 @@ class LogCollectTaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     finished_at: datetime | None = None
+    # ── P1 直传票据（2026-11-03）──────────────────────────────────────────
+    # 只在「创建时选了 P1 且平台已配置票据密钥」时下发。前端必须把它透传给
+    # bridge，由 bridge 拼进 acli 的 `-L 0:Authorization:Bearer <ticket>`。
+    # 票据是 per-task 短期凭据：不进 URL、不落库、不写日志。
+    p1_ticket: str | None = Field(
+        default=None,
+        description="P1 直传票据（仅创建响应下发；缺失表示应走 P2 或需重新创建任务）",
+    )
+    p1_ticket_expires_at: int | None = Field(
+        default=None,
+        description="票据过期时间（Unix 秒）；前端据此判断是否需要提示重新建任务",
+    )
 
 
 class LogCollectTaskListResponse(BaseModel):
     total: int
     items: list[LogCollectTaskResponse]
+
+
+class P1ArchiveVerifyRequest(BaseModel):
+    """P1 归档核验请求。"""
+
+    archive_size: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "节点侧报告的压缩包字节数（acli progress 的 archive_size）。"
+            "给出时与 5888 归档件大小比对；缺失则只做存在性与时间窗校验。"
+        ),
+    )
+
+
+class P1ArchiveVerifyResponse(BaseModel):
+    """P1 归档核验结论。
+
+    为什么必须由服务端给结论：P1 链路上平台没有源包副本，acli 报"上传成功"
+    是唯一证据；没有这一步，"delivered" 等于采信客户端自述。
+    """
+
+    task_id: UUID
+    verified: bool
+    reason: str
+    filename: str
+    expected_size: int | None = None
+    archived_size: int | None = None
+    archived_at: datetime | None = None
+    target_path: str | None = None
+    detail: dict = Field(default_factory=dict)
 
 
 # ── P2 段②：客户 PC → 平台 分块上传 ──────────────────────────────────────────

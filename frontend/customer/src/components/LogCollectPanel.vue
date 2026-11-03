@@ -183,6 +183,14 @@ interface ProbeResult {
   log_server_latency_ms?: number
   /** 本次探测的目标地址（随快照落库，便于事后核对探的是哪个地址） */
   log_server_url?: string
+  /**
+   * 节点 acli 是否支持注入上传请求头（`-L|--url-header`）。
+   *
+   * 这是 P1 能否带凭据上传的节点侧前提：5888 启用鉴权后，acli 必须能把
+   * 平台签发的票据注入成请求头才过得去；老版本没有该参数，直传必然 401。
+   * `undefined` 表示探测端未升级，按"未知"处理，不禁用 P1。
+   */
+  acli_supports_upload_header?: boolean
   // 以下字段由 bridge 从目标集群读取；缺省表示探测降级，前端必须能继续工作
   modules?: ModuleOption[]
   hosts?: HostOption[]
@@ -278,7 +286,22 @@ const pathModeTouched = ref(false)
 const p1Disabled = computed(() => {
   const probe = probeResult.value
   if (!probe) return false
-  return !probe.log_server_reachable
+  if (!probe.log_server_reachable) return true
+  // 可达只说明网络通，不代表能上传：5888 启用鉴权后，acli 必须能把票据
+  // 注入成请求头才过得去。老版本 acli 没有 -L，直传必然 401。
+  //
+  // 只在明确 false 时禁用：老 bridge 不返回该字段（undefined），
+  // 此时按"未知"处理，保留 P1 可选，避免升级顺序把用户卡在 P2 上。
+  return probe.acli_supports_upload_header === false
+})
+
+/** 探测给出的 P1 不可用原因（供置灰时的提示文案使用）。 */
+const p1UnavailableReason = computed(() => {
+  const probe = probeResult.value
+  if (!probe) return ''
+  if (!probe.log_server_reachable) return '节点连不上日志服务器'
+  if (probe.acli_supports_upload_header === false) return '节点 acli 版本不支持上传鉴权头，需升级 acli'
+  return ''
 })
 const currentTask = ref<LogCollectTask | null>(null)
 // 面板视图：form = 新建收集；result = 该工单已完成收集的只读结果
@@ -2102,6 +2125,26 @@ async function handleStart() {
       }
       throw createError
     }
+    // P1 凭据只在建任务响应里出现一次：拿不到就说明平台没配票据密钥，
+    // 此时发 P1 只会换来一次 401，并在界面上留下一个"直传失败"的假故障。
+    //
+    // 这里直接把本次下发改写成 P2，同时把落库路径改回 bridge_relay：
+    // 让"用户看到的路径"与"实际走的路径"保持一致，而不是靠事后降级记录去解释。
+    let p1Ticket = ''
+    if (pathMode.value === 'P1') {
+      p1Ticket = String(task.p1_ticket || '')
+      if (!p1Ticket) {
+        ElMessage.warning('平台未配置日志服务器直传凭据，本次已自动改走平台中转')
+        pathMode.value = 'P2'
+        task = await logCollectApi.patchTask(task.task_id, {
+          upload_mode: 'bridge_relay',
+          detail: {
+            upload_mode_switched_from: 'acli_direct',
+            upload_mode_switched_reason: '平台未配置 P1 直传票据，创建时改走 P2',
+          },
+        })
+      }
+    }
     currentTask.value = task
 
     stage.value = 'creating'
@@ -2117,6 +2160,8 @@ async function handleStart() {
         dateTo: form.dateRange[1],
         ips: targetHosts,
         remoteUrl: pathMode.value === 'P1' ? RELAY_URL : undefined,
+        // bridge 会把它注入成 `-L 0:Authorization:Bearer <ticket>`
+        uploadTicket: p1Ticket || undefined,
       },
       180000,
     )
@@ -2608,7 +2653,7 @@ async function syncNodeState(
         action.action === 'patch_delivered'
       ) {
         try {
-          const patch =
+          let patch: Partial<LogCollectTask> =
             action.action === 'patch_delivered'
               ? // 只补交付证据，status 保持 completed：它是采集结论，不该因为补登交付被重写
                 { delivery_status: 'delivered' as const }
@@ -2638,6 +2683,32 @@ async function syncNodeState(
                   error_message: normalizeErrorMessage(action.reason),
                   error_code: lastNodeErrorCode || undefined,
                 }
+          // P1 的"已交付"此前完全由节点自述决定，而插件在上传成功后已自删
+          // 压缩包——一旦判错就永久不可恢复。补登 delivered 之前必须让服务端
+          // 按产物名回查日志服务器的归档件。
+          if (action.action === 'patch_delivered') {
+            // 用 try/catch 而不是 `.catch()`：核验接口在旧版本前端/旧后端组合下
+            // 可能根本不存在，直接调用会在同步阶段抛 TypeError，`.catch()` 接不住。
+            let verdict: { verified?: boolean; reason?: string } | null = null
+            try {
+              verdict = await logCollectApi.verifyP1Archive(
+                currentTask.value.task_id,
+                observedArchiveSize.value || currentTask.value.archive_size || null,
+              )
+            } catch {
+              // 核验不可用（后端未升级 / 网络异常）时保持旧行为：
+              // 不能用"核验不了"去否掉一条本来成立的交付结论。
+              verdict = null
+            }
+            if (verdict && verdict.verified === false) {
+              patch = {
+                delivery_status: 'failed',
+                delivery_error: `P1 归档核验未通过：${verdict.reason}`,
+                error_code: 'LC-TRANSFER-007',
+                error_message: `日志服务器上没有找到一致的归档件（${verdict.reason}）`,
+              }
+            }
+          }
           currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, patch)
           if (action.action === 'patch_completed') {
             stage.value = 'done'
@@ -2651,6 +2722,11 @@ async function syncNodeState(
             // 只需让归档状态从「尚未交付」变成「已由插件直传」。
             stage.value = 'done'
             if (viewMode.value === 'result') showResult(currentTask.value)
+            if (patch.delivery_status === 'failed') {
+              // 核验不通过时绝不能报"同步成功"：用户会以为日志已经在服务器上了，
+              // 而节点上的包已被插件删除，只能重新采集。
+              ElMessage.error('直传归档核验未通过：日志服务器上没有一致的归档件，请重新采集')
+            }
           } else {
             // 必须在改 stage 之前取 stepActive：一旦看到 failed 它会返回 failedStep 本身，
             // 顺序颠倒会让步骤条永远停在第一步「探测」，而本次失败发生在「采集」（对账在 collecting 阶段触发）。
@@ -2661,7 +2737,10 @@ async function syncNodeState(
           // 已落终态：降频继续对账（而不是停摆）——failed 的节点任务可能仍在跑，
           // 停掉轮询会让「接管」按钮再也不出现。
           startAutoSync(TERMINAL_POLL_INTERVAL)
-          if (!options.silent) ElMessage.success(buildSyncNotice(action))
+          // 核验失败时上面已经报过 error，这里不再叠一条"成功"。
+          const archiveCheckFailed =
+            action.action === 'patch_delivered' && patch.delivery_status === 'failed'
+          if (!options.silent && !archiveCheckFailed) ElMessage.success(buildSyncNotice(action))
         } catch (error: any) {
           const status = Number(error?.response?.status ?? 0)
           if (status >= 400 && status < 500) {

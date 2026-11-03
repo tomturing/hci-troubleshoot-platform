@@ -565,6 +565,17 @@
       "http_status": 409,
       "user_hint": "该任务正在上传或代传中，请等待当前进度结束后再点上传。",
       "ops_hint": "delivery_status 处于 pulling/uploading/relaying；长时间不动请查 bridge 交付作业日志与 relay_status。"
+    },
+    {
+      "code": "LC-TRANSFER-007",
+      "layer": "TRANSFER",
+      "stage": "upload",
+      "title_zh": "直传归档核验未通过",
+      "owner": "customer",
+      "retryable": false,
+      "http_status": 409,
+      "user_hint": "节点报告已直传成功，但日志服务器上没有找到一致的归档件；请重新采集一次，或改用「上传到平台」走中转。",
+      "ops_hint": "比对 5888 GET /archive_status 的 found/size/mtime 与节点报告的 archive_size；P1 成功后插件会自动删包，核验不通过时节点已无源包，无法补交付。"
     }
   ]
 }

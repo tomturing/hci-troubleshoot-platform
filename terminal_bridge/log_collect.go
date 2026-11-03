@@ -268,6 +268,18 @@ func buildLogCollectCreateCommand(req InMessage) (command string, errType string
 		}
 	}
 
+	// 票据只允许出现在 -L 的值里。字符集收窄是硬要求：bridge 拼的是 shell
+	// 命令，而 acli 自己不防注入，任何来自平台的字符串都必须先过白名单。
+	uploadTicket := strings.TrimSpace(req.UploadTicket)
+	if uploadTicket != "" {
+		if !logCollectUploadTicketRe.MatchString(uploadTicket) {
+			return "", "invalid_upload_ticket", "P1 直传票据格式非法"
+		}
+		if remoteURL == "" {
+			return "", "invalid_upload_ticket", "P1 直传票据必须与上传地址同时出现"
+		}
+	}
+
 	parts := []string{
 		"log_collect", "create",
 		"-s", shellQuote(ticket),
@@ -280,8 +292,38 @@ func buildLogCollectCreateCommand(req InMessage) (command string, errType string
 	}
 	if remoteURL != "" {
 		parts = append(parts, "-u", shellQuote(remoteURL))
+		if uploadTicket != "" {
+			// 用 -L（URL 特定请求头）而不是 -H（全局请求头）：
+			// -H 会把凭据带给 acli 访问的每一个地址，暴露面必须按 URL 限定到
+			// 第 0 个上传地址（index 从 0 开始）。
+			parts = append(parts, "-L", shellQuote(logCollectUploadHeader(uploadTicket)))
+		}
 	}
 	return strings.Join(parts, " "), "", ""
+}
+
+// logCollectUploadTicketRe 限定票据字符集：只允许 base64url 与点分隔符。
+// 平台签发的形状是 p1.v1.<payload>.<hex>，长度 100~600 之间。
+var logCollectUploadTicketRe = regexp.MustCompile(`^[A-Za-z0-9._-]{16,600}$`)
+
+// logCollectUploadHeader 构造 acli `-L` 的取值：index:Header-Name:value。
+//
+// index 固定为 0：一次 create 只有一个 -u 上传地址，凭据没有理由发给别的 URL。
+func logCollectUploadHeader(uploadTicket string) string {
+	return "0:Authorization:Bearer " + uploadTicket
+}
+
+// redactUploadTicket 把完整命令里的票据替换掉，供日志与前端展示。
+//
+// 为什么不能只靠通用脱敏：bridge 的 sensitiveTextPatterns 靠
+// password/token/secret 等关键词匹配，而 `Authorization: Bearer x` 里
+// 一个关键词都没有，会被原样写进 command 字段与 detail。
+func redactUploadTicket(command, uploadTicket string) string {
+	uploadTicket = strings.TrimSpace(uploadTicket)
+	if uploadTicket == "" {
+		return command
+	}
+	return strings.ReplaceAll(command, uploadTicket, "[REDACTED]")
 }
 
 // runCommandPty 在独立 Session 上分配伪终端执行命令并返回合并输出。
@@ -343,6 +385,15 @@ type logCollectProbeResult struct {
 	LogServerReachable bool   `json:"log_server_reachable"`
 	LogServerHTTPCode  int    `json:"log_server_http_code"`
 	LogServerLatencyMS int64  `json:"log_server_latency_ms"`
+	// AcliSupportsUploadHeader 表示本节点的 acli 是否支持 `-L|--url-header`。
+	//
+	// 这是 P1 能否带凭据上传的硬前提：不支持就只能走 P2（平台代传带 Bearer）。
+	// 判据直接取 `acli log_collect create --help` 的原文——版本号不可靠，
+	// 同一版本号的不同构建实测参数集并不一致。
+	//
+	// 注意它**不**等于"P1 可用"：还要平台已配置票据密钥、且网络可达。
+	// bridge 不知道平台密钥状态，因此这里只回答"节点侧能力"。
+	AcliSupportsUploadHeader bool `json:"acli_supports_upload_header"`
 	// 准备阶段的事实来源：场景目录与节点清单都必须由被采集集群给出，不能硬编码在前端。
 	Modules       []logCollectModuleOption `json:"modules"`
 	Hosts         []logCollectHostOption   `json:"hosts"`
@@ -490,6 +541,11 @@ func (s *SSHSession) probeLogCollectCatalog(ctx context.Context, result *logColl
 	// 实机验证：`acli log_collect create --help` 会以 exit code 1 结束
 	// （插件把 --help 判为未定义参数），但正文已完整打印，因此只认输出内容、不认退出码。
 	helpOut, _, _ := s.runCommandPty(ctx, logCollectAcliInvoke("log_collect create --help"), 8*time.Second)
+	// 同一份 help 文本顺便回答"能不能给上传请求加头"：
+	// P1 直传要过 5888 的鉴权，全靠 `-L|--url-header` 注入票据。
+	// 老版本没有这个参数，结果只能落 P2，必须让前端提前知道而不去撞 401。
+	result.AcliSupportsUploadHeader = strings.Contains(helpOut, "--url-header") ||
+		strings.Contains(helpOut, "--header")
 	if modules := parseLogCollectModuleCatalog(helpOut); len(modules) > 0 {
 		result.Modules = modules
 		result.CatalogSource = "acli_help"
@@ -644,8 +700,16 @@ type logCollectProgress struct {
 	Hosts       []logCollectHost `json:"hosts,omitempty"`
 	UploadURL   string           `json:"upload_url,omitempty"`
 	UploadState string           `json:"upload_state,omitempty"`
-	ParseOK     bool             `json:"parse_ok"`
-	Raw         string           `json:"raw"`
+	// UploadError 是上传失败时命中的首个原因行。
+	//
+	// 为什么需要它：2026-11-03 Q2026110300278 的 upload_state 只有"失败"两个字，
+	// 平台与桥侧都无法区分 401 / 超时 / 网络，只能去 5888 翻服务端日志。
+	UploadError string `json:"upload_error,omitempty"`
+	// UploadRawTail 是上传阶段的输出尾部（仅在出现上传状态时填充）。
+	// 结构化的失败文案不保证存在，原文尾部是排障的最后一条线索。
+	UploadRawTail string `json:"upload_raw_tail,omitempty"`
+	ParseOK       bool   `json:"parse_ok"`
+	Raw           string `json:"raw"`
 	// NodeState 是归一化后的节点态（none/running/completed/abnormal/unknown）。
 	// 节点是任务状态的唯一真相源，但插件只给中文文案，平台无法直接拿它做状态机判断；
 	// 归一化放在 bridge 侧，避免每个前端各自实现一套字符串匹配。
@@ -739,6 +803,11 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 			result.Percent, _ = strconv.Atoi(match[1])
 			result.Done, _ = strconv.Atoi(match[2])
 			result.Total, _ = strconv.Atoi(match[3])
+		case result.UploadError == "" && sawUploadBlock &&
+			(strings.Contains(line, "失败") || strings.Contains(line, "错误") || strings.Contains(line, "异常")):
+			// 只在上传块里抓第一行原因：任务块里的"失败"属于采集阶段，
+			// 混进来会把"上传 401"显示成"采集失败"。
+			result.UploadError = truncateString(line, 160)
 		case logCollectHostLineRe.MatchString(line):
 			match := logCollectHostLineRe.FindStringSubmatch(line)
 			result.Hosts = append(result.Hosts, logCollectHost{
@@ -747,6 +816,11 @@ func parseLogCollectProgress(raw string) logCollectProgress {
 		}
 	}
 	result.ParseOK = result.Status != "" || result.Percent > 0 || result.ArchivePath != ""
+	if result.UploadState != "" {
+		// 上传阶段一旦有状态就留原文尾部：结构化失败文案不保证存在，
+		// 而"为什么失败"是这一阶段唯一真正需要回答的问题。
+		result.UploadRawTail = truncateString(strings.TrimSpace(stripAnsi(raw)), 512)
+	}
 	return result
 }
 
@@ -1250,7 +1324,10 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"available_mb":   probe.AvailableMB,
 			"log_server_url": probe.LogServerURL, "log_server_reachable": probe.LogServerReachable,
 			"http_code": probe.LogServerHTTPCode, "latency_ms": probe.LogServerLatencyMS,
-			"catalog_source": probe.CatalogSource, "modules_count": len(probe.Modules),
+			// P1 能不能带凭据，取决于节点 acli 是否支持注入上传请求头。
+			// 落库是为了让"为什么这次走了 P2"在事后可回答，而不是只能靠版本号猜。
+			"acli_supports_upload_header": probe.AcliSupportsUploadHeader,
+			"catalog_source":              probe.CatalogSource, "modules_count": len(probe.Modules),
 			"hosts_count": len(probe.Hosts), "catalog_note": probe.CatalogNote,
 			"note": probe.Note, "key": key,
 		})
@@ -1291,12 +1368,14 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
 			Message: firstNonEmpty(failure, strings.TrimSpace(output)),
-			Detail:  "acli " + command, TraceID: traceID, CustomUI: cui,
+			Detail:  redactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo,
 		})
 		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": failure,
-			"command": redactCommand("acli " + command), "output_preview": stripAnsi(truncateString(output, 512)),
+			"command":        redactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)),
+			"p1_ticket_used": msg.UploadTicket != "",
+			"output_preview": stripAnsi(truncateString(output, 512)),
 		})
 
 	case "progress":
@@ -1362,6 +1441,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"done": progress.Done, "total": progress.Total,
 			"status_text": progress.Status, "archive_path": progress.ArchivePath,
 			"upload_url": progress.UploadURL, "upload_state": progress.UploadState,
+			// 上传失败必须留下能定因的东西：只有"失败"两个字时，平台与桥侧
+			// 都只能去 5888 翻服务端日志才能判断是 401、超时还是网络。
+			"upload_error": progress.UploadError, "upload_raw_tail": progress.UploadRawTail,
 			"node_state":  progress.NodeState,
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
 			"archive_exists": progress.ArchiveExists, "archive_probe_path": probePath,

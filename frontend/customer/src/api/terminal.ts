@@ -641,6 +641,13 @@ export interface LogCollectMessageOptions {
   totalSize?: number
   uploadedParts?: number[]
   localPath?: string
+  /**
+   * P1 直传票据（平台签发、per-task 短期有效）。
+   *
+   * bridge 会把它注入成 `-L 0:Authorization:Bearer <ticket>`，只对第 0 个
+   * 上传地址生效——用 `-H` 会把凭据带给 acli 访问的每一个地址。
+   */
+  uploadTicket?: string
 }
 
 /**
@@ -669,6 +676,7 @@ export function buildLogCollectMessage(
     ips: options.ips || undefined,
     extra_paths: options.extraPaths?.length ? options.extraPaths : undefined,
     remote_url: options.remoteUrl || undefined,
+    upload_ticket: options.uploadTicket || undefined,
     source_path: options.sourcePath || undefined,
     platform_url: options.platformUrl || undefined,
     upload_token: options.uploadToken || undefined,

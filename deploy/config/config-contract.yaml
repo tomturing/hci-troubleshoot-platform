@@ -229,6 +229,11 @@ helm_equivalents:
   LOG_COLLECT_RELAY_TOKEN:
     value_paths: [secrets.logCollectRelayToken]
     render_optional: true
+  # P1 直传票据密钥（对应 5888 的 ACLI_P1_TICKET_SECRET）。
+  # 同样留空即不注入：此时平台不签发票据，前端自动把直传降级为平台中转。
+  LOG_COLLECT_P1_TICKET_SECRET:
+    value_paths: [secrets.p1TicketSecret]
+    render_optional: true
   LLM_BASE_URL:
     value_paths: [llm.baseUrl]
   LLM_API_KEY:

@@ -117,6 +117,30 @@ class SangforRelayClient:
         response.raise_for_status()
         return response.json()
 
+    async def archive_status(
+        self,
+        client: httpx.AsyncClient,
+        filename: str,
+        *,
+        ticket: str = "",
+    ) -> dict[str, Any]:
+        """按产物名查 5888 的归档事实（P1 直传的唯一可核验锚点）。
+
+        为什么不能用 ``upload_status`` 代替：P1 是节点 acli 自己上传的，平台
+        从来没有拿到过它的 ``upload_id``；产物名是两侧唯一的公共键。
+
+        ``ticket`` 给出时优先用 P1 票据（绑定产物名、短时效），否则退回全局
+        Bearer——这样核验不强制依赖全局密钥，也不会把 P2 通道绑死在核验路径上。
+        """
+        headers = {"Authorization": f"Bearer {ticket}"} if ticket else self._headers()
+        response = await client.get(
+            f"{self.base_url}/archive_status",
+            params={"filename": filename},
+            headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
 
 class LogCollectRelayService:
     def __init__(

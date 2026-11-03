@@ -69,6 +69,10 @@ const (
 	// 探测命令本身跑不了（命令不存在/通道异常）：不能说包没了，只能说无法确认。
 	// 与 001（包确定不存在）严格区分：混用会让平台对着盘上的包报“已被删除”。
 	ErrTransferArchiveProbe = "LC-TRANSFER-006"
+	// P1 直传后按产物名回查 5888 归档未通过（不存在/大小不一致/时间窗外）。
+	// 与 001/006 的区别：001 是包没生成，006 是探测不了，本码是包生成了、
+	// 也（据 acli 说）传完了，但落盘侧没有一致的归档件。
+	ErrTransferArchiveUnverified = "LC-TRANSFER-007"
 
 	ErrPlatUnauthorized = "LC-PLATFORM-001"
 	ErrPlatForbidden    = "LC-PLATFORM-002"
@@ -142,6 +146,8 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrTransferResumeFailed:   {"TRANSFER", "platform", "manual", "upload"},
 	ErrTransferTooLarge:       {"TRANSFER", "platform", "false", "upload"},
 	ErrTransferArchiveProbe:   {"TRANSFER", "customer", "true", "package"},
+	// 不可自动重试：P1 成功后插件已删源包，重试没有输入。
+	ErrTransferArchiveUnverified: {"TRANSFER", "customer", "false", "upload"},
 
 	ErrPlatUnauthorized: {"PLATFORM", "platform", "true", "api"},
 	ErrPlatForbidden:    {"PLATFORM", "platform", "false", "api"},
