@@ -5,6 +5,7 @@
 """
 
 import asyncio
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1029,10 +1030,8 @@ async def test_reconcile_loop_keeps_claiming_after_startup(monkeypatch):
     task = asyncio.create_task(routes.reconcile_relays_loop(interval=0.01))
     await asyncio.sleep(0.05)
     task.cancel()
-    try:
+    with suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
     assert calls >= 2, "启动之后必须继续周期接管，否则发布交还的 pending 永远没人捡"
 
