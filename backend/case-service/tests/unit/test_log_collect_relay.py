@@ -5,6 +5,7 @@
 """
 
 import asyncio
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -1004,6 +1005,35 @@ async def test_startup_reconcile_is_skipped_when_relay_disabled(monkeypatch):
     await routes.reconcile_relays_on_startup()
 
     assert spawned == []
+
+
+async def test_reconcile_loop_keeps_claiming_after_startup(monkeypatch):
+    """发布交接发生在启动之后：循环必须继续接管，而不是只跑一次。
+
+    回归背景（2026-11-04 Q2026110400024）：滚动更新时新 Pod 先起来，
+    那时旧 Pod 仍持有 running（租约未过期，不会被抢）；旧 Pod 在 grace
+    period 内才把 running 交还成 pending。只在 lifespan 启动 claim 一次
+    会永久漏掉这个 pending —— 界面一直转圈、不报错也不重试。
+    """
+
+    from app.routes import log_collect as routes
+
+    calls = 0
+
+    async def fake_once() -> int:
+        nonlocal calls
+        calls += 1
+        return 0
+
+    monkeypatch.setattr(routes, "reconcile_relays_once", fake_once)
+
+    task = asyncio.create_task(routes.reconcile_relays_loop(interval=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    assert calls >= 2, "启动之后必须继续周期接管，否则发布交还的 pending 永远没人捡"
 
 
 async def test_shutdown_hands_back_running_relays(monkeypatch):

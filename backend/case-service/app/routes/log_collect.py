@@ -179,23 +179,49 @@ def _spawn_relay(relay_service: LogCollectRelayService, task_id: UUID) -> None:
     background.add_done_callback(_on_relay_done)
 
 
-async def reconcile_relays_on_startup() -> None:
-    """启动即接管：上一个进程（发布/重启/OOM）留下的代传不会自己跑完。
+async def reconcile_relays_once() -> int:
+    """接管一轮，返回本轮真正拉起的任务数。
 
-    两类都要收：租约过期仍标 running 的（进程被 SIGKILL），以及优雅退出时
-    交还成 pending 的。没这一步，「发布」就是代传状态永久卡 running 的触发器。
+    抽成单轮是为了让「启动接管」与「周期接管」共用同一判据，
+    测试也能只跑一轮而不必等真实 sleep。
     """
     if database_manager is None or not settings.LOG_COLLECT_RELAY_ENABLED:
-        return
+        return 0
     try:
         relay_service = _build_relay_service()
         task_ids = await relay_service.claim_stale()
         for task_id in task_ids:
             _spawn_relay(relay_service, task_id)
         if task_ids:
-            logger.info("日志包代传启动接管 count=%s tasks=%s", len(task_ids), task_ids)
-    except Exception:  # noqa: BLE001 - 接管失败不能阻断服务启动
-        logger.exception("日志包代传启动接管失败")
+            logger.info("日志包代传接管 count=%s tasks=%s", len(task_ids), task_ids)
+        return len(task_ids)
+    except Exception:  # noqa: BLE001 - 接管失败不能阻断服务
+        logger.exception("日志包代传接管失败")
+        return 0
+
+
+async def reconcile_relays_on_startup() -> None:
+    """启动即接管：上一个进程（发布/重启/OOM）留下的代传不会自己跑完。
+
+    两类都要收：租约过期仍标 running 的（进程被 SIGKILL），以及优雅退出时
+    交还成 pending 的。没这一步，「发布」就是代传状态永久卡 running 的触发器。
+    """
+    await reconcile_relays_once()
+
+
+async def reconcile_relays_loop(*, interval: float = 60.0) -> None:
+    """周期接管：只在启动跑一次是不够的。
+
+    滚动发布的实际顺序是「新 Pod 先起来 → 旧 Pod 在 grace period 内把 running
+    交还成 pending」。启动那一刻新实例看到的还是旧实例持有的 running（租约未过期，
+    不会抢），而旧实例稍后才写 pending —— 此后没有任何代码再看一眼，
+    任务就永久停在 pending：界面一直转圈、前端只轮询 relay_status，
+    既不报错也不重试（2026-11-04 Q2026110400024 卡在 228/723 共 43 分钟，
+    正是当天 case-service 发布造成的）。
+    """
+    while True:
+        await reconcile_relays_once()
+        await asyncio.sleep(interval)
 
 
 async def shutdown_relays() -> None:

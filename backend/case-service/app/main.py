@@ -54,8 +54,11 @@ async def lifespan(app: FastAPI):
     case_insights.set_database_manager(database_manager)
 
     # 接管上一个进程遗留的代传（发布/重启/OOM 后不靠人工干预）：
-    # 租约过期的 running 与优雅退出时交还的 pending 都会在这里被重新拉起。
-    relay_reconcile = asyncio.create_task(log_collect.reconcile_relays_on_startup())
+    # 租约过期的 running 与优雅退出时交还的 pending 都会被重新拉起。
+    # 必须周期执行而不是只在启动跑一次：滚动更新时新 Pod 先启动、
+    # 旧 Pod 在 grace period 内才把 running 交还成 pending，启动那一刻
+    # 根本看不到它（2026-11-04 Q2026110400024 因此卡在 228/723 共 43 分钟）。
+    relay_reconcile = asyncio.create_task(log_collect.reconcile_relays_loop())
 
     yield
 
