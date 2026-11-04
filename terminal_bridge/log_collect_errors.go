@@ -79,6 +79,10 @@ const (
 	// 009 是"空间被别的交付作业占着"，等它完成即可，清盘往往无济于事——
 	// 混用会把用户引向错误的处置动作（2026-11-03 并发叠加场景）。
 	ErrTransferAdmissionExceeded = "LC-TRANSFER-009"
+	// 源包仍在写入：acli 进度到 100% 但 zip 未收尾，或提交后包被重新生成。
+	// 与 003（分片上传失败）的区别：003 重试有机会成功，010 重试只会追一个
+	// 移动的目标；处置动作是"等包大小稳定后重开一次上传会话"。
+	ErrTransferSourceStillWriting = "LC-TRANSFER-010"
 	// P1 直传后按产物名回查 5888 归档未通过（不存在/大小不一致/时间窗外）。
 	// 与 001/006 的区别：001 是包没生成，006 是探测不了，本码是包生成了、
 	// 也（据 acli 说）传完了，但落盘侧没有一致的归档件。
@@ -160,6 +164,8 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrTransferLocalDiskFull: {"TRANSFER", "customer", "manual", "package"},
 	// 等其它作业完成即可，不是人手工清盘能解决的；重试同样不会自己变好。
 	ErrTransferAdmissionExceeded: {"TRANSFER", "customer", "manual", "package"},
+	// 等包写完即可恢复；这不是网络抖动，在同一个会话上重试不会变好。
+	ErrTransferSourceStillWriting: {"TRANSFER", "customer", "manual", "package"},
 	// 不可自动重试：P1 成功后插件已删源包，重试没有输入。
 	ErrTransferArchiveUnverified: {"TRANSFER", "customer", "false", "upload"},
 

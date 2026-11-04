@@ -249,5 +249,11 @@ func deliveryErrorCode(err error) string {
 	if isDeliveryAdmission(err) {
 		return ErrTransferAdmissionExceeded
 	}
+	// fatal 失败可以自带规范码（如源包仍在写入 010）：
+	// 这类失败以前只有中文文案，平台记录里永远没有可统计的码。
+	var coded interface{ ErrorCode() string }
+	if errors.As(err, &coded) {
+		return coded.ErrorCode()
+	}
 	return ""
 }
