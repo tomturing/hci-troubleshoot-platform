@@ -490,6 +490,17 @@
       "ops_hint": "并发准入：同目录进行中作业未落地字节之和 + 本次需求 > 可用空间。可调低 HCI_BRIDGE_DELIVERY_CONCURRENCY 或清理 %TEMP%/hci-log-collect；delivery.disk_precheck 事件带 reserved_bytes。"
     },
     {
+      "code": "LC-TRANSFER-010",
+      "layer": "TRANSFER",
+      "stage": "package",
+      "title_zh": "源包仍在写入",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "节点上的压缩包还没写完（采集已到 100%，但 zip 仍在收尾或被重新生成）。此时建立的上传会话按旧大小校验，继续传每片都会失败；请等包大小不再变化后再点「上传到平台」，要最新内容请重新采集。",
+      "ops_hint": "bridge 侧 delivery.* 事件可查：waitArchiveSettled 超时、pull 期间大小变化（拉取前/当前字节数）、sourceSizeGuard 命中。排查节点 zip 是否仍被 acli 写入，或是否被重复采集覆盖；确认包稳定后重开上传会话（新会话=新基线）。"
+    },
+    {
       "code": "LC-PLATFORM-001",
       "layer": "PLATFORM",
       "stage": "api",

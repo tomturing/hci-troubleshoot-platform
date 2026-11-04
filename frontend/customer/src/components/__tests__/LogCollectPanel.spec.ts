@@ -1355,6 +1355,38 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  /**
+   * 源包仍在写入（2026-11-04 Q2026110400883）：
+   * 采集进度到 100% 但 zip 未收尾，此时建立的会话按旧大小校验，逐片必失败。
+   * 处置动作是"等包稳定后重开一次会话"，不能退化成清盘（008）或等其它任务（009）。
+   */
+  it('交付失败原因是压缩包仍在写入时给出等待稳定指引（LC-TRANSFER-010）', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          upload_mode: 'bridge_relay',
+          delivery_status: 'failed',
+          error_code: 'LC-TRANSFER-010',
+          // 不提供 error_message，验证 010 分支自己的兜底文案
+          error_message: '',
+        } as Partial<LogCollectTask>),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('仍在写入')
+    expect(text).toContain('不再变化')
+    expect(text).toContain('重新采集')
+    // 不能退化成清盘/并发占用的指引
+    expect(text).not.toContain('请清理临时目录')
+    wrapper.unmount()
+  })
+
   it('结果态点「重新收集」回到表单，并保留重新收集入口', async () => {
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [taskFixture()] })
 

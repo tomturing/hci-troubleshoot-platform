@@ -156,14 +156,42 @@ func (r *deliveryRunner) submit(job *deliveryJob) *deliveryJob {
 	}
 	job.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	job.Phase = phaseWaitingCollect
+	var stale *deliveryJob
+	var staleCancel context.CancelFunc
 	r.mu.Lock()
-	// 同 task 重复提交（前端刷新后重放）直接复用既有 job，避免重复占位。
 	if existing, ok := r.jobs[job.JobID]; ok && !existing.Phase.terminal() {
-		r.mu.Unlock()
-		return existing
+		// 同一个平台会话的重放（前端刷新/重复点击）直接复用，避免重复占位。
+		if sameDeliverySession(existing, job) {
+			r.mu.Unlock()
+			return existing
+		}
+		// 会话参数变了：平台已签发新令牌 / 新 total_size / 新分片方案，
+		// 旧作业的 SubmittedSize 与 PartCount 已经作废。若继续复用，
+		// 新会话会按上一轮的基线校验，每一片都必然失败且重试不会自愈。
+		existing.Phase = phaseFailed
+		existing.LastError = "superseded_by_new_session"
+		stale, staleCancel = existing, r.cancels[job.JobID]
+		delete(r.cancels, job.JobID)
+		delete(r.jobs, job.JobID)
 	}
 	r.jobs[job.JobID] = job
 	r.mu.Unlock()
+
+	if stale != nil {
+		// 旧作业的 goroutine 必须在锁外终止；同时把它的 JobID 换成独立值，
+		// 否则它收尾时会用同一个文件名把磁盘记录覆盖回旧会话。
+		oldID := stale.JobID
+		if staleCancel != nil {
+			staleCancel()
+		}
+		stale.JobID = oldID + "-superseded"
+		_ = r.store.save(stale)
+		blog("WARN", "delivery.superseded", "同一任务的新上传会话覆盖了旧作业", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "old_job_id": oldID,
+			"old_submitted_size": stale.SubmittedSize, "new_submitted_size": job.SubmittedSize,
+			"old_part_count": stale.PartCount, "new_part_count": job.PartCount,
+		})
+	}
 
 	if err := r.store.save(job); err != nil {
 		blog("WARN", "delivery.save_failed", "交付作业落盘失败（本次仅内存）", "", job.CaseID, job.NodeIP, "", map[string]any{
@@ -176,6 +204,19 @@ func (r *deliveryRunner) submit(job *deliveryJob) *deliveryJob {
 	})
 	r.enqueue(job)
 	return job
+}
+
+// sameDeliverySession 判断两次提交是否指向同一个平台上传会话。
+//
+// 不能只看 task_id：同一任务失败重试时，平台会签发新令牌、新 total_size
+// 和新分片方案，而 bridge 里的旧作业可能仍处于 retrying（非终态）。
+// 复用旧作业会让 SubmittedSize/PartCount 停在上一轮，新会话每片都校验不过。
+func sameDeliverySession(a, b *deliveryJob) bool {
+	return a.UploadToken == b.UploadToken &&
+		a.SubmittedSize == b.SubmittedSize &&
+		a.PartCount == b.PartCount &&
+		a.ChunkSize == b.ChunkSize &&
+		a.Direct == b.Direct
 }
 
 // status 返回 job 快照（深拷贝，避免调用方读到并发修改中的结构）。
@@ -442,7 +483,14 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 			progress := parseLogCollectProgress(output)
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
 				sourcePath := firstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
-				if sourcePath != "" {
+				if sourcePath == "" {
+					// progress 到 100% 却没有包路径：不能就这么进入拉取。
+					// 空路径会让后面每一步都失败（digest_unavailable、stat 失败、
+					// 拉取命令 status 1），错误文案却指向"源包可能已被清理"。
+					blog("WARN", "delivery.archive_path_missing", "采集已完成但未取到压缩包路径，继续等待", "", job.CaseID, job.NodeIP, "", map[string]any{
+						"job_id": job.JobID, "total": progress.Total,
+					})
+				} else {
 					// 串味判定：包比任务还老 ⇒ 这是上一次采集的产物，不能当本次结果。
 					if startedAt, ok := job.startedAt(); ok {
 						if mtime, statErr := statArchiveMTime(ctx, session, sourcePath); statErr == nil {
@@ -457,20 +505,31 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 							}
 						}
 					}
-				}
-				r.mu.Lock()
-				if job.SourcePath == "" {
+
+					// done>=total 只代表 acli 的采集任务结束，zip 仍在收尾追加。
+					// 必须等它真正写完再交付，否则拉取追的是一个移动目标：
+					// 2026-11-04 Q2026110400883 提交 882701883 字节，拉取期间还在长到 892074444，
+					// 最终本地副本与平台会话基线不符，每片都过不了校验。
+					settledSize, settleErr := r.waitArchiveSettled(ctx, session, job, sourcePath)
+					if settleErr != nil {
+						return settleErr
+					}
+
+					r.mu.Lock()
 					job.SourcePath = sourcePath
+					if settledSize > 0 {
+						job.SourceSize = settledSize
+					}
+					job.Phase = phasePulling
+					r.mu.Unlock()
+					_ = r.store.save(job)
+					blog("INFO", "delivery.collect_finished", "节点采集已完成且压缩包已落定，开始交付", "", job.CaseID, job.NodeIP, "", map[string]any{
+						"job_id": job.JobID, "total": progress.Total, "archive_path": sourcePath, "size": settledSize,
+					})
+					// 包已确认写完，此刻取基线最可靠。
+					r.ensureSourceDigest(ctx, session, job)
+					return nil
 				}
-				job.Phase = phasePulling
-				r.mu.Unlock()
-				_ = r.store.save(job)
-				blog("INFO", "delivery.collect_finished", "节点采集已完成，开始交付", "", job.CaseID, job.NodeIP, "", map[string]any{
-					"job_id": job.JobID, "total": progress.Total, "archive_path": progress.ArchivePath,
-				})
-				// 采集刚完成、包在节点上还是新的，此刻取基线最可靠。
-				r.ensureSourceDigest(ctx, session, job)
-				return nil
 			}
 		}
 		select {
@@ -481,6 +540,82 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 		// 自适应降频：采集通常十几分钟，10s→30s 减少对节点与桥的打扰。
 		if interval < 30*time.Second {
 			interval += 10 * time.Second
+		}
+	}
+}
+
+// 压缩包落定判定：两次采样间隔与最长等待。
+const (
+	// 太短会与 acli 的写缓冲撞车（大小看起来"没变"其实在攒），
+	// 太长会让正常交付白白多等十几秒。
+	deliveryArchiveSettleInterval = 3 * time.Second
+	// 正常 zip 收尾是秒级；5 分钟还没写完基本是采集异常（进程卡死/盘满）。
+	deliveryArchiveSettleTimeout = 5 * time.Minute
+)
+
+// statArchiveSize 取节点上压缩包的字节数；stat 不可用时退回两级探测。
+func statArchiveSize(ctx context.Context, session *SSHSession, path string) (int64, bool) {
+	if strings.TrimSpace(path) == "" {
+		return 0, false
+	}
+	if out, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path))); err == nil {
+		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
+			return size, true
+		}
+	}
+	probed := probeLogCollectArchive(ctx, session, path)
+	if probed.Exists != nil && *probed.Exists && probed.Size > 0 {
+		return probed.Size, true
+	}
+	return 0, false
+}
+
+// waitArchiveSettled 等"压缩包真正写完"再允许拉取。
+//
+// 为什么 done>=total 不够：acli 的 progress 到 100% 只说明采集任务结束，
+// zip 仍在追加尾部。2026-11-04 Q2026110400883：提交时 882701883 字节，
+// 拉取前 889677835，拉取完 892074444——三次大小都不同，而平台会话按
+// 提交时的大小校验，末片长度必然对不上，每片都会失败。
+//
+// 判据必须两条同时成立：
+//  1. 连续两次 stat 大小相同（不再增长）；
+//  2. 尾部存在 zip EOCD 标记（确实收尾）。
+//
+// EOCD 校验手段缺失（受限 shell 没有 tail/od/tr/grep）时降级为只看大小稳定，
+// 与 prepareDirect 同一取舍：少一个观测手段不该阻断交付。
+func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *SSHSession, job *deliveryJob, path string) (int64, error) {
+	deadline := time.Now().Add(deliveryArchiveSettleTimeout)
+	var last int64
+	for {
+		if time.Now().After(deadline) {
+			return 0, newFatal(
+				ErrTransferSourceStillWriting,
+				"节点压缩包在 %s 内仍未写完（最后一次大小为 %d 字节）：采集进程可能异常或节点磁盘已满；"+
+					"请先确认节点采集状态，再决定是等待还是重新采集，不要在当前包上继续交付",
+				deliveryArchiveSettleTimeout, last,
+			)
+		}
+		size, ok := statArchiveSize(ctx, session, path)
+		if ok && size == last {
+			completeErr := verifyArchiveComplete(ctx, session, path)
+			if completeErr == nil {
+				return size, nil
+			}
+			if errors.Is(completeErr, errArchiveCompleteUnverifiable) {
+				blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，仅按大小稳定判定包已写完", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "source_path": path, "size": size, "reason": completeErr.Error(),
+				})
+				return size, nil
+			}
+			// EOCD 缺失＝还在写，继续观察。
+		}
+		if ok {
+			last = size
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(deliveryArchiveSettleInterval):
 		}
 	}
 }
@@ -525,7 +660,13 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession,
 
 	if err := verifyArchiveComplete(ctx, session, sourcePath); err != nil {
 		if !errors.Is(err, errArchiveCompleteUnverifiable) {
-			return err
+			// 包没写完就必须终态失败：补交付里重试同样会读到半截包，
+			// 而且每轮都会重新校验一遍几十 GB 的文件尾。给 010 让前端
+			// 明确告诉用户"等压缩结束再点"，而不是反复清盘/重点。
+			return newFatal(ErrTransferSourceStillWriting,
+				"源包尚未写完：%v；请等待节点采集/压缩真正结束后再点「上传到平台」，不要连续重试",
+				err.Error(),
+			)
 		}
 		// 校验手段缺失不是包坏了：只能降级为"未校验"并留痕，不能因此阻断交付。
 		blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，跳过完整性预检", "", job.CaseID, job.NodeIP, "", map[string]any{
@@ -795,9 +936,24 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 		}
 
 		wrapped := fmt.Errorf("拉取中断（已拉 %d 字节）: %w", written, err)
+		// 拉取失败后立刻复量源包：与拉取前不同就说明它还在写（或被重建）。
+		// 这条判据必须优先于 errPullSizeMismatch 的"被覆盖/截断"归因——
+		// 2026-11-04 Q2026110400883 现场，bridge 把"包还在长"报成
+		// "源包可能已被清理"，于是按普通错误重试了 4 轮，每轮都在追一个移动的目标。
+		if current, ok := statArchiveSize(ctx, session, job.SourcePath); ok && job.SourceSize > 0 && current != job.SourceSize {
+			// 残包不能留：否则下次续传会把旧内容当"已拉部分"接着追加。
+			r.discardLocalCopy(job, "source_still_writing")
+			return newFatal(
+				ErrTransferSourceStillWriting,
+				"源包在拉取期间仍在写入（拉取前 %d 字节，当前 %d 字节），本次交付作废："+
+					"平台上传会话已按拉取前的大小建立，继续传只会每片都失败。"+
+					"请等待采集/压缩真正结束、包大小不再变化后，重新点击「上传到平台」",
+				job.SourceSize, current,
+			)
+		}
 		if errors.Is(err, errPullSizeMismatch) {
-			// 源包字节数变了：继续重试只会重复拉一遍，直接终态等人处理。
-			return &deliveryFatalError{reason: wrapped.Error() + "；源包可能已被覆盖或截断，重试无意义"}
+			// 字节数对不上且大小已不再变化：源包被整体覆盖或截断，重试没有意义。
+			return newFatal(ErrTransferSourceStillWriting, "%s；源包可能已被覆盖或截断，重试无意义", wrapped.Error())
 		}
 		return wrapped
 	}
@@ -1171,9 +1327,22 @@ func (e *deliveryAuthError) Error() string { return e.reason }
 // 与 authError 的区别：它不需要人做任何额外动作，只是继续重试没有意义。
 // 典型场景：节点源包与拉取结果摘要不一致（包已被同名覆盖），重试会再白拉
 // 一次 20 GiB，一天之内就能把客户机带宽和磁盘打满。
-type deliveryFatalError struct{ reason string }
+type deliveryFatalError struct {
+	reason string
+	// code 是可选的规范错误码。前端与平台要靠它分支处置，
+	// 只匹配中文文案会在文案一改就静默失效（磁盘满 008 的教训）。
+	code string
+}
 
 func (e *deliveryFatalError) Error() string { return e.reason }
+
+// ErrorCode 让 deliveryErrorCode 能统一取出可落库的码。
+func (e *deliveryFatalError) ErrorCode() string { return e.code }
+
+// newFatal 构造带规范错误码的 fatal 失败。
+func newFatal(code, format string, args ...any) *deliveryFatalError {
+	return &deliveryFatalError{code: code, reason: fmt.Sprintf(format, args...)}
+}
 
 // isDeliveryFatalError 用 errors.As 穿透包装。
 func isDeliveryFatalError(err error) bool {

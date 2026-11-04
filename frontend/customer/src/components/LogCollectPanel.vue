@@ -971,6 +971,11 @@ const resultArchiveText = computed(() => {
       // 与 008 的处置动作不同：让用户等其它交付任务结束，而不是去清一个清不出来的盘。
       return `交付失败：${formatFailureReason(task, '客户机还有其它交付任务在占用本地空间，请等待其完成后再重试，无需重新采集')}`
     }
+    if (task.error_code === 'LC-TRANSFER-010') {
+      // 源包仍在写入：处置动作是"等包稳定后重开一次会话"。
+      // 必须阻止连续重点——每次重点都会按当时的中间大小再建一个注定作废的会话。
+      return `交付失败：${formatFailureReason(task, '节点压缩包仍在写入（采集已到 100% 但 zip 未收尾），请等文件大小不再变化后重试；要交付最新内容请先重新采集')}`
+    }
     return '交付失败（可点「上传到平台」重传，无需重新采集）'
   }
   // queued = 平台已登记一次交付尝试但没走到终态（提交阶段中断/失败）。
@@ -3307,6 +3312,10 @@ async function uploadExistingPackage(ws: WebSocket, task: LogCollectTask, token:
   // 先确认包真的还在，再动平台状态：否则 status 被改成 collecting 之后才发现传无可传，
   // 平台就被留在"采集中"的假态里，只能靠下一轮对账再纠回来。
   // 判据只认 probeArchiveOnNode 的三态结论：探测失败会直接抛出真因，不再冒充"包已不在"。
+  //
+  // "包是否已经写完"不在这里再判一次：前端多一次 stat 就多一次往返与超时面，
+  // 且与 bridge 的判据必然分叉（Q2026102900165 的教训）。bridge 的 direct 路径
+  // 有 EOCD 校验、collect 路径有 waitArchiveSettled，统一由它返回 LC-TRANSFER-010。
   const probe = await probeArchiveOnNode(ws, archivePath)
 
   // failed / cancelled → completed 在状态机里没有直连边，唯一合法出口是回到 collecting。

@@ -18,6 +18,7 @@ import hmac
 import math
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -365,6 +366,14 @@ class LogCollectUploadService:
         task.object_key = object_key
         task.object_size = size
         task.object_sha256 = digest
+        # 产物已落到平台对象存储，交付终态必须由服务端落库：
+        # 前端只在轮询到 job done 后才 PATCH delivered，浏览器关闭/断网时
+        # 平台会永久停在 queued（2026-11-04 Q2026110400883 实测）。
+        # 语义边界：delivery_status 只表示"产物到了平台"；之后 relay 到
+        # 日志服务器失败仍由 relay_service._finish 改回 failed。
+        task.delivery_status = "delivered"
+        task.delivery_finished_at = datetime.now(UTC)
+        task.delivery_error = None
         # 这里必须 commit 而不能只 flush，原因有二：
         # 1) 路由在 complete 返回后会立刻 relay_service.trigger() —— 那是**另一个
         #    session** 对同一行的 UPDATE。本事务若仍持有行锁，trigger 会与它互等
