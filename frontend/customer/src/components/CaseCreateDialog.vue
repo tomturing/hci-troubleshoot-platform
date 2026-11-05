@@ -650,6 +650,7 @@ onBeforeUnmount(() => {
     title="创建工单"
     width="560px"
     :close-on-click-modal="false"
+    append-to-body
     align-center
     class="case-create-dialog"
   >

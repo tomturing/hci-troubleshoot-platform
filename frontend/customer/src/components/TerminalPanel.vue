@@ -1,10 +1,13 @@
 <script setup lang="ts">
 /**
  * TerminalPanel.vue
- * 三态按钮实现：
- * - 状态A：无工单 + 无SSH → "连接SSH并创建工单" → 打开 CaseCreateDialog
- * - 状态B：有工单 + 无SSH → "连接SSH" → 打开 SshConnectDialog
- * - 状态C：已连接 → 显示 xterm 终端
+ * 两态实现（SSH 会话已与工单解耦）：
+ * - 未连接 → "连接 SSH" → 打开统一登录弹框（SshConnectDialog / terminal-only）
+ * - 已连接 → 显示 xterm 终端
+ *
+ * 终端、文件下载、日志收集、Agent 排障共用同一条 SSH 会话：连接本身不再要求
+ * 先建工单，因此不存在"无工单 → 先弹创建工单"的中间态。工单只决定录像/历史
+ * 归档到哪条工单下（无工单照常可连，只是不归档）。
  *
  * Task 42: 终端操作录制功能
  * - 命令输入和输出回显自动录制并上传数据库
@@ -45,40 +48,23 @@ const manualDisconnect = ref(false)
 // 顺手送到 B 机，这类误发在客户生产环境里代价很高。
 const lastExecutedCommand = ref('')
 
-// ===== 三态判断 =====
-const terminalState = computed(() => {
-  if (chatStore.sshConnectionState === 'connected') return 'C'  // 已连接
-  if (chatStore.currentCase) return 'B'                         // 有工单，未连接
-  return 'A'                                                      // 无工单，无连接
-})
-
 // ===== 前置检测 loading =====
 const checkingBridge = ref(false)
 
-async function handleConnectAndCreate() {
-  // 状态A：打开 CaseCreateDialog
-  checkingBridge.value = true
-  try {
-    const status = await checkBridgeBeforeOpen()
-    chatStore.caseCreateDialogBridgeStatus = status
-    chatStore.showCaseTemplate = true
-  } finally {
-    checkingBridge.value = false
-  }
-}
-
 async function handleOpenSshDialog() {
-  // 状态B：打开 SshConnectDialog
+  // SSH 是独立能力：无论有没有工单，入口都是同一条登录弹框。
   checkingBridge.value = true
   try {
     const status = await checkBridgeBeforeOpen()
     chatStore.sshConnectDialogBridgeStatus = status
-    chatStore.openSshFlowDialog(chatStore.currentCase?.case_id || null, 'terminal-only')
+    chatStore.openSshFlowDialog(
+      chatStore.currentCase?.case_id || chatStore.logCollectCaseId || null,
+      'terminal-only',
+    )
   } finally {
     checkingBridge.value = false
   }
 }
-
 
 
 const fullOutputText = ref('')
@@ -94,8 +80,6 @@ const connectingLabel = computed(() => {
   if (chatStore.sshConnectionState === 'connecting') return '正在连接...'
   return '连接中...'
 })
-const caseId = computed(() => chatStore.currentCase?.case_id || 'default')
-
 const errorMessage = computed(() => chatStore.sshErrorMessage)
 
 // 终端录像按工单归档：优先当前聊天工单，其次日志收集绑定的工单。
@@ -168,9 +152,11 @@ watch(isConnected, async (connected) => {
     lastExecutedCommand.value = ''
     return
   }
-  // 连接成功 → 开始录制
-  if (chatStore.currentCase?.case_id) {
-    startRecording(recordingState, chatStore.currentCase.case_id, {
+  // 连接成功 → 开始录制。工单只决定录像归档位置：
+  // 有聊天工单优先用它，否则用日志收集绑定的人工工单；两者都没有则不归档
+  // （SSH 仍可正常使用，避免把"没有工单"变成"不能登录"）。
+  if (historyCaseId.value) {
+    startRecording(recordingState, historyCaseId.value, {
       conversationId: chatStore.conversationId ?? undefined,
     })
   }
@@ -456,10 +442,10 @@ function closePanel() {
 }
 
 onMounted(() => {
-  // 如果 SSH 已连接（如 CaseCreateDialog 流程：SSH 先连接再打开 Drawer），
+  // 如果 SSH 已连接（如统一登录弹框：登录成功后右栏才挂载），
   // watch(isConnected) 不会触发（因为没有 transition），需在 onMounted 手动启动录制
-  if (isConnected.value && chatStore.currentCase?.case_id) {
-    startRecording(recordingState, chatStore.currentCase.case_id, {
+  if (isConnected.value && historyCaseId.value) {
+    startRecording(recordingState, historyCaseId.value, {
       conversationId: chatStore.conversationId ?? undefined,
     })
   }
@@ -519,24 +505,8 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- ===== 三态连接区域 ===== -->
-    <!-- 状态A：无工单 + 无SSH -->
-    <div v-if="terminalState === 'A'" class="ssh-connect-area">
-      <el-button
-        type="primary"
-        size="large"
-        :loading="checkingBridge"
-        class="btn-connect-ssh"
-        @click="handleConnectAndCreate"
-      >
-        <el-icon><Monitor /></el-icon>
-        {{ checkingBridge ? '正在检测 Bridge...' : '连接 SSH 并创建工单' }}
-      </el-button>
-      <p class="connect-hint">点击后检测 Bridge 并打开工单创建弹框</p>
-    </div>
-
-    <!-- 状态B：有工单 + 无SSH -->
-    <div v-if="terminalState === 'B'" class="ssh-connect-area">
+    <!-- ===== 连接区域：未连接时只要求登录，不再引导建工单 ===== -->
+    <div v-if="!isConnected" class="ssh-connect-area">
       <el-button
         type="primary"
         size="large"
@@ -548,11 +518,14 @@ onBeforeUnmount(() => {
         {{ checkingBridge ? '正在检测 Bridge...' : (isConnecting ? '正在连接...' : '连接 SSH') }}
       </el-button>
       <p v-if="isError" class="connect-error">{{ errorMessage }}</p>
-      <p class="connect-hint">点击后检测 Bridge 并打开 SSH 连接弹框</p>
+      <p class="connect-hint">终端 / 文件下载 / 日志收集 / Agent 排障共用这一条 SSH 会话</p>
+      <p v-if="!hasCaseContext" class="connect-hint connect-hint--weak">
+        未绑定工单也可连接；终端录像与回放历史需有工单后归档
+      </p>
     </div>
 
-    <!-- 状态C：已连接 → 显示终端 -->
-    <div v-if="terminalState === 'C'" class="terminal-stage">
+    <!-- 已连接 → 显示终端 -->
+    <div v-else class="terminal-stage">
       <div ref="terminalContainer" class="terminal-canvas" />
     </div>
 
@@ -698,6 +671,12 @@ onBeforeUnmount(() => {
   color: #909399;
   font-size: 12px;
   margin: 0;
+}
+
+/* 次级说明：无工单时的录像归档限制，不能与主提示同等视觉权重 */
+.connect-hint--weak {
+  color: #6b6f76;
+  font-size: 11px;
 }
 
 

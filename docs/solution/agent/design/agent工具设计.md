@@ -2,7 +2,7 @@
 status: active
 category: solution
 audience: developer
-last_updated: 2026-10-21
+last_updated: 2026-11-05
 owner: team
 ---
 
@@ -1077,6 +1077,7 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 
 | 日期 | 版本 | 摘要 |
 |------|------|------|
+| 2026-11-05 | v3.8 | **SSH 会话来源与工具门禁解耦（入口口径）**：终端 / 文件下载 / 日志收集 / Agent 排障共用同一 bridge 会话，但"会话由谁建立"不再绑定建单流程。`stores/chat.ts` 的 `checkAndOpenTerminal` 改为登录门禁（已连接零探测、未连接先检测 bridge 再弹统一登录框），`TerminalPanel` 删除「无工单 → 先建单」三态。§2.3 的门禁结论不变：Agent 工具仍要求 `sshConnectionState === 'connected'`，区别只在于用户现在可以**独立于工单**先建立该会话（例如进终端排查后再建单，或只做文件下载/日志收集）。详见 [SSH 终端独立化与登录门禁统一方案](../../custom-ui/events/2026-11-05-SSH终端独立化与登录门禁统一方案.md) |
 | 2026-11-02 | v3.7 | **排障前置 Bridge 与 SSH 门禁（工具面可用性的前置条件）**：Agent 的全部节点侧工具（`acli_exec`/`bash_exec`/`sftp`）都依赖 terminal_bridge 的 SSH 会话，缺会话时后端仍会接受消息并把 SOP 推到「执行中」，直到超时才暴露。前端 `stores/chat.ts` 新增 `requireTroubleshootReady` 门禁，「继续处理未关闭工单 / 切换历史工单 / 已有工单内发消息」三个入口在动作前统一校验「bridge 可握手 + `sshConnectionState === 'connected'`」，未满足时弹 `TroubleshootGateDialog`（下载并运行 bridge / SSH 登录 / 无 SSH 排障=离线诊断 / 暂不排障）；已连接时零探测放行，并发入口共用同一结论。新增 `troubleshootGateBlockedSend` 把「消息未发出」的两种原因（流式守卫 / 门禁）分开，避免交互卡片误报「诊断仍在进行中」。详见 [排障前置 Bridge 与 SSH 门禁设计](../../custom-ui/events/2026-11-02-排障前置Bridge与SSH门禁设计.md) |
 | 2026-10-29 | v3.6 | **`database/seeds/` 不再只装 Agent 侧种子，并明确 seeds 与 data-migrations 的分工**：新增 `06_log_collect_scenarios.sql`（日志收集「故障场景」字典，非 Agent 工具面数据），与 `01_tool_definitions.sql`/`02_system_prompts.sql`/`03_skill_definitions.sql` 同一策略（`ON CONFLICT DO NOTHING`，不回滚运营在管理台的修改）。该文件原本放在 `data-migrations/056`，合并后 staging 的 `db-migrate` PreSync 必然失败（存量库 Step 1 DML 早于 Step 3 atlas apply，新表尚不存在）——故确立分工：**新表的初始数据 → `seeds/`（PostSync db-seed）；既有表的数据搬迁/纠正 → `data-migrations/`（PreSync）**，并写入 `database/README.md` 铁律第 6 条。详见 [事件文档](../../events/2026-10-29-日志收集场景字典与Agent不联动.md) §七 |
 | 2026-10-29 | v3.5 | **日志收集不在 Agent 工具面之内（澄清边界）**：排障 Agent **没有** `log_collect` 类工具，日志包采集由用户在右栏 SSH 终端执行 `acli log_collect` 完成，Agent 不下发、不感知进度。此前两者并排展示，现场用户误以为可以让 Agent 去收日志。前端 `stores/chat.ts` 新增 `isAgentChatHidden = logCollectVisible && isTerminalVisible`：采集打开且终端就绪时中央会话收起（`v-show`，会话状态与滚动位置保留），SSH 未就绪时改为标题栏显式提示「与排障 Agent 不联动」。`GET /api/log-collect/scenarios` 提供的场景字典只用于勾选项文案，**不注册为 Agent 工具、不进 ReAct 工具列表**。详见 [日志收集场景字典与 Agent 不联动](../../events/2026-10-29-日志收集场景字典与Agent不联动.md) |
