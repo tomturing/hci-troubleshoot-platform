@@ -57,6 +57,7 @@ const openTerminalAfterConnect = computed(() => chatStore.sshFlowDialogMode !== 
     :title="dialogTitle"
     width="500px"
     :close-on-click-modal="false"
+    append-to-body
     align-center
     class="ssh-connect-dialog"
     @close="handleCancelled"

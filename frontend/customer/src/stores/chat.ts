@@ -14,7 +14,7 @@ import {
   rightWidthRange,
 } from '@/utils/workspaceLayout'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
-import { checkBridgeRunning, checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, buildSftpMessage, parseSftpListPayload, parseSftpTransferPayload, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec, type SftpEntry, type SftpTransferPayload } from '@/api/terminal'
+import { checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, buildSftpMessage, parseSftpListPayload, parseSftpTransferPayload, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec, type SftpEntry, type SftpTransferPayload } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
   buildSafeExecResultPayload,
@@ -2607,20 +2607,44 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * 点击「终端」按钮的入口
-   * 先检测 Bridge，根据结果决定：直接打开侧边栏 或 提示下载
+   * 点击「SSH 终端」按钮的入口。
+   *
+   * SSH 会话是独立能力，终端 / 文件下载 / 日志收集 / Agent 排障共用同一条会话，
+   * 因此这里只做「登录门禁」：
+   * - 已连接 → 零探测直接展示终端（与排障门禁口径一致）；
+   * - 未连接 → 检测 Bridge；可用则打开统一登录弹框（terminal-only），
+   *   成功后再落到终端页签；
+   * - Bridge 不可用 → 复用既有下载提示弹窗。
+   *
+   * 历史行为（无工单时先弹「创建工单」）已废弃：把建单当成 SSH 的前置条件，
+   * 会让只想登进终端看一眼的用户被迫走完整建单流程。
    */
   async function checkAndOpenTerminal() {
-    bridgeStatus.value = 'checking'
-    const running = await checkBridgeRunning()
-    if (running) {
+    if (sshConnectionState.value === 'connected') {
       bridgeStatus.value = 'running'
+      pendingRightPanelTab.value = 'terminal'
       openRightPanel('terminal')
-    } else {
-      bridgeStatus.value = 'not_running'
+      return
+    }
+
+    bridgeStatus.value = 'checking'
+    const status = await checkBridgeBeforeOpen()
+    bridgeStatus.value = status === 'running' ? 'running' : 'not_running'
+    if (status !== 'running') {
       // 让 App.vue 展示下载提示弹窗（通过 showBridgeDownload 状态驱动）
       showBridgeDownload.value = true
+      return
     }
+
+    // 先展开右栏再弹登录框：用户取消登录后仍能看到终端面板与「连接 SSH」重试入口，
+    // 而不是点了顶栏按钮却什么都没留下。
+    pendingRightPanelTab.value = 'terminal'
+    openRightPanel('terminal')
+    sshConnectDialogBridgeStatus.value = status
+    openSshFlowDialog(
+      currentCase.value?.case_id ?? logCollectCaseId.value ?? null,
+      'terminal-only',
+    )
   }
 
   /**
@@ -2694,6 +2718,9 @@ export const useChatStore = defineStore('chat', () => {
     assistantType?: string,
   ) {
     devLog('SSH-FLOW-DIALOG', '打开弹框', { caseId, mode, assistantType })
+    // 同一时刻只允许一个模态：创建工单弹框若还开着（例如用户先发消息再点 SSH 终端），
+    // 必须先收起，否则两个弹框叠加，后开的登录框会被前一个的遮罩/层级干扰。
+    showCaseTemplate.value = false
     sshFlowDialogCaseId.value = caseId
     sshFlowDialogMode.value = mode
     sshFlowDialogAssistantType.value = assistantType
