@@ -433,6 +433,79 @@ export function fallbackNodeState(snapshot: {
 }
 
 /**
+ * 节点上报的上传阶段语义（与文案语言无关）。
+ *
+ * `unknown` 表示这一串文本不是可识别的上传状态，调用方必须按"拿不到证据"处理，
+ * 不能自行猜测成成功或失败。
+ */
+export type UploadStatePhase = 'delivered' | 'failed' | 'uploading' | 'unknown'
+
+/**
+ * 归一化 acli progress 里的 `upload_state` 文本。
+ *
+ * 第一性原理：这段文本是给人读的，中文「发送成功 / 发送中 / 发送失败」与英文
+ * `Success / Sending / Sending failed` 只是同一状态的不同表示。判定必须按词义，
+ * 不能按某一种语言的字面量——2026-11-06 英文环境实测 `upload_state="Success"`，
+ * 旧代码用 `includes('成功')` 判断，P1 明明归档成功却会被判成失败并阻断收尾。
+ *
+ * 顺序硬约束：`failed` 必须最先判。英文 `Sending failed` 同时含 sending 与 failed，
+ * 先判 uploading 会把失败吞掉。
+ */
+export function classifyUploadState(raw?: string | null): UploadStatePhase {
+  const text = (raw || '').trim()
+  if (!text) return 'unknown'
+  const lower = text.toLowerCase()
+
+  if (
+    text.includes('失败') ||
+    text.includes('错误') ||
+    text.includes('异常') ||
+    lower.includes('fail') ||
+    lower.includes('error') ||
+    lower.includes('unauthorized') ||
+    lower.includes('timeout') ||
+    lower.includes('abnormal')
+  ) {
+    return 'failed'
+  }
+  if (
+    text.includes('成功') ||
+    lower.includes('success') ||
+    lower.includes('succeed') ||
+    lower.includes('complete') ||
+    lower.includes('finished') ||
+    lower.includes('done')
+  ) {
+    return 'delivered'
+  }
+  if (
+    text.includes('发送中') ||
+    text.includes('上传中') ||
+    text.includes('进行中') ||
+    lower.includes('sending') ||
+    lower.includes('uploading') ||
+    lower.includes('progress') ||
+    lower.includes('pending')
+  ) {
+    return 'uploading'
+  }
+  return 'unknown'
+}
+
+/**
+ * P1 收尾是否放行。
+ *
+ * 刻意保留旧语义：`upload_state` 缺失（节点没给上传块）时放行，由平台侧其它证据
+ * 兜底；只有**明确给了状态且不是成功**才阻断。单独抽出来是为了让这条非显然
+ * 规则可测，而不是埋在组件的条件表达式里。
+ */
+export function isP1UploadDelivered(raw?: string | null): boolean {
+  const state = (raw || '').trim()
+  if (!state) return true
+  return classifyUploadState(state) === 'delivered'
+}
+
+/**
  * 下发新任务前的守卫：这个对账结论是否应该**阻止** create。
  *
  * 只拦"节点上确实有活、会与新 create 抢同一会话"的情形：
