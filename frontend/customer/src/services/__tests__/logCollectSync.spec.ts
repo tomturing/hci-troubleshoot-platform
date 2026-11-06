@@ -3,6 +3,7 @@ import {
   blocksCreate,
   buildSyncNotice,
   decideNodeSync,
+  DELIVERY_EVIDENCE_WAIT_MS,
   fallbackNodeState,
   hashReport,
   interpretArchiveProbe,
@@ -197,8 +198,11 @@ describe('decideNodeSync 节点态直映射', () => {
       archiveExists: false,
       platformDelivered: false,
     })
-    expect(action.action).toBe('none')
-    expect(action.reason).toContain('重新采集')
+    // 证据驱动状态机：包已不在只是"这一刻没量到"，不能反推"插件直传成功"、
+    // 更不能立刻判失败。只做有界等待，把交付结论留给落盘侧核验。
+    expect(action.action).toBe('wait_delivery')
+    expect(action.action).not.toBe('adopt')
+    expect(action.reason).toContain('正在确认')
   })
 
   // 现场回归（工单 Q2026102701193，2026-10-27）：
@@ -244,9 +248,9 @@ describe('decideNodeSync 节点态直映射', () => {
       archivePath: '/sf/data/local/acli/tmp/data/log_collect/Q2026102701193.zip',
       platformDelivered: false,
     })
-    expect(action.action).toBe('none')
+    expect(action.action).toBe('wait_delivery')
     expect(action.action).not.toBe('adopt')
-    expect(action.reason).toContain('未确认')
+    expect(action.reason).toContain('正在确认')
   })
 
   it('平台已完成但未交付 + 节点无任务 → 没有可交付的物证，不提供上传入口', () => {
@@ -417,5 +421,82 @@ describe('fallbackNodeState 语言无关', () => {
 
   it('识别不了仍然返回 unknown', () => {
     expect(fallbackNodeState({ status: '' })).toBe('unknown')
+  })
+})
+
+/**
+ * 证据驱动交付状态机（2026-11-06，Q2026101201081）。
+ *
+ * 现场教训：acli 16:17:10 报「收集任务已完成」，20 GiB 的包 16:18 才落盘。
+ * 旧实现在报告完成那一刻同时做了两件错事：
+ *   - `upload_state` 为空却写 `delivered`（假成功）；
+ *   - 一次瞬时 `archive_missing` 就写 `failed + LC-TRANSFER-007`（假失败）。
+ * 交付结论必须由证据决定，且证据不足时只能"等待/未知"，不能二选一猜一个。
+ */
+describe('交付证据有界等待', () => {
+  const completed = {
+    platformStatus: 'completed' as const,
+    nodeState: 'completed' as const,
+    reportRefreshed: true,
+    platformDelivered: false,
+  }
+
+  it('窗口固定为 10 分钟，且只有一个常量来源', () => {
+    expect(DELIVERY_EVIDENCE_WAIT_MS).toBe(600000)
+  })
+
+  it('落盘侧核验通过 → 补登已交付，与节点自述无关', () => {
+    expect(decideNodeSync({ ...completed, archiveVerified: 'delivered' }).action).toBe('patch_delivered')
+  })
+
+  it('落盘侧明确否定 + 节点自述成功 → 不写库、不报失败，进入等待', () => {
+    const action = decideNodeSync({
+      ...completed,
+      nodeDelivered: true,
+      archiveVerified: 'failed',
+    })
+    expect(action.action).toBe('wait_delivery')
+    expect(action.reason).toContain('等待')
+  })
+
+  it('无证据 + 包已不在 → 有界等待，不得断言"插件直传成功/无需再上传"', () => {
+    const action = decideNodeSync({ ...completed, archiveExists: false })
+    expect(action.action).toBe('wait_delivery')
+    expect(action.reason).not.toContain('无需再上传')
+  })
+
+  it('窗口边界：未到点是等待，到点收敛为结果未知（不写 failed）', () => {
+    expect(
+      decideNodeSync({ ...completed, deliveryWaitElapsedMs: DELIVERY_EVIDENCE_WAIT_MS - 1 }).action,
+    ).toBe('wait_delivery')
+    const expired = decideNodeSync({ ...completed, deliveryWaitElapsedMs: DELIVERY_EVIDENCE_WAIT_MS })
+    expect(expired.action).toBe('delivery_unknown')
+    expect(expired.reason).toContain('结果未知')
+  })
+
+  it('包仍在盘 → 保留补交付入口，不被等待逻辑吞掉', () => {
+    const action = decideNodeSync({ ...completed, archiveExists: true })
+    expect(action.action).toBe('adopt')
+    expect(action.adoptMode).toBe('deliver')
+  })
+
+  it('回归护栏：采集结论绝不被交付证据拦住（#1277 / Q2026101401683）', () => {
+    // "要求完成态自证"曾把真实完成永久卡在 collecting；本次改动只约束交付结论。
+    expect(
+      decideNodeSync({
+        platformStatus: 'collecting',
+        nodeState: 'completed',
+        archiveVerified: 'failed',
+        deliveryWaitElapsedMs: 0,
+      }).action,
+    ).toBe('patch_completed')
+  })
+
+  it('两种新动作都给出可操作提示，且不谎称已归档', () => {
+    const waiting = buildSyncNotice({ action: 'wait_delivery', reason: '正在确认归档件' })
+    const unknown = buildSyncNotice({ action: 'delivery_unknown', reason: '结果未知' })
+    expect(waiting).toContain('10 分钟')
+    expect(waiting).not.toContain('已归档')
+    expect(unknown).toContain('不会判成失败')
   })
 })

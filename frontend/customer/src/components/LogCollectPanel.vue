@@ -53,9 +53,11 @@ import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
   decideNodeSync,
+  DELIVERY_EVIDENCE_WAIT_MS,
   fallbackNodeState,
   hashReport,
   interpretArchiveProbe,
+  type ArchiveVerification,
   type NodeState,
   type SyncAction,
 } from '@/services/logCollectSync'
@@ -102,6 +104,37 @@ const POLL_INTERVAL = 5000
 // 终态任务的低频对账间隔：failed 的节点侧任务可能仍在跑（需要「接管」），
 // 完全停轮询会让接管入口再也不出现；但每 5s 打一次 SSH 也没有必要。
 const TERMINAL_POLL_INTERVAL = 30000
+
+/**
+ * 交付证据等待起点（单调时钟，不持久化）。
+ *
+ * 关页面重开 / 换端接管时内存起点会丢，此时以任务的 `updated_at` 为锚点：
+ * `status=completed` 写入平台那一刻就是"采集完成"时刻，与内存起点同义。
+ * 不做这个回退，窗口会被每轮对账重置成 0，等待就会变成永久等待。
+ */
+let deliveryWaitStartedAt = 0
+
+function deliveryWaitElapsed(task: LogCollectTask | null): number {
+  if (deliveryWaitStartedAt) return Math.max(0, Date.now() - deliveryWaitStartedAt)
+  const anchor = task?.updated_at || task?.finished_at
+  const ts = anchor ? Date.parse(String(anchor)) : NaN
+  return Number.isFinite(ts) ? Math.max(0, Date.now() - ts) : 0
+}
+
+/** 唯一调用链：状态转移带上 trace/case/task、证据来源与等待时长，便于端到端串起前后端日志。 */
+function logDeliveryDecision(
+  event: string,
+  detail: Record<string, unknown>,
+  task: LogCollectTask | null = currentTask.value,
+) {
+  console.info('[log-collect][delivery]', JSON.stringify({
+    event,
+    trace_id: `lc-${props.caseId}-${task?.task_id ?? 'none'}`,
+    case_id: props.caseId,
+    task_id: task?.task_id ?? null,
+    ...detail,
+  }))
+}
 
 // 最近一次桥侧失败的规范错误码（LC-<LAYER>-<NNN>）。
 //
@@ -2641,7 +2674,20 @@ async function syncNodeState(
     const nodeDelivered = deliveryEvidenceOf(snapshot, currentTask.value) === 'delivered'
     const platformDelivered =
       currentTask.value?.delivery_status === 'delivered' || currentTask.value?.relay_status === 'success'
-    const action = decideNodeSync({
+    // 落盘侧核验只在"P1 已完成但未登记交付"时做，不给每条对账都加一次 HTTP。
+    // 结果作为唯一权威证据交给判定层；核验不可用返回 'none'，由有界等待兜底。
+    const isP1Completed =
+      (currentTask.value?.upload_mode === 'acli_direct' || Boolean(currentTask.value?.remote_url)) &&
+      nodeState === 'completed' &&
+      !platformDelivered
+    const archiveVerified: ArchiveVerification = isP1Completed
+      ? await verifyArchiveEvidence(
+          currentTask.value!.task_id,
+          observedArchiveSize.value || currentTask.value!.archive_size || null,
+        )
+      : 'none'
+    const waitMs = isP1Completed ? deliveryWaitElapsed(currentTask.value) : 0
+    let action = decideNodeSync({
       platformStatus: currentTask.value?.status ?? null,
       nodeState,
       archivePath: snapshot.archive_path,
@@ -2654,6 +2700,26 @@ async function syncNodeState(
       reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
       targetHosts: targetHostList(),
       platformDelivered,
+      archiveVerified,
+      deliveryWaitElapsedMs: waitMs,
+    })
+    // 节点自述"发送成功"但落盘侧明确否定：两边证据冲突时一律不写库，
+    // 转成有界等待，等包/归档件状态稳定再收敛（避免 Q2026101201081 的假失败）。
+    if (action.action === 'patch_delivered' && archiveVerified === 'failed') {
+      action = {
+        action: 'wait_delivery',
+        reason: '日志服务器上暂未查到归档件，与节点报告不一致；正在等待上传/归档确认',
+        ownership: action.ownership,
+      }
+    }
+    logDeliveryDecision('sync_decision', {
+      source: options.source ?? 'unknown',
+      action: action.action,
+      evidence: archiveVerified,
+      node_delivered: nodeDelivered,
+      archive_exists: snapshot.archive_exists ?? null,
+      wait_ms: waitMs,
+      wait_limit_ms: DELIVERY_EVIDENCE_WAIT_MS,
     })
     // 节点报告的包路径就是补交付的源：平台侧的 archive_path 在"从未交付"的任务上是空的。
     nodeArchivePath.value = snapshot.archive_path || ''
@@ -2700,9 +2766,16 @@ async function syncNodeState(
                   // 避免"已完成但 upload_mode 为空"在结果页显示成"未记录"
                   upload_mode:
                     currentTask.value.upload_mode ?? (currentTask.value.remote_url ? 'acli_direct' : undefined),
-                  // 采集完成不等于已交付：只有能拿出证据时才写 delivered，
-                  // 否则留空由补交付入口补齐（写成 delivered 会让"上传到平台"永远不出现）。
-                  delivery_status: deliveryEvidenceOf(snapshot, currentTask.value),
+                  // 采集完成不等于已交付：只有拿到正向证据才写 delivered。
+                  // 落盘侧明确否定时一律留空（可能是包还没传完的瞬时观测）；
+                  // 核验不可用（旧后端）时保留「节点明确报发送成功」这条兼容路径。
+                  delivery_status:
+                    archiveVerified === 'failed'
+                      ? undefined
+                      : archiveVerified === 'delivered' ||
+                          deliveryEvidenceOf(snapshot, currentTask.value) === 'delivered'
+                        ? 'delivered'
+                        : undefined,
                   archive_path: snapshot.archive_path || currentTask.value.archive_path || undefined,
                   // 节点侧只在包还在时量得到；已有值优先保留，避免 P2 的记录被 0 覆盖。
                   // 兜底顺序里必须有 observedArchiveSize：判"完成"的那份快照必然量不到
@@ -2718,32 +2791,11 @@ async function syncNodeState(
                   error_message: normalizeErrorMessage(action.reason),
                   error_code: lastNodeErrorCode || undefined,
                 }
-          // P1 的"已交付"此前完全由节点自述决定，而插件在上传成功后已自删
-          // 压缩包——一旦判错就永久不可恢复。补登 delivered 之前必须让服务端
-          // 按产物名回查日志服务器的归档件。
-          if (action.action === 'patch_delivered') {
-            // 用 try/catch 而不是 `.catch()`：核验接口在旧版本前端/旧后端组合下
-            // 可能根本不存在，直接调用会在同步阶段抛 TypeError，`.catch()` 接不住。
-            let verdict: { verified?: boolean; reason?: string } | null = null
-            try {
-              verdict = await logCollectApi.verifyP1Archive(
-                currentTask.value.task_id,
-                observedArchiveSize.value || currentTask.value.archive_size || null,
-              )
-            } catch {
-              // 核验不可用（后端未升级 / 网络异常）时保持旧行为：
-              // 不能用"核验不了"去否掉一条本来成立的交付结论。
-              verdict = null
-            }
-            if (verdict && verdict.verified === false) {
-              patch = {
-                delivery_status: 'failed',
-                delivery_error: `P1 归档核验未通过：${verdict.reason}`,
-                error_code: 'LC-TRANSFER-007',
-                error_message: `日志服务器上没有找到一致的归档件（${verdict.reason}）`,
-              }
-            }
-          }
+          // 归档核验已在判定前统一做过一次（archiveVerified），此处不再重复调用：
+          // 核验明确否定时动作已被改写成 wait_delivery，根本不会走到补登分支。
+          // 旧实现在这里把一次瞬时 archive_missing 直接写成
+          // `delivery_status=failed + LC-TRANSFER-007`，而大包可能还在打包/上传途中
+          // （Q2026101201081：16:17 判完成、16:18 包才落盘）——那是假失败。
           currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, patch)
           if (action.action === 'patch_completed') {
             stage.value = 'done'
@@ -2816,6 +2868,17 @@ async function syncNodeState(
           }
         }
       }
+    }
+    // 交付证据有界等待：窗口内保持高频轮询尽快收敛，超时后降频并明确"结果未知"。
+    // 不写库、不改 stage，换端接管时由同一纯函数重新判定，保证幂等。
+    if (action.action === 'wait_delivery') {
+      nodeSyncHint.value = buildSyncNotice(action)
+      startAutoSync(POLL_INTERVAL)
+      logDeliveryDecision('wait_delivery_polling', { wait_ms: waitMs, interval_ms: POLL_INTERVAL })
+    } else if (action.action === 'delivery_unknown') {
+      nodeSyncHint.value = buildSyncNotice(action)
+      startAutoSync(TERMINAL_POLL_INTERVAL)
+      logDeliveryDecision('delivery_unknown', { wait_ms: waitMs, interval_ms: TERMINAL_POLL_INTERVAL })
     }
     return action
   } finally {
@@ -3160,25 +3223,65 @@ async function pollUntilCollected(
   }
 }
 
+/**
+ * 落盘侧归档核验：交付结论的唯一权威证据源。
+ *
+ * 三态返回，绝不能把"接口不可用 / 抛错"当成"核验通过"——旧后端与前端是两个独立发布物，
+ * 用 try/catch 而不是 `.catch()`，因为方法根本不存在时同步 TypeError 不会进 Promise 链。
+ */
+async function verifyArchiveEvidence(taskId: string, size: number | null): Promise<ArchiveVerification> {
+  try {
+    const verdict = await logCollectApi.verifyP1Archive(taskId, size)
+    if (verdict?.verified === true) return 'delivered'
+    if (verdict?.verified === false) return 'failed'
+  } catch {
+    // 核验不可用：按"无结论"处理，交给有界等待
+  }
+  return 'none'
+}
+
 async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null) {
   // 必须用"通过完成判据的那一份快照"，不能回读 progress.value：
   // 否则上传状态/包路径可能来自另一次读取（早先就是拿旧报告的「成功」放行了假完成）。
-  if (snapshot?.upload_state && !snapshot.upload_state.includes('成功')) {
-    throw new Error(`日志服务器上传失败：${snapshot.upload_state}，可改用 P2 中转`)
+  const uploadState = (snapshot?.upload_state || '').trim()
+  if (uploadState && !uploadState.includes('成功')) {
+    throw new Error(`日志服务器上传失败：${uploadState}，可改用 P2 中转`)
   }
-  await markCompleted(task.task_id, {
+  const archiveSize = snapshot?.archive_size || observedArchiveSize.value || task.archive_size || null
+  const evidence = await verifyArchiveEvidence(task.task_id, archiveSize)
+  const nodeSuccess = uploadState.includes('成功')
+  // 只有正向证据才写 delivered：
+  //   - 落盘侧核验通过（最强，与节点态无关）；
+  //   - 核验不可用（旧后端）且节点明确报「发送成功」（兼容路径）。
+  // `upload_state` 为空既不证明成功也不证明失败：acli 某些版本根本不打印该字段，
+  // 且完成报告可以早于打包/上传（Q2026101201081：16:17 报完成、16:18 包才落盘）。
+  // 旧实现把它当成功写 delivered、把一次瞬时 archive_missing 当失败写 failed，两头都说谎。
+  const delivered = evidence === 'delivered' || (evidence === 'none' && nodeSuccess)
+  const patch: Partial<LogCollectTask> = {
     upload_mode: 'acli_direct',
-    // 走到这里说明 upload_state 已确认"成功"，这是 P1 唯一能拿到的交付证据。
-    delivery_status: 'delivered',
     archive_path: snapshot?.archive_path || undefined,
-    // 大小来自 bridge 的 stat（插件 progress 不打印大小）。这里的 snapshot 是
-    // "上传成功"那一份——包已被插件自删，size 必然为 0，所以必须回退到过程中记录的峰值，
-    // 否则每次 P1 都会写成「未记录」。
+    // 大小来自 bridge 的 stat（插件 progress 不打印大小）。上传成功那一份快照里
+    // 包已被插件自删、size 必然为 0，所以必须回退到过程中记录的峰值。
     archive_size: snapshot?.archive_size || observedArchiveSize.value || undefined,
-  })
+  }
+  if (delivered) patch.delivery_status = 'delivered'
+  await markCompleted(task.task_id, patch)
   stage.value = 'done'
-  cleanupTip.value = 'P1 由插件直传日志服务器；上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
-  ElMessage.success('日志已归档到日志服务器')
+  if (delivered) {
+    deliveryWaitStartedAt = 0
+    cleanupTip.value = 'P1 由插件直传日志服务器；上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
+    ElMessage.success('日志已归档到日志服务器')
+    logDeliveryDecision('delivered', { evidence, upload_state: uploadState, wait_ms: 0 }, task)
+  } else {
+    // 采集结论照常落库，交付结论进入有界等待：不写 failed、不写 delivered。
+    // 窗口从这一刻起算；关页面重开时由 deliveryWaitElapsed() 回退到任务 updated_at。
+    deliveryWaitStartedAt = Date.now()
+    nodeSyncHint.value =
+      '采集已完成，正在确认日志服务器归档件（最多等待 10 分钟）；压缩包仍在节点时可直接点「上传到平台」经平台中转补交付'
+    startAutoSync(POLL_INTERVAL)
+    ElMessage.info('采集已完成，正在确认日志服务器归档件')
+    logDeliveryDecision('wait_delivery', { evidence, upload_state: uploadState, wait_ms: 0 }, task)
+  }
 }
 
 /**

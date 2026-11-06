@@ -34,6 +34,19 @@ export type PlatformStatus =
   | 'cancelled'
   | (string & {})
 
+/**
+ * 交付证据有界等待窗口（10 分钟）。
+ *
+ * 从「采集完成」起算：acli 的完成报告可以在包落盘、上传完成之前发出，
+ * 因此在完成瞬间既不能写 delivered，也不能写 failed。窗口内只做幂等观察，
+ * 超时后收敛为「结果未知」并保留人工入口，绝不等成死循环、也不把未知写成失败。
+ * 固定常量而非自适应：先用指标观察真实打包耗时，再考虑调整，避免引入新复杂度。
+ */
+export const DELIVERY_EVIDENCE_WAIT_MS = 10 * 60 * 1000
+
+/** 落盘侧核验结论（服务端按产物名回查日志服务器归档件），三态不接受布尔 */
+export type ArchiveVerification = 'delivered' | 'failed' | 'none'
+
 export interface SyncInput {
   /** 平台当前任务状态；为空表示平台上没有任务记录 */
   platformStatus?: PlatformStatus | null
@@ -91,6 +104,19 @@ export interface SyncInput {
    * 省略时按"未交付"处理——宁可多给一次上传入口，也不要把没交付的任务说成已归档。
    */
   platformDelivered?: boolean
+  /**
+   * 落盘侧归档核验结论。它是**唯一权威的交付证据源**：
+   * 节点自述（`nodeDelivered`）只是 acli 的一面之词，包在盘（`archiveExists`）只证明可补交付。
+   *
+   * `failed` 表示"这一刻日志服务器上没有"，**不等于最终失败**——大包可能还没传完。
+   * 因此 `failed` 不触发写库，只作为继续等待的依据；`none` 表示接口不可用/没结论。
+   */
+  archiveVerified?: ArchiveVerification
+  /**
+   * 自「采集完成」起已等待的毫秒数。仅用于 `platformStatus === 'completed'` 的收敛判定，
+   * 由调用方从单调起点计算，纯数据入参便于穷举测试边界。
+   */
+  deliveryWaitElapsedMs?: number
 }
 
 /** 报告归属：本次任务 / 上一次任务的旧报告 / 无从判断 */
@@ -106,6 +132,14 @@ export type SyncActionKind =
   | 'patch_failed'
   /** 平台已完成、节点报告 P1 直传成功：把交付证据补写进平台（status 不动） */
   | 'patch_delivered'
+  /**
+   * 已完成但尚无交付证据：不写任何终态，继续幂等观察（10 分钟窗口内）。
+   * 与「不要求完成态自证」的历史修复（#1277/#1284，Q2026101401683）不冲突：
+   * 本动作只约束**交付结论**，绝不拦 `status=completed` 的采集结论。
+   */
+  | 'wait_delivery'
+  /** 等待窗口耗尽仍无证据：结果未知。不写 failed，保留人工核验与补交付入口 */
+  | 'delivery_unknown'
   | 'warn_node_busy'
   /** 平台已归档但节点仍在跑：提示冲突，必要时允许"以节点为准纠正" */
   | 'warn_completed_conflict'
@@ -257,12 +291,38 @@ export function decideNodeSync(input: SyncInput): SyncAction {
       }
     }
 
-    // 「采集完成」≠「已交付」，但「未登记交付」也≠「未交付」：
-    // P1 的交付对平台不可观测，节点报告是唯一证据。报告说发送成功、平台却没记录，
-    // 只能说明**平台漏记**，不能据此让用户重传一个已被插件删除的包
-    // （工单 Q2026102701193，2026-10-27 现场：acli 报发送成功、zip 已自删，
-    //  面板却一直提示「压缩包仍在节点，请点上传到平台」，点下去 stat 必然 exit 1）。
-    if (!input.platformDelivered && input.nodeDelivered) {
+    // 「采集完成」≠「已交付」。证据优先级严格按可观测强度排序：
+    //   落盘侧归档核验 > 节点自述「发送成功」 > 包仍在盘（只是可补交付，不是已交付）。
+    // 有界等待只作用于交付结论，不拦 status=completed：
+    // 历史故障 Q2026101401683 就是"要求完成态自证"把真实完成永久卡在 collecting，
+    // 这个坑不能借本次改动复活（#1277/#1284）。
+    const elapsed = input.deliveryWaitElapsedMs ?? 0
+    const waitForEvidence = (reason: string): SyncAction =>
+      elapsed < DELIVERY_EVIDENCE_WAIT_MS
+        ? { action: 'wait_delivery', reason, ownership }
+        : {
+            action: 'delivery_unknown',
+            reason: `${reason}；已等待 ${Math.round(elapsed / 60000)} 分钟仍无归档证据，结果未知，请手动「刷新进度」或点「上传到平台」确认`,
+            ownership,
+          }
+
+    // 落盘侧明确否定：也不能立刻写 failed。大包可能还在打包/上传途中，
+    // 此刻"服务器上没有"只是瞬时观测（Q2026101201081：16:17 判完成、16:18 包才落盘）。
+    if (!input.platformDelivered && input.archiveVerified === 'failed') {
+      return waitForEvidence('日志服务器上暂未查到归档件，正在等待上传/归档确认')
+    }
+    // 落盘侧确认存在：最强证据，与节点态无关
+    if (!input.platformDelivered && input.archiveVerified === 'delivered') {
+      return {
+        action: 'patch_delivered',
+        reason: '日志服务器上已查到一致的归档件，平台缺这条记录；按已交付补登',
+        ownership,
+      }
+    }
+    // 核验不可用（旧后端 / 网络异常）时保留节点自述这条兼容路径：
+    // 报告说发送成功、平台却没记录，只能说明平台漏记，不能让用户重传已被插件删除的包
+    // （工单 Q2026102701193，2026-10-27 现场）。
+    if (!input.platformDelivered && input.nodeDelivered && input.archiveVerified !== 'failed') {
       return {
         action: 'patch_delivered',
         reason: '节点报告 P1 直传日志服务器成功，平台缺这条记录；按已交付补登（平台不留副本属 P1 的已知代价）',
@@ -282,14 +342,11 @@ export function decideNodeSync(input: SyncInput): SyncAction {
         }
       }
       if (nodeState === 'completed') {
-        return {
-          action: 'none',
-          reason:
-            input.archiveExists === false
-              ? '节点已采集完成且压缩包已不在（P1 发送成功后插件会自删），无需再上传；如需产物请重新采集'
-              : '节点已采集完成，但未确认压缩包是否仍在节点（缺少 stat 结论）；如需产物请重新采集',
-          ownership,
-        }
+        return waitForEvidence(
+          input.archiveExists === false
+            ? '采集已完成，压缩包已不在节点且日志服务器暂未查到归档件；正在确认插件是否已直传成功'
+            : '采集已完成，正在确认日志服务器归档件（尚未拿到交付证据）',
+        )
       }
       return {
         action: 'none',
@@ -547,6 +604,10 @@ export function buildSyncNotice(action: SyncAction): string {
     case 'patch_delivered':
       // 不是"已归档"的高调宣告：平台只是补上节点早已给出的结论，产物并不在平台侧。
       return `日志已交付：${action.reason}`
+    case 'wait_delivery':
+      return `${action.reason}（采集结论已完成，自动刷新会继续确认，最多等待 10 分钟；包仍在节点时可直接点「上传到平台」）`
+    case 'delivery_unknown':
+      return `${action.reason}。不会判成失败，也不会要求重新采集`
     case 'warn_completed_conflict':
       return action.canCorrect
         ? `${action.reason}。可点「以节点为准纠正」把平台状态改回采集中并继续跟进（不会删除节点或日志服务器上的压缩包）。`
