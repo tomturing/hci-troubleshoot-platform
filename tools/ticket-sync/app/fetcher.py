@@ -31,6 +31,11 @@ TZ = ZoneInfo("Asia/Shanghai")
 # rsync --info=progress2 的单行格式：`  12,345,678  45%  1.23MB/s  0:00:01`
 _PROGRESS_RE = re.compile(r"([\d,]+)\s+(\d+)%")
 
+# 工单归档的两种合法名字：规范名 `<工单号>.zip`，以及 5888 归档重传时保留的
+# `<工单号>-<YYYYmmddHHMMSS>[-序号].zip`。两者都必须是"一层目录 + 同一个工单号"，
+# 目录名与文件名不一致的（软链、手工挪包）一律不算。
+_ARCHIVE_PATH_RE = re.compile(r"^/sf/log/(Q\d{13})/(Q\d{13})(?:-\d{14}(?:-\d+)?)?\.zip$")
+
 # 退出码语义见 rsync 手册。这里只映射需要区分的几类，其余归入 ssh-failed / extract-failed。
 _EXIT_CODES = {
     1: ErrorCode.EXTRACT_FAILED,  # 语法或用法错误
@@ -275,9 +280,18 @@ def looks_like_non_log_bundle(entries: list[str]) -> bool:
 
 
 def _parse_remote_archives(output: str) -> list[RemoteArchive]:
-    """解析 find 的固定三列输出，并丢弃不符合工单目录契约的文件。"""
-    result: list[RemoteArchive] = []
-    pattern = re.compile(r"^/sf/log/(Q\d{13})/\1\.zip$")
+    """解析 find 的固定三列输出；同一工单有多份时只保留最新一份。
+
+    为什么允许带时间戳的包名：5888 在 2026-10-31 ~ 11-06 之间把**重传的新包**
+    存成 `<工单号>-<YYYYmmddHHMMSS>.zip`，规范名留在首次上传的旧包上。现场
+    Q2026110600493 就是这样：规范名是 11:04 采集的 335M 旧包，12:06 采集的
+    545M 新包沉在时间戳名下。只认规范名会让这类工单永久同步到过期日志。
+
+    取最新的判据是 mtime，不是包名里的时间戳：名字里的时间戳只是服务端打戳
+    时刻的近似，mtime 才是真实的落盘时间；mtime 相同（同秒重传）时优先规范名，
+    因为那正是 2026-11-06 之后 5888 的"规范名 = 最新"约定。
+    """
+    per_ticket: dict[str, RemoteArchive] = {}
     for raw in output.splitlines():
         path, separator, rest = raw.partition("\t")
         if not separator:
@@ -285,8 +299,10 @@ def _parse_remote_archives(output: str) -> list[RemoteArchive]:
         size_text, separator, mtime_text = rest.partition("\t")
         if not separator:
             continue
-        match = pattern.fullmatch(path)
-        if match is None:
+        match = _ARCHIVE_PATH_RE.fullmatch(path)
+        # 目录名与文件名必须是同一个工单号：跨目录的引用（软链、手工挪包）
+        # 不能当成该工单的归档，否则会把别的工单内容同步进来。
+        if match is None or match.group(1) != match.group(2):
             continue
         try:
             size = int(size_text)
@@ -295,8 +311,69 @@ def _parse_remote_archives(output: str) -> list[RemoteArchive]:
             continue
         if size < 0 or mtime <= 0:
             continue
-        result.append(RemoteArchive(match.group(1), path, size, mtime))
-    return sorted(result, key=lambda item: item.ticket_id)
+        ticket_id = match.group(1)
+        archive = RemoteArchive(ticket_id, path, size, mtime)
+        current = per_ticket.get(ticket_id)
+        if current is None or _is_newer_archive(archive, current):
+            per_ticket[ticket_id] = archive
+    return sorted(per_ticket.values(), key=lambda item: item.ticket_id)
+
+
+def _is_newer_archive(candidate: RemoteArchive, current: RemoteArchive) -> bool:
+    """candidate 是否比 current 更新：先比 mtime，同 mtime 时规范名优先。"""
+    if candidate.mtime != current.mtime:
+        return candidate.mtime > current.mtime
+    return _is_canonical_archive(candidate) and not _is_canonical_archive(current)
+
+
+def _is_canonical_archive(archive: RemoteArchive) -> bool:
+    """是否平台/5888 两侧约定的规范名 `/sf/log/<工单号>/<工单号>.zip`。"""
+    return archive.path == f"/sf/log/{archive.ticket_id}/{archive.ticket_id}.zip"
+
+
+async def resolve_archive_path(cfg: Config, ticket_id: str) -> str:
+    """返回该工单当前应当同步的远端包路径。
+
+    单工单目录里可能同时躺着规范名与历史带戳包（2026-10-31 ~ 11-06 的产物），
+    直接拉规范名会拿到旧包，所以在任务开始时先列一次目录取最新那份。
+
+    列目录失败或无结果时回退规范名：这里不臆造失败原因，让随后的 rsync 去
+    报真正的错误（NOT_FOUND / SSH_FAILED），错误码语义保持单一来源。
+    """
+    root = f"/sf/log/{ticket_id}"
+    command = (
+        f"LC_ALL=C find {shlex.quote(root)} -mindepth 1 -maxdepth 1 -type f "
+        "-name '*.zip' -printf '%p\\t%s\\t%T@\\n'"
+    )
+    try:
+        stdout = await _ssh_run(cfg, command, "无法枚举工单归档目录")
+    except TicketError as exc:
+        logger.warning(
+            "ticket=%s 枚举归档目录失败，回退规范名 error=%s", ticket_id, exc.detail
+        )
+        return cfg.remote_archive(ticket_id)
+
+    archives = [
+        archive
+        for archive in _parse_remote_archives(stdout.decode("utf-8", errors="replace"))
+        if archive.ticket_id == ticket_id
+    ]
+    if not archives:
+        return cfg.remote_archive(ticket_id)
+    if not _is_canonical_archive(archives[0]):
+        logger.info(
+            "ticket=%s 目录内最新包不是规范名，按最新同步 path=%s size=%d mtime=%.3f",
+            ticket_id,
+            archives[0].path,
+            archives[0].size,
+            archives[0].mtime,
+        )
+    return archives[0].path
+
+
+def _remote_spec(cfg: Config, ticket_id: str, remote_path: str | None) -> str:
+    """拼 rsync 的远端描述（`host:path`）：显式路径优先，否则落到规范名。"""
+    return f"{cfg.source}:{remote_path or cfg.remote_archive(ticket_id)}"
 
 
 async def fetch(
@@ -305,14 +382,23 @@ async def fetch(
     work_dir: Path,
     job_id: str,
     on_progress: Callable[[int, int], None] | None = None,
+    remote_path: str | None = None,
 ) -> Path:
     """把 <工单号>.zip 拉到 work_dir，返回本地路径。
+
+    `remote_path` 留空时先解析工单目录内最新的一份（历史带戳包场景），解析结果仍
+    是规范名就是常规路径。放在这里而不是调用方，是为了让自动任务、手动触发与 CLI
+    三条入口共用同一套选取逻辑——漏改任何一条都会静默同步到旧包。
+    本地落盘名始终是 `<工单号>.zip`：rsync 目标是文件名而非目录，远端叫什么不影响
+    断点续传与解压。
 
     失败一律抛 TicketError，调用方不需要关心 subprocess 细节。
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     target = work_dir / f"{ticket_id}.zip"
-    remote = f"{cfg.source}:{cfg.remote_archive(ticket_id)}"
+    if remote_path is None:
+        remote_path = await resolve_archive_path(cfg, ticket_id)
+    remote = _remote_spec(cfg, ticket_id, remote_path)
 
     # ssh 参数：BatchMode 禁止交互提示，避免子进程挂死在密码输入上。
     # accept-new 只接受首次出现的 host key，已存在且不匹配时仍会失败，不做降级。
