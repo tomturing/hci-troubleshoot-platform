@@ -1059,3 +1059,97 @@ async def test_shutdown_hands_back_running_relays(monkeypatch):
     assert released == [[task_id]]
     assert task.cancelled() is True
     assert task_id not in routes._running_relays.values()
+
+
+# ── 代传并发闸门：内存峰值的唯一收敛点 ──────────────────────────────────────
+
+
+async def test_relay_gate_serializes_beyond_concurrency(monkeypatch):
+    """并发超过上限时必须排队，而不是把 N 个整片同时读进内存。
+
+    回归背景（2026-11-06 Q2026110600940）：9.59 GiB / 982 片的 P2 代传在 256Mi
+    配额下被 OOMKilled。单个任务只持有约 10 MiB 分片，所以峰值由「同时跑了几个」
+    决定，而不是「包有多大」——不设闸门时这一点完全没有上界。
+    """
+
+    from app.routes import log_collect as routes
+
+    monkeypatch.setattr(routes.settings, "LOG_COLLECT_RELAY_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(routes, "_relay_gate", None)
+
+    active = 0
+    peak = 0
+
+    async def _run(_task_id) -> None:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.03)
+        active -= 1
+
+    service = SimpleNamespace(run=_run, release=AsyncMock(return_value=1))
+
+    await asyncio.gather(*(routes._run_relay_gated(service, uuid4(), queue_timeout=5.0) for _ in range(3)))
+
+    assert peak == 1, "闸门为 1 时不允许两个代传同时持有分片"
+    assert service.release.await_count == 0
+
+
+async def test_relay_gate_returns_lease_when_queue_times_out(monkeypatch):
+    """排队超时必须交还租约，绝不能停在无人执行的 running。
+
+    running 只靠心跳续租，而排队中的协程还没跑起来、自然没有心跳；等超过
+    stale_after 就会被别的实例判成「执行者已死」并抢占，同一个包变成两个进程
+    同时上传。交还成 pending 交给下一轮 reconcile 才是安全出口。
+    """
+
+    from app.routes import log_collect as routes
+
+    gate = asyncio.Semaphore(1)
+    await gate.acquire()  # 占满闸门，模拟「已有代传在跑」
+    monkeypatch.setattr(routes, "_relay_gate", gate)
+
+    async def _run(_task_id) -> None:
+        raise AssertionError("排队超时不应执行代传")
+
+    released: list = []
+
+    service = SimpleNamespace(
+        run=_run,
+        release=AsyncMock(side_effect=lambda ids: released.extend(ids) or len(ids)),
+    )
+    task_id = uuid4()
+
+    await routes._run_relay_gated(service, task_id, queue_timeout=0.05)
+
+    assert released == [task_id], "排队超时要把租约交还，否则任务停在 running 无人执行"
+
+
+async def test_relay_gate_releases_slot_on_failure(monkeypatch):
+    """代传抛错也必须释放闸门，否则一次异常就永久吃掉一个并发额度。"""
+
+    from app.routes import log_collect as routes
+
+    monkeypatch.setattr(routes.settings, "LOG_COLLECT_RELAY_MAX_CONCURRENCY", 1)
+    monkeypatch.setattr(routes, "_relay_gate", None)
+
+    async def _boom(_task_id) -> None:
+        raise RuntimeError("5888 挂了")
+
+    service = SimpleNamespace(run=_boom, release=AsyncMock(return_value=1))
+
+    with suppress(RuntimeError):
+        await routes._run_relay_gated(service, uuid4(), queue_timeout=1.0)
+
+    async def _ok(_task_id) -> None:
+        return None
+
+    # 闸门必须回到可用状态：额度没被吃掉，第二次不会排队超时
+    await asyncio.wait_for(
+        routes._run_relay_gated(
+            SimpleNamespace(run=_ok, release=AsyncMock()),
+            uuid4(),
+            queue_timeout=1.0,
+        ),
+        timeout=1.0,
+    )

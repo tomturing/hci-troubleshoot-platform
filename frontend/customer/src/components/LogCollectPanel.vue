@@ -27,6 +27,7 @@ import {
   type LogCollectScenarioItem,
   type LogCollectTask,
   type ProbeHistoryItem,
+  type RelaySnapshot,
   type RelayStatus,
   type UploadInitResult,
 } from '@/api/logCollect'
@@ -46,7 +47,7 @@ import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCa
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
 import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
-import { shouldRecoverRelayLease } from '@/services/logCollectRelay'
+import { isTransientPlatformError, shouldRecoverRelayLease } from '@/services/logCollectRelay'
 import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
@@ -2199,8 +2200,17 @@ async function handleStart() {
     // 必须在改 stage 之前取：stepActive 一旦看到 failed 就会返回 failedStep 本身，
     // 顺序颠倒会让它永远停在第一步。放在这里可同时覆盖"结果未知"与普通失败两条分支。
     failedStep.value = stepActive.value
-    // 轮询超时属于"结果未知"：不替服务端写终态，否则会出现 UI 报失败、后台实际成功
+    // 轮询超时 / 平台瞬时不可用都属于"结果未知"：不替服务端写终态，否则会出现
+    // UI 报失败而后台实际成功（2026-11-06 Q2026110600940：case-service 被
+    // OOMKilled 的两秒里网关兜底 503，前端据此把已交付的任务写成 failed）。
     if (error instanceof RelayPendingError) {
+      errorMessage.value = normalizeErrorMessage(error.message)
+      stage.value = 'failed'
+      ElMessage.warning(errorMessage.value)
+      return
+    }
+    if (isTransientPlatformError(error)) {
+      errorMessage.value = '平台暂时不可用，任务仍在后台进行；请稍后点「刷新进度」确认结果'
       stage.value = 'failed'
       ElMessage.warning(errorMessage.value)
       return
@@ -2940,6 +2950,14 @@ async function adoptNodeTask() {
       await uploadExistingPackage(ws, task, token)
     } catch (error: any) {
       if (token !== runToken) return
+      // 平台瞬时不可用不代表交付失败：后台代传可能仍在跑，此刻 patchTask 多半
+      // 也打不通，写进去的只会是一条误导性原因（2026-11-06 Q2026110600940）。
+      if (isTransientPlatformError(error)) {
+        errorMessage.value = '平台暂时不可用，上传仍在后台继续；请稍后点「刷新进度」确认结果'
+        stage.value = 'failed'
+        ElMessage.warning(errorMessage.value)
+        return
+      }
       errorMessage.value = normalizeErrorMessage(String(error?.message || error))
       failedStep.value = stepActive.value
       stage.value = 'failed'
@@ -3521,12 +3539,47 @@ async function runDeliveryJob(
 /** 归档由服务端后台任务驱动，前端轮询超时只代表"结果未知"，不代表任务失败。 */
 class RelayPendingError extends Error {}
 
+/**
+ * 平台瞬时不可用时允许静默重试的次数（× POLL_INTERVAL=5s，约 1 分钟）。
+ *
+ * 为什么要静默而不是立刻报错：代传是**服务端后台任务**，前端这一次轮询失败与
+ * 归档本身没有因果关系。case-service 被 OOMKilled 后通常 1~2 秒就恢复，
+ * 为此打断一次 9.59 GiB 的归档并把任务写成 failed，代价远大于多等两秒
+ * （2026-11-06 Q2026110600940 正是这样把已交付的任务判成了失败）。
+ *
+ * 为什么仍要有上限：平台持续不可用超过 1 分钟时，继续静默会让用户误以为
+ * "还在传"；此时落「结果未知」，把判断权交回给人，且**不替服务端写终态**。
+ */
+const TRANSIENT_RETRY_LIMIT = 12
+
+/** 取一次归档快照；平台瞬时不可用时返回 null（由调用方继续轮询）。 */
+async function pollRelayOnce(taskId: string): Promise<RelaySnapshot | null> {
+  try {
+    return await logCollectApi.getRelay(taskId)
+  } catch (error) {
+    if (!isTransientPlatformError(error)) throw error
+    return null
+  }
+}
+
 async function pollRelay(taskId: string, token: number) {
   // 上限 2 小时（1440 次 × 5s）：代传是长任务，但不能无限轮询
   let leaseRecoveryAttempted = false
+  let transientFailures = 0
   for (let attempt = 0; attempt < 1440; attempt++) {
     if (token !== runToken) return
-    const snapshot = await logCollectApi.getRelay(taskId)
+    const snapshot = await pollRelayOnce(taskId)
+    if (!snapshot) {
+      transientFailures += 1
+      if (transientFailures >= TRANSIENT_RETRY_LIMIT) {
+        throw new RelayPendingError(
+          '平台暂时不可用，归档仍在后台继续；请稍后点「刷新进度」确认结果',
+        )
+      }
+      await sleep(POLL_INTERVAL)
+      continue
+    }
+    transientFailures = 0
     relayStatus.value = snapshot.relay_status
     relayProgress.value = snapshot
     if (snapshot.relay_status === 'success') return
