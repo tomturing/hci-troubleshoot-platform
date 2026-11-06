@@ -41,7 +41,7 @@ func toDeliveryJobView(job *deliveryJob) deliveryJobView {
 	if job == nil {
 		return deliveryJobView{}
 	}
-	return deliveryJobView{
+	view := deliveryJobView{
 		JobID: job.JobID, TaskID: job.TaskID, Phase: string(job.Phase),
 		Progress: job.progress(), SourceSize: job.SourceSize, PulledBytes: job.PulledBytes,
 		PartCount: job.PartCount, UploadedParts: len(job.UploadedParts),
@@ -50,6 +50,13 @@ func toDeliveryJobView(job *deliveryJob) deliveryJobView {
 		Integrity: job.Integrity, IntegrityNote: job.IntegrityNote,
 		SourceSHA256: job.SourceSHA256, LocalSHA256: job.LocalSHA256,
 	}
+	// 被顶替的旧作业不得对外给出「可归因的失败」：前端会按 error_code 把这条
+	// 过期结论写回平台任务，污染新会话的状态（Q2026110601054）。
+	if job.Superseded {
+		view.ErrorCode = ""
+		view.LastError = "源包已变化 / 会话已被新代替代（旧作业已作废）"
+	}
+	return view
 }
 
 // handleDeliverySubmit 接收交付请求：校验参数、落盘、入队，立即返回 job_id。

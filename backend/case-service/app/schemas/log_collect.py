@@ -370,6 +370,13 @@ class UploadInitRequest(BaseModel):
 
     total_size: int = Field(gt=0, description="压缩包总字节数")
     expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # 内容指纹：把"同名文件被重新采集覆盖"也识别成新内容，而不只看字节数。
+    # 老前端不传时回落为只比 total_size，保证现场未升级的页面不受影响。
+    archive_fingerprint: str | None = Field(
+        default=None,
+        max_length=256,
+        description="源包内容指纹（如 size:generation 或 sha256）；用于识别同名换包",
+    )
 
 
 class UploadInitResponse(BaseModel):
@@ -380,6 +387,8 @@ class UploadInitResponse(BaseModel):
     total_size: int
     uploaded_parts: list[int]
     missing_parts: list[int]
+    # 会话代际：与任务当前代际不一致时，旧会话的迟到分片一律拒绝。
+    delivery_epoch: int = 0
 
 
 class DeliverRequest(BaseModel):
@@ -397,6 +406,11 @@ class DeliverRequest(BaseModel):
         description="节点上压缩包路径，仅登记给 bridge 使用；平台不访问该路径",
     )
     force: bool = Field(default=False, description="已交付是否强制重传")
+    archive_fingerprint: str | None = Field(
+        default=None,
+        max_length=256,
+        description="源包内容指纹；与会话已有指纹不同时自动作废旧会话并按新基线重建",
+    )
 
 
 class DeliverResponse(BaseModel):
@@ -415,6 +429,8 @@ class DeliverResponse(BaseModel):
 
 class UploadStatusResponse(BaseModel):
     upload_id: str
+    # 会话代际：前端用它判断"看到的作业结果是否属于当前会话"。
+    delivery_epoch: int = 0
     # 续签的短期令牌：断点续传重试时客户端需要重新携带它。
     # 以前这个接口不返回 token，于是"续传刷新"那一步必然把 token 丢成空串，
     # 表现为 bridge 立刻回 "task_id 与 upload_token 必填"（2026-10-27 现场）。

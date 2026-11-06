@@ -48,7 +48,14 @@ import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManag
 import { pickDisplayTask } from '@/services/logCollectHistory'
 import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
 import { buildNodeCleanupTip } from '@/services/logCollectCleanup'
-import { isTransientPlatformError, shouldRecoverRelayLease } from '@/services/logCollectRelay'
+import {
+  BRIDGE_CHANNEL_LOST_MESSAGE,
+  isOutcomeUnknownError,
+  isSessionDiverged,
+  isArchiveSizeSettled,
+  isTransientPlatformError,
+  shouldRecoverRelayLease,
+} from '@/services/logCollectRelay'
 import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
@@ -1412,7 +1419,7 @@ const waiterRejectors = new Map<string, (error: Error) => void>()
 // 会话已断开的准确文案：必须点名真因，不能退化成"超时"。
 const SSH_LOST_MESSAGE =
   'SSH 会话已断开（远端 shell 空闲 10 分钟自动退出，HCI TMOUT=600）。请先在 SSH 终端重新连接节点，再用「查看任务状态 / 接管」继续；不要重新下发采集（插件单任务互斥会拒绝）。'
-const BRIDGE_CHANNEL_LOST = '与 terminal_bridge 的连接已断开，节点操作未送达'
+const BRIDGE_CHANNEL_LOST = BRIDGE_CHANNEL_LOST_MESSAGE
 
 // 本面板是否已知会话断开。它不能只看 chatStore：会话可能是面板这条连接
 // autoConnect 建的，ssh_disconnected 只会推给建会话的那条 WS。
@@ -2217,7 +2224,7 @@ async function handleStart() {
       ElMessage.warning(errorMessage.value)
       return
     }
-    if (isTransientPlatformError(error)) {
+    if (isOutcomeUnknownError(error)) {
       errorMessage.value = '平台暂时不可用，任务仍在后台进行；请稍后点「刷新进度」确认结果'
       stage.value = 'failed'
       ElMessage.warning(errorMessage.value)
@@ -2960,7 +2967,7 @@ async function adoptNodeTask() {
       if (token !== runToken) return
       // 平台瞬时不可用不代表交付失败：后台代传可能仍在跑，此刻 patchTask 多半
       // 也打不通，写进去的只会是一条误导性原因（2026-11-06 Q2026110600940）。
-      if (isTransientPlatformError(error)) {
+      if (isOutcomeUnknownError(error)) {
         errorMessage.value = '平台暂时不可用，上传仍在后台继续；请稍后点「刷新进度」确认结果'
         stage.value = 'failed'
         ElMessage.warning(errorMessage.value)
@@ -3259,12 +3266,24 @@ async function runP2(
   }
   if (totalSize <= 0) throw new Error('压缩包大小异常（节点报告 0 字节），无法中转')
 
+  // 会话几何在 init 时按 total_size 冻结，因此"包还在写"时建立会话必然失败。
+  // 这里用节点已上报的态做零往返门禁：不额外发起 WS 请求，避免给补交付链路
+  // 增加超时面。节点态缺失（老 bridge）时不拦，交给 bridge 的 waitArchiveSettled。
+  const nodeState = String((progress.value as Record<string, unknown> | null)?.node_state ?? '')
+  if (nodeState && nodeState !== 'completed' && nodeState !== 'done') {
+    throw new Error(`采集尚未收尾（节点状态 ${nodeState}），请等日志包生成完毕再上传`)
+  }
+
   // 2) 平台签发分片会话：走 /deliver 而非 /uploads。
   //    /deliver 由服务端负责"会话大小不一致"的自愈与会话记账；
   //    /uploads 会把 409 抛给前端，而前端从不 abort → 会话就此死锁（现场复现过）。
   const delivered = await logCollectApi.deliverTask(task.task_id, {
     total_size: totalSize,
     source_path: archivePath,
+    // 内容指纹的可用近似：平台够不着节点、拿不到包摘要，只能登记
+    // "这次提交认的是哪个路径上的多大一份"。真正的代际隔离由服务端
+    // 单调递增的 delivery_epoch 承担（编进上传令牌，旧令牌自动失效）。
+    archive_fingerprint: `${totalSize}:${archivePath}:${task.created_at || task.task_id}`,
   })
   if (delivered.already_delivered) {
     // 幂等短路：服务端没有再开会话。不要继续下发作业去"再传一次"。
@@ -3519,15 +3538,44 @@ async function runDeliveryJob(
   const origin = window.location.origin
   let tlsInsecure = platformCertTrusted(origin)
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  let certRetries = 0
+  let sessionRebuilds = 0
+  // 上限同时覆盖：证书授权重试 1 次 + 会话重建 2 次 + 常规裕量。
+  for (let attempt = 0; attempt < 8; attempt += 1) {
     const jobId = await submitDeliveryJob(ws, args, tlsInsecure, mode)
     try {
       await waitDeliveryJob(ws, jobId, token)
       return
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+
+      // 源包在提交后被重新采集覆盖：旧会话的分片几何已作废，继续传只会每片失败。
+      // 第一性原理给出的不是"让用户手动重点上传"，而是系统自己重新量包、
+      // 重新签发会话并重提作业。服务端 /deliver 会推进代际并自动 abort 旧会话，
+      // 旧令牌因代际签名不匹配而失效，不会把两代字节混进同一个成品。
+      if (isSessionDiverged(message) && sessionRebuilds < 2) {
+        sessionRebuilds += 1
+        const fresh = await probeArchiveOnNode(ws, args.sourcePath)
+        const nextSize = fresh.size > 0 ? fresh.size : args.totalSize
+        const rebuilt = await logCollectApi.deliverTask(args.task.task_id, {
+          total_size: nextSize,
+          source_path: args.sourcePath,
+          force: true,
+        })
+        if (rebuilt.already_delivered) return // 服务端已确认交付，不需要重传
+        if (!rebuilt.upload?.upload_token) {
+          throw new Error('重建上传会话失败：服务端未签发上传令牌')
+        }
+        args.totalSize = nextSize
+        args.session = rebuilt.upload
+        stage.value = 'pulling'
+        ElMessage.warning('源包内容已变化，已自动按新基线重建上传会话并续跑')
+        continue
+      }
+
       // 只在"首次 + 尚未授权 + 确属证书问题"时打扰用户，其余错误原样抛出
-      if (attempt > 0 || tlsInsecure || !isCertificateUntrusted(message)) throw err
+      if (certRetries > 0 || tlsInsecure || !isCertificateUntrusted(message)) throw err
+      certRetries += 1
       if (!(await confirmTrustPlatformCertificate(origin))) throw err
       rememberPlatformCertTrust(origin)
       tlsInsecure = true

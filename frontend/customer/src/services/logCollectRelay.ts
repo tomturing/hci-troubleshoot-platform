@@ -70,3 +70,50 @@ export function isTransientPlatformError(error: unknown): boolean {
   if (status === 502 || status === 503 || status === 504) return true
   return !candidate.response
 }
+
+/** WS 通道断开的规范文案：只在一处定义，避免判据与抛错处文案漂移。 */
+export const BRIDGE_CHANNEL_LOST_MESSAGE = '与 terminal_bridge 的连接已断开，节点操作未送达'
+
+/**
+ * 「结果未知」的完整判据。
+ *
+ * 与 `isTransientPlatformError` 分开是为了不破坏原有语义：后者只认 axios 类
+ * 网关异常。WS 通道断开是业务代码主动 `throw new Error(BRIDGE_CHANNEL_LOST)`，
+ * 但它与 503 在**因果上完全同类**——浏览器这一刻问不到结果，服务端后台的
+ * 交付作业仍在跑。2026-11-06 Q2026110601054 就是因为把它当成确定失败，
+ * 前端写了 `status=failed`，而 relay 已 success、包已落 5888。
+ *
+ * 判据刻意收窄到规范文案本身：其它业务 Error（任务下发失败、令牌缺失）
+ * 仍是确定结论，绝不能吞成"等一下就好"。
+ */
+export function isOutcomeUnknownError(error: unknown): boolean {
+  if (isTransientPlatformError(error)) return true
+  return error instanceof Error && error.message.includes(BRIDGE_CHANNEL_LOST_MESSAGE)
+}
+
+/**
+ * 交付作业失败是否源于「会话基线已作废」。
+ *
+ * 源包在提交后被重新采集覆盖时，平台会话仍按旧的 total_size 冻结分片几何，
+ * 继续上传只会每片失败。这类错误不该让用户手动重点「上传到平台」，
+ * 而应由 `runDeliveryJob` 重新量包、重新签发会话并自动续跑。
+ */
+export function isSessionDiverged(message: string): boolean {
+  return (
+    message.includes('源包已变化') ||
+    message.includes('上传会话大小不一致') ||
+    message.includes('上传会话需按新基线重建') ||
+    message.includes('会话已被新代替代')
+  )
+}
+
+/**
+ * 判断两次量到的包大小是否已稳定。
+ *
+ * 第一性原理：分片几何在 init 时冻结，因此「包还在写」时建立会话必然失败。
+ * 采集未收尾就点上传是本单第二次报「源包已变化」的直接原因，
+ * 必须在 init 之前把"字节序列已确定"验证掉，而不是依赖节点状态字段。
+ */
+export function isArchiveSizeSettled(previousSize: number, currentSize: number): boolean {
+  return previousSize > 0 && currentSize === previousSize
+}
