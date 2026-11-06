@@ -114,6 +114,9 @@ vi.mock('@/api/logCollect', () => ({
     // 归档核验必须与真实 API 同构：缺了这个桩，组件里的 try/catch 会把
     // TypeError 当成"核验不可用"吞掉，所有 P1 用例静默退回旧行为却照样绿灯。
     verifyP1Archive: vi.fn(),
+    // 弱证据入口（节点自报）：交付终态由服务端写，前端不再 PATCH delivery_status，
+    // 因此"补登已交付"的用例必须观察这个调用，而不是 patchTask 的入参。
+    attestP1Delivered: vi.fn(),
   },
 }))
 
@@ -318,6 +321,10 @@ describe('LogCollectPanel', () => {
     // 也不能默认 verified=false 把既有 P1 补登用例改写成等待。
     vi.mocked(logCollectApi.verifyP1Archive).mockReset()
     vi.mocked(logCollectApi.verifyP1Archive).mockRejectedValue(new Error('核验接口不可用'))
+    // 默认"自报入口不可用"（旧后端组合）：组件必须退化成"未登记 + 有界等待"，
+    // 绝不能因为接口缺失就把节点自述当成已交付。
+    vi.mocked(logCollectApi.attestP1Delivered).mockReset()
+    vi.mocked(logCollectApi.attestP1Delivered).mockRejectedValue(new Error('自报入口不可用'))
     mockStore.openSshFlowDialog.mockClear()
     mockStore.sshConnectDialogBridgeStatus = 'checking'
     vi.mocked(checkBridgeBeforeOpen).mockClear()
@@ -1793,15 +1800,19 @@ describe('LogCollectPanel', () => {
       detail: {},
     })
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    // 核验通过后 delivered 由**服务端**写库（verify-archive 内部 server_authoritative），
+    // 前端只是把权威快照拉回来：所以这里让 getTask 在核验之后返回 delivered，
+    // 而不是让 patchTask 回显入参——后者会把"前端能不能写终态"这件错事测成绿灯。
+    let verified = false
     vi.mocked(logCollectApi.getTask).mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
-      return done
+      return verified ? { ...done, delivery_status: 'delivered' as const } : done
     })
     vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
-    vi.mocked(logCollectApi.verifyP1Archive).mockResolvedValue({
-      verified: true,
-      reason: 'size_matched',
-    } as any)
+    vi.mocked(logCollectApi.verifyP1Archive).mockImplementation(async () => {
+      verified = true
+      return { verified: true, reason: 'size_matched' } as any
+    })
 
     const wrapper = mountPanel()
     await flushPromises()
@@ -1829,13 +1840,14 @@ describe('LogCollectPanel', () => {
     })
     await flushPromises()
 
+    await vi.waitFor(() => expect(logCollectApi.verifyP1Archive).toHaveBeenCalled())
     await vi.waitFor(() =>
-      expect(
-        vi
-          .mocked(logCollectApi.patchTask)
-          .mock.calls.some(([, body]: any) => body?.delivery_status === 'delivered'),
-      ).toBe(true),
+      expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false),
     )
+    // 交付终态一次都不许由前端写：写进去也会被服务端忽略（single-writer）。
+    const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
+    expect(patches.some((body: any) => body?.delivery_status !== undefined)).toBe(false)
+    expect(logCollectApi.attestP1Delivered).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -2078,15 +2090,18 @@ describe('LogCollectPanel', () => {
     await flushPromises()
     await vi.waitFor(() => expect(logCollectApi.getRelay).toHaveBeenCalled())
 
-    // 5) 归档成功才收敛为完成，并登记实际交付路径
+    // 5) 归档成功才收敛为完成，并登记实际交付路径。
+    // delivery_status 不在其中：relay 服务端在 _finish(success) 时已经权威写库，
+    // 前端再写一次会被服务端静默忽略（single-writer），断言它反而会锁死错误契约。
     const completed = vi
       .mocked(logCollectApi.patchTask)
       .mock.calls.filter(([, body]: any) => body?.status === 'completed')
     expect(completed).toHaveLength(1)
     expect(completed[0][1]).toMatchObject({
       upload_mode: 'bridge_relay',
-      delivery_status: 'delivered',
+      archive_path: archivePath,
     })
+    expect(completed[0][1]).not.toHaveProperty('delivery_status')
 
     // 全程没有重新下发采集、也没有再轮询 progress
     expect(sentMessages.some((m) => m.includes('"log_action":"create"'))).toBe(false)
@@ -2210,20 +2225,20 @@ describe('LogCollectPanel', () => {
 
     await vi.waitFor(() =>
       expect(
-        vi
-          .mocked(logCollectApi.patchTask)
-          .mock.calls.some(([, body]: any) => body?.delivery_status === 'failed'),
+        vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.error_code),
       ).toBe(true),
     )
     const failure = vi
       .mocked(logCollectApi.patchTask)
-      .mock.calls.find(([, body]: any) => body?.delivery_status === 'failed')!
-    expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-008' })
+      .mock.calls.find(([, body]: any) => body?.error_code)!
+    expect(failure[1]).toMatchObject({ error_code: 'LC-TRANSFER-008' })
     expect(String((failure[1] as any).error_message)).toContain('客户机磁盘空间不足')
-    // 负向契约（缺了这两条，实现退化也测不出来）：
+    // 负向契约（缺了这几条，实现退化也测不出来）：
     // 1) 采集完成是真实结论，交付失败不得把它改写成 failed，否则用户既看不到包在哪、也没有重试入口；
-    // 2) delivery_error 是代传终态的唯一权威字段，由后端 _finish 落库，前端回写会用通用文案覆盖真因。
+    // 2) delivery_status 是单一权威字段，前端写了也会被服务端静默忽略，写它只会制造"假成功/假失败"；
+    // 3) delivery_error 是代传终态的唯一权威字段，由后端 _finish 落库，前端回写会用通用文案覆盖真因。
     expect((failure[1] as any).status).toBeUndefined()
+    expect((failure[1] as any).delivery_status).toBeUndefined()
     expect((failure[1] as any).delivery_error).toBeUndefined()
     wrapper.unmount()
   })
@@ -2351,15 +2366,14 @@ describe('LogCollectPanel', () => {
 
     await vi.waitFor(() =>
       expect(
-        vi
-          .mocked(logCollectApi.patchTask)
-          .mock.calls.some(([, body]: any) => body?.delivery_status === 'failed'),
+        vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.error_code),
       ).toBe(true),
     )
     const failure = vi
       .mocked(logCollectApi.patchTask)
-      .mock.calls.find(([, body]: any) => body?.delivery_status === 'failed')!
-    expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-008' })
+      .mock.calls.find(([, body]: any) => body?.error_code)!
+    expect(failure[1]).toMatchObject({ error_code: 'LC-TRANSFER-008' })
+    expect((failure[1] as any).delivery_status).toBeUndefined()
     // 平台已记录 → 不回写 error_message，避免 "[LC-X] [LC-X] ..." 重复拼接与覆盖真因
     expect((failure[1] as any).error_message).toBeUndefined()
      wrapper.unmount()
@@ -2390,7 +2404,15 @@ describe('LogCollectPanel', () => {
       detail: {},
     })
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
-    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    // 交付终态由服务端写：自报入口返回的是权威快照，前端只做回填。
+    let attested = false
+    vi.mocked(logCollectApi.attestP1Delivered).mockImplementation(async () => {
+      attested = true
+      return { ...done, delivery_status: 'delivered' as const }
+    })
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () =>
+      attested ? { ...done, delivery_status: 'delivered' as const } : done,
+    )
     vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
 
     const wrapper = mountPanel()
@@ -2422,9 +2444,86 @@ describe('LogCollectPanel', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     await flushPromises()
 
+    // 关键：弱证据必须经服务端入口落库（浏览器不可能自己写 delivered）
+    await vi.waitFor(() => expect(logCollectApi.attestP1Delivered).toHaveBeenCalled())
+    expect(vi.mocked(logCollectApi.attestP1Delivered).mock.calls[0][1]).toMatchObject({
+      upload_state: '发送成功',
+    })
     const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
-    expect(patches.some((body: any) => body?.delivery_status === 'delivered')).toBe(true)
+    expect(patches.some((body: any) => body?.delivery_status !== undefined)).toBe(false)
     // 关键：不得再出现补交付入口
+    expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false)
+    expect(wrapper.text()).toContain('已由插件直传日志服务器')
+    wrapper.unmount()
+  })
+
+  /**
+   * 2026-11-06 英文环境实测回归：acli 输出 `Status: Success`，
+   * 旧代码用 `includes('成功')` 判不出已交付，P1 结果页会挂「上传到平台」，
+   * 新建任务收尾还会被 finishP1 抛错阻断。
+   */
+  it('英文 upload_state=Success 时 P1 交付证据仍成立，不给补交付入口', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.24.194', port: 22, username: 'root' }
+    const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026110666666.zip'
+    const done = taskFixture({
+      task_id: 'task-p1-en',
+      status: 'completed',
+      progress: 100,
+      archive_path: archivePath,
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      relay_status: 'none',
+      delivery_status: 'none',
+      ips: ['172.28.24.194'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    let attested = false
+    vi.mocked(logCollectApi.attestP1Delivered).mockImplementation(async () => {
+      attested = true
+      return { ...done, delivery_status: 'delivered' as const }
+    })
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () =>
+      attested ? { ...done, delivery_status: 'delivered' as const } : done,
+    )
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: 'Collect task has been completed!',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: archivePath,
+          archive_exists: false,
+          upload_state: 'Success',
+          hosts: [{ ip: '172.28.24.194', status: 'Collection successful', percent: 100 }],
+          raw: 'Status: Collect task has been completed!\\nSend address: http://acli.sangfor.com.cn:5888/\\nStatus: Success',
+        },
+      }),
+    })
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flushPromises()
+
+    // 英文环境同样走服务端自报入口：判定口径两端一致（先失败后成功、中英双语）
+    await vi.waitFor(() => expect(logCollectApi.attestP1Delivered).toHaveBeenCalled())
+    expect(vi.mocked(logCollectApi.attestP1Delivered).mock.calls[0][1]).toMatchObject({
+      upload_state: 'Success',
+    })
+    const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
+    expect(patches.some((body: any) => body?.delivery_status !== undefined)).toBe(false)
     expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false)
     expect(wrapper.text()).toContain('已由插件直传日志服务器')
     wrapper.unmount()

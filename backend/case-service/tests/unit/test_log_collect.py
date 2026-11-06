@@ -375,7 +375,7 @@ class TestUpdateTask:
 
 
     async def test_archive_verified_not_downgraded_to_self_reported(self, service, mock_repo):
-        """已由 verify-archive 回查过的交付证据不能被后续 PATCH 降级。
+        """已由 verify-archive 回查过的交付证据不能被后续写入降级。
 
         现场（2026-11-04 Q2026101201081）：核验通过后再次写 delivered，
         旧逻辑把 detail.delivery_evidence 改回 acli_self_reported，
@@ -386,6 +386,7 @@ class TestUpdateTask:
         task.progress = 100
         task.upload_mode = "acli_direct"
         task.delivery_status = "none"
+        task.archive_size = None
         task.detail = {
             "delivery_evidence": "archive_verified",
             "delivery_evidence_note": "日志服务器归档件一致",
@@ -396,7 +397,11 @@ class TestUpdateTask:
 
         result = await service.update_task(
             "11111111-1111-1111-1111-111111111111",
-            LogCollectTaskPatch(delivery_status="delivered"),
+            LogCollectTaskPatch(
+                delivery_status="delivered",
+                detail={"p1_self_report": {"upload_state": "发送成功"}},
+            ),
+            server_authoritative=True,
         )
 
         assert result.detail["delivery_evidence"] == "archive_verified"
@@ -409,6 +414,7 @@ class TestUpdateTask:
         task.progress = 100
         task.upload_mode = "acli_direct"
         task.delivery_status = "none"
+        task.archive_size = None
         task.detail = {}
         mock_repo.get_by_id = AsyncMock(return_value=task)
         mock_repo.flush = AsyncMock()
@@ -417,10 +423,37 @@ class TestUpdateTask:
         result = await service.update_task(
             "11111111-1111-1111-1111-111111111111",
             LogCollectTaskPatch(delivery_status="delivered"),
+            server_authoritative=True,
         )
 
         assert result.detail["delivery_evidence"] == "acli_self_reported"
         assert "verify-archive" in result.detail["delivery_evidence_note"]
+
+    async def test_public_patch_cannot_write_delivery_status(self, service, mock_repo):
+        """公共 PATCH 写交付终态必须被静默忽略（single-writer）。
+
+        Why：浏览器可伪造的写入面一旦能落 delivered，任何前端 bug 都能伪造"已交付"，
+        而 P1 的包在节点上已被插件自删、事后无法纠正（Q2026110601054）。
+        弱证据通道走 ``POST /p1-delivered``，由服务端判定 upload_state 后权威落库。
+        """
+        task = MagicMock(spec=LogCollectTask)
+        task.status = "uploading"
+        task.progress = 100
+        task.upload_mode = "acli_direct"
+        task.delivery_status = "none"
+        task.archive_size = None
+        task.detail = {}
+        mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
+
+        result = await service.update_task(
+            "11111111-1111-1111-1111-111111111111",
+            LogCollectTaskPatch(delivery_status="delivered", upload_mode="acli_direct"),
+        )
+
+        assert result.delivery_status == "none"
+        assert "delivery_evidence" not in result.detail
 
 
 class TestBeginDelivery:
@@ -569,3 +602,35 @@ class TestPayloadValidation:
     def test_patch_requires_field(self):
         with pytest.raises(ValidationError):
             LogCollectTaskPatch()
+
+
+class TestP1DeliveryAttestation:
+    """P1 弱证据通道的语义判定：服务端自己判 upload_state，绝不默认成功。"""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("发送成功", "delivered"),
+            ("Status: Success", "delivered"),
+            ("succeed", "delivered"),
+            # 刻意不把裸「完成」算成功：`未完成` / `未上传完成` 会被误判成已交付，
+            # 而 P1 判错的代价不可逆（插件已自删包）。判不出成功就落「未知」，不走终态。
+            ("上传完成", "unknown"),
+            ("发送失败", "failed"),
+            ("error: unauthorized", "failed"),
+            ("上传超时 timeout", "failed"),
+            ("发送中", "unknown"),
+            ("", "unknown"),
+            (None, "unknown"),
+        ],
+    )
+    def test_classify_upload_state(self, raw, expected):
+        """口径必须与前端 classifyUploadState 一致：先判失败，再判成功。
+
+        为什么单测直接钉住这张表：判定漂移会同时造成两类事故——
+        英文环境判不出成功（P1 结果页挂「上传到平台」，点了必然失败），
+        以及把失败当成功（平台显示已交付、日志服务器上什么都没有）。
+        """
+        from app.routes.log_collect import _classify_upload_state
+
+        assert _classify_upload_state(raw) == expected

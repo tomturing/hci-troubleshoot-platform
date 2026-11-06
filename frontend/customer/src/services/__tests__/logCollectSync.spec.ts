@@ -3,10 +3,12 @@ import {
   blocksCreate,
   buildSyncNotice,
   decideNodeSync,
+  classifyUploadState,
   DELIVERY_EVIDENCE_WAIT_MS,
   fallbackNodeState,
   hashReport,
   interpretArchiveProbe,
+  isP1UploadDelivered,
   resolveOwnership,
 } from '../logCollectSync'
 
@@ -498,5 +500,65 @@ describe('交付证据有界等待', () => {
     expect(waiting).toContain('10 分钟')
     expect(waiting).not.toContain('已归档')
     expect(unknown).toContain('不会判成失败')
+  })
+})
+
+/**
+ * 2026-11-06 英文环境实测 `upload_state="Success"`，但 LogCollectPanel 用
+ * `includes('成功')` 判定 P1 是否交付，导致成功被判失败并阻断 finishP1 收尾。
+ * 所有状态词判定必须收敛到按词义归一，不能散落在组件里硬编码中文。
+ */
+describe('classifyUploadState 上传状态语言无关', () => {
+  const cases: Array<[string, string | undefined, ReturnType<typeof classifyUploadState>]> = [
+    ['中文成功', '发送成功', 'delivered'],
+    ['中文发送中', '发送中', 'uploading'],
+    ['中文上传中', '上传中', 'uploading'],
+    ['中文失败', '发送失败', 'failed'],
+    ['中文错误', '发送错误', 'failed'],
+    ['英文成功', 'Success', 'delivered'],
+    ['英文成功（实机 Succeed 写法）', 'Succeed', 'delivered'],
+    ['英文完成', 'Completed', 'delivered'],
+    ['英文发送中', 'Sending', 'uploading'],
+    ['英文上传中', 'Uploading', 'uploading'],
+    ['英文进行中', 'In progress', 'uploading'],
+    ['英文失败', 'Failed', 'failed'],
+    ['英文发送失败（含 sending，失败必须优先）', 'Sending failed', 'failed'],
+    ['英文鉴权失败', '401 Unauthorized', 'failed'],
+    ['英文超时', 'Timeout', 'failed'],
+    ['空串', '', 'unknown'],
+    ['未传', undefined, 'unknown'],
+    ['无法识别', '???', 'unknown'],
+  ]
+  it.each(cases)('%s', (_name, raw, want) => {
+    expect(classifyUploadState(raw)).toBe(want)
+  })
+
+  it('前后空白不影响判定', () => {
+    expect(classifyUploadState('  Success  ')).toBe('delivered')
+  })
+})
+
+describe('isP1UploadDelivered P1 收尾放行', () => {
+  it('英文成功必须放行（回归：旧代码会抛"上传失败"）', () => {
+    expect(isP1UploadDelivered('Success')).toBe(true)
+    expect(isP1UploadDelivered('Succeed')).toBe(true)
+  })
+
+  it('中文成功保持放行', () => {
+    expect(isP1UploadDelivered('发送成功')).toBe(true)
+  })
+
+  it('明确失败一律阻断，中英文一致', () => {
+    expect(isP1UploadDelivered('发送失败')).toBe(false)
+    expect(isP1UploadDelivered('Failed')).toBe(false)
+    expect(isP1UploadDelivered('Sending failed')).toBe(false)
+  })
+
+  it('节点没给上传块时由证据状态机兜底，不再默认已交付', () => {
+    // 函数本身为兼容 #1453 仍返回 true（English P1 成功不能被误杀），
+    // 但交付结论不再直接采信它：finishP1 会走 verify-archive，
+    // 空 upload_state 在证据不足时进入有界等待（见「交付证据有界等待」）。
+    expect(isP1UploadDelivered('')).toBe(true)
+    expect(isP1UploadDelivered(undefined)).toBe(true)
   })
 })

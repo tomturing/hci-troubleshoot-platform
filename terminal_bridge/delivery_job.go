@@ -151,6 +151,13 @@ type deliveryJob struct {
 	// 交付的充分必要条件只有两条——节点上存在完整包、平台有上传会话；
 	// 采集是否仍在跑与"能不能传这个包"没有因果关系。
 	Direct bool `json:"direct,omitempty"`
+	// Superseded 表示本作业已被同一任务的新上传会话顶替（fencing）。
+	//
+	// 为什么不能只靠 cancel：2026-11-06 Q2026110601054 中旧作业 15:51:11 已收到
+	// "context canceled"，但 runJob 把这个错误当成普通可恢复失败写成 retrying，
+	// 退避重排后 15:55:10 又 collect_finished → 拉包 → 落 fatal 并写回平台。
+	// 取消只是"通知"，不是"资格"；被顶替的作业必须永久失去重排与写回资格。
+	Superseded bool `json:"superseded,omitempty"`
 	// TLSInsecure 表示本次交付允许跳过平台证书校验。
 	// 平台在客户内网普遍是自签证书，客户机系统根证书库不可能预置它，
 	// 不放宽就必然 x509 失败。这里不做全局开关：授权随 job 落盘，

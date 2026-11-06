@@ -229,7 +229,10 @@ class LogCollectTaskPatch(BaseModel):
     archive_path: str | None = None
     archive_size: int | None = Field(default=None, ge=0)
     archive_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    # 交付状态可由前端/bridge 回写；与 status 正交，因此不参与状态机校验
+    # 交付状态是单一权威字段：公共 PATCH 里的 delivery_status 会被服务端**静默忽略**
+    # （single-writer，2026-11-06 Q2026110601054）。要写它只能走服务端入口：
+    # verify-archive（强证据，平台回查归档件）或 p1-delivered（弱证据，节点自报）。
+    # 与 status 正交，因此不参与状态机校验。
     delivery_status: DeliveryStatus | None = None
     delivery_error: str | None = None
     # 交付结束时刻由服务端在核验通过/失败时写入，不交给客户端自报——
@@ -343,6 +346,34 @@ class P1ArchiveVerifyRequest(BaseModel):
     )
 
 
+class P1DeliveryAttestRequest(BaseModel):
+    """P1 交付自报请求：转述节点 acli 报告的「发送成功」。
+
+    这是**弱证据**通道，存在的前提是两条硬事实：
+    1. P1 的交付对平台不可观测，acli 报成功后插件会立刻自删压缩包
+       （Q2026102701193：界面若判"未交付"，用户点重传必然 stat exit 1，彻底死锁）；
+    2. 浏览器可伪造的公共 PATCH 绝不能写交付终态（否则任何前端 bug 都能伪造"已交付"）。
+
+    因此这里既不放开 PATCH，也不允许浏览器直接落终态：请求只携带 acli 的原始
+    ``upload_state``，由**服务端**判定是否含成功语义，再走 server_authoritative
+    入口写 delivered，并强制标注 ``delivery_evidence=acli_self_reported``。
+    """
+
+    upload_state: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "acli progress 里 upload_state 的原文（中英文均可）。"
+            "服务端自行判定成功语义：判不出成功即拒绝，绝不默认成功。"
+        ),
+    )
+    archive_size: int | None = Field(
+        default=None,
+        ge=0,
+        description="节点侧报告的压缩包字节数；仅在任务记录缺失时用于补齐，不覆盖已知值",
+    )
+
+
 class P1ArchiveVerifyResponse(BaseModel):
     """P1 归档核验结论。
 
@@ -370,6 +401,13 @@ class UploadInitRequest(BaseModel):
 
     total_size: int = Field(gt=0, description="压缩包总字节数")
     expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # 内容指纹：把"同名文件被重新采集覆盖"也识别成新内容，而不只看字节数。
+    # 老前端不传时回落为只比 total_size，保证现场未升级的页面不受影响。
+    archive_fingerprint: str | None = Field(
+        default=None,
+        max_length=256,
+        description="源包内容指纹（如 size:generation 或 sha256）；用于识别同名换包",
+    )
 
 
 class UploadInitResponse(BaseModel):
@@ -380,6 +418,8 @@ class UploadInitResponse(BaseModel):
     total_size: int
     uploaded_parts: list[int]
     missing_parts: list[int]
+    # 会话代际：与任务当前代际不一致时，旧会话的迟到分片一律拒绝。
+    delivery_epoch: int = 0
 
 
 class DeliverRequest(BaseModel):
@@ -397,6 +437,11 @@ class DeliverRequest(BaseModel):
         description="节点上压缩包路径，仅登记给 bridge 使用；平台不访问该路径",
     )
     force: bool = Field(default=False, description="已交付是否强制重传")
+    archive_fingerprint: str | None = Field(
+        default=None,
+        max_length=256,
+        description="源包内容指纹；与会话已有指纹不同时自动作废旧会话并按新基线重建",
+    )
 
 
 class DeliverResponse(BaseModel):
@@ -415,6 +460,8 @@ class DeliverResponse(BaseModel):
 
 class UploadStatusResponse(BaseModel):
     upload_id: str
+    # 会话代际：前端用它判断"看到的作业结果是否属于当前会话"。
+    delivery_epoch: int = 0
     # 续签的短期令牌：断点续传重试时客户端需要重新携带它。
     # 以前这个接口不返回 token，于是"续传刷新"那一步必然把 token 丢成空串，
     # 表现为 bridge 立刻回 "task_id 与 upload_token 必填"（2026-10-27 现场）。

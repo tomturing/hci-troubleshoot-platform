@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -24,6 +25,8 @@ from ..schemas.log_collect import (
     LogCollectTaskCreate,
     LogCollectTaskPatch,
 )
+
+logger = logging.getLogger(__name__)
 
 # probe 快照入库上限：探测失败原因里会夹 acli 原始日志行，不设上限会让 detail 无界增长。
 _PROBE_SNAPSHOT_MAX_BYTES = 8192
@@ -188,9 +191,43 @@ class LogCollectService:
     ):
         return await self.repository.list_by_case(case_id, created_by=created_by, limit=limit, offset=offset)
 
-    async def update_task(self, task_id, patch: LogCollectTaskPatch) -> LogCollectTask:
+    async def update_task(
+        self,
+        task_id,
+        patch: LogCollectTaskPatch,
+        *,
+        server_authoritative: bool = False,
+    ) -> LogCollectTask:
         task = await self.get_task(task_id)
         data = patch.model_dump(exclude_none=True)
+
+        # ── 单一权威终态（single-writer）────────────────────────────────────
+        # 第一性原理：产物是否到达只能由服务端拿到的持久化事实证明；浏览器一次
+        # WS/HTTP 请求失败只说明「结果未知」，不能据此写任务终态。历史事故
+        # Q2026110601054：relay 已 success/delivered、包已落 5888，前端却因通道
+        # 断开写了 status=failed，三份状态互相打脸且无人回写。
+        # 采用"静默忽略 + 结构化审计"而非 422：老前端不会被新契约打断。
+        if not server_authoritative:
+            guarded = (
+                "delivery_status",
+                "delivery_error",
+                "delivery_finished_at",
+                "relay_status",
+            )
+            ignored = [key for key in guarded if key in data]
+            for key in ignored:
+                data.pop(key, None)
+            if task.delivery_status == "delivered" and data.get("status") == "failed":
+                # 已交付事实不可逆：误判失败只能由服务端专用终态函数纠正。
+                for key in ("status", "error_code", "error_message"):
+                    data.pop(key, None)
+                ignored.append("status(delivered_not_reversible)")
+            if ignored:
+                logger.info(
+                    "task.terminal_write_ignored task_id=%s trace_id=%s keys=%s",
+                    task_id, getattr(task, "trace_id", ""), ",".join(ignored),
+                )
+
         target_status = data.get("status")
 
         if target_status is not None:

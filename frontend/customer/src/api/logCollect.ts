@@ -206,6 +206,8 @@ export interface UploadInitResult {
   chunk_size: number
   part_count: number
   total_size: number
+  /** 会话代际：服务端签发时写入，旧代令牌在新会话里自动失效。 */
+  delivery_epoch?: number
   uploaded_parts: number[]
   missing_parts: number[]
 }
@@ -367,6 +369,25 @@ export const logCollectApi = {
     return data
   },
 
+  /**
+   * 登记「节点报告 P1 直传成功」（弱证据）：由服务端判定 upload_state 后权威落库。
+   *
+   * 为什么不直接 PATCH delivery_status：交付终态是单一权威字段，公共 PATCH 里的
+   * 该字段会被服务端静默忽略（single-writer，Q2026110601054）。P1 的包在上传成功后
+   * 被插件自删，判成"未交付"会让用户点重传必然失败（Q2026102701193），
+   * 所以弱证据必须有服务端受理入口，并打上 acli_self_reported 供事后区分。
+   */
+  async attestP1Delivered(
+    taskId: string,
+    body: { upload_state?: string | null; archive_size?: number | null },
+  ): Promise<LogCollectTask> {
+    const { data } = await client.post(`/log-collect/tasks/${taskId}/p1-delivered`, {
+      upload_state: body.upload_state ?? null,
+      archive_size: body.archive_size ?? null,
+    })
+    return data
+  },
+
   async cancelTask(taskId: string, reason?: string): Promise<LogCollectTask> {
     const { data } = await client.post(`/log-collect/tasks/${taskId}/cancel`, null, {
       params: reason ? { reason } : undefined,
@@ -388,7 +409,14 @@ export const logCollectApi = {
    */
   async deliverTask(
     taskId: string,
-    body: { total_size: number; source_path?: string; expected_sha256?: string; force?: boolean },
+    body: {
+      total_size: number
+      source_path?: string
+      expected_sha256?: string
+      force?: boolean
+      /** 内容指纹：识别"同名包被重新采集覆盖"，服务端据此自动重建会话。 */
+      archive_fingerprint?: string
+    },
   ): Promise<DeliverResult> {
     const { data } = await client.post(`/log-collect/tasks/${taskId}/deliver`, body)
     return data

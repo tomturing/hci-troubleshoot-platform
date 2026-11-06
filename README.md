@@ -4,6 +4,25 @@
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
+### 交付一致性与会话代际治理（2026-11-06）
+
+- **会话绑定内容身份与代际**：`/deliver` 每次推进单调递增 `delivery_epoch`，
+  连同可选 `archive_fingerprint` 写入会话 meta；同名换包、大小变化、代际变化
+  一律自动 abort 旧会话并按新基线重建，不再要求用户手动重点「上传到平台」。
+- **代际即 fencing token**：上传令牌签名包含当前代际，旧作业的迟到分片在
+  新会话里自动 401 失效，避免两代字节被合并成同一个成品。
+- **终态单一权威**：客户端 PATCH 不再能写 `delivery_status` / `delivery_error`
+  等终态字段；relay success 由服务端一次性收敛 `status` / `error_*`，
+  已 delivered 不可逆转为 failed。P1 归档核验走服务端权威入口。
+- **结果未知不等于失败**：WS 通道断开与网关 503 同类，只提示不落库；
+  会话分叉由前端自动重新量包、重签会话并重提作业（上限 2 次）。
+- **旧作业不得复活**：bridge 侧 `Superseded` 标志 + membership 检查 + 各阶段
+  `ctx.Err()` 守卫，杜绝 `context canceled` 被当成可恢复错误后重排复活。
+  详见 [设计](docs/plans/2026-11-06-交付一致性-design.md)、
+  [需求](docs/requirement/events/2026-11-06-交付一致性需求.md)、
+  [方案](docs/solution/events/2026-11-06-会话代际与单一权威终态.md)、
+  [任务](docs/task/events/2026-11-06-交付一致性修复任务.md)。
+
 ### 日志收集交付路径与「已采集完成」补交付（2026-10-27，2026-10-28 修正判据）
 
 - **交付路径成为任务属性**：创建任务即落库 `upload_mode`（`acli_direct`=P1 直传日志服务器 /
