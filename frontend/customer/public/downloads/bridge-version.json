@@ -1,7 +1,7 @@
 {
-  "version": "v2.34.0-8-gbf68e244",
-  "commit": "bf68e2446710",
-  "build_time": "2026-11-04T08:19:45Z",
+  "version": "v2.34.0-13-gc8990c4a",
+  "commit": "c8990c4a492a",
+  "build_time": "2026-11-06T08:29:06Z",
   "goos": "windows",
   "goarch": "amd64"
 }
