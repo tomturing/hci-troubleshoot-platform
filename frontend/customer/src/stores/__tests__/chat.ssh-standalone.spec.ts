@@ -128,15 +128,19 @@ describe('chat store - SSH 终端独立入口', () => {
     expect(store.sshFlowDialogVisible).toBe(false)
   })
 
-  it('Bridge 不可用：走下载提示，不弹登录框', async () => {
+  it('Bridge 不可用：仍走同一个登录弹框（框内 bridge-guide 自带下载与重检）', async () => {
     mockCheckBridgeBeforeOpen.mockResolvedValue('not-running')
     const store = await setup('disconnected')
 
     await store.checkAndOpenTerminal()
 
-    expect(store.showBridgeDownload).toBe(true)
-    expect(store.sshFlowDialogVisible).toBe(false)
-    expect(store.isRightPanelOpen).toBe(false)
+    // 四个入口（顶栏 / 面板 / 文件下载 / 日志收集）必须共用一套 Bridge 引导，
+    // 不再为顶栏单独维护"只有下载并打开"的第二个弹窗。
+    expect(store.sshFlowDialogVisible).toBe(true)
+    expect(store.sshFlowDialogMode).toBe('terminal-only')
+    expect(store.sshConnectDialogBridgeStatus).toBe('not-running')
+    expect(store.bridgeStatus).toBe('not_running')
+    expect(store.isRightPanelOpen).toBe(true)
   })
 
   it('打开任意 SSH 登录弹框都会先收起创建工单弹框（同一时刻只允许一个模态）', async () => {
