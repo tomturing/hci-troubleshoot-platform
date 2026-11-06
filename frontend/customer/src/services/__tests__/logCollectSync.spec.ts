@@ -9,7 +9,9 @@ import {
   hashReport,
   interpretArchiveProbe,
   isP1UploadDelivered,
+  parseAcliTotalTime,
   resolveOwnership,
+  SESSION_ADOPT_GRACE_MS,
 } from '../logCollectSync'
 
 const STALE_REPORT = '状态：收集任务已完成！\n总进度：100% - 2/2\n归档状态：发送成功'
@@ -29,9 +31,62 @@ describe('hashReport', () => {
   })
 })
 
+describe('parseAcliTotalTime', () => {
+  it('解析带毫秒的 HH:MM:SS.s（现场原始值）', () => {
+    expect(parseAcliTotalTime('00:03:38.9')).toBeCloseTo(218.9, 5)
+  })
+
+  it('解析不足一小时时省略小时段的 MM:SS', () => {
+    expect(parseAcliTotalTime('58:11')).toBe(3491)
+  })
+
+  it('解析跨小时的 HH:MM:SS', () => {
+    expect(parseAcliTotalTime('1:02:03')).toBe(3723)
+  })
+
+  it('无法解析 → null，调用方据此跳过否决而不是放行', () => {
+    expect(parseAcliTotalTime('')).toBeNull()
+    expect(parseAcliTotalTime(undefined)).toBeNull()
+    expect(parseAcliTotalTime('unknown')).toBeNull()
+    expect(parseAcliTotalTime('3 分 38 秒')).toBeNull()
+  })
+})
+
 describe('resolveOwnership 报告归属', () => {
-  it('报告已刷新 → 属于本次任务', () => {
-    expect(resolveOwnership({ nodeState: 'completed', reportRefreshed: true }).ownership).toBe('current')
+  it('报告已刷新 → 只说明报告变了，不再直接认定属于本次任务', () => {
+    // 2026-11-06 Q2026110666667：acli 在同一任务的上传阶段会持续改写完成报告
+    // （Total time 03:09.0 → 03:38.9、raw 长度 2485 → 2776），"变了"既可能是新任务、
+    // 也可能是同一任务的演进，无法区分。归属的正向证据改由 L1（采集起点）承担。
+    const result = resolveOwnership({ nodeState: 'completed', reportRefreshed: true })
+    expect(result.ownership).toBe('unknown')
+    expect(result.reason).toContain('上传阶段')
+  })
+
+  it('报告总耗时超过任务年龄 → 必是更早任务的报告（L2 时间否决）', () => {
+    // 现场数据：新任务创建 3 秒，报告自称跑了 03:38.9（218.9 秒）
+    const result = resolveOwnership({
+      nodeState: 'completed',
+      reportRefreshed: true,
+      reportTotalSeconds: 218.9,
+      taskAgeSeconds: 3,
+    })
+    expect(result.ownership).toBe('stale')
+    expect(result.reason).toContain('不可能是本次任务的报告')
+  })
+
+  it('报告总耗时在任务年龄之内（含松弛）→ 不做否决', () => {
+    const result = resolveOwnership({
+      nodeState: 'completed',
+      reportRefreshed: true,
+      reportTotalSeconds: 218.9,
+      taskAgeSeconds: 600,
+    })
+    expect(result.ownership).toBe('unknown')
+  })
+
+  it('报告没带总耗时 → 跳过时间否决，绝不当成"时间对得上"', () => {
+    const result = resolveOwnership({ nodeState: 'completed', reportRefreshed: true, taskAgeSeconds: 3 })
+    expect(result.ownership).toBe('unknown')
   })
 
   it('报告与下发前逐字相同 → 上一次任务的旧报告', () => {
@@ -303,6 +358,155 @@ describe('decideNodeSync 节点态直映射', () => {
     expect(action.action).toBe('warn_node_busy')
     // 非平台下发的任务，acli 报告里没有模块与时间范围，必须提前说清楚
     expect(action.reason).toContain('非本平台下发')
+  })
+})
+
+/** 现场 2026-11-06 Q2026110666667 的时间线，用作用例基线 */
+describe('L1 采集起点门', () => {
+  it('新任务 3 秒就报完成、从未见过 running → 不采信，继续等', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      requireSessionAdopt: true,
+      sessionAdopted: false,
+      taskAgeMs: 3_000,
+    })
+    expect(action.action).toBe('wait_refresh')
+    expect(action.reason).toContain('采集起点')
+  })
+
+  it('见到过 running（采集起点）后再报完成 → 正常落完成', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      requireSessionAdopt: true,
+      sessionAdopted: true,
+      taskAgeMs: 218_000,
+    })
+    expect(action.action).toBe('patch_completed')
+  })
+
+  it('超过冷启动窗口仍未见起点 → 兜底放行，绝不把真完成永久卡住', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      requireSessionAdopt: true,
+      sessionAdopted: false,
+      taskAgeMs: SESSION_ADOPT_GRACE_MS + 1,
+    })
+    expect(action.action).toBe('patch_completed')
+  })
+
+  it('接管历史任务（未要求起点）→ 不设门，Q2026101401683 的路径不受影响', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      requireSessionAdopt: false,
+      sessionAdopted: false,
+      taskAgeMs: 5_000,
+    })
+    expect(action.action).toBe('patch_completed')
+  })
+
+  it('拿不到任务年龄 → 无法证明"刚下发"，按节点态放行（不制造新的卡死）', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'completed',
+      reportRefreshed: true,
+      requireSessionAdopt: true,
+      sessionAdopted: false,
+    })
+    expect(action.action).toBe('patch_completed')
+  })
+})
+
+describe('L2 假 Success 拦截', () => {
+  it('本次下发、从未见上传、包已不在 → 不写 delivered', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      requireSessionAdopt: true,
+      nodeDelivered: true,
+      platformDelivered: false,
+      archiveExists: false,
+      uploadSeen: false,
+      deliveryWaitElapsedMs: 0,
+    })
+    expect(action.action).toBe('wait_delivery')
+    expect(action.reason).toContain('从未观测到上传过程')
+  })
+
+  it('见过上传阶段后再报成功 → 正常补登已交付', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      requireSessionAdopt: true,
+      nodeDelivered: true,
+      platformDelivered: false,
+      archiveExists: false,
+      uploadSeen: true,
+    })
+    expect(action.action).toBe('patch_delivered')
+  })
+
+  it('接管历史任务（未要求起点）→ 不拦，Q2026102701193 的补登路径不变', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      nodeDelivered: true,
+      platformDelivered: false,
+      archiveExists: false,
+      uploadSeen: false,
+    })
+    expect(action.action).toBe('patch_delivered')
+  })
+
+  it('等待超时仍无归档证据 → 明确告知结果未知，而不是静默卡住', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'completed',
+      requireSessionAdopt: true,
+      nodeDelivered: true,
+      platformDelivered: false,
+      archiveExists: false,
+      uploadSeen: false,
+      deliveryWaitElapsedMs: DELIVERY_EVIDENCE_WAIT_MS + 1,
+    })
+    expect(action.action).toBe('delivery_unknown')
+  })
+})
+
+describe('L3 状态机单调', () => {
+  it('平台已 completed 时，任何路径都不会再返回 patch_completed', () => {
+    const cases = [
+      { nodeState: 'completed' as const },
+      { nodeState: 'running' as const },
+      { nodeState: 'abnormal' as const },
+      { nodeState: 'unknown' as const },
+    ]
+    for (const item of cases) {
+      const action = decideNodeSync({ platformStatus: 'completed', ...item })
+      expect(action.action).not.toBe('patch_completed')
+    }
+  })
+
+  it('平台已 completed 时，也不会被自动改写成 failed', () => {
+    const action = decideNodeSync({ platformStatus: 'completed', nodeState: 'abnormal' })
+    expect(action.action).not.toBe('patch_failed')
+  })
+
+  it('终态纠正是用户显式动作：提示冲突但 canCorrect 可为真', () => {
+    const action = decideNodeSync({
+      platformStatus: 'completed',
+      nodeState: 'running',
+      reportRefreshed: true,
+    })
+    expect(action.action).toBe('warn_completed_conflict')
+    expect(action.canCorrect).toBe(true)
   })
 })
 

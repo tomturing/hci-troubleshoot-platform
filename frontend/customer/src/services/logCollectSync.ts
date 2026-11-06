@@ -1,20 +1,36 @@
 /**
  * 两端状态对齐（custom-ui ↔ HCI 上的 acli 插件任务）。
  *
- * 第一性原理（2026-10-26 重写）：
- *   节点是任务的唯一真相源，平台 DB 里的任务只是它的**投影**。
- *   因此这里只回答两个问题，不做任何"二次印证"：
- *     1. 归属：眼前这份报告属于本次下发吗？—— 只认「下发锚定」的报告指纹；
- *     2. 映射：归属确认后，节点态直接映射平台态，不再附加"完成是否可信"的条件。
+ * 第一性原理：节点是任务的唯一真相源，平台 DB 里的任务只是它的**投影**。
+ * 但"真相源"不等于"可以无条件采信"——**必须先证明这份报告属于哪一次下发**，
+ * 否则投影会把上一轮的状态写到新任务上，比不更新更糟。
  *
- * 为什么删掉 isCompletionTrustworthy（#1277 / #1284 的实现）：
- *   旧模型要求"节点说完成"时必须拿出正向证据（压缩包 mtime 或报告已刷新），
- *   而 P1 直传成功后插件会**主动删除**压缩包 → `stat` 必然失败 → mtime 恒缺失。
- *   于是真实完成被永久判成"无法确认完成归属"，平台停在 collecting，用户被卡死
- *   （工单 Q2026101401683：节点 100%、上传成功，面板却提示"继续等待"）。
+ * 三层判据（2026-11-06 重建，见 Q2026110666667）：
  *
- * 正确方向不是"证明节点是对的"，而是"识别报告是旧的"：
- *   只要报告不是下发前那一份，它就是本次任务的报告；此时没有理由不信它。
+ *   L1 归属正向前置门（`SESSION_ADOPT_GRACE_MS`）：
+ *     新任务必须**观测到节点 running（采集起点）**，才允许把 completed 映射为完成。
+ *     根因：acli 是节点级单任务，`create` 不返回句柄、`progress` 不带任务 ID，
+ *     下发后到插件真正接单之间读到的仍是上一次任务的报告。窗口 10 分钟兜底，
+ *     兼顾"页面重开接管已跑完任务"的历史场景（Q2026101401683）。
+ *
+ *   L2 否决性证据（只拦不放行）：
+ *     - 时间一致性：报告自称 `Total time` > 任务年龄 + 120s → 必是更早任务的报告；
+ *     - 逐字相同：报告与下发前完全一致 → 必是旧报告；
+ *     - 假 Success：从未观测到上传过程且压缩包已不在 → 不写 delivered。
+ *
+ *   L3 状态机单调：
+ *     终态（completed/failed/cancelled）不会被节点报告自动改写，只能由用户显式操作离开。
+ *
+ * 为什么删掉"指纹变化 = 属于本次任务"（#1284 的实现）：
+ *   它假设 create 后 acli 只是**逐字复读**上一份报告（两次 raw 完全一致）。实测同一任务
+ *   在上传阶段会持续改写完成报告（`Total time` 03:09.0 → 03:38.9、raw 长度 2485 → 2776），
+ *   指纹随之变化，"报告变了"于是既可能是新任务、也可能是同一任务的演进，无法区分。
+ *   归属的正确锚点是**观测到的采集起点**，文本指纹只保留"完全相同 → 必是旧的"这一侧。
+ *
+ * 为什么也不能要求"完成必须自证"（#1277 / #1284 的旧模型）：
+ *   P1 直传成功后插件会主动删除压缩包 → `stat` 必然失败 → mtime 恒缺失，
+ *   真完成会被永久判成"无法确认"，平台停在 collecting（Q2026101401683）。
+ *   所以 L2 只做否决，L1 才是放行依据，且 L1 有 10 分钟兜底出口。
  *
  * 这个文件只做判定，不产生副作用，便于穷举测试状态组合。
  */
@@ -43,6 +59,33 @@ export type PlatformStatus =
  * 固定常量而非自适应：先用指标观察真实打包耗时，再考虑调整，避免引入新复杂度。
  */
 export const DELIVERY_EVIDENCE_WAIT_MS = 10 * 60 * 1000
+
+/**
+ * 冷启动窗口（L1）：create 后这段时间内，未见「采集起点」的完成报告一律不采信。
+ *
+ * 为什么需要：acli 是**节点级单任务**且 `create` 不返回任何句柄，`progress` 也不带任务 ID。
+ * 新任务下发后到插件真正切换任务之间，存在一段"读到的仍是上一次任务报告"的真空期
+ * （2026-11-06 Q2026110666667：22:08:42 建任务，22:08:45 就拿到上一轮的 100% 完成报告，
+ * 3 秒被判完成，而节点 22:09:31 才从 0% 真正开始）。
+ *
+ * 判据不靠"报告变化"（同一任务在上传阶段会持续改写 Total time，指纹必然变化），
+ * 而是要求**正向证据**：必须观测到节点 `running` 才算本次任务接管了会话。
+ *
+ * 窗口取 10 分钟而不是几秒：acli 一次采集最短也在 3 分钟量级（现场实测 00:03:38.9），
+ * 5 秒轮询必然能抓到 running。窗口同时是**兜底出口**——页面关闭后重开、接管一个
+ * 早已跑完的任务时，永远看不到 running，超窗后按节点态放行，避免重演
+ * Q2026101401683「真完成被永久卡在采集中」。
+ */
+export const SESSION_ADOPT_GRACE_MS = 10 * 60 * 1000
+
+/**
+ * `Total time` 否决的时钟松弛（秒）。
+ *
+ * 平台的 `created_at` 与 acli 内部计时起点之间隔着"命令下发 → 插件接单"的几秒到几十秒，
+ * 再叠加轮询采样延迟，因此只有当报告总耗时**明显超过**任务年龄时才判旧报告。
+ * 取 120 秒：足以覆盖下发延迟，又远小于一次真实采集（3 分钟起）。
+ */
+export const TOTAL_TIME_SLACK_SECONDS = 120
 
 /** 落盘侧核验结论（服务端按产物名回查日志服务器归档件），三态不接受布尔 */
 export type ArchiveVerification = 'delivered' | 'failed' | 'none'
@@ -85,13 +128,52 @@ export interface SyncInput {
   /**
    * 报告指纹是否已刷新（与 create 前锚定的基线比较）。
    *
-   * - `true`：报告变了 → 必然是本次任务产出的报告；
+   * - `true`：报告变了；
    * - `false`：报告与下发前逐字相同 → 一定是上一次任务的旧报告；
    * - `undefined`：没有基线可比（历史任务、旧 bridge、基线读取失败）。
    *
-   * 由调用方从 `baselineReportHash` 与当前 `raw` 计算，纯数据入参便于测试。
+   * **重要（2026-11-06 订正）**：`true` 只是"报告变了"，**不再等于"属于本次任务"**。
+   * acli 在同一任务的上传阶段会持续改写完成报告（`Total time` 从 03:09.0 涨到 03:38.9，
+   * 还会追加发送状态行），同一份任务的报告指纹因此会反复变化。归属的正向证据改由
+   * `sessionAdopted`（L1）承担，指纹只保留"逐字相同 → 必是旧报告"这个否决语义。
    */
   reportRefreshed?: boolean
+  /**
+   * L1 正向证据：是否已观测到**本次任务的采集起点**（节点 `running`）。
+   *
+   * acli 无任务 ID、无句柄，`progress` 又不带归属，所以"新任务已被接单"这件事
+   * 只能靠一次 running 观测来证明。
+   */
+  sessionAdopted?: boolean
+  /**
+   * 是否**要求**先拿到起点证据才允许写完成态（L1 门的开关）。
+   *
+   * 只在"本次会话亲自 create 的任务"上为 true。历史任务接管必须为 false：
+   * 用户关掉页面、十分钟后重开去接管一个早已跑完的任务时，永远看不到 running，
+   * 一旦误开这个门就会重演 Q2026101401683「真完成被永久卡在采集中」。
+   *
+   * 缺省 false —— 宁可少拦，也不能把合法的接管路径挡死。
+   */
+  requireSessionAdopt?: boolean
+  /** 平台任务的年龄（毫秒），仅用于 `SESSION_ADOPT_GRACE_MS` 兜底放行 */
+  taskAgeMs?: number
+  /**
+   * 报告自称的总耗时（秒），由 `parseAcliTotalTime` 从 `Total time: 00:03:38.9` 解析。
+   *
+   * 它同时是**独立于文本指纹**的归属证据：任务只存在 3 秒，报告却自称跑了 3 分 38 秒，
+   * 这份报告必然属于更早的任务。缺省表示报告里没这一段，不做否决。
+   */
+  reportTotalSeconds?: number
+  /** 平台任务已运行的秒数，与 `reportTotalSeconds` 配对做时间一致性否决 */
+  taskAgeSeconds?: number
+  /**
+   * 本次下发过程中是否**观测到过上传阶段**（`upload_state` 为 sending/uploading）。
+   *
+   * 用于识别「采集完成瞬间的假 Success」：acli 在采集结束、上传尚未开始时就会报一次
+   * `Status: Success`，随后回落到 `Sending`（2026-11-06 实测 Success → Sending → Success）。
+   * 从未见过上传过程、且压缩包已不在节点时，这个 Success 不足以证明已交付。
+   */
+  uploadSeen?: boolean
   /** 报告里列出的目标主机（无指纹时用于归属兜底判定） */
   reportHosts?: string[]
   /** 本次任务的目标主机（`ips` 展开后的实际 IP 列表） */
@@ -183,19 +265,67 @@ export function hashReport(raw: string): string {
 }
 
 /**
+ * 解析 acli 报告的 `Total time`（形如 `00:03:38.9`、`58:11`、`1:02:03`）为秒。
+ *
+ * 解析失败返回 `null`：拿不到就**不做否决**，绝不把"没解析出来"当成"时间对得上"。
+ * 这段文本是 acli 唯一的自证耗时字段（`Total time` / `总耗时` 两种语言，
+ * bridge 已按标签归一），与包名、工单号都无关，因此同一工单重复采集时仍然可用。
+ */
+export function parseAcliTotalTime(raw?: string | null): number | null {
+  const text = (raw || '').trim()
+  if (!text) return null
+  // 兼容 `HH:MM:SS.s` 与 `MM:SS.s`：acli 不足一小时时省略小时段。
+  const match = /^(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/.exec(text)
+  if (!match) return null
+  const hours = match[1] ? Number(match[1]) : 0
+  const minutes = Number(match[2])
+  const seconds = Number(match[3])
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) return null
+  return hours * 3600 + minutes * 60 + seconds
+}
+
+/** 秒 → `Xm Ys` 的可读文案，只用于提示语，不参与判定 */
+function formatDuration(totalSeconds: number): string {
+  const safe = Math.max(0, Math.round(totalSeconds))
+  if (safe < 60) return `${safe} 秒`
+  return `${Math.floor(safe / 60)} 分 ${safe % 60} 秒`
+}
+
+/**
  * 判断节点报告是否属于本次下发。
  *
- * 优先级：明确指纹 > 规模否决 > 主机集合否决 > 无从判断。
- * 只有"拿到过度证据"才判 stale；信息不足时返回 unknown，由上层**按节点态为准**，
- * 绝不因为"证明不了"就停在采集中——那正是本轮要修的故障。
+ * 优先级（逐级都是**否决**，最后才给 unknown）：
+ *   1. 时间一致性（L2）：报告总耗时 > 任务年龄 → 必是更早任务的报告；
+ *   2. 逐字相同 → 必是旧报告；
+ *   3. 指纹变化 → 只记"报告变了"，**不再直接判 current**（见下方注释）；
+ *   4. 规模否决 > 主机集合否决 > 无从判断。
+ *
+ * 只有"拿到过度证据"才判 stale；信息不足时返回 unknown，由上层按节点态为准，
+ * 绝不因为"证明不了"就停在采集中——那正是 Q2026101401683 的故障。
+ * 但"放行完成态"另有 L1 门（必须先看到采集起点），不依赖本函数。
  */
 export function resolveOwnership(input: SyncInput): { ownership: Ownership; reason: string } {
-  if (input.reportRefreshed === true) {
-    return { ownership: 'current', reason: '节点报告已刷新，属于本次任务' }
+  // L2-1：时间一致性否决。它不依赖文本是否变化，是当前最强的一条归属证据。
+  // 2026-11-06 Q2026110666667：新任务创建 3 秒，报告自称 Total time 00:03:38.9，
+  // 而旧实现只看"指纹变了"就放行，直接把 3 秒的任务写成完成。
+  if (
+    input.reportTotalSeconds != null &&
+    input.taskAgeSeconds != null &&
+    input.reportTotalSeconds > input.taskAgeSeconds + TOTAL_TIME_SLACK_SECONDS
+  ) {
+    return {
+      ownership: 'stale',
+      reason: `节点报告总耗时 ${formatDuration(input.reportTotalSeconds)} 超过本任务已运行 ${formatDuration(
+        input.taskAgeSeconds,
+      )}，不可能是本次任务的报告`,
+    }
   }
   if (input.reportRefreshed === false) {
     return { ownership: 'stale', reason: '节点报告与下发前完全相同，仍是上一次任务的报告' }
   }
+  // 注意这里**不再**返回 current：同一任务在上传阶段会持续改写报告（Total time 递增、
+  // 追加发送状态行），"变了"既可能是新任务、也可能是同一任务的演进，无法区分。
+  // 归属的正向证据交给 L1（decideNodeSync 里的采集起点门），本函数只负责否决。
 
   // 没有指纹可比（历史任务 / 旧 bridge）：只用能证伪的规模与主机集合做否决
   if (input.progressTotal && input.expectedHosts && input.progressTotal !== input.expectedHosts) {
@@ -212,6 +342,12 @@ export function resolveOwnership(input: SyncInput): { ownership: Ownership; reas
       return { ownership: 'stale', reason: '节点报告中的主机与本任务目标无交集' }
     }
   }
+  if (input.reportRefreshed === true) {
+    return {
+      ownership: 'unknown',
+      reason: '节点报告已变化，但无法排除它是上一次任务上传阶段的报告演进，需等采集起点确认',
+    }
+  }
   return { ownership: 'unknown', reason: '没有可比的下发基线，以节点态为准' }
 }
 
@@ -221,7 +357,7 @@ export function resolveOwnership(input: SyncInput): { ownership: Ownership; reas
  * 幂等约定：只做"修正投影"与"清理僵尸"，绝不自动 create/重试——
  * 重复采集的代价远大于状态短暂不准。
  */
-export function decideNodeSync(input: SyncInput): SyncAction {
+function decideNodeSyncUnchecked(input: SyncInput): SyncAction {
   const { platformStatus, nodeState } = input
 
   // 认不出节点态时一律不动：宁可保留不一致让用户点「刷新进度」，
@@ -272,12 +408,14 @@ export function decideNodeSync(input: SyncInput): SyncAction {
     // 归档是既成事实：节点上的 running 只可能是"归档之后又发起了新任务"，
     // 不自动回退，交给用户点「重新收集」。
     if (nodeState === 'running') {
-      // 只有"报告已确认刷新"才允许用户把归档纠正回采集中：
-      // 报告没刷新时已经在上面按 wait_refresh 拦住了，这条分支的 current 意味着
-      // 归档之后节点上确实跑起了新任务，纠正与否交给用户点一次。
+      // 只有"报告确实不是旧的"才允许用户把归档纠正回采集中：
+      // 报告逐字未变时已经在上面按 wait_refresh 拦住了，能走到这里的要么报告已变、
+      // 要么无从比对，都属于"归档之后节点上可能真跑起了新任务"，纠正与否交给用户点一次。
+      // 注意 L3 只禁止**自动**回退，用户显式点「纠正」是状态机允许的边。
       return {
         action: 'warn_completed_conflict',
-        canCorrect: ownership === 'current',
+        // 报告逐字未变已在上面按 wait_refresh 拦掉，走到这里的都不是旧报告
+        canCorrect: true,
         reason: '平台已归档，节点上有新的采集任务在运行；如需重收请点「重新收集」',
         ownership,
       }
@@ -323,6 +461,28 @@ export function decideNodeSync(input: SyncInput): SyncAction {
     // 报告说发送成功、平台却没记录，只能说明平台漏记，不能让用户重传已被插件删除的包
     // （工单 Q2026102701193，2026-10-27 现场）。
     if (!input.platformDelivered && input.nodeDelivered && input.archiveVerified !== 'failed') {
+      // L2-3：从未观测到上传过程、且压缩包已不在节点时，这一句 Success 不足以证明已交付。
+      //
+      // acli 的状态序列是 `Success → Sending → Success`（2026-11-06 实测）：采集阶段一结束
+      // 就先报一次 Success，真正上传却要等到之后，中途回落到 Sending 跑 55 分钟。
+      // 若把第一次 Success 当交付，平台会记下一条**没有任何产物**的 delivered
+      // （5ad6842a：22:07:47 标 delivered，archive_exists=false、size=0，22:10:45 才真正开始传）。
+      //
+      // 判据刻意用"没见过 Sending"而不是"包不存在"单独成立：包被插件自删是 P1 成功后的
+      // 正常现象，只有**同时**满足"没见过上传"才能断定这个 Success 是采集阶段的假信号。
+      //
+      // 这条门只在"本次会话亲自下发"时生效（requireSessionAdopt）：接管一个早已结束的历史任务
+      // 永远不可能看到上传过程，一旦误开此门就会把真交付永远判成"待确认"
+      // （Q2026102701193 的教训——插件自删包 + 平台漏记，只能靠节点自述补登）。
+      if (
+        input.requireSessionAdopt === true &&
+        input.archiveExists === false &&
+        input.uploadSeen !== true
+      ) {
+        return waitForEvidence(
+          '节点报告发送成功，但从未观测到上传过程且压缩包已不在节点；可能是采集完成瞬间的状态，正在确认日志服务器归档件',
+        )
+      }
       return {
         action: 'patch_delivered',
         reason: '节点报告 P1 直传日志服务器成功，平台缺这条记录；按已交付补登（平台不留副本属 P1 的已知代价）',
@@ -405,6 +565,32 @@ export function decideNodeSync(input: SyncInput): SyncAction {
   }
 
   if (ACTIVE_STATUSES.has(platformStatus)) {
+    // L1：采集起点门。新任务下发后到插件真正接单之间，`progress` 读到的可能仍是
+    // 上一次任务的完成报告（acli 无任务 ID、无句柄，progress 也不带归属）。
+    // 唯一能证明"这份报告属于本次任务"的正向证据，是**看到过它从 running 起步**。
+    //
+    // 为什么不能只看"报告变了"：同一任务在上传阶段会持续改写报告
+    // （2026-11-06 Q2026110666667，Total time 03:09.0 → 03:38.9，raw 长度 2485 → 2776），
+    // 指纹必然变化，旧判据因此把上一轮的完成报告放行，3 秒的任务被写成完成。
+    //
+    // 窗口是**兜底出口**：页面关闭后重开、接管早已跑完的任务时永远看不到 running，
+    // 超窗后按节点态放行，避免重演 Q2026101401683「真完成被永久卡住」。
+    const taskAgeMs = input.taskAgeMs
+    if (
+      nodeState === 'completed' &&
+      input.requireSessionAdopt === true &&
+      input.sessionAdopted !== true &&
+      taskAgeMs != null &&
+      taskAgeMs < SESSION_ADOPT_GRACE_MS
+    ) {
+      return {
+        action: 'wait_refresh',
+        reason: `尚未观测到本次任务的采集起点（节点始终未出现 running），完成报告可能来自上一次任务；继续等待（本任务已运行 ${formatDuration(
+          taskAgeMs / 1000,
+        )}，最多等待 ${formatDuration(SESSION_ADOPT_GRACE_MS / 1000)}）`,
+        ownership,
+      }
+    }
     // 归属已确认（或无从证伪）→ 节点说什么就是什么，不再附加任何完成判据
     if (nodeState === 'completed') {
       return { action: 'patch_completed', reason: '节点任务已完成', ownership }
@@ -426,6 +612,46 @@ export function decideNodeSync(input: SyncInput): SyncAction {
     reason: `未定义的状态组合：${platformStatus}/${nodeState}`,
     ownership,
   }
+}
+
+/** 平台侧终态：只能由用户显式操作离开，判定层不得自动回退 */
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled'])
+
+/**
+ * L3：状态机单调性守卫。
+ *
+ * 第一性原理：终态一旦写入就是既成事实，后续读到什么报告都不能把它"自动改正"回来——
+ * 那等于平台自己推翻自己已经给用户的结论，而且每一次抖动都会被下一轮对账再推翻一次。
+ * 要离开终态只有两条路，且必须由用户触发：「重新收集」新建任务、或「接管」走状态机
+ * 允许的 failed → collecting 边。
+ *
+ * 因此判定层对终态任务只允许两类动作：
+ *   - 写**交付证据**（`patch_delivered`、`uploading` 阶段推进）：改的是交付维度，不是 status；
+ *   - 灰度提示（`warn_completed_conflict`、`wait_delivery`、`delivery_unknown`）。
+ *
+ * 任何试图把终态改写成 completed/failed 的动作都在这里被降级为提示，并明确告诉用户
+ * 下一步该点哪个按钮，避免"界面自己跳来跳去"却没人知道发生了什么。
+ */
+function enforceMonotonicStatus(input: SyncInput, action: SyncAction): SyncAction {
+  if (!input.platformStatus || !TERMINAL_STATUSES.has(input.platformStatus)) return action
+  if (action.action !== 'patch_completed' && action.action !== 'patch_failed') return action
+  const pending = action.action === 'patch_completed' ? '完成' : '失败'
+  return {
+    action: 'warn_completed_conflict',
+    canCorrect: false,
+    reason: `平台状态已是终态（${input.platformStatus}），不会因节点报告自动改写为${pending}；如需重新采集请点「重新收集」`,
+    ownership: action.ownership,
+  }
+}
+
+/**
+ * 对账判定的唯一出口。
+ *
+ * 内部实现只回答"节点报告看起来该做什么"，本函数负责套上状态机不变量（L3），
+ * 保证任何一条路径都不会把终态自动改回活跃态。
+ */
+export function decideNodeSync(input: SyncInput): SyncAction {
+  return enforceMonotonicStatus(input, decideNodeSyncUnchecked(input))
 }
 
 /**

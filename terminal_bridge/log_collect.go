@@ -1597,7 +1597,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			// 上传失败必须留下能定因的东西：只有"失败"两个字时，平台与桥侧
 			// 都只能去 5888 翻服务端日志才能判断是 401、超时还是网络。
 			"upload_error": progress.UploadError, "upload_raw_tail": progress.UploadRawTail,
-			"node_state":  progress.NodeState,
+			"node_state": progress.NodeState,
+			// total_time 是 acli 唯一的自证耗时字段，也是平台侧判定"这份报告属于哪次下发"
+			// 的独立证据：任务只存在 3 秒、报告却自称跑了 3 分 38 秒，必是上一次任务的报告
+			// （2026-11-06 Q2026110666667）。它以前只在回包里给前端、不落库，事后无法复核。
+			"total_time":  progress.TotalTime,
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
 			"archive_exists": progress.ArchiveExists, "archive_probe_path": probePath,
 			"archive_probe_source": probeSource, "archive_probe_level": archiveProbeResult.Level,
