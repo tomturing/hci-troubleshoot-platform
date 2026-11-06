@@ -28,6 +28,7 @@ from ..schemas.log_collect import (
     LogCollectTaskResponse,
     P1ArchiveVerifyRequest,
     P1ArchiveVerifyResponse,
+    P1DeliveryAttestRequest,
     UploadCompleteRequest,
     UploadCompleteResponse,
     UploadInitRequest,
@@ -418,6 +419,111 @@ def _judge_p1_archive(
             return False, "stale_archive", archived_size, archived_at
 
     return True, "verified", archived_size, archived_at
+
+
+_UPLOAD_STATE_FAILED_TOKENS = (
+    "失败",
+    "错误",
+    "异常",
+    "fail",
+    "error",
+    "unauthorized",
+    "timeout",
+    "abnormal",
+)
+_UPLOAD_STATE_DELIVERED_TOKENS = (
+    "成功",
+    "success",
+    "succeed",
+    "complete",
+    "finished",
+    "done",
+)
+
+
+def _classify_upload_state(raw: str | None) -> str:
+    """把 acli 的 ``upload_state`` 原文归为 delivered / failed / unknown。
+
+    与前端 ``logCollectSync.classifyUploadState`` 同口径（先判失败再判成功、中英双语）。
+    为什么必须两端逐字对齐：判据一漂就会出现"界面说成功、平台说失败"的双源矛盾
+    （2026-11-06 英文环境 ``Status: Success`` 判不出已交付的现场）。
+    这里只区分"是否含成功语义"与"是否明确失败"，不引入第三套判定。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "unknown"
+    lower = text.lower()
+    if any(token in text or token in lower for token in _UPLOAD_STATE_FAILED_TOKENS):
+        return "failed"
+    if any(token in lower for token in _UPLOAD_STATE_DELIVERED_TOKENS):
+        return "delivered"
+    return "unknown"
+
+
+@router.post("/{task_id}/p1-delivered", response_model=LogCollectTaskResponse)
+async def attest_p1_delivered(
+    task_id: UUID,
+    payload: P1DeliveryAttestRequest,
+    client_id: str = Depends(get_client_id),
+    service: LogCollectService = Depends(get_log_collect_service),
+):
+    """登记「节点报告 P1 直传成功」，由服务端写入交付终态（弱证据入口）。
+
+    第一性原理：交付终态必须由唯一写入者推进，而那唯一写入者是**服务端**，
+    不是"唯一证据源是平台回查"。两条通道各有其位：
+
+    - ``verify-archive``：服务端主动回查日志服务器，强证据；
+    - 本接口：平台够不着节点、票据密钥又可能未配置，此时 acli 的自述是唯一可用证据。
+
+    对抗性审查过的失败条件与处置：
+    - 前端随意声称成功 → 请求只收 ``upload_state`` 原文，由服务端判定语义，
+      判不出成功直接 409，不写任何终态；
+    - 非 P1 任务（P2 已有 sha256 全链路校验）→ 409，不允许用弱证据覆盖强结论；
+    - 重复调用 → 已 delivered 直接幂等返回，不刷新时间戳；
+    - 事后无法区分"核验过"与"自报的" → ``log_collect_service.update_task`` 会写入
+      ``delivery_evidence=acli_self_reported`` 与说明文案，且不覆盖 archive_verified。
+    """
+    task = await _owned_task(task_id, client_id, service)
+
+    if task.upload_mode != "acli_direct":
+        raise _problem(
+            "LC-TRANSFER-003",
+            "只有 P1 直传任务接受节点自报交付：P2 在合并阶段已有 sha256 校验",
+        )
+    if task.delivery_status == "delivered":
+        # 幂等：重复自报不刷新 delivery_finished_at，时间戳必须与首次结论同源。
+        return LogCollectTaskResponse.model_validate(task)
+
+    phase = _classify_upload_state(payload.upload_state)
+    if phase != "delivered":
+        raise _problem(
+            "LC-TRANSFER-007",
+            f"节点报告未包含发送成功语义（判定结果：{phase}），不能据此登记已交付",
+        )
+
+    attested_at = datetime.now(UTC)
+    patch = LogCollectTaskPatch(
+        delivery_status="delivered",
+        delivery_finished_at=attested_at,
+        archive_size=payload.archive_size if task.archive_size is None else None,
+        detail={
+            "p1_self_report": {
+                "upload_state": payload.upload_state,
+                "archive_size": payload.archive_size,
+                "attested_at": attested_at.isoformat(),
+            }
+        },
+    )
+    # 弱证据也必须经服务端权威入口落库：公共 PATCH 的 delivery_status 会被静默忽略，
+    # 这也是"前端补登 delivered 却永远写不进去"那类回归的根因。
+    updated = await service.update_task(task_id, patch, server_authoritative=True)
+    logger.info(
+        "P1 节点自报交付 task=%s trace_id=%s upload_state=%r evidence=acli_self_reported",
+        task_id,
+        getattr(updated, "trace_id", ""),
+        payload.upload_state,
+    )
+    return LogCollectTaskResponse.model_validate(updated)
 
 
 @router.post("/{task_id}/verify-archive", response_model=P1ArchiveVerifyResponse)

@@ -262,10 +262,13 @@ class LogCollectService:
         # 否则事后无法区分"平台核验过"与"只有 acli 说成功"（2026-10-28 Q2026102800331）。
         if task.upload_mode == "acli_direct" and task.delivery_status == "delivered":
             evidence = dict(task.detail or {})
-            if evidence.get("delivery_evidence") != "acli_self_reported":
+            # 已由 verify-archive 回查过就是更强的证据，不能被"自报"降级覆盖：
+            # 否则核验通过的记录也会被写成"平台无独立回执"（2026-11-04 现场）。
+            if evidence.get("delivery_evidence") not in ("archive_verified", "acli_self_reported"):
                 evidence["delivery_evidence"] = "acli_self_reported"
                 evidence["delivery_evidence_note"] = (
-                    "P1 直传：平台无独立回执，delivered 依据 acli 进度的 upload_state=成功 与压缩包自删"
+                    "P1 直传：平台未回查归档件，delivered 仅依据 acli 自报（upload_state 或压缩包自删）；"
+                    "如需确认请调用 verify-archive 核验"
                 )
                 task.detail = evidence
 

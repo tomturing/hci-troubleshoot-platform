@@ -229,7 +229,10 @@ class LogCollectTaskPatch(BaseModel):
     archive_path: str | None = None
     archive_size: int | None = Field(default=None, ge=0)
     archive_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    # 交付状态可由前端/bridge 回写；与 status 正交，因此不参与状态机校验
+    # 交付状态是单一权威字段：公共 PATCH 里的 delivery_status 会被服务端**静默忽略**
+    # （single-writer，2026-11-06 Q2026110601054）。要写它只能走服务端入口：
+    # verify-archive（强证据，平台回查归档件）或 p1-delivered（弱证据，节点自报）。
+    # 与 status 正交，因此不参与状态机校验。
     delivery_status: DeliveryStatus | None = None
     delivery_error: str | None = None
     # 交付结束时刻由服务端在核验通过/失败时写入，不交给客户端自报——
@@ -340,6 +343,34 @@ class P1ArchiveVerifyRequest(BaseModel):
             "节点侧报告的压缩包字节数（acli progress 的 archive_size）。"
             "给出时与 5888 归档件大小比对；缺失则只做存在性与时间窗校验。"
         ),
+    )
+
+
+class P1DeliveryAttestRequest(BaseModel):
+    """P1 交付自报请求：转述节点 acli 报告的「发送成功」。
+
+    这是**弱证据**通道，存在的前提是两条硬事实：
+    1. P1 的交付对平台不可观测，acli 报成功后插件会立刻自删压缩包
+       （Q2026102701193：界面若判"未交付"，用户点重传必然 stat exit 1，彻底死锁）；
+    2. 浏览器可伪造的公共 PATCH 绝不能写交付终态（否则任何前端 bug 都能伪造"已交付"）。
+
+    因此这里既不放开 PATCH，也不允许浏览器直接落终态：请求只携带 acli 的原始
+    ``upload_state``，由**服务端**判定是否含成功语义，再走 server_authoritative
+    入口写 delivered，并强制标注 ``delivery_evidence=acli_self_reported``。
+    """
+
+    upload_state: str | None = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "acli progress 里 upload_state 的原文（中英文均可）。"
+            "服务端自行判定成功语义：判不出成功即拒绝，绝不默认成功。"
+        ),
+    )
+    archive_size: int | None = Field(
+        default=None,
+        ge=0,
+        description="节点侧报告的压缩包字节数；仅在任务记录缺失时用于补齐，不覆盖已知值",
     )
 
 

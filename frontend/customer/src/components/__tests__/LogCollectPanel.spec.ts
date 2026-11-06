@@ -111,6 +111,12 @@ vi.mock('@/api/logCollect', () => ({
     deliverTask: vi.fn(),
     getRelay: vi.fn(),
     getUploadStatus: vi.fn(),
+    // 归档核验必须与真实 API 同构：缺了这个桩，组件里的 try/catch 会把
+    // TypeError 当成"核验不可用"吞掉，所有 P1 用例静默退回旧行为却照样绿灯。
+    verifyP1Archive: vi.fn(),
+    // 弱证据入口（节点自报）：交付终态由服务端写，前端不再 PATCH delivery_status，
+    // 因此"补登已交付"的用例必须观察这个调用，而不是 patchTask 的入参。
+    attestP1Delivered: vi.fn(),
   },
 }))
 
@@ -308,6 +314,17 @@ describe('LogCollectPanel', () => {
     vi.mocked(logCollectApi.listScenarios).mockReset()
     vi.mocked(logCollectApi.listScenarios).mockResolvedValue([])
     vi.mocked(logCollectApi.getTask).mockReset()
+    // patchTask 的调用历史必须逐例清零：否则"没写 delivered"这类断言会被
+    // 前面用例的历史调用顶成 true，失败点看起来完全无关。
+    vi.mocked(logCollectApi.patchTask).mockClear()
+    // 默认"核验接口不可用（旧后端组合）"：既不能让 vi.fn() 返回 undefined 混成绿灯，
+    // 也不能默认 verified=false 把既有 P1 补登用例改写成等待。
+    vi.mocked(logCollectApi.verifyP1Archive).mockReset()
+    vi.mocked(logCollectApi.verifyP1Archive).mockRejectedValue(new Error('核验接口不可用'))
+    // 默认"自报入口不可用"（旧后端组合）：组件必须退化成"未登记 + 有界等待"，
+    // 绝不能因为接口缺失就把节点自述当成已交付。
+    vi.mocked(logCollectApi.attestP1Delivered).mockReset()
+    vi.mocked(logCollectApi.attestP1Delivered).mockRejectedValue(new Error('自报入口不可用'))
     mockStore.openSshFlowDialog.mockClear()
     mockStore.sshConnectDialogBridgeStatus = 'checking'
     vi.mocked(checkBridgeBeforeOpen).mockClear()
@@ -1703,6 +1720,246 @@ describe('LogCollectPanel', () => {
   })
 
   /**
+   * 现场回归（Q2026101201081）：16:17 报完成、20 GiB 的包 16:18 才落盘。
+   * 旧实现把一次瞬时 archive_missing 写成 `failed + LC-TRANSFER-007`，
+   * 又在 upload_state 为空时写 delivered——两头都说谎。
+   */
+  it('P1 已完成但归档核验瞬时否定 → 不写 failed/delivered，只进入有界等待', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const done = taskFixture({
+      task_id: 'task-evidence-wait',
+      status: 'completed',
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      delivery_status: 'none',
+      relay_status: 'none',
+      // 刚完成的任务：等待窗口的回退锚点用 updated_at，
+      // 留着 taskFixture 的 2026-10-22 会被直接判成"结果未知"。
+      updated_at: new Date().toISOString(),
+      ips: ['172.28.25.1'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return done
+    })
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.verifyP1Archive).mockResolvedValue({
+      verified: false,
+      reason: 'archive_missing',
+    } as any)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await flushPromises()
+    expect(sentMessages.some((raw) => JSON.parse(raw).log_action === 'progress')).toBe(true)
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务已完成！',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+          archive_exists: false,
+          upload_state: '',
+          hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+          raw: '状态：收集任务已完成！\n总进度：100% - 1/1',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
+    expect(patches.some((body: any) => body?.delivery_status === 'failed')).toBe(false)
+    expect(patches.some((body: any) => body?.delivery_status === 'delivered')).toBe(false)
+    expect(wrapper.text()).toMatch(/归档确认|结果未知/)
+    wrapper.unmount()
+  })
+
+  /** 与上一条互补：核验通过必须照旧收敛为 delivered，防止把"等待"实现成"永不交付"。 */
+  it('P1 已完成且归档核验通过 → 补登 delivered', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.2', port: 22, username: 'root' }
+    const done = taskFixture({
+      task_id: 'task-evidence-ok',
+      status: 'completed',
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      delivery_status: 'none',
+      relay_status: 'none',
+      ips: ['172.28.25.2'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    // 核验通过后 delivered 由**服务端**写库（verify-archive 内部 server_authoritative），
+    // 前端只是把权威快照拉回来：所以这里让 getTask 在核验之后返回 delivered，
+    // 而不是让 patchTask 回显入参——后者会把"前端能不能写终态"这件错事测成绿灯。
+    let verified = false
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      return verified ? { ...done, delivery_status: 'delivered' as const } : done
+    })
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.verifyP1Archive).mockImplementation(async () => {
+      verified = true
+      return { verified: true, reason: 'size_matched' } as any
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务已完成！',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+          archive_exists: false,
+          upload_state: '',
+          hosts: [{ ip: '172.28.25.2', status: '收集完成', percent: 100 }],
+          raw: '状态：收集任务已完成！\n总进度：100% - 1/1',
+        },
+      }),
+    })
+    await flushPromises()
+
+    await vi.waitFor(() => expect(logCollectApi.verifyP1Archive).toHaveBeenCalled())
+    await vi.waitFor(() =>
+      expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false),
+    )
+    // 交付终态一次都不许由前端写：写进去也会被服务端忽略（single-writer）。
+    const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
+    expect(patches.some((body: any) => body?.delivery_status !== undefined)).toBe(false)
+    expect(logCollectApi.attestP1Delivered).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  /**
+   * 主流程（finishP1）回归：upload_state 为空时绝不能写 delivered。
+   * acli 某些版本不打印该字段，且完成报告可以早于打包/上传；证据不足只能等待。
+   */
+  it('主流程完成且 upload_state 为空、核验否定 → 只写采集结论，不写交付结论', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.3', port: 22, username: 'root' }
+    const created = taskFixture({
+      task_id: 'task-empty-upload-state',
+      status: 'pending',
+      progress: 0,
+      finished_at: null,
+      archive_path: null,
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      p1_ticket: 'p1-ticket-empty',
+      p1_ticket_expires_at: 4102444800,
+      delivery_status: 'none',
+      relay_status: 'none',
+      ips: ['172.28.25.3'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.createTask).mockResolvedValue(created)
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...created, ...body }))
+    vi.mocked(logCollectApi.verifyP1Archive).mockResolvedValue({
+      verified: false,
+      reason: 'archive_missing',
+    } as any)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 20480,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'network', label: '网络专项' }],
+          hosts: [{ ip: '172.28.25.3', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+    const start = wrapper.findAll('button').find((item) => item.text() === '开始收集')
+    expect(start).toBeTruthy()
+    await start!.trigger('click')
+    await flushPromises()
+
+    // 下发前的基线：节点无任务，避免 guardian 判"节点忙"拦住 create
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '空闲', percent: 0, done: 0, total: 0, node_state: 'none',
+          archive_path: '', hosts: [], raw: '状态：节点上没有采集任务',
+        },
+      }),
+    })
+    await flushPromises()
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({ type: 'log_collect_result', log_action: 'create', status: 'ok', log_data: {} }),
+    })
+    await flushPromises()
+    // 完成报告：upload_state 为空，包还没落盘
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务已完成！', percent: 100, done: 1, total: 1,
+          node_state: 'completed',
+          archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip',
+          archive_exists: false,
+          upload_state: '',
+          hosts: [{ ip: '172.28.25.3', status: '收集完成', percent: 100 }],
+          raw: '状态：收集任务已完成！\n总进度：100% - 1/1',
+        },
+      }),
+    })
+    await flushPromises()
+
+    await vi.waitFor(() =>
+      expect(
+        vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.status === 'completed'),
+      ).toBe(true),
+    )
+    const completed = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.map(([, body]: any) => body)
+      .filter((body: any) => body?.status === 'completed')
+      .pop()
+    // 采集结论照常写；交付结论既不能是 delivered（假成功）也不能是 failed（假失败）
+    expect(completed.delivery_status).toBeUndefined()
+    expect(wrapper.text()).toContain('正在确认')
+    wrapper.unmount()
+  })
+
+  /**
    * 现场回归（工单 Q2026102701294 / 2026-10-27）：
    * 节点采集 100%、289 MiB 包仍在盘，平台侧却是终态且零产物。
    *
@@ -1833,15 +2090,18 @@ describe('LogCollectPanel', () => {
     await flushPromises()
     await vi.waitFor(() => expect(logCollectApi.getRelay).toHaveBeenCalled())
 
-    // 5) 归档成功才收敛为完成，并登记实际交付路径
+    // 5) 归档成功才收敛为完成，并登记实际交付路径。
+    // delivery_status 不在其中：relay 服务端在 _finish(success) 时已经权威写库，
+    // 前端再写一次会被服务端静默忽略（single-writer），断言它反而会锁死错误契约。
     const completed = vi
       .mocked(logCollectApi.patchTask)
       .mock.calls.filter(([, body]: any) => body?.status === 'completed')
     expect(completed).toHaveLength(1)
     expect(completed[0][1]).toMatchObject({
       upload_mode: 'bridge_relay',
-      delivery_status: 'delivered',
+      archive_path: archivePath,
     })
+    expect(completed[0][1]).not.toHaveProperty('delivery_status')
 
     // 全程没有重新下发采集、也没有再轮询 progress
     expect(sentMessages.some((m) => m.includes('"log_action":"create"'))).toBe(false)
@@ -1965,18 +2225,159 @@ describe('LogCollectPanel', () => {
 
     await vi.waitFor(() =>
       expect(
-        vi
-          .mocked(logCollectApi.patchTask)
-          .mock.calls.some(([, body]: any) => body?.delivery_status === 'failed'),
+        vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.error_code),
       ).toBe(true),
     )
     const failure = vi
       .mocked(logCollectApi.patchTask)
-      .mock.calls.find(([, body]: any) => body?.delivery_status === 'failed')!
-    expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-008' })
+      .mock.calls.find(([, body]: any) => body?.error_code)!
+    expect(failure[1]).toMatchObject({ error_code: 'LC-TRANSFER-008' })
     expect(String((failure[1] as any).error_message)).toContain('客户机磁盘空间不足')
+    // 负向契约（缺了这几条，实现退化也测不出来）：
+    // 1) 采集完成是真实结论，交付失败不得把它改写成 failed，否则用户既看不到包在哪、也没有重试入口；
+    // 2) delivery_status 是单一权威字段，前端写了也会被服务端静默忽略，写它只会制造"假成功/假失败"；
+    // 3) delivery_error 是代传终态的唯一权威字段，由后端 _finish 落库，前端回写会用通用文案覆盖真因。
+    expect((failure[1] as any).status).toBeUndefined()
+    expect((failure[1] as any).delivery_status).toBeUndefined()
+    expect((failure[1] as any).delivery_error).toBeUndefined()
     wrapper.unmount()
   })
+
+  /**
+   * 同一现场的另一半：后端 _finish 已经把真实原因写进 error_message，
+   * 前端 catch 拿到的是「[码] 原因」的转述，原样回写会变成 "[LC-X] [LC-X] ..."。
+   * 契约：error_message 平台已记录则不覆盖；error_code 属结构化归因，仍须取最新一次。
+   */
+  it('平台已记录失败原因时不覆盖文案，但错误码取最新一次', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '192.19.4.249', port: 22, username: 'admin' }
+    const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026110400111.zip'
+    const done = taskFixture({
+      task_id: 'task-stale-code',
+      status: 'completed',
+      progress: 100,
+      archive_path: archivePath,
+      upload_mode: 'bridge_relay',
+      relay_status: 'none',
+      delivery_status: 'failed',
+      // 上一次失败留下的旧码：不能被沿用
+      error_code: 'LC-TRANSFER-009',
+      error_message: '客户机还有其它交付任务在占用本地空间（后端记录）',
+      ips: ['192.19.4.249'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.deliverTask).mockResolvedValue({
+      already_delivered: false,
+      delivery_status: 'queued',
+      delivery_attempts: 2,
+      source_path: archivePath,
+      upload: {
+        upload_id: 'up-stale',
+        upload_token: 'token-123456',
+        chunk_size: 8388608,
+        part_count: 4,
+        total_size: 30408704,
+        uploaded_parts: [],
+        missing_parts: [1],
+      },
+    } as any)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务已完成！',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: archivePath,
+          archive_exists: true,
+          upload_state: '',
+          hosts: [{ ip: '192.19.4.249', status: '收集完成', percent: 100 }],
+          raw: '状态：收集任务已完成！\n总进度：100% - 1/1',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const upload = wrapper.findAll('button').find((item) => item.text() === '上传到平台')
+    expect(upload).toBeTruthy()
+    vi.mocked(logCollectApi.patchTask).mockClear()
+    sentMessages.length = 0
+    await upload!.trigger('click')
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'stat',
+        status: 'ok',
+        log_data: { size: 30408704, exists: true },
+      }),
+    })
+    await flushPromises()
+    await vi.waitFor(() => expect(logCollectApi.deliverTask).toHaveBeenCalled())
+    await vi.waitFor(() =>
+      expect(sentMessages.some((m) => m.includes('"type":"delivery_submit"'))).toBe(true),
+    )
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'submit',
+        status: 'ok',
+        log_data: { job_id: 'dj-task-stale-code' },
+      }),
+    })
+    await flushPromises()
+    await vi.waitFor(() => expect(sentMessages.some((m) => m.includes('"log_action":"status"'))).toBe(true))
+
+    // 失败发生前，后端已把本轮真实原因写进任务记录
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () => ({
+      ...done,
+      error_code: 'LC-TRANSFER-008',
+      error_message: '客户机磁盘空间不足：请清理临时目录后重试（后端记录）',
+    }))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'status',
+        status: 'ok',
+        log_data: {
+          job_id: 'dj-task-stale-code',
+          phase: 'failed',
+          error_code: 'LC-TRANSFER-008',
+          last_error: '客户机磁盘空间不足：本地副本还需 29.0 MiB，目标目录当前可用 8.9 MiB',
+        },
+      }),
+    })
+    await flushPromises()
+
+    await vi.waitFor(() =>
+      expect(
+        vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.error_code),
+      ).toBe(true),
+    )
+    const failure = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.find(([, body]: any) => body?.error_code)!
+    expect(failure[1]).toMatchObject({ error_code: 'LC-TRANSFER-008' })
+    expect((failure[1] as any).delivery_status).toBeUndefined()
+    // 平台已记录 → 不回写 error_message，避免 "[LC-X] [LC-X] ..." 重复拼接与覆盖真因
+    expect((failure[1] as any).error_message).toBeUndefined()
+     wrapper.unmount()
+   })
 
   /**
    * 现场回归（工单 Q2026102701193，2026-10-27）：
@@ -2003,7 +2404,15 @@ describe('LogCollectPanel', () => {
       detail: {},
     })
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
-    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    // 交付终态由服务端写：自报入口返回的是权威快照，前端只做回填。
+    let attested = false
+    vi.mocked(logCollectApi.attestP1Delivered).mockImplementation(async () => {
+      attested = true
+      return { ...done, delivery_status: 'delivered' as const }
+    })
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () =>
+      attested ? { ...done, delivery_status: 'delivered' as const } : done,
+    )
     vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
 
     const wrapper = mountPanel()
@@ -2035,8 +2444,13 @@ describe('LogCollectPanel', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     await flushPromises()
 
+    // 关键：弱证据必须经服务端入口落库（浏览器不可能自己写 delivered）
+    await vi.waitFor(() => expect(logCollectApi.attestP1Delivered).toHaveBeenCalled())
+    expect(vi.mocked(logCollectApi.attestP1Delivered).mock.calls[0][1]).toMatchObject({
+      upload_state: '发送成功',
+    })
     const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
-    expect(patches.some((body: any) => body?.delivery_status === 'delivered')).toBe(true)
+    expect(patches.some((body: any) => body?.delivery_status !== undefined)).toBe(false)
     // 关键：不得再出现补交付入口
     expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false)
     expect(wrapper.text()).toContain('已由插件直传日志服务器')
@@ -2065,7 +2479,14 @@ describe('LogCollectPanel', () => {
       detail: {},
     })
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
-    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    let attested = false
+    vi.mocked(logCollectApi.attestP1Delivered).mockImplementation(async () => {
+      attested = true
+      return { ...done, delivery_status: 'delivered' as const }
+    })
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () =>
+      attested ? { ...done, delivery_status: 'delivered' as const } : done,
+    )
     vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
 
     const wrapper = mountPanel()
@@ -2096,8 +2517,13 @@ describe('LogCollectPanel', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
     await flushPromises()
 
+    // 英文环境同样走服务端自报入口：判定口径两端一致（先失败后成功、中英双语）
+    await vi.waitFor(() => expect(logCollectApi.attestP1Delivered).toHaveBeenCalled())
+    expect(vi.mocked(logCollectApi.attestP1Delivered).mock.calls[0][1]).toMatchObject({
+      upload_state: 'Success',
+    })
     const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
-    expect(patches.some((body: any) => body?.delivery_status === 'delivered')).toBe(true)
+    expect(patches.some((body: any) => body?.delivery_status !== undefined)).toBe(false)
     expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false)
     expect(wrapper.text()).toContain('已由插件直传日志服务器')
     wrapper.unmount()
