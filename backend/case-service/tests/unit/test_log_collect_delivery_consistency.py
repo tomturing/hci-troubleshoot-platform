@@ -9,6 +9,7 @@
 客户端不得写交付终态。
 """
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -179,3 +180,35 @@ async def test_server_side_archive_verification_writes_terminal(task_service):
         server_authoritative=True,
     )
     assert task.delivery_status == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_p1_delivered_clears_stale_attest_error_code(task_service):
+    """P1 直传补登 delivered 时，必须清掉之前残留的核验否定失败码。
+
+    现场 Q2026110666667 / b7fa86c5：归档核验曾判 stale_archive 写下
+    LC-TRANSFER-007，后续节点真实直传成功补登 delivered，error_code 却
+    留着未清，造成 delivered 与失败码并存的矛盾记录。
+    """
+
+    service, repo = task_service
+    task = _task(
+        upload_mode="acli_direct",
+        status="collecting",
+        delivery_status="failed",
+        error_code="LC-TRANSFER-007",
+        error_message="P1 归档核验未通过：stale_archive",
+    )
+    repo.get_by_id.return_value = task
+
+    await service.update_task(
+        uuid4(),
+        LogCollectTaskPatch(
+            delivery_status="delivered",
+            delivery_finished_at=datetime.now(UTC),
+        ),
+        server_authoritative=True,
+    )
+    assert task.delivery_status == "delivered"
+    assert task.error_code is None
+    assert task.error_message is None

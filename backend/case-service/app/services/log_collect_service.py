@@ -271,6 +271,14 @@ class LogCollectService:
                     "如需确认请调用 verify-archive 核验"
                 )
                 task.detail = evidence
+                # 交付终态以 delivered 登记后，之前残留的失败/核验否定证据
+                # （如 LC-TRANSFER-007 stale_archive）不再适用，必须清零，
+                # 否则会出现 delivered 与失败码并存的矛盾记录
+                # （2026-11-06 Q2026110666667 / b7fa86c5：归档核验曾判 stale_archive，
+                #  后续节点真实直传成功补登 delivered，error_code 却留着未清）。
+                if task.error_code is not None:
+                    task.error_code = None
+                    task.error_message = None
 
         if target_status in TERMINAL_STATUSES:
             task.finished_at = datetime.now(UTC)
