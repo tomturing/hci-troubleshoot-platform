@@ -108,7 +108,7 @@ class LogCollectTaskCreate(BaseModel):
         description=(
             "下发前的探测快照（acli 版本/构建/架构/节点清单数/场景目录来源/"
             "日志服务器可达性与两项失败原因）。"
-            "任务失败后必须能回答\"当时那台机器是什么状态\"，只留在前端内存里，"
+            '任务失败后必须能回答"当时那台机器是什么状态"，只留在前端内存里，'
             "关面板或换端就永久丢失（2026-10-28 现场：任务 detail 只有报告指纹）。"
         ),
     )
@@ -277,6 +277,13 @@ class LogCollectTaskResponse(BaseModel):
     acli_version: str | None = None
     upload_mode: str | None = None
     archive_path: str | None = None
+    # 节点侧清理路径：P2 的 archive_path 是平台对象 key，绝不能用于 rm -f。
+    # 仅当 bridge_execution_logs 里存在该工单的节点侧 progress 证据时，
+    # 才由路由层附加；缺失时前端必须改为「不提供清理命令」，不得自行拼路径。
+    node_archive_path: str | None = Field(
+        default=None,
+        description="节点上采集包的绝对路径（有节点侧证据才返回；绝不是平台对象 key）",
+    )
     archive_size: int | None = None
     archive_sha256: str | None = None
     # 清理提示：平台不自动删除、不提供删除 API，仅以这些字段驱动告警展示

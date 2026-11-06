@@ -37,6 +37,7 @@ from ..schemas.log_collect import (
 )
 from ..schemas.log_collect_errors import build_problem
 from ..security.auth import get_client_id, verify_case_exists
+from ..services.log_collect_node_path import expected_node_archive_path
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
 from ..services.log_collect_service import (
     InvalidTransitionError,
@@ -585,6 +586,53 @@ async def list_probes(
     return {"items": [dict(row) for row in rows]}
 
 
+# 节点清理路径的证据查询：只认 bridge 写下的原始 progress 报告，且路径必须与
+# expected_node_archive_path(case_id) 逐字节相等（SQL 先过滤，避免把任意字符串
+# 拉进 Python 再判断）。
+_NODE_ARCHIVE_PATH_SQL = text(
+    """
+    SELECT 1
+    FROM bridge_execution_logs
+    WHERE case_id = :case_id
+      AND event = 'log_collect.progress'
+      AND extra->>'archive_path' = :expected_path
+    LIMIT 1
+    """
+)
+
+
+async def _attach_node_archive_path(
+    responses: list[LogCollectTaskResponse],
+    session,
+    case_id: str,
+) -> None:
+    """仅当有节点侧证据时，给响应附上可展示的节点绝对路径。
+
+    查不到证据就保持 None，前端会明确「不提供路径」。绝不退回用
+    archive_path / object_key 去拼路径——那正是会误导用户的根源
+    （2026-11-06 Q2026110600940）。证据查询失败也不能让任务列表整体 500。
+    """
+    if not responses:
+        return
+    expected = expected_node_archive_path(case_id)
+    if expected is None:
+        return
+    try:
+        row = (
+            await session.execute(
+                _NODE_ARCHIVE_PATH_SQL,
+                {"case_id": case_id, "expected_path": expected},
+            )
+        ).first()
+    except Exception:  # noqa: BLE001 - 只读旁证，不能影响主查询
+        logger.exception("节点清理路径证据查询失败 case=%s", case_id)
+        return
+    if row is None:
+        return
+    for response in responses:
+        response.node_archive_path = expected
+
+
 @router.get("", response_model=LogCollectTaskListResponse)
 async def list_tasks(
     case_id: str = Query(..., min_length=1, max_length=20, description="工单号"),
@@ -596,7 +644,9 @@ async def list_tasks(
     """按工单查询任务列表（倒序），只返回当前身份创建的任务。"""
     await verify_case_exists(case_id, service.repository.session)
     items, total = await service.list_tasks(case_id, created_by=client_id, limit=limit, offset=offset)
-    return {"total": total, "items": items}
+    responses = [LogCollectTaskResponse.model_validate(item) for item in items]
+    await _attach_node_archive_path(responses, service.repository.session, case_id)
+    return {"total": total, "items": responses}
 
 
 @router.get("/{task_id}", response_model=LogCollectTaskResponse)
@@ -606,7 +656,10 @@ async def get_task(
     service: LogCollectService = Depends(get_log_collect_service),
 ):
     """查询单个任务（仅任务创建者可见）。"""
-    return await _owned_task(task_id, client_id, service)
+    task = await _owned_task(task_id, client_id, service)
+    response = LogCollectTaskResponse.model_validate(task)
+    await _attach_node_archive_path([response], service.repository.session, task.case_id)
+    return response
 
 
 @router.patch("/{task_id}", response_model=LogCollectTaskResponse)
