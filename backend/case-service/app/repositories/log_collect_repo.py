@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+import json
+from typing import Any
+
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.log_collect import LogCollectTask
@@ -66,6 +69,29 @@ class LogCollectTaskRepository:
             .offset(offset)
         )
         return list(result.scalars().all()), total
+
+    async def update_upload_progress(self, task_id, progress: dict[str, Any]) -> None:
+        """把分片上传进度原子合并进 ``detail.upload_progress``。
+
+        为什么用一条原生 SQL 而不是"读出 task → 改 detail → flush"：
+
+        - 分片上传是两个 case-service 副本轮流接的，同一任务的不同分片会并发落库，
+          读-改-写必然互相覆盖，最后 detail 里只剩某一片的进度；
+        - ``||`` 是库内原子合并，只动一个 key，不会碰 detail 里其它字段
+          （例如 ``data_correction`` 审计）。
+
+        只写进度、不参与交付判定：进度是给人看的可观测性数据，
+        任何情况下都不该反过来影响上传本身。
+        """
+        await self.session.execute(
+            text(
+                "UPDATE log_collect_task "
+                "SET detail = coalesce(detail, '{}'::jsonb) "
+                "|| jsonb_build_object('upload_progress', cast(:progress AS jsonb)) "
+                "WHERE task_id = :task_id"
+            ),
+            {"task_id": str(task_id), "progress": json.dumps(progress, ensure_ascii=False)},
+        )
 
     async def flush(self) -> None:
         await self.session.flush()

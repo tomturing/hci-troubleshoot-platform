@@ -35,12 +35,14 @@ import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
   describeRelayProgress,
+  describeUploadProgress,
   formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
   rememberPlatformCertTrust,
   type DeliverySubmitPayload,
+  type UploadProgressView,
   type RelayProgressView,
 } from '@/utils/logCollectDelivery'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
@@ -1026,7 +1028,17 @@ const resultArchiveText = computed(() => {
   // 不显式化的话，这里只会显示"采集完成，尚未交付"，用户无从知道已经试过一次、
   // 试到哪一步了（Q2026102701193 现场库里就有一条 queued 卡了两天）。
   // 这一条排在「失败兜底」之前：采集失败但交付曾登记为 queued 时，仍以 queued 为准。
-  if (task.delivery_status === 'queued') return '交付已登记但未完成（可点「上传到平台」重试）'
+  if (task.delivery_status === 'queued') {
+    // 有分片进度就必须带上：19/233 与 231/233 的处置完全相反。
+    // 前者说明链路撑不住当前节奏（别傻等），后者只差最后几分钟（别重开会话）。
+    const progress = describeUploadProgress(
+      (task.detail?.['upload_progress'] ?? null) as UploadProgressView | null,
+    )
+    if (progress) {
+      return `交付已登记但未完成：${progress}（链路恢复后自动续传，无需重新采集）`
+    }
+    return '交付已登记但未完成（可点「上传到平台」重试）'
+  }
   // 失败任务没有"归档/交付"可言：兜底显示未归档，避免落到「未记录」让人以为还在路上。
   if (task.status === 'failed') return '采集失败，未归档'
   if (resultDelivered.value) {

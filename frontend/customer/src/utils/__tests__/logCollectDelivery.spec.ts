@@ -3,6 +3,7 @@ import {
   buildDeliverySubmitMessage,
   buildDeliverySubmitPayload,
   describeRelayProgress,
+  describeUploadProgress,
   formatFailureReason,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
@@ -260,5 +261,49 @@ describe('describeRelayProgress', () => {
     const text = describeRelayProgress({ relay_chunk_total: 1, relay_last_error: 'x'.repeat(300) })
     expect(text).toContain('…')
     expect(text.length).toBeLessThan(200)
+  })
+})
+
+describe('describeUploadProgress', () => {
+  const now = Date.parse('2026-11-06T13:40:00Z')
+
+  it('没有进度快照时返回空串，让调用方回落到原文案', () => {
+    expect(describeUploadProgress(null)).toBe('')
+    expect(describeUploadProgress({})).toBe('')
+    expect(describeUploadProgress({ uploaded: 0, total: 233 })).toBe('')
+    expect(describeUploadProgress({ uploaded: 19, total: 0 })).toBe('')
+  })
+
+  it('一分钟内刚写过：说"刚刚"，不报分钟数', () => {
+    expect(
+      describeUploadProgress({ uploaded: 19, total: 233, updated_at: '2026-11-06T13:39:30Z' }, now),
+    ).toBe('平台已收到 19/233 片（刚刚仍在写入）')
+  })
+
+  it('十分钟内没动：如实说几分钟前，但不预设失败', () => {
+    expect(
+      describeUploadProgress({ uploaded: 19, total: 233, updated_at: '2026-11-06T13:33:00Z' }, now),
+    ).toBe('平台已收到 19/233 片（7 分钟前仍在写入）')
+  })
+
+  // Q2026110600112：卡在 19/233 十小时，界面全程只说「交付已登记但未完成」，
+  // 用户无法判断"再等等"还是"这条链已经废了"。
+  it('超过十分钟没动：明确提示链路可能停滞', () => {
+    expect(
+      describeUploadProgress({ uploaded: 19, total: 233, updated_at: '2026-11-06T03:40:00Z' }, now),
+    ).toBe('平台已收到 19/233 片（已 600 分钟没有新增分片，链路可能已停滞）')
+  })
+
+  it('浏览器时钟落后于服务端时不许出现负数', () => {
+    expect(
+      describeUploadProgress({ uploaded: 5, total: 233, updated_at: '2026-11-06T13:45:00Z' }, now),
+    ).toBe('平台已收到 5/233 片（刚刚仍在写入）')
+  })
+
+  it('时间戳缺失或非法时只报片数', () => {
+    expect(describeUploadProgress({ uploaded: 5, total: 233 }, now)).toBe('平台已收到 5/233 片')
+    expect(describeUploadProgress({ uploaded: 5, total: 233, updated_at: 'oops' }, now)).toBe(
+      '平台已收到 5/233 片',
+    )
   })
 })

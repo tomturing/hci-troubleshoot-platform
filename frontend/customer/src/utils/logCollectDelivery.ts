@@ -168,6 +168,54 @@ export interface RelayProgressView {
   relay_last_error?: string | null
 }
 
+/** 平台分片上传进度快照（后端写在 `task.detail.upload_progress`）。 */
+export interface UploadProgressView {
+  uploaded?: number
+  total?: number
+  /** 服务端最后一次收片的时刻（ISO 8601，UTC） */
+  updated_at?: string | null
+}
+
+/**
+ * 超过这个时长没有新增分片，就提示"链路可能已停滞"。
+ *
+ * 取 10 分钟：正常弱网下一片（8 MiB）在 30~500 秒之间，10 分钟没动已经不是慢，
+ * 而是这一轮多半又被单片超时掐断了。注意措辞是"可能"，前端不替 bridge 下结论。
+ */
+const UPLOAD_PROGRESS_STALL_HINT_MS = 10 * 60 * 1000
+
+/**
+ * 拼装"平台已收到第几片"。
+ *
+ * 第一性原理：交付卡住时，平台侧的 `delivery_status` 一直是 queued、`object_size`
+ * 一直是空，界面只能说「交付已登记但未完成」——用户看不出 19/233 和 231/233 的差别，
+ * 于是"再等等"和"这条链已经废了"变成同一个画面（2026-11-06 Q2026110600112
+ * 卡在 19/233 十小时，现场始终无法判断）。
+ * 分片计数是唯一能回答这个问题的服务端事实，`updated_at` 则回答"还在动吗"。
+ */
+export function describeUploadProgress(
+  view: UploadProgressView | null | undefined,
+  now: number = Date.now(),
+): string {
+  const uploaded = Number(view?.uploaded ?? 0)
+  const total = Number(view?.total ?? 0)
+  if (!(uploaded > 0) || !(total > 0)) return ''
+
+  const head = `平台已收到 ${uploaded}/${total} 片`
+  const stamp = Date.parse(String(view?.updated_at ?? ''))
+  if (!Number.isFinite(stamp)) return head
+
+  // 现场机器很少校时，浏览器时钟可能落后于服务端：负数一律读作"刚刚"，
+  // 不能显示成"负 3 分钟前"。
+  const idleMs = Math.max(0, now - stamp)
+  if (idleMs < 60_000) return `${head}（刚刚仍在写入）`
+  const minutes = Math.round(idleMs / 60_000)
+  if (idleMs >= UPLOAD_PROGRESS_STALL_HINT_MS) {
+    return `${head}（已 ${minutes} 分钟没有新增分片，链路可能已停滞）`
+  }
+  return `${head}（${minutes} 分钟前仍在写入）`
+}
+
 /** 最近一次错误在进度行里的展示上限：进度行是单行，长堆栈会把关键信息挤没。 */
 const RELAY_ERROR_INLINE_LIMIT = 120
 
