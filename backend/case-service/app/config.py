@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # 心跳由独立协程发送，所以单个 300s 分片超时期间也在续租；本值只需覆盖
     # 「进程已死但没人写终态」的判定窗口。默认 120s 对应 30s 心跳。
     LOG_COLLECT_RELAY_STALE_SECONDS: int = 120
+    # 代传并发闸门：每个在途代传在内存里持有 1 个整片（约 10 MiB，由 5888 的
+    # init_upload 决定，不能改小），叠加 httpx 的 multipart 缓冲，并发数直接
+    # 决定进程 RSS 峰值。2026-11-06 Q2026110600940（9.59 GiB / 982 片）在无上限
+    # 并发下把 case-service 撑到 OOMKilled，重启的两秒里网关回 503，前端据此
+    # 把一次最终成功的归档判成 failed。默认 3：配合 1 GiB 配额留足余量。
+    LOG_COLLECT_RELAY_MAX_CONCURRENCY: int = 3
 
     # P1 直传票据（2026-11-03）：5888 启用 ACLI_UPLOAD_TOKEN 后，节点 acli 的
     # 直传（P1）因为没有认证头而被 401 全量打回。acli 1.0.0 起支持

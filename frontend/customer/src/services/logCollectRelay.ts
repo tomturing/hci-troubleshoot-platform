@@ -37,3 +37,36 @@ export function shouldRecoverRelayLease(
   if (snapshot.relay_status !== 'running') return false
   return snapshot.stale === true
 }
+
+/** axios 错误里与判定相关的最小字段（不引入 axios 类型依赖，便于纯函数单测）。 */
+export interface PlatformErrorLike {
+  isAxiosError?: boolean
+  response?: { status?: number }
+}
+
+/**
+ * 平台侧异常是否属于「这一刻问不到」，而非「业务上已失败」。
+ *
+ * 回归背景（2026-11-06 工单 Q2026110600940）：
+ * 一次 9.59 GiB 的 P2 代传期间，case-service 因内存超限被 OOMKilled，重启的那
+ * 两秒里 api-gateway 把「连接不上下游」统一兜底成 `503 Case Service unavailable`。
+ * 前端把这个 503 当成业务失败写进 `status=failed`，而服务端后台代传随后成功完成
+ * （relay success + 链尾摘要校验通过），于是同一单同时存在「已交付」与「失败」。
+ *
+ * 第一性原理：**代传是服务端后台任务，与前端这一次 HTTP 请求没有因果关系**。
+ * 请求失败只能证明"状态未知"，不能证明"任务失败"，因此这类错误必须走
+ * 「结果未知」分支，绝不能替服务端写终态。
+ *
+ * 判据只用 axios 错误自身的属性：
+ * - `502/503/504`：网关或下游暂时不可用（OOM 重启正是 503）；
+ * - 有 `isAxiosError` 但没有 `response`：连接被重置 / 超时 / 断网，同样只代表问不到。
+ * 业务代码自己 `throw new Error(...)` 不带 `isAxiosError`，必须判为真失败，
+ * 否则「任务下发失败」这类确定结论会被当成瞬时抖动而永远不落库。
+ */
+export function isTransientPlatformError(error: unknown): boolean {
+  const candidate = error as PlatformErrorLike | null | undefined
+  if (!candidate || candidate.isAxiosError !== true) return false
+  const status = Number(candidate.response?.status ?? 0)
+  if (status === 502 || status === 503 || status === 504) return true
+  return !candidate.response
+}

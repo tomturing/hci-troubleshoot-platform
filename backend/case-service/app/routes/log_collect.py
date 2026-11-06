@@ -173,8 +173,60 @@ def _on_relay_done(task: asyncio.Task) -> None:
         logger.error("日志包代传失败 task=%s error=%s", task.get_name(), exc)
 
 
+# 代传并发闸门（进程级单例）。
+#
+# 为什么必须挂在模块级而不是服务实例上：`get_relay_service()` 每个请求都新建一个
+# LogCollectRelayService，挂在实例上的信号量等于每个请求各拿一把锁，闸门直接失效。
+_relay_gate: asyncio.Semaphore | None = None
+
+
+def _relay_concurrency() -> int:
+    return max(1, int(settings.LOG_COLLECT_RELAY_MAX_CONCURRENCY))
+
+
+def _relay_semaphore() -> asyncio.Semaphore:
+    global _relay_gate
+    if _relay_gate is None:
+        _relay_gate = asyncio.Semaphore(_relay_concurrency())
+    return _relay_gate
+
+
+async def _run_relay_gated(
+    relay_service: LogCollectRelayService,
+    task_id: UUID,
+    *,
+    queue_timeout: float | None = None,
+) -> None:
+    """在并发闸门内执行代传，排队超时则交还租约。
+
+    为什么要给排队设上限而不是一直等：`trigger()` 已经把任务标成 running，而
+    running 只靠心跳协程续租；排队中的协程还没跑起来、自然没有心跳，等超过
+    `stale_after/2` 就会被别的实例判成「执行者已死」并抢占，同一个包变成两个
+    进程同时上传。交还成 pending 交给下一轮 reconcile 接管，是唯一不会双重
+    执行的出口（代价是延后最多一个 reconcile 周期）。
+    """
+    semaphore = _relay_semaphore()
+    # 默认取租约的一半；显式入参只为让单测把 5 秒压到毫秒级，生产调用一律走默认。
+    if queue_timeout is None:
+        queue_timeout = max(5.0, float(settings.LOG_COLLECT_RELAY_STALE_SECONDS) / 2)
+    try:
+        await asyncio.wait_for(semaphore.acquire(), timeout=queue_timeout)
+    except TimeoutError:
+        logger.warning(
+            "日志包代传排队超时，交还租约等待下一轮接管 task=%s concurrency=%s",
+            task_id,
+            _relay_concurrency(),
+        )
+        await relay_service.release([task_id])
+        return
+    try:
+        await relay_service.run(task_id)
+    finally:
+        semaphore.release()
+
+
 def _spawn_relay(relay_service: LogCollectRelayService, task_id: UUID) -> None:
-    background = asyncio.create_task(relay_service.run(task_id))
+    background = asyncio.create_task(_run_relay_gated(relay_service, task_id))
     _running_relays[background] = task_id
     background.add_done_callback(_on_relay_done)
 
@@ -313,9 +365,7 @@ def _attach_p1_ticket(response: LogCollectTaskResponse, tickets: P1TicketService
     filename = archive_filename_for(response.case_id)
     try:
         response.p1_ticket = tickets.issue(response.case_id, filename)
-        response.p1_ticket_expires_at = tickets.verify(
-            response.p1_ticket, filename=filename
-        ).expires_at
+        response.p1_ticket_expires_at = tickets.verify(response.p1_ticket, filename=filename).expires_at
     except P1TicketError as exc:
         # 未配置密钥 / 输入异常都不阻断建任务：任务仍可走 P2。
         # 但必须在日志里说清是哪一类，否则 P1 全量 401 时会显得毫无征兆。
@@ -363,9 +413,7 @@ def _judge_p1_archive(
     if created_at is not None:
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=UTC)
-        if archived_at is not None and archived_at < created_at - timedelta(
-            seconds=P1_ARCHIVE_LOOKBACK_SECONDS
-        ):
+        if archived_at is not None and archived_at < created_at - timedelta(seconds=P1_ARCHIVE_LOOKBACK_SECONDS):
             return False, "stale_archive", archived_size, archived_at
 
     return True, "verified", archived_size, archived_at
@@ -420,9 +468,7 @@ async def verify_p1_archive(
         logger.warning("P1 归档查询失败 task=%s: %s", task_id, exc)
         raise _problem("LC-TRANSFER-007", f"查询日志服务器归档失败：{exc}") from exc
 
-    verified, reason, archived_size, archived_at = _judge_p1_archive(
-        task, archive, expected_size
-    )
+    verified, reason, archived_size, archived_at = _judge_p1_archive(task, archive, expected_size)
 
     checked_at = datetime.now(UTC)
     detail = {
