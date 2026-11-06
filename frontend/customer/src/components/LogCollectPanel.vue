@@ -68,6 +68,7 @@ import {
   hashReport,
   interpretArchiveProbe,
   isP1UploadDelivered,
+  parseAcliTotalTime,
   type ArchiveVerification,
   type NodeState,
   type SyncAction,
@@ -268,6 +269,13 @@ interface ProgressSnapshot {
    */
   archive_exists?: boolean
   upload_state: string
+  /**
+   * acli 自报的总耗时（`00:03:38.9` / `58:11`），bridge 已按 `总耗时`/`Total time` 归一。
+   *
+   * 它是**独立于文本指纹**的归属证据：任务只存在 3 秒、报告却自称跑了 3 分 38 秒，
+   * 这份报告必然属于更早的任务。解析失败（缺省）时不做否决。
+   */
+  total_time?: string
   hosts: Array<{ ip: string; status: string; percent: number }>
   /** 节点态归一化结果：none / running / completed / abnormal / unknown */
   node_state?: NodeState
@@ -386,6 +394,31 @@ const observedArchiveSize = ref(0)
  * 关面板、换浏览器、重启后接管任务时，内存里的基线早就没了。
  */
 const baselineReportHash = ref('')
+/**
+ * L1 正向证据：本次下发是否**亲眼见过节点 running（采集起点）**。
+ *
+ * acli 是节点级单任务，`create` 不回句柄、`progress` 也不带任务 ID，所以"插件已经
+ * 接单并开始跑我的任务"这件事，只能由一次 running 观测来证明。没见到它之前，
+ * 任何 completed 报告都可能是上一次任务的残留（2026-11-06 Q2026110666667：
+ * 22:08:42 建任务，22:08:45 就拿到上一轮 100%，而节点 22:09:31 才从 0% 开始）。
+ *
+ * 内存态只覆盖"本次会话"；跨页面刷新由 `task.progress > 0` 兜底（只有 running 才写进度）。
+ */
+const sessionAdopted = ref(false)
+/**
+ * L1 门开关：本次会话**亲自 create** 的任务才要求先看到采集起点。
+ *
+ * 接管历史任务时必须关掉——用户关页面、过一阵重开去接管一个早已跑完的任务时，
+ * 永远不可能再看到 running，开着门就会把真实完成永久挡住（Q2026101401683）。
+ */
+const requireSessionAdopt = ref(false)
+/**
+ * 本次下发过程中是否观测到过上传阶段（`upload_state` 为 sending/uploading）。
+ *
+ * 用于识别「采集完成瞬间的假 Success」：acli 实测会先报 Success、再回落 Sending 跑很久。
+ * 从未见过上传过程时，那句 Success 不足以证明包已经到了日志服务器。
+ */
+const uploadPhaseSeen = ref(false)
 // 对账提示：用于告诉用户"节点态与平台态不一致、下一步该做什么"
 const nodeSyncHint = ref('')
 // 对账时读到的节点压缩包路径：补交付必须用「节点实际报告的那一份」，
@@ -1986,6 +2019,11 @@ function startRecollect() {
   // 重新收集 = 新一次下发：上一轮的基线 / 提示 / 时间戳全部作废。
   // 否则新任务头几秒会拿旧基线比对，或者继续显示上一轮的"已完成"提示。
   baselineReportHash.value = ''
+  // L1/L2 证据属于**某一次下发**，不能跨任务继承：上一轮见过 running/上传，
+  // 不代表新任务也见过，否则新任务的第一份残留报告就能直接过关。
+  sessionAdopted.value = false
+  uploadPhaseSeen.value = false
+  requireSessionAdopt.value = false
   nodeSyncHint.value = ''
   nodeAction.value = ''
   // 新一次下发 = 解除上一轮的写库熔断
@@ -2150,9 +2188,22 @@ async function handleStart() {
     // 下发前锚定基线：create 不会让报告立刻刷新，下发后的头几次 progress
     // 仍可能是上一次任务的完成报告。指纹随任务入库（detail.baseline_report_hash），
     // 换浏览器/重启后接管任务时仍能把"这一份报告属于哪次下发"判清楚。
-    // 用函数取值而不是直接读 progress.value：本函数前面刚赋过 null，TS 会把 .value 收窄成 never。
-    const baseline = readProgressHash()
+    //
+    // 基线必须来自**刚刚实读的节点报告**，不能直接用 progress.value：
+    // 判为 wait_refresh 时刻意不更新 progress（避免把旧报告的 100% 显示出来），
+    // 此时 progress.value 比节点落后一个版本。拿它当锚点，下发后的第一份报告
+    // 一定"看起来变了"，归属门就形同虚设 —— Q2026110666667 正是这样复发的
+    // （基线 2698 字节，节点当时已是 2776 字节，3 秒的新任务被上一轮报告判完成）。
+    // 显式标注类型：上面刚把 progress 置过 null，TS 会把 .value 收窄成 null
+    let baselineSnapshot: ProgressSnapshot | null = progress.value
+    if (!preSync || preSync.action === 'wait_refresh') {
+      baselineSnapshot = (await readNodeSnapshot(20000, true)) ?? progress.value
+    }
+    const baseline = hashReport(baselineSnapshot?.raw ?? '')
     baselineReportHash.value = baseline
+    // L1/L2 证据属于某一次下发，新任务必须从零开始积累
+    sessionAdopted.value = false
+    uploadPhaseSeen.value = false
 
     let task: LogCollectTask
     try {
@@ -2226,6 +2277,10 @@ async function handleStart() {
       }
     }
     currentTask.value = task
+    // 本次会话亲自下发的任务：必须等节点出现 running（采集起点）才认 completed。
+    // 这是唯一发生"读到上一轮报告"的场景——acli 单任务、无句柄，下发瞬间读到的
+    // 仍是上一个任务的状态（Q2026110666667：3 秒被判完成）。
+    requireSessionAdopt.value = true
 
     stage.value = 'creating'
     const created = await sendAndWait(
@@ -2645,6 +2700,59 @@ function reportRefreshedOf(snapshot: ProgressSnapshot): boolean | undefined {
 }
 
 /**
+ * 累积本次下发的正向证据（L1 采集起点 / L2 上传阶段）。
+ *
+ * 所有能看到节点快照的入口都必须经过这里：漏掉任何一个，判定层就会以为"从没跑过"，
+ * 把真实完成一直挡在 L1 门外面（重演 Q2026101401683 的反向故障）。
+ */
+function noteNodeObservation(snapshot: ProgressSnapshot | null) {
+  if (!snapshot) return
+  const nodeState = snapshot.node_state ?? fallbackNodeState(snapshot)
+  // 起点只在"还没跑完"时才算数：`completed` 不属于起点证据。
+  if (nodeState === 'running' && (snapshot.percent ?? 0) < 100) sessionAdopted.value = true
+  const phase = classifyUploadState(snapshot.upload_state)
+  if (phase === 'uploading' || phase === 'failed') uploadPhaseSeen.value = true
+}
+
+/**
+ * 本次下发是否已拿到起点证据。
+ *
+ * 除内存标记外，还认 `task.progress > 0`：平台只在 running 时才写进度，
+ * 所以这个字段是**跨页面刷新**仍然有效的"曾经跑过"证据。
+ */
+function sessionAdoptedOf(): boolean {
+  if (sessionAdopted.value) return true
+  return (currentTask.value?.progress ?? 0) > 0
+}
+
+/** 同一份"见过上传"的跨会话证据：平台把 uploading 阶段写进过任务状态。 */
+function uploadSeenOf(): boolean {
+  if (uploadPhaseSeen.value) return true
+  return currentTask.value?.status === 'uploading'
+}
+
+/** 任务年龄（毫秒）；拿不到 created_at 时返回 undefined（不做 L1 兜底、也不做时间否决）。 */
+function taskAgeMsOf(): number | undefined {
+  const created = currentTask.value?.created_at
+  if (!created) return undefined
+  const started = new Date(created).getTime()
+  if (!Number.isFinite(started)) return undefined
+  return Math.max(0, Date.now() - started)
+}
+
+/** 任务年龄（秒）；与 `taskAgeMsOf` 同源，供 L2 时间一致性否决使用。 */
+function taskAgeSecondsOf(): number | undefined {
+  const ageMs = taskAgeMsOf()
+  return ageMs == null ? undefined : ageMs / 1000
+}
+
+/** 报告自称的总耗时（秒）；解析失败返回 undefined，判定层据此跳过时间否决。 */
+function reportTotalSecondsOf(snapshot: ProgressSnapshot): number | undefined {
+  const parsed = parseAcliTotalTime(snapshot.total_time)
+  return parsed == null ? undefined : parsed
+}
+
+/**
  * 由节点快照推断交付证据（只对 P1 有意义）。
  *
  * P1 的上传发生在 acli 内部，平台看不到任何字节或分片，唯一可读的证据是
@@ -2690,6 +2798,9 @@ async function syncNodeState(
     }
 
     const nodeState = snapshot.node_state ?? fallbackNodeState(snapshot)
+    // 先记证据再判定：本次采样本身就是一条"节点跑到哪一步"的证据，
+    // 顺序写反会让判定层永远比观测慢一拍，真实完成被 L1 门误挡。
+    noteNodeObservation(snapshot)
     // 两个证据源必须分开传，不能在这里合并：
     //   - platformDelivered：**平台侧**已有交付记录（P2 代传成功 / 已登记 delivered）；
     //   - nodeDelivered：**本轮节点报告**里的 P1「发送成功」。
@@ -2721,6 +2832,13 @@ async function syncNodeState(
       progressTotal: snapshot.total,
       expectedHosts: expectedHostCount(),
       reportRefreshed: reportRefreshedOf(snapshot),
+      // L1/L2：归属正向证据 + 时间一致性否决，两者都只依赖可自证的事实
+      requireSessionAdopt: requireSessionAdopt.value,
+      sessionAdopted: sessionAdoptedOf(),
+      taskAgeMs: taskAgeMsOf(),
+      reportTotalSeconds: reportTotalSecondsOf(snapshot),
+      taskAgeSeconds: taskAgeSecondsOf(),
+      uploadSeen: uploadSeenOf(),
       reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
       targetHosts: targetHostList(),
       platformDelivered,
@@ -2923,6 +3041,11 @@ async function resumeTaskFlow(
 ) {
   // 主流程自己持有轮询权：先停掉接管态的自动刷新，避免两条链抢同一条 bridge 通道
   stopAutoSync()
+
+  // 接管的是**别人/上一次会话**下发的任务，不是本次会话 create 的：
+  // L1 门必须关掉，否则"关页面→重开→接管一个已跑完的任务"会因永远看不到 running
+  // 而被永久卡在采集中（Q2026101401683 的回归点）。
+  requireSessionAdopt.value = false
 
   // 平台已进入交付阶段（uploading）：作业在 bridge 里跑，接上轮询即可，
   // 绝不能再走一遍"拉包 + 上传"。这也是断线/关页面后重开面板的恢复入口。
@@ -3218,6 +3341,9 @@ async function pollUntilCollected(
       if (snapshot) {
         // 主流程自己直连 sendAndWait，不走 readNodeSnapshot：这里单独记一次大小。
         rememberObservedArchiveSize(snapshot)
+        // L1/L2 证据必须在这里累积：主流程是采集期间**唯一**的采样者，
+        // 漏记就等于判定层永远看不到起点，真实完成会被挡在门外。
+        noteNodeObservation(snapshot)
         // 与「刷新进度」共用同一个判定：归属 → 映射，不再另写一套完成逻辑。
         // 这里的平台态固定按"本次采集进行中"算——主流程本身就在 collecting 上跑，
         // 若读取 currentTask 的瞬时值，会在 patch 后把 completed 再判成"已归档"而空转。
@@ -3228,6 +3354,11 @@ async function pollUntilCollected(
           progressTotal: snapshot.total,
           expectedHosts: expectedHostCount(),
           reportRefreshed: baselineHash ? hashReport(snapshot.raw ?? '') !== baselineHash : undefined,
+          sessionAdopted: sessionAdoptedOf(),
+          taskAgeMs: taskAgeMsOf(),
+          reportTotalSeconds: reportTotalSecondsOf(snapshot),
+          taskAgeSeconds: taskAgeSecondsOf(),
+          uploadSeen: uploadSeenOf(),
           reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
           targetHosts: targetHostList(),
         })
@@ -3296,7 +3427,13 @@ async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null)
   // `upload_state` 为空既不证明成功也不证明失败：acli 某些版本根本不打印该字段，
   // 且完成报告可以早于打包/上传（Q2026101201081：16:17 报完成、16:18 包才落盘）。
   // 旧实现把它当成功写 delivered、把一次瞬时 archive_missing 当失败写 failed，两头都说谎。
-  const delivered = evidence === 'delivered' || (evidence === 'none' && nodeSuccess)
+  // L2：从未观测到上传过程、且压缩包已不在节点时，这句 Success 只是采集完成瞬间的信号。
+  // 实测 acli 状态序列是 Success → Sending → Success：第一次 Success 时包还没开始传，
+  // 直接写 delivered 会得到一条**零产物**的交付记录（5ad6842a：delivered 但 size=0）。
+  // 只有"见过上传"或"包确实还在盘（可补交付）"两种情形，nodeSuccess 才可信。
+  const successIsTrustworthy = uploadSeenOf() || snapshot?.archive_exists !== false
+  const delivered =
+    evidence === 'delivered' || (evidence === 'none' && nodeSuccess && successIsTrustworthy)
   const patch: Partial<LogCollectTask> = {
     upload_mode: 'acli_direct',
     // 交付状态不放进 PATCH：公共接口会静默忽略它（single-writer），
