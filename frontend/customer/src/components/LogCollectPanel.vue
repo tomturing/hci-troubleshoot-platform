@@ -60,9 +60,11 @@ import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
   decideNodeSync,
+  classifyUploadState,
   fallbackNodeState,
   hashReport,
   interpretArchiveProbe,
+  isP1UploadDelivered,
   type NodeState,
   type SyncAction,
 } from '@/services/logCollectSync'
@@ -2563,11 +2565,13 @@ function targetHostList(): string[] {
  * 现场（Q2026101401683 / 23:22）：acli 在把包发给日志服务器时仍输出
  * 「收集任务进行中！总进度 85%」，并在这个百分比上停留 30 多秒；
  * 步骤条却一直停在「采集」，用户以为采集卡死，而节点其实是在上传。
- * `upload_state`（发送中 / 成功 / 失败）是节点自己给出的阶段信号，用它点亮「上传」。
+ * `upload_state`（中文「发送中 / 成功 / 失败」，英文 `Sending / Success / Failed`）
+ * 是节点自己给出的阶段信号，用它点亮「上传」。文案随节点语言变化，判定统一走
+ * `classifyUploadState`，不要在组件里比对某一种语言的字面量。
  */
 function applyNodeStage(snapshot: ProgressSnapshot) {
   if (stage.value !== 'collecting') return
-  if (/发送中|上传中/.test(snapshot.upload_state ?? '')) stage.value = 'uploading'
+  if (classifyUploadState(snapshot.upload_state) === 'uploading') stage.value = 'uploading'
 }
 
 /**
@@ -2599,7 +2603,8 @@ function reportRefreshedOf(snapshot: ProgressSnapshot): boolean | undefined {
  * 由节点快照推断交付证据（只对 P1 有意义）。
  *
  * P1 的上传发生在 acli 内部，平台看不到任何字节或分片，唯一可读的证据是
- * progress 里的 `upload_state` 文本（"发送成功"/"发送失败"）。
+ * progress 里的 `upload_state` 文本（"发送成功"/"发送失败" 或 `Success`/`Failed`），
+ * 语义由 `classifyUploadState` 归一化，与语言无关。
  * P2 一律返回 undefined：它的交付结果由数据面合并与代传写进 DB，
  * 用节点态去覆盖只会把"平台已交付"改成"未知"。
  */
@@ -2610,9 +2615,9 @@ function deliveryEvidenceOf(
   if (!task) return undefined
   const isP1 = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
   if (!isP1) return undefined
-  const state = snapshot.upload_state || ''
-  if (state.includes('成功')) return 'delivered'
-  if (state.includes('失败')) return 'failed'
+  const phase = classifyUploadState(snapshot.upload_state)
+  if (phase === 'delivered') return 'delivered'
+  if (phase === 'failed') return 'failed'
   return undefined
 }
 
@@ -3170,12 +3175,13 @@ async function pollUntilCollected(
 async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null) {
   // 必须用"通过完成判据的那一份快照"，不能回读 progress.value：
   // 否则上传状态/包路径可能来自另一次读取（早先就是拿旧报告的「成功」放行了假完成）。
-  if (snapshot?.upload_state && !snapshot.upload_state.includes('成功')) {
-    throw new Error(`日志服务器上传失败：${snapshot.upload_state}，可改用 P2 中转`)
+  if (!isP1UploadDelivered(snapshot?.upload_state)) {
+    throw new Error(`日志服务器上传失败：${snapshot?.upload_state}，可改用 P2 中转`)
   }
   await markCompleted(task.task_id, {
     upload_mode: 'acli_direct',
-    // 走到这里说明 upload_state 已确认"成功"，这是 P1 唯一能拿到的交付证据。
+    // 走到这里说明 upload_state 已确认是成功态（中文"发送成功"/英文 `Success`），
+    // 这是 P1 唯一能拿到的交付证据。
     delivery_status: 'delivered',
     archive_path: snapshot?.archive_path || undefined,
     // 大小来自 bridge 的 stat（插件 progress 不打印大小）。这里的 snapshot 是

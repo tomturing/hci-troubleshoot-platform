@@ -2044,6 +2044,66 @@ describe('LogCollectPanel', () => {
   })
 
   /**
+   * 2026-11-06 英文环境实测回归：acli 输出 `Status: Success`，
+   * 旧代码用 `includes('成功')` 判不出已交付，P1 结果页会挂「上传到平台」，
+   * 新建任务收尾还会被 finishP1 抛错阻断。
+   */
+  it('英文 upload_state=Success 时 P1 交付证据仍成立，不给补交付入口', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.24.194', port: 22, username: 'root' }
+    const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026110666666.zip'
+    const done = taskFixture({
+      task_id: 'task-p1-en',
+      status: 'completed',
+      progress: 100,
+      archive_path: archivePath,
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      relay_status: 'none',
+      delivery_status: 'none',
+      ips: ['172.28.24.194'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: 'Collect task has been completed!',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: archivePath,
+          archive_exists: false,
+          upload_state: 'Success',
+          hosts: [{ ip: '172.28.24.194', status: 'Collection successful', percent: 100 }],
+          raw: 'Status: Collect task has been completed!\\nSend address: http://acli.sangfor.com.cn:5888/\\nStatus: Success',
+        },
+      }),
+    })
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flushPromises()
+
+    const patches = vi.mocked(logCollectApi.patchTask).mock.calls.map(([, body]: any) => body)
+    expect(patches.some((body: any) => body?.delivery_status === 'delivered')).toBe(true)
+    expect(wrapper.findAll('button').some((item) => item.text() === '上传到平台')).toBe(false)
+    expect(wrapper.text()).toContain('已由插件直传日志服务器')
+    wrapper.unmount()
+  })
+
+  /**
    * 现场反馈（2026-10-26 22:40）：刷新页面重新登录后接管进行中任务，
    * 只能看到「采集 0%」，表单里的故障场景/时间范围/目标主机全是空默认值，
    * 用户无法确认"这次到底下发了什么"。
