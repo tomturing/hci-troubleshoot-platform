@@ -671,6 +671,12 @@ func TestClassifyLogCollectNodeState(t *testing.T) {
 		{"异常结束", logCollectProgress{Status: "收集任务异常结束！"}, logCollectNodeAbnormal},
 		{"收集失败", logCollectProgress{Status: "收集失败"}, logCollectNodeAbnormal},
 		{"无任务", logCollectProgress{Status: "收集任务不存在！"}, logCollectNodeNone},
+		// 英文输出（2026-11-06 Q2026110486009，节点 10.12.10.11）：
+		// 同一 acli 版本在不同机器上语言不同，归一化不能只认中文。
+		{"英文进行中", logCollectProgress{Status: "Collect task is in progress!"}, logCollectNodeRunning},
+		{"英文已完成", logCollectProgress{Status: "Collect task has been completed!"}, logCollectNodeCompleted},
+		{"英文上传失败", logCollectProgress{Status: "Sending failed"}, logCollectNodeAbnormal},
+		{"英文无任务", logCollectProgress{Status: "Collect task does not exist!"}, logCollectNodeNone},
 		{"状态行缺失但仍在跑", logCollectProgress{Hosts: []logCollectHost{{IP: "10.0.0.1", Status: "收集中"}}}, logCollectNodeRunning},
 		// 识别不了就不动平台状态，绝不按猜测去 cancel 节点任务
 		{"完全无法识别", logCollectProgress{}, logCollectNodeUnknown},
@@ -949,5 +955,123 @@ func TestParseLogCollectProgressUploadError(t *testing.T) {
 	collectOnly := parseLogCollectProgress("状态：收集失败")
 	if collectOnly.UploadError != "" {
 		t.Fatalf("采集阶段的失败不应写入 upload_error：%q", collectOnly.UploadError)
+	}
+}
+
+// 英文输出样本逐字取自 2026-11-06 Q2026110486009 的现场终端（节点 10.12.10.11）。
+//
+// 为什么必须钉住这一份：同一 acli 1.0.0（build 2026-05-20）在另一台机器上输出中文且
+// 解析正常，在这台机器上输出英文，旧实现只比对中文前缀，parse_ok=false，
+// 平台读不到"已完成/上传失败"，任务卡在 collecting、不降级 P2，10.03 GiB 包留在节点。
+func TestParseLogCollectProgressEnglish(t *testing.T) {
+	raw := strings.Join([]string{
+		"Status: Collect task is in progress!",
+		"Path to the compressed file (Please manually delete the compressed file after downloading the log): /sf/data/local/acli/tmp/data/log_collect/Q2026110486009.zip",
+		"Overall progress: 60% - 3/5(Collected/Total collected)",
+		"Total time: 00:11:13.9",
+		"10.12.10.22  Collection successful   100%",
+		"10.12.10.23  Collection in progress  45%",
+		"10.12.10.24  Collection failed       -",
+		"Log collection result sending status:",
+		"Send address: http://acli.sangfor.com.cn:5888",
+		"Status: Failed",
+	}, "\n")
+
+	got := parseLogCollectProgress(raw)
+	if !got.ParseOK {
+		t.Fatal("英文输出应解析成功")
+	}
+	if got.Status != "Collect task is in progress!" {
+		t.Fatalf("任务状态解析错误：%q", got.Status)
+	}
+	if got.Percent != 60 || got.Done != 3 || got.Total != 5 {
+		t.Fatalf("总进度解析错误：%+v", got)
+	}
+	if got.ArchivePath != "/sf/data/local/acli/tmp/data/log_collect/Q2026110486009.zip" {
+		t.Fatalf("压缩包路径解析错误：%q", got.ArchivePath)
+	}
+	if got.TotalTime != "00:11:13.9" {
+		t.Fatalf("总耗时解析错误：%q", got.TotalTime)
+	}
+	// 地址值里自带端口冒号，取最后一个冒号会把地址切成 "5888"。
+	if got.UploadURL != "http://acli.sangfor.com.cn:5888" {
+		t.Fatalf("上传地址解析错误：%q", got.UploadURL)
+	}
+	if got.UploadState != "Failed" {
+		t.Fatalf("上传状态解析错误：%q", got.UploadState)
+	}
+	if len(got.Hosts) != 3 {
+		t.Fatalf("节点明细数量错误：%d", len(got.Hosts))
+	}
+	if got.Hosts[0].Status != "Collection successful" || got.Hosts[0].Percent != "100%" {
+		t.Fatalf("节点明细解析错误：%+v", got.Hosts[0])
+	}
+	if got.Hosts[2].Percent != "-" {
+		t.Fatalf("失败节点的百分比应保留占位横线：%+v", got.Hosts[2])
+	}
+	if node := classifyLogCollectNodeState(got); node != logCollectNodeRunning {
+		t.Fatalf("节点态归一化错误：%s", node)
+	}
+}
+
+// 现场收尾那一段：采集已完成、包已生成、上传失败。
+// 这正是必须让平台看懂的组合——否则既不降级 P2，也没有补交付入口。
+func TestParseLogCollectProgressEnglishCompleted(t *testing.T) {
+	raw := strings.Join([]string{
+		"Status: Collect task has been completed!",
+		"Path to the compressed file (Please manually delete the compressed file after downloading the log): /sf/data/local/acli/tmp/data/log_collect/Q2026110486009.zip",
+		"Overall progress: 100% - 5/5(Collected/Total collected)",
+		"Total time: 00:11:13.9",
+		"10.12.10.21  Collection successful   100%",
+		"10.12.10.22  Collection successful   100%",
+		"10.12.10.23  Collection successful   100%",
+		"10.12.10.24  Collection successful   100%",
+		"10.12.10.25  Collection successful   100%",
+		"Log collection result sending status:",
+		"Send address: http://acli.sangfor.com.cn:5888",
+		"Status: Failed",
+	}, "\n")
+
+	got := parseLogCollectProgress(raw)
+	if !got.ParseOK {
+		t.Fatal("英文输出应解析成功")
+	}
+	if got.Percent != 100 || got.Done != 5 || got.Total != 5 {
+		t.Fatalf("总进度解析错误：%+v", got)
+	}
+	if len(got.Hosts) != 5 {
+		t.Fatalf("节点明细数量错误：%d", len(got.Hosts))
+	}
+	if node := classifyLogCollectNodeState(got); node != logCollectNodeCompleted {
+		t.Fatalf("节点态应为 completed，实际：%s", node)
+	}
+	if got.UploadState != "Failed" {
+		t.Fatalf("上传失败必须被识别，否则平台不会降级 P2：%q", got.UploadState)
+	}
+	if got.UploadRawTail == "" {
+		t.Fatal("出现上传状态时必须保留原文尾部")
+	}
+}
+
+// 英文 help 没有「枚举值」标题时走全量扫描兜底，且必须只认白名单枚举。
+func TestParseLogCollectModuleCatalogEnglishFallback(t *testing.T) {
+	raw := strings.Join([]string{
+		"Usage:",
+		"  acli log_collect create [flags]",
+		"",
+		"  host_offline (Host offline)",
+		"  vm_start (VM start)",
+		"  system (System)",
+		"  note about file (Please see the manual)",
+	}, "\n")
+
+	modules := parseLogCollectModuleCatalog(raw)
+	if len(modules) == 0 {
+		t.Fatal("英文 help 应能解析出场景目录")
+	}
+
+	// 只有正文括号、没有任何白名单枚举时，必须回退内置目录而不是谎称来自集群。
+	if got := parseLogCollectModuleCatalog("note about file (Please see the manual)"); got != nil {
+		t.Fatalf("没有白名单枚举时不应返回目录：%+v", got)
 	}
 }

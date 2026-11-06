@@ -159,15 +159,24 @@ var (
 	logCollectDateRe   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	logCollectIPv4Re   = regexp.MustCompile(`^(\d{1,3}\.){3}\d{1,3}$`)
 	// 额外收集路径只允许绝对路径，并禁止 shell 元字符与空白（插件会直接拼命令）。
-	logCollectPathRe     = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
-	logCollectProgressRe = regexp.MustCompile(`^总进度：(\d+)% - (\d+)/(\d+)`)
+	logCollectPathRe = regexp.MustCompile(`^/[A-Za-z0-9_./-]+$`)
+	// 进度行按「标签 + 百分比 + 分数」的形态匹配，中英文共用一条：
+	// 中文「总进度：63% - 2/3（已收集完成/收集总数）」、英文
+	// 「Overall progress: 100% - 5/5(Collected/Total collected)」。
+	logCollectProgressRe = regexp.MustCompile(`^(?:总进度|Overall progress)\s*[:：]\s*(\d+)%\s*-\s*(\d+)\s*/\s*(\d+)`)
 	// logCollectAnsiRe 匹配终端颜色/样式转义。acli 失败时会输出 `\x1b[31mFATA\x1b[0m...`，
 	// 不清洗会让状态行前缀带转义、解析失配，前端也会把乱码直接展示给用户。
-	logCollectAnsiRe     = regexp.MustCompile("\u001b\\[[0-9;]*m")
-	logCollectHostLineRe = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,3}){3})\s+(收集完成|收集中|收集失败)\s+(\d+%|-)`)
+	logCollectAnsiRe = regexp.MustCompile("\u001b\\[[0-9;]*m")
+	// 节点行只锚定「行首 IP + 中间状态列 + 行尾百分比/占位横线」三段的形态，
+	// 中间列不写死文案：中文「收集完成」与英文「Collection successful」都是两个词的
+	// 组合，任何按词枚举的写法都会在下一次文案变化时失效，交给
+	// classifyLogCollectHostStatusWord 归一化后再判定这一行是否是节点明细。
+	logCollectHostLineRe = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,3}){3})\s+(.+?)\s+(\d+%|-)\s*$`)
 	// 实机 help 把枚举值按两列排版（同一行出现两个「名称（标签）」），
-	// 因此必须全量扫描而不是逐行只取首个匹配。
-	logCollectModuleOptionRe = regexp.MustCompile(`([a-z][a-z_]+)（([^）]{1,40})）`)
+	// 因此必须全量扫描而不是逐行只取首个匹配。括号兼容全角与半角，
+	// 并允许标签前有空格：中文是 `host_offline（主机离线）`，
+	// 英文是 `host_offline (Host offline)`。只吃空格/制表符，不跨行。
+	logCollectModuleOptionRe = regexp.MustCompile(`([a-z][a-z_]+)[ \t]*[（(][ \t]*([^）)]{1,40})[）)]`)
 )
 
 // shellQuote 用单引号包裹并按 POSIX 规则转义内部单引号。
@@ -602,14 +611,24 @@ func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
 		return nil
 	}
 	block := raw
-	idx := strings.Index(block, "枚举值")
-	if idx < 0 {
-		// 文案改版时不做猜测，交给调用方回退内置目录。
-		return nil
-	}
-	block = block[idx:]
-	if end := strings.Index(block, "说明"); end >= 0 {
-		block = block[:end]
+	// 中文 help 用「枚举值 … 说明」两段标题圈定枚举区。英文 help 的标题文案没有
+	// 实机样本，不能凭猜测把某一种写法当唯一入口；找不到标题时改为全量扫描，
+	// 并把命中门槛提高到 2 条——示例命令里也可能出现括号，单条命中不足以定论。
+	scoped := false
+	for _, head := range []string{"枚举值", "Enum values", "Valid values"} {
+		idx := strings.Index(block, head)
+		if idx < 0 {
+			continue
+		}
+		block = block[idx+len(head):]
+		for _, tail := range []string{"说明", "Description"} {
+			if end := strings.Index(block, tail); end >= 0 {
+				block = block[:end]
+				break
+			}
+		}
+		scoped = true
+		break
 	}
 
 	// 第一性原理：白名单 logCollectModules 是 -m 的合法枚举全集，目录只应从中取。
@@ -618,9 +637,22 @@ func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
 	//   - help 会漏列合法枚举（实机 acli 1.0.1 未列出 core），漏列的专项用户永远看不到。
 	// 因此 label 一律取自平台内置短名 logCollectModuleLabels，并按固定顺序补齐白名单全集。
 	matches := logCollectModuleOptionRe.FindAllStringSubmatch(block, -1)
-	// 一个合法枚举都解析不到，说明 help 改版/乱码：交给调用方回退内置目录，
+	// 只统计命中白名单的枚举：英文 help 正文里 `file (Please ...)` 这类半角括号
+	// 也会被正则命中，按条数判断会把"没有枚举的文本"误认成集群目录，
+	// 让目录来源提示谎称来自集群。
+	validMatches := 0
+	for _, match := range matches {
+		if logCollectModules[match[1]] {
+			validMatches++
+		}
+	}
+	// 枚举解析不到，说明 help 改版/乱码：交给调用方回退内置目录，
 	// 而不是拿全量白名单冒充"集群目录"（那样目录来源提示会谎称来自集群）。
-	if len(matches) == 0 {
+	minMatches := 1
+	if !scoped {
+		minMatches = 2
+	}
+	if validMatches < minMatches {
 		return nil
 	}
 
@@ -737,27 +769,48 @@ const (
 	logCollectNodeCompleted = "completed"
 	logCollectNodeAbnormal  = "abnormal"
 	logCollectNodeUnknown   = "unknown"
+
+	logCollectHostRunning   = "running"
+	logCollectHostCompleted = "completed"
+	logCollectHostFailed    = "failed"
 )
 
-// classifyLogCollectNodeState 把插件的中文状态行归一为可做状态机判断的枚举。
+// classifyLogCollectNodeState 把插件的状态行归一为可做状态机判断的枚举。
 //
 // 对抗性审查：识别不了的一律 unknown——宁可不动平台状态，也不要按猜测去 cancel 节点任务。
 // 「异常结束」必须单列：它既不含"完成"也不含"失败"，早期前端因此既不判完成也不判失败，
 // 只能空转到 1 小时超时。
+//
+// 中英文必须同时覆盖：同一个 acli 版本在不同机器上输出语言不同（2026-11-06
+// Q2026110486009 输出英文，旧实现只认中文，node_state 恒为 unknown）。
 func classifyLogCollectNodeState(progress logCollectProgress) string {
 	status := strings.TrimSpace(progress.Status)
+	lower := strings.ToLower(status)
 	switch {
-	case strings.Contains(status, "异常结束"), strings.Contains(status, "失败"), strings.Contains(status, "错误"):
+	case strings.Contains(status, "异常结束"), strings.Contains(status, "失败"), strings.Contains(status, "错误"),
+		strings.Contains(lower, "fail"), strings.Contains(lower, "error"),
+		strings.Contains(lower, "abnormal"):
 		return logCollectNodeAbnormal
-	case strings.Contains(status, "完成"):
+	case strings.Contains(status, "完成"),
+		strings.Contains(lower, "complete"), strings.Contains(lower, "success"),
+		strings.Contains(lower, "finish"), strings.Contains(lower, "done"):
 		return logCollectNodeCompleted
-	case strings.Contains(status, "进行中"), strings.Contains(status, "收集中"),
-		strings.Contains(status, "上传中"), strings.Contains(status, "打包"), strings.Contains(status, "准备"):
-		return logCollectNodeRunning
-	// 实机无任务文案是「收集任务不存在！」（见 TestParseLogCollectProgress 样本）
+	// 实机无任务文案是「收集任务不存在！」/ `Collect task does not exist!`
+	// （见 TestParseLogCollectProgress 样本）。
+	//
+	// 必须排在 running 之前：英文无任务文案 `Collect task does not exist!` 里
+	// 含 "collect"，先判 running 会把它归成"进行中"，平台就会一直等下去。
 	case strings.Contains(status, "不存在"), strings.Contains(status, "无任务"),
-		strings.Contains(status, "暂无"), strings.Contains(status, "没有正在"):
+		strings.Contains(status, "暂无"), strings.Contains(status, "没有正在"),
+		strings.Contains(lower, "not exist"), strings.Contains(lower, "no task"),
+		strings.Contains(lower, "none"):
 		return logCollectNodeNone
+	case strings.Contains(status, "进行中"), strings.Contains(status, "收集中"),
+		strings.Contains(status, "上传中"), strings.Contains(status, "打包"), strings.Contains(status, "准备"),
+		strings.Contains(lower, "progress"), strings.Contains(lower, "running"),
+		strings.Contains(lower, "collect"), strings.Contains(lower, "upload"),
+		strings.Contains(lower, "pack"):
+		return logCollectNodeRunning
 	}
 	// 状态行缺失时用可观测信号兜底：有进度或有节点明细，说明任务存在且仍在推进。
 	if progress.Percent > 0 || len(progress.Hosts) > 0 || progress.Done > 0 {
@@ -766,58 +819,150 @@ func classifyLogCollectNodeState(progress logCollectProgress) string {
 	return logCollectNodeUnknown
 }
 
+// classifyLogCollectHostStatusWord 归一化节点明细中间列的状态词。
+// 返回空串表示这一行不是节点明细——行首是 IP 的行也可能来自日志或命令回显，
+// 不能见到 IP 就当成节点。
+func classifyLogCollectHostStatusWord(word string) string {
+	w := strings.ToLower(strings.TrimSpace(word))
+	switch {
+	case strings.Contains(word, "失败"), strings.Contains(word, "异常"),
+		strings.Contains(w, "fail"), strings.Contains(w, "error"),
+		strings.Contains(w, "abnormal"):
+		return logCollectHostFailed
+	case strings.Contains(word, "完成"),
+		strings.Contains(w, "success"), strings.Contains(w, "complete"),
+		strings.Contains(w, "finish"), strings.Contains(w, "done"):
+		return logCollectHostCompleted
+	case strings.Contains(word, "收集"), strings.Contains(word, "进行"),
+		strings.Contains(w, "collect"), strings.Contains(w, "progress"),
+		strings.Contains(w, "running"), strings.Contains(w, "pack"),
+		strings.Contains(w, "upload"), strings.Contains(w, "wait"):
+		return logCollectHostRunning
+	}
+	return ""
+}
+
+// logCollectLabel 表示 progress 输出里「标签：值」这一行的标签，可含多种语言写法。
+//
+// 第一性原理：这段输出是给人读的文本，标签文案随运行环境语言变化，但
+// 「标签 + 冒号 + 值」的结构不变。解析只能锚定结构，不能锚定某一种语言的字面量：
+// 2026-11-06 Q2026110486009 的节点输出英文，旧实现按中文前缀逐条匹配，全部落空，
+// 于是 parse_ok=false、平台读不到"已完成"也读不到"上传失败"，
+// 任务卡在 collecting、不降级 P2，10.03 GiB 的包留在节点上。
+type logCollectLabel struct{ aliases []string }
+
+var (
+	logCollectStatusLabel     = logCollectLabel{aliases: []string{"状态", "Status"}}
+	logCollectUploadAddrLabel = logCollectLabel{aliases: []string{"发送地址", "Send address"}}
+	logCollectArchiveLabel    = logCollectLabel{aliases: []string{"压缩包路径", "Path to the compressed file"}}
+	logCollectTotalTimeLabel  = logCollectLabel{aliases: []string{"总耗时", "Total time"}}
+)
+
+// value 判断行是否以该标签开头，并返回冒号后的值。
+//
+// 分隔符只取标签后的**第一个**冒号：上传地址的值自带端口冒号
+// （http://acli.sangfor.com.cn:5888），取最后一个会把地址切成 "5888"。
+// 标签与冒号之间允许夹一段括号说明（英文的压缩包路径行就是这样）。
+func (l logCollectLabel) value(line string) (string, bool) {
+	for _, alias := range l.aliases {
+		if len(line) < len(alias) || !strings.EqualFold(line[:len(alias)], alias) {
+			continue
+		}
+		rest := line[len(alias):]
+		// 英文标签后常带一个空格再接括号说明
+		// （`Path to the compressed file (Please ...): /x.zip`），先剥掉再判分隔符。
+		if trimmed := strings.TrimLeft(rest, " \t"); trimmed != "" {
+			rest = trimmed
+		}
+		// 标签后必须紧跟冒号或括号说明，否则 "Statuses: ..." 会误命中 "Status"。
+		if !(strings.HasPrefix(rest, "：") || strings.HasPrefix(rest, ":") ||
+			strings.HasPrefix(rest, "（") || strings.HasPrefix(rest, "(")) {
+			continue
+		}
+		idx := strings.IndexAny(rest, "：:")
+		if idx < 0 {
+			return "", true
+		}
+		value := strings.TrimPrefix(strings.TrimPrefix(rest[idx:], "："), ":")
+		return strings.TrimSpace(value), true
+	}
+	return "", false
+}
+
+// isLogCollectFailureLine 判断上传块里的一行是否是失败原因。
+// 不能只认中文「失败/错误/异常」：英文输出里是 "Failed"、"401 Unauthorized"。
+func isLogCollectFailureLine(line string) bool {
+	if strings.Contains(line, "失败") || strings.Contains(line, "错误") || strings.Contains(line, "异常") {
+		return true
+	}
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "fail") || strings.Contains(lower, "error") ||
+		strings.Contains(lower, "unauthorized") || strings.Contains(lower, "timeout")
+}
+
 type logCollectHost struct {
 	IP      string `json:"ip"`
 	Status  string `json:"status"`
 	Percent string `json:"percent,omitempty"`
 }
 
-// parseLogCollectProgress 解析插件的中文文本输出。
+// parseLogCollectProgress 解析插件的 progress 文本输出。
 //
 // 对抗性审查：插件版本变化可能改文案，因此解析失败必须降级为 Raw 透传，
 // 而不是返回零值进度导致前端误判"任务丢失"。
+//
+// 同样的理由适用于语言：文案随运行环境变化（同一 acli 版本在不同机器上分别输出
+// 中文与英文），所以这里只依赖「标签 + 冒号 + 值」、百分数、IP 这些结构特征，
+// 不再逐条比对中文前缀。
 func parseLogCollectProgress(raw string) logCollectProgress {
 	result := logCollectProgress{Raw: raw}
 	if strings.TrimSpace(raw) == "" {
 		return result
 	}
 
-	// 任务状态与上传状态共用「状态：」前缀，用「发送地址：」出现位置区分上下文。
+	// 任务状态与上传状态共用「状态/Status」标签，用「发送地址/Send address」出现位置区分上下文。
 	sawUploadBlock := false
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		switch {
-		case strings.HasPrefix(line, "发送地址："):
+		if value, ok := logCollectUploadAddrLabel.value(line); ok {
 			sawUploadBlock = true
-			result.UploadURL = strings.TrimPrefix(line, "发送地址：")
-		case strings.HasPrefix(line, "状态："):
-			value := strings.TrimPrefix(line, "状态：")
+			result.UploadURL = value
+			continue
+		}
+		if value, ok := logCollectStatusLabel.value(line); ok {
 			if sawUploadBlock {
 				result.UploadState = value
 			} else {
 				result.Status = value
 			}
-		case strings.HasPrefix(line, "压缩包路径"):
-			if idx := strings.Index(line, "："); idx >= 0 {
-				result.ArchivePath = strings.TrimSpace(line[idx+len("："):])
-			}
-		case strings.HasPrefix(line, "总耗时："):
-			result.TotalTime = strings.TrimPrefix(line, "总耗时：")
-		case logCollectProgressRe.MatchString(line):
-			match := logCollectProgressRe.FindStringSubmatch(line)
+			continue
+		}
+		if value, ok := logCollectArchiveLabel.value(line); ok {
+			result.ArchivePath = value
+			continue
+		}
+		if value, ok := logCollectTotalTimeLabel.value(line); ok {
+			result.TotalTime = value
+			continue
+		}
+		if match := logCollectProgressRe.FindStringSubmatch(line); match != nil {
 			result.Percent, _ = strconv.Atoi(match[1])
 			result.Done, _ = strconv.Atoi(match[2])
 			result.Total, _ = strconv.Atoi(match[3])
-		case result.UploadError == "" && sawUploadBlock &&
-			(strings.Contains(line, "失败") || strings.Contains(line, "错误") || strings.Contains(line, "异常")):
-			// 只在上传块里抓第一行原因：任务块里的"失败"属于采集阶段，
-			// 混进来会把"上传 401"显示成"采集失败"。
+			continue
+		}
+		// 只在上传块里抓第一行原因：任务块里的"失败"属于采集阶段，
+		// 混进来会把"上传 401"显示成"采集失败"。
+		if result.UploadError == "" && sawUploadBlock && isLogCollectFailureLine(line) {
 			result.UploadError = truncateString(line, 160)
-		case logCollectHostLineRe.MatchString(line):
-			match := logCollectHostLineRe.FindStringSubmatch(line)
+			continue
+		}
+		// 行首 IP 不必然是节点明细，必须再由中间列归一化确认。
+		if match := logCollectHostLineRe.FindStringSubmatch(line); match != nil &&
+			classifyLogCollectHostStatusWord(match[2]) != "" {
 			result.Hosts = append(result.Hosts, logCollectHost{
 				IP: match[1], Status: match[2], Percent: match[3],
 			})
