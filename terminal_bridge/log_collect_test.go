@@ -870,12 +870,13 @@ func TestBuildLogCollectCreateCommandP1Ticket(t *testing.T) {
 		if errType != "" {
 			t.Fatalf("不应拒绝：%s %s", errType, errMsg)
 		}
-		want := "-L '0:Authorization:Bearer " + ticket + "'"
+		// 现场实测 -L 未被 acli 带到上传请求上，改用全局 -H 做隔离验证。
+		want := "-H 'Authorization: Bearer " + ticket + "'"
 		if !strings.Contains(command, want) {
 			t.Fatalf("命令缺少 %q，实际：%s", want, command)
 		}
-		if strings.Contains(command, " -H ") {
-			t.Fatalf("必须用 -L 而不是全局 -H：%s", command)
+		if strings.Contains(command, " -L ") {
+			t.Fatalf("不应再使用 -L：%s", command)
 		}
 	})
 
@@ -886,7 +887,7 @@ func TestBuildLogCollectCreateCommandP1Ticket(t *testing.T) {
 		if errType != "" {
 			t.Fatalf("不应拒绝：%s", errType)
 		}
-		if strings.Contains(command, " -L ") {
+		if strings.Contains(command, " -H ") {
 			t.Fatalf("无票据时不应注入请求头：%s", command)
 		}
 	})

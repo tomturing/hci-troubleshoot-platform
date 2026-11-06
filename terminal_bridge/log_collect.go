@@ -296,7 +296,17 @@ func buildLogCollectCreateCommand(req InMessage) (command string, errType string
 			// 用 -L（URL 特定请求头）而不是 -H（全局请求头）：
 			// -H 会把凭据带给 acli 访问的每一个地址，暴露面必须按 URL 限定到
 			// 第 0 个上传地址（index 从 0 开始）。
-			parts = append(parts, "-L", shellQuote(logCollectUploadHeader(uploadTicket)))
+			// 用 -H（全局请求头）而不是 -L（URL 特定请求头）。
+			//
+			// 现场 Q2026110601054 实测：命令里带 -L '0:Authorization:Bearer …' 时，
+			// acli 正常接受参数并下发任务，但 5888 收到的 /init_upload 里没有任何
+			// Authorization 头（日志只有"鉴权失败"、没有我们新增的 [P1] 与 reason）。
+			// 也就是说 1.0.0 解析了 -L 却没把它带到上传请求上。
+			//
+			// 这里换成全局头做隔离验证：若 -H 能发出去，说明是 -L 的 index 语义
+			// （引用"已配置的目标地址"而非命令行 -u）导致；若 -H 也发不出去，
+			// 说明该版本的自定义头参数对上传链路是死参数，P1 带凭据不可行。
+			parts = append(parts, "-H", shellQuote(logCollectUploadHeader(uploadTicket)))
 		}
 	}
 	return strings.Join(parts, " "), "", ""
@@ -306,11 +316,9 @@ func buildLogCollectCreateCommand(req InMessage) (command string, errType string
 // 平台签发的形状是 p1.v1.<payload>.<hex>，长度 100~600 之间。
 var logCollectUploadTicketRe = regexp.MustCompile(`^[A-Za-z0-9._-]{16,600}$`)
 
-// logCollectUploadHeader 构造 acli `-L` 的取值：index:Header-Name:value。
-//
-// index 固定为 0：一次 create 只有一个 -u 上传地址，凭据没有理由发给别的 URL。
+// logCollectUploadHeader 构造 acli `-H` 的取值：Header-Name: value。
 func logCollectUploadHeader(uploadTicket string) string {
-	return "0:Authorization:Bearer " + uploadTicket
+	return "Authorization: Bearer " + uploadTicket
 }
 
 // redactUploadTicket 把完整命令里的票据替换掉，供日志与前端展示。
