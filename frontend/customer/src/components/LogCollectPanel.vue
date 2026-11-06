@@ -79,7 +79,7 @@ const descColumns = computed(() => (chatStore.leftPanelWidth >= 600 ? 2 : 1))
 const formLabelPosition = computed(() => (chatStore.leftPanelWidth < 480 ? 'top' : 'right'))
 
 /** 日志服务器探测目标：与 bridge 的默认值一致，仅用于展示与兜底文案。 */
-const RELAY_URL = 'http://acli.sangfor.com.cn:5888'
+const RELAY_URL = 'http://acli.sangfor.com.cn:5888/'
 
 /**
  * 探测回包归一化：把 bridge 的 `log_server_http_code` 与平台存档的 `http_code` 收成同一个值。
