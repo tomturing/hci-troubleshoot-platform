@@ -2220,8 +2220,150 @@ describe('LogCollectPanel', () => {
       .mock.calls.find(([, body]: any) => body?.delivery_status === 'failed')!
     expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-008' })
     expect(String((failure[1] as any).error_message)).toContain('客户机磁盘空间不足')
+    // 负向契约（缺了这两条，实现退化也测不出来）：
+    // 1) 采集完成是真实结论，交付失败不得把它改写成 failed，否则用户既看不到包在哪、也没有重试入口；
+    // 2) delivery_error 是代传终态的唯一权威字段，由后端 _finish 落库，前端回写会用通用文案覆盖真因。
+    expect((failure[1] as any).status).toBeUndefined()
+    expect((failure[1] as any).delivery_error).toBeUndefined()
     wrapper.unmount()
   })
+
+  /**
+   * 同一现场的另一半：后端 _finish 已经把真实原因写进 error_message，
+   * 前端 catch 拿到的是「[码] 原因」的转述，原样回写会变成 "[LC-X] [LC-X] ..."。
+   * 契约：error_message 平台已记录则不覆盖；error_code 属结构化归因，仍须取最新一次。
+   */
+  it('平台已记录失败原因时不覆盖文案，但错误码取最新一次', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '192.19.4.249', port: 22, username: 'admin' }
+    const archivePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026110400111.zip'
+    const done = taskFixture({
+      task_id: 'task-stale-code',
+      status: 'completed',
+      progress: 100,
+      archive_path: archivePath,
+      upload_mode: 'bridge_relay',
+      relay_status: 'none',
+      delivery_status: 'failed',
+      // 上一次失败留下的旧码：不能被沿用
+      error_code: 'LC-TRANSFER-009',
+      error_message: '客户机还有其它交付任务在占用本地空间（后端记录）',
+      ips: ['192.19.4.249'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.deliverTask).mockResolvedValue({
+      already_delivered: false,
+      delivery_status: 'queued',
+      delivery_attempts: 2,
+      source_path: archivePath,
+      upload: {
+        upload_id: 'up-stale',
+        upload_token: 'token-123456',
+        chunk_size: 8388608,
+        part_count: 4,
+        total_size: 30408704,
+        uploaded_parts: [],
+        missing_parts: [1],
+      },
+    } as any)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '收集任务已完成！',
+          percent: 100,
+          done: 1,
+          total: 1,
+          node_state: 'completed',
+          archive_path: archivePath,
+          archive_exists: true,
+          upload_state: '',
+          hosts: [{ ip: '192.19.4.249', status: '收集完成', percent: 100 }],
+          raw: '状态：收集任务已完成！\n总进度：100% - 1/1',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const upload = wrapper.findAll('button').find((item) => item.text() === '上传到平台')
+    expect(upload).toBeTruthy()
+    vi.mocked(logCollectApi.patchTask).mockClear()
+    sentMessages.length = 0
+    await upload!.trigger('click')
+    await flushPromises()
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'stat',
+        status: 'ok',
+        log_data: { size: 30408704, exists: true },
+      }),
+    })
+    await flushPromises()
+    await vi.waitFor(() => expect(logCollectApi.deliverTask).toHaveBeenCalled())
+    await vi.waitFor(() =>
+      expect(sentMessages.some((m) => m.includes('"type":"delivery_submit"'))).toBe(true),
+    )
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'submit',
+        status: 'ok',
+        log_data: { job_id: 'dj-task-stale-code' },
+      }),
+    })
+    await flushPromises()
+    await vi.waitFor(() => expect(sentMessages.some((m) => m.includes('"log_action":"status"'))).toBe(true))
+
+    // 失败发生前，后端已把本轮真实原因写进任务记录
+    vi.mocked(logCollectApi.getTask).mockImplementation(async () => ({
+      ...done,
+      error_code: 'LC-TRANSFER-008',
+      error_message: '客户机磁盘空间不足：请清理临时目录后重试（后端记录）',
+    }))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'delivery_result',
+        log_action: 'status',
+        status: 'ok',
+        log_data: {
+          job_id: 'dj-task-stale-code',
+          phase: 'failed',
+          error_code: 'LC-TRANSFER-008',
+          last_error: '客户机磁盘空间不足：本地副本还需 29.0 MiB，目标目录当前可用 8.9 MiB',
+        },
+      }),
+    })
+    await flushPromises()
+
+    await vi.waitFor(() =>
+      expect(
+        vi
+          .mocked(logCollectApi.patchTask)
+          .mock.calls.some(([, body]: any) => body?.delivery_status === 'failed'),
+      ).toBe(true),
+    )
+    const failure = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.find(([, body]: any) => body?.delivery_status === 'failed')!
+    expect(failure[1]).toMatchObject({ delivery_status: 'failed', error_code: 'LC-TRANSFER-008' })
+    // 平台已记录 → 不回写 error_message，避免 "[LC-X] [LC-X] ..." 重复拼接与覆盖真因
+    expect((failure[1] as any).error_message).toBeUndefined()
+     wrapper.unmount()
+   })
 
   /**
    * 现场回归（工单 Q2026102701193，2026-10-27）：

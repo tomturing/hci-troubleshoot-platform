@@ -374,6 +374,55 @@ class TestUpdateTask:
         assert result.detail == {"baseline_report_hash": "7843-1a2b3c4d"}
 
 
+    async def test_archive_verified_not_downgraded_to_self_reported(self, service, mock_repo):
+        """已由 verify-archive 回查过的交付证据不能被后续 PATCH 降级。
+
+        现场（2026-11-04 Q2026101201081）：核验通过后再次写 delivered，
+        旧逻辑把 detail.delivery_evidence 改回 acli_self_reported，
+        事后就看不出"平台确实回查过日志服务器"。
+        """
+        task = MagicMock(spec=LogCollectTask)
+        task.status = "uploading"
+        task.progress = 100
+        task.upload_mode = "acli_direct"
+        task.delivery_status = "none"
+        task.detail = {
+            "delivery_evidence": "archive_verified",
+            "delivery_evidence_note": "日志服务器归档件一致",
+        }
+        mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
+
+        result = await service.update_task(
+            "11111111-1111-1111-1111-111111111111",
+            LogCollectTaskPatch(delivery_status="delivered"),
+        )
+
+        assert result.detail["delivery_evidence"] == "archive_verified"
+        assert result.detail["delivery_evidence_note"] == "日志服务器归档件一致"
+
+    async def test_missing_evidence_still_marked_self_reported(self, service, mock_repo):
+        """没有回查证据时仍要标注"仅 acli 自报"，避免把未知说成已核验。"""
+        task = MagicMock(spec=LogCollectTask)
+        task.status = "uploading"
+        task.progress = 100
+        task.upload_mode = "acli_direct"
+        task.delivery_status = "none"
+        task.detail = {}
+        mock_repo.get_by_id = AsyncMock(return_value=task)
+        mock_repo.flush = AsyncMock()
+        mock_repo.refresh = AsyncMock()
+
+        result = await service.update_task(
+            "11111111-1111-1111-1111-111111111111",
+            LogCollectTaskPatch(delivery_status="delivered"),
+        )
+
+        assert result.detail["delivery_evidence"] == "acli_self_reported"
+        assert "verify-archive" in result.detail["delivery_evidence_note"]
+
+
 class TestBeginDelivery:
     """补交付的登记语义：只推进 delivery_*，并把实际交付路径改成 P2。"""
 

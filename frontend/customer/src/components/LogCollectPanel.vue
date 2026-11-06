@@ -2961,11 +2961,19 @@ async function fallbackToP2(
 ): Promise<boolean> {
   const archivePath = progress.value?.archive_path || ''
   if (!archivePath) return false
+  // 主失败原因的码必须先留底：下面这次探测只是"能不能降级"的附加判断，
+  // 它失败时（最典型是包已被插件自删 → LC-TRANSFER-001）写入的码是**次生结论**，
+  // 不能顶掉主因（P1 归档核验失败是服务端写的 LC-TRANSFER-007）。
+  // 顶掉之后库里会出现"码说包不在、文案说核验未通过"的自相矛盾记录。
+  const causeCode = lastNodeErrorCode
   // stat 探测不到时不能降级：失败可能是"设备已删包"（多半是"其实传成功了"），
   // 也可能是"命令不可用"，两者都不该把用户引向一次注定失败的搬运。
   // probeArchiveOnNode 已把三态收拢：只有确认在盘上才返回，探测失败直接抛错，此处按 false 处理。
   const probed = await probeArchiveOnNode(ws, archivePath).catch(() => null)
-  if (!probed) return false
+  if (!probed) {
+    lastNodeErrorCode = causeCode
+    return false
+  }
 
   const reason = cause instanceof Error ? cause.message : String(cause)
   ElMessage.warning(`直传日志服务器失败（${reason}），已自动切换平台中转续传`)
