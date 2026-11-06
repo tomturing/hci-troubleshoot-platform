@@ -165,6 +165,20 @@ describe('TerminalPanel - SSH 独立登录入口', () => {
     wrapper.unmount()
   })
 
+  it('Bridge 不可用时仍打开统一登录框（框内展示 bridge-guide，不再另弹下载窗）', async () => {
+    mockCheckBridge.mockResolvedValue('not-running')
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.find('button.btn-connect-ssh').trigger('click')
+    await nextTick()
+    await flushPromises()
+
+    expect(mockStore.sshConnectDialogBridgeStatus).toBe('not-running')
+    expect(mockStore.openSshFlowDialog).toHaveBeenCalledWith(null, 'terminal-only')
+    wrapper.unmount()
+  })
+
   it('无聊天工单但日志收集已绑定工单时，登录带上该工单用于录像归档', async () => {
     mockStore.logCollectCaseId = 'Q2026110500002'
     const wrapper = mountPanel()

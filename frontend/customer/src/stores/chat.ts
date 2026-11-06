@@ -2621,8 +2621,10 @@ export const useChatStore = defineStore('chat', () => {
    */
   async function checkAndOpenTerminal() {
     if (sshConnectionState.value === 'connected') {
+      // 已连接不需要挂起意图：openTerminalSidebar 的缺省页签就是终端，
+      // 这里写 terminal 只会给后续任意一次登录留下一个永不被消费的残留值。
+      pendingRightPanelTab.value = null
       bridgeStatus.value = 'running'
-      pendingRightPanelTab.value = 'terminal'
       openRightPanel('terminal')
       return
     }
@@ -2630,16 +2632,14 @@ export const useChatStore = defineStore('chat', () => {
     bridgeStatus.value = 'checking'
     const status = await checkBridgeBeforeOpen()
     bridgeStatus.value = status === 'running' ? 'running' : 'not_running'
-    if (status !== 'running') {
-      // 让 App.vue 展示下载提示弹窗（通过 showBridgeDownload 状态驱动）
-      showBridgeDownload.value = true
-      return
-    }
 
     // 先展开右栏再弹登录框：用户取消登录后仍能看到终端面板与「连接 SSH」重试入口，
     // 而不是点了顶栏按钮却什么都没留下。
     pendingRightPanelTab.value = 'terminal'
     openRightPanel('terminal')
+    // Bridge 不可用也走同一个登录框：框内 bridge-guide 视图自带「下载」与
+    // 「已运行，点击刷新」，与文件下载 / 日志收集 / 面板内登录完全同构。
+    // （旧实现单独弹一个只有「下载并打开」的弹窗，四个入口两套文案、两套行为。）
     sshConnectDialogBridgeStatus.value = status
     openSshFlowDialog(
       currentCase.value?.case_id ?? logCollectCaseId.value ?? null,
@@ -2687,12 +2687,6 @@ export const useChatStore = defineStore('chat', () => {
 
   function closeTerminalSidebar() {
     showTerminalSidebar.value = false
-  }
-
-  // Bridge 下载提示弹窗状态
-  const showBridgeDownload = ref(false)
-  function closeBridgeDownload() {
-    showBridgeDownload.value = false
   }
 
   // === 统一 SSH 连接弹框状态 ===
@@ -4671,8 +4665,6 @@ export const useChatStore = defineStore('chat', () => {
     setAutoExecuteMode,
     // Bridge 状态
     bridgeStatus,
-    showBridgeDownload,
-    closeBridgeDownload,
     // 统一 SSH 连接弹框
     sshFlowDialogVisible,
     sshFlowDialogCaseId,

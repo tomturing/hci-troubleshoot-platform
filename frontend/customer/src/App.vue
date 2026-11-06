@@ -111,11 +111,6 @@ const logCollectVisible = computed({
   set: (visible: boolean) => (visible ? chatStore.openLogCollect() : chatStore.closeLogCollect()),
 })
 
-// Bridge 下载地址：优先读环境变量，回退到相对路径
-// 部署时在 .env 中配置 VITE_BRIDGE_DOWNLOAD_URL 指向实际文件
-const BRIDGE_DOWNLOAD_URL =
-  import.meta.env.VITE_BRIDGE_DOWNLOAD_URL || '/downloads/terminal_bridge.exe'
-
 onMounted(() => {
   // 首帧就要有正确的视口宽度，否则抽屉会按 SSR 兜底值布局一次再跳变
   chatStore.setViewportWidth(window.innerWidth)
@@ -128,23 +123,6 @@ onBeforeUnmount(() => {
   if (resizeIdleTimer) window.clearTimeout(resizeIdleTimer)
   window.removeEventListener('resize', handleViewportResize)
 })
-
-/**
- * 触发 terminal_bridge.exe 下载
- * 用隐藏 <a download> 替代 window.open，避免浏览器弹窗拦截策略
- */
-function handleDownloadBridge() {
-  chatStore.closeBridgeDownload()
-
-  const a = document.createElement('a')
-  a.href = BRIDGE_DOWNLOAD_URL
-  a.download = 'terminal_bridge.exe'
-  a.style.display = 'none'
-  document.body.appendChild(a)
-  a.click()
-  // 延迟移除，确保点击事件已触发
-  setTimeout(() => document.body.removeChild(a), 200)
-}
 
 </script>
 
@@ -429,30 +407,6 @@ function handleDownloadBridge() {
     <!-- 无活跃工单时人工指定归档工单号 -->
     <LogCollectCaseDialog />
 
-    <!-- Bridge 未运行时的下载提示弹窗 -->
-    <el-dialog
-      v-model="chatStore.showBridgeDownload"
-      title="SSH 终端插件"
-      width="420px"
-      :close-on-click-modal="true"
-      class="bridge-dialog"
-    >
-      <div class="bridge-prompt">
-        <el-icon class="bridge-icon"><Monitor /></el-icon>
-        <p class="bridge-title">生效 SSH 终端插件</p>
-        <p class="bridge-desc">
-          SSH 终端需要本地 Bridge 组件（2.5M）支持，检测到当前未运行。<br />
-          请点击下载并打开，启动后再次点击「终端」按钮即可使用。
-        </p>
-      </div>
-      <template #footer>
-        <el-button @click="chatStore.closeBridgeDownload()">取消</el-button>
-        <el-button type="primary" class="bridge-download-btn" @click="handleDownloadBridge">
-          <el-icon><FolderOpened /></el-icon>
-          下载并打开
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -755,38 +709,6 @@ body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-}
-
-/* Bridge 下载提示弹窗 */
-.bridge-prompt {
-  text-align: center;
-  padding: 8px 0 16px;
-}
-
-.bridge-icon {
-  font-size: 48px;
-  margin-bottom: 12px;
-  color: var(--el-color-primary);
-}
-
-.bridge-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-  margin-bottom: 10px;
-}
-
-.bridge-desc {
-  font-size: 13px;
-  color: #606266;
-  line-height: 1.8;
-}
-
-.bridge-download-btn :deep(span) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
 }
 
 /* 终端历史按钮 */
