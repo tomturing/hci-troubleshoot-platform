@@ -288,13 +288,22 @@ caseService:
     # （2026-11-02 staging 实测过一次，故路径写死在这里并加注释）。
     hostPath: /sf/dsh-home/.dsh/sessions
     mountPath: /var/lib/hci/dsh-sessions
+  # 内存下限由「代传并发 × 单分片」决定，不是拍脑袋留余量。
+  #
+  # 第一性原理：P2 代传必须把 5888 在 init_upload 里指定的整片（实测约 10 MiB）
+  # 读进内存再以 multipart 发出，单片大小由对端决定、平台无法调小；因此 RSS 峰值
+  # ≈ Python 基础运行时（约 120 MiB）+ 并发数 × 约 12 MiB + 数据面分片写入缓冲。
+  # 2026-11-06 Q2026110600940（9.59 GiB / 982 片）在 256Mi 配额下被 OOMKilled，
+  # 重启的两秒窗口里网关对前端回 503，前端据此把一次最终成功的归档写成 failed。
+  # 1 GiB 可覆盖「并发上限 3（LOG_COLLECT_RELAY_MAX_CONCURRENCY）+ 分片并发写入」，
+  # 并给 Python 堆留出 GC 空间；贴着上限跑会反复抖动，反而更容易在临界点被杀。
   resources:
     requests:
       cpu: "50m"
-      memory: "96Mi"
+      memory: "128Mi"
     limits:
       cpu: "500m"
-      memory: "256Mi"
+      memory: "1Gi"
 
 # ======================== Conversation Service ==============================
 conversationService:
