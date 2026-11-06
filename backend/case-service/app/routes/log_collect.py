@@ -500,7 +500,9 @@ async def verify_p1_archive(
         patch.error_code = "LC-TRANSFER-007"
         patch.error_message = f"P1 归档核验未通过：{reason}"
 
-    await service.update_task(task_id, patch)
+    # 服务端核验归档后写终态：这是"经过独立事实核验"的内部调用，
+    # 必须绕过公共 PATCH 的客户端写入拦截（single-writer 的权威入口）。
+    await service.update_task(task_id, patch, server_authoritative=True)
 
     logger.info(
         "P1 归档核验 task=%s verified=%s reason=%s expected=%s archived=%s",
@@ -760,28 +762,30 @@ async def deliver_task(
             f"该任务正在交付中（{task.delivery_status}），请等待当前进度结束",
         )
 
+    # 会话代际：服务端单调递增，作为 fencing token 编入上传令牌。
+    # 用户每次明确表达交付意图（含重新采集后重签）都会推进代际，旧作业的
+    # 令牌与分片在新会话里一律失效，不会混进新包的字节序列。
+    epoch = int(task.delivery_attempts or 0) + 1
+    init_kwargs = dict(
+        total_size=payload.total_size,
+        expected_sha256=payload.expected_sha256,
+        archive_fingerprint=payload.archive_fingerprint,
+        delivery_epoch=epoch,
+    )
     try:
-        upload = await upload_service.init(
-            task,
-            total_size=payload.total_size,
-            expected_sha256=payload.expected_sha256,
-        )
+        upload = await upload_service.init(task, **init_kwargs)
     except LogCollectUploadError as exc:
         if getattr(exc, "status", None) != 409:
             raise _upload_problem(exc) from exc
-        # 409 = 既有会话大小对不上。重建而不是把死锁抛给用户。
+        # 409 = 源包内容/大小/代际已变化。自动作废旧会话并按新基线重建，
+        # 不把死锁抛给用户；分片几何在 init 时冻结，旧分片继续传必然每片失败。
         logger.warning(
-            "log_collect.deliver.session_size_mismatch task_id=%s detail=%s",
-            task_id,
-            exc,
+            "delivery.session_rebuilt task_id=%s trace_id=%s epoch=%s detail=%s",
+            task_id, task.trace_id, epoch, exc,
         )
         await upload_service.abort(task_id)
         try:
-            upload = await upload_service.init(
-                task,
-                total_size=payload.total_size,
-                expected_sha256=payload.expected_sha256,
-            )
+            upload = await upload_service.init(task, **init_kwargs)
         except LogCollectUploadError as retry_exc:
             raise _upload_problem(retry_exc) from retry_exc
 
@@ -814,6 +818,7 @@ async def init_upload(
             task,
             total_size=payload.total_size,
             expected_sha256=payload.expected_sha256,
+            archive_fingerprint=payload.archive_fingerprint,
         )
     except LogCollectUploadError as exc:
         raise _upload_problem(exc) from exc

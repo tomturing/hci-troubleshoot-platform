@@ -634,12 +634,34 @@ class LogCollectRelayService:
             # 现场第一反应是"是不是又坏了"。失败任务则保留，供重试前判断。
             payload["relay_last_error"] = None
             payload["relay_last_error_at"] = None
+            # 单一权威终态：归档成功这一持久化事实必须把「任务状态」一起收敛。
+            # Q2026110601054 的 relay_status=success / delivery_status=delivered
+            # 与 status=failed 并存，就是因为前端在 WS 断连时写了 failed 而无人纠正。
+            # 这里直接走 UPDATE（不经过公共 PATCH 状态机），并显式允许纠正误判。
+            payload["status"] = "completed"
+            payload["progress"] = 100
+            payload["finished_at"] = func.now()
+            payload["error_code"] = None
+            payload["error_message"] = None
         else:
             payload["delivery_status"] = "failed"
             payload["delivery_error"] = (error or "归档到日志服务器失败")[:2000]
         if error:
             payload["error_code"] = error_code
             payload["error_message"] = error[:2000]
+        # CAS：已交付是终态事实，旧代 relay 迟到的失败回写不得把它改回去。
+        stmt = update(LogCollectTask).where(LogCollectTask.task_id == task_id)
+        if not error:
+            stmt = stmt.where(LogCollectTask.delivery_status != "delivered")
         async with self.session_factory() as session:
-            await session.execute(update(LogCollectTask).where(LogCollectTask.task_id == task_id).values(**payload))
+            trace_id = (
+                await session.execute(
+                    select(LogCollectTask.trace_id).where(LogCollectTask.task_id == task_id)
+                )
+            ).scalar_one_or_none()
+            logger.info(
+                "task.terminal_converged task_id=%s trace_id=%s status=%s",
+                task_id, trace_id, status,
+            )
+            await session.execute(stmt.values(**payload))
             await session.commit()

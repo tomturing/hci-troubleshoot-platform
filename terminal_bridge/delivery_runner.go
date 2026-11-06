@@ -127,6 +127,19 @@ func (r *deliveryRunner) start() {
 }
 
 // enqueue 非阻塞入队；队列满时保持 job 在 store 里等下一轮启动，不丢。
+// requeueEligible 判断作业是否仍有资格重排（fencing + membership）。
+//
+// 新会话 submit 时会把旧作业从 r.jobs 删除并放入新指针；指针不相等说明
+// "这已经不是当前作业"，即使它还停在 retrying 也不得重新入队。
+// 少了这两个判据，旧作业会在 ctx 取消后靠退避重排复活，并重建一个全新的
+// context 继续拉包/上传（2026-11-06 Q2026110601054）。
+func (r *deliveryRunner) requeueEligible(job *deliveryJob) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return job.Phase == phaseRetrying && !job.NeedsReauth &&
+		!job.Superseded && r.jobs[job.JobID] == job
+}
+
 func (r *deliveryRunner) enqueue(job *deliveryJob) {
 	select {
 	case r.queue <- job:
@@ -170,6 +183,7 @@ func (r *deliveryRunner) submit(job *deliveryJob) *deliveryJob {
 		// 新会话会按上一轮的基线校验，每一片都必然失败且重试不会自愈。
 		existing.Phase = phaseFailed
 		existing.LastError = "superseded_by_new_session"
+		existing.Superseded = true
 		stale, staleCancel = existing, r.cancels[job.JobID]
 		delete(r.cancels, job.JobID)
 		delete(r.jobs, job.JobID)
@@ -276,6 +290,15 @@ func (r *deliveryRunner) cancel(jobID string) bool {
 
 // runJob 推进单个 job 到终态。
 func (r *deliveryRunner) runJob(job *deliveryJob) {
+	r.mu.Lock()
+	abandoned := job.Superseded
+	r.mu.Unlock()
+	if abandoned {
+		blog("INFO", "delivery.superseded_skipped", "被顶替的作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "task_id": job.TaskID,
+		})
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), deliveryJobTimeout)
 	r.mu.Lock()
 	r.cancels[job.JobID] = cancel
@@ -304,12 +327,19 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	if err != nil {
 		job.Attempt++
 		job.LastError = err.Error()
-		// 凭据类失败单独标记：它不是"重试能好"的错误，必须等人。
-		// 完整性类失败同理：源包与基线不一致，重试只会再白拉一遍 20 GiB。
-		if isDeliveryAuthError(err) {
+		// 最高优先级：作业已被新会话顶替（fencing），或协程被显式取消。
+		// 这类错误必须直接落终态，绝不能进 retrying——否则退避重排会给它
+		// 创建一个全新的 ctx，旧作业就此"复活"并把过期失败写回平台。
+		if job.Superseded || errors.Is(err, context.Canceled) {
+			job.Phase = phaseFailed
+			job.LastError = "superseded_by_new_session"
+			job.LastErrorCode = ""
+		} else if isDeliveryAuthError(err) {
+			// 凭据类失败单独标记：它不是"重试能好"的错误，必须等人。
 			job.NeedsReauth = true
 			job.Phase = phaseFailed
 		} else if isDeliveryFatalError(err) {
+			// 完整性类失败同理：源包与基线不一致，重试只会再白拉一遍 20 GiB。
 			job.Phase = phaseFailed
 		} else if job.Attempt < budget {
 			// 可恢复失败：后台会退避重排，因此对外只能表现为 retrying。
@@ -344,11 +374,13 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 			// 阶段归一化交给 advance（按已拉字节/已传分片决定从哪续）。
 			// 这里只认 retrying：若期间用户重新提交或作业已被取消/判终态，
 			// 旧协程不得把作业再拽回执行队列（否则同一 job 会被两条流程同时推进）。
-			r.mu.Lock()
-			stillRetrying := job.Phase == phaseRetrying && !job.NeedsReauth
-			r.mu.Unlock()
-			if stillRetrying {
+			// 抽成方法是为了让"旧作业不得复活"这条约束能被单测直接锁住。
+			if r.requeueEligible(job) {
 				r.enqueue(job)
+			} else {
+				blog("INFO", "delivery.requeue_rejected", "被顶替或已取消的作业不再重排", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "superseded": job.Superseded, "phase": string(job.Phase),
+				})
 			}
 		}()
 	}
@@ -356,6 +388,11 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 
 // advance 按阶段推进；每个阶段都可重入。
 func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
+	// 协作式取消：每个阶段入口都必须先问一次。旧实现只在个别子步骤里检查，
+	// 被 cancel 的作业仍会继续 waitCollect / 拉取 / 上传，正是"取消不生效"的根因。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// 先做与外部资源无关的守卫：把中间态归一化，并拒绝推进终态/未知阶段。
 	// 顺序很关键——放在 sessionFor 之前，既省掉一次无意义的会话解析，
 	// 也让"作业不会被误标成功"这条约束可以被单测直接验证。

@@ -206,6 +206,8 @@ export interface UploadInitResult {
   chunk_size: number
   part_count: number
   total_size: number
+  /** 会话代际：服务端签发时写入，旧代令牌在新会话里自动失效。 */
+  delivery_epoch?: number
   uploaded_parts: number[]
   missing_parts: number[]
 }
@@ -388,7 +390,14 @@ export const logCollectApi = {
    */
   async deliverTask(
     taskId: string,
-    body: { total_size: number; source_path?: string; expected_sha256?: string; force?: boolean },
+    body: {
+      total_size: number
+      source_path?: string
+      expected_sha256?: string
+      force?: boolean
+      /** 内容指纹：识别"同名包被重新采集覆盖"，服务端据此自动重建会话。 */
+      archive_fingerprint?: string
+    },
   ): Promise<DeliverResult> {
     const { data } = await client.post(`/log-collect/tasks/${taskId}/deliver`, body)
     return data

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { isTransientPlatformError, shouldRecoverRelayLease } from '../logCollectRelay'
+import {
+  BRIDGE_CHANNEL_LOST_MESSAGE,
+  isArchiveSizeSettled,
+  isOutcomeUnknownError,
+  isSessionDiverged,
+  isTransientPlatformError,
+  shouldRecoverRelayLease,
+} from '../logCollectRelay'
 
 /**
  * 回归背景（2026-10-30 发布复盘）：
@@ -90,5 +97,51 @@ describe('isTransientPlatformError', () => {
     expect(isTransientPlatformError(null)).toBe(false)
     expect(isTransientPlatformError(undefined)).toBe(false)
     expect(isTransientPlatformError('503')).toBe(false)
+  })
+})
+
+/**
+ * 2026-11-06 Q2026110601054：WS 通道断开被当成确定失败写进 status=failed，
+ * 而服务端 relay 已 success、包已落 5888。判据必须收窄到规范文案本身，
+ * 不能把别的业务 Error 一并吞掉。
+ */
+describe('isOutcomeUnknownError', () => {
+  it('网关 503 仍是结果未知', () => {
+    expect(isOutcomeUnknownError(axiosError(503))).toBe(true)
+  })
+
+  it('WS 通道断开是结果未知，不是业务失败', () => {
+    expect(isOutcomeUnknownError(new Error(BRIDGE_CHANNEL_LOST_MESSAGE))).toBe(true)
+  })
+
+  it('其它业务 Error 必须保持为真失败', () => {
+    expect(isOutcomeUnknownError(new Error('任务下发失败'))).toBe(false)
+    expect(isOutcomeUnknownError(new Error('上传会话令牌缺失或已过期'))).toBe(false)
+    expect(isOutcomeUnknownError(new Error('与 terminal_bridge 的连接不好'))).toBe(false)
+  })
+})
+
+describe('isSessionDiverged', () => {
+  it('源包变化 / 会话大小不一致 / 新代替代都触发自动重签', () => {
+    expect(isSessionDiverged('源包已变化（提交上传时 3909075473 字节）')).toBe(true)
+    expect(isSessionDiverged('上传会话大小不一致')).toBe(true)
+    expect(isSessionDiverged('会话已被新代替代')).toBe(true)
+  })
+
+  it('磁盘满、证书不受信等失败不得误判为会话分叉', () => {
+    expect(isSessionDiverged('客户机磁盘空间不足')).toBe(false)
+    expect(isSessionDiverged('平台证书不受信')).toBe(false)
+    expect(isSessionDiverged('上传 token 无效或已过期')).toBe(false)
+  })
+})
+
+describe('isArchiveSizeSettled', () => {
+  it('连续两次量到相同大小才算内容已确定', () => {
+    expect(isArchiveSizeSettled(1024, 1024)).toBe(true)
+  })
+
+  it('包仍在写或大小异常时必须继续等待', () => {
+    expect(isArchiveSizeSettled(1024, 2048)).toBe(false)
+    expect(isArchiveSizeSettled(0, 0)).toBe(false)
   })
 })

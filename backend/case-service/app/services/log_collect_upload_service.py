@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import math
 import time
 from collections.abc import AsyncIterator
@@ -34,6 +35,8 @@ from .log_collect_storage import (
     PartMissingError,
     PartSizeMismatchError,
 )
+
+logger = logging.getLogger(__name__)
 
 # 单分片允许的上下限：上限防止单请求过大，下限防止分片过碎导致请求风暴。
 MIN_CHUNK_SIZE = 8 * 1024 * 1024
@@ -100,11 +103,19 @@ class LogCollectUploadService:
 
     # ── token ───────────────────────────────────────────────────────────────
 
-    def issue_token(self, task_id: str) -> str:
+    def issue_token(self, task_id: str, delivery_epoch: int = 0) -> str:
+        """签发数据面令牌；代际 > 0 时把代际编进签名，实现 fencing。
+
+        为什么需要代际：同一次任务可能被重新采集后重签会话，旧作业仍持有旧令牌。
+        令牌只签 task_id 时，旧作业的分片会写进新会话的分片目录，
+        新会话合并出的字节序列就是两代包的混合体——比"上传失败"更危险。
+        代际为 0（历史会话）时沿用旧签名格式，保证未升级现场不中断。
+        """
+
         expires_at = int(time.time()) + self.token_ttl_seconds
-        signature = hmac.new(
-            self.secret, f"{task_id}:{expires_at}".encode(), hashlib.sha256
-        ).hexdigest()
+        epoch = int(delivery_epoch or 0)
+        message = f"{task_id}:{expires_at}" if epoch == 0 else f"{task_id}:{expires_at}:{epoch}"
+        signature = hmac.new(self.secret, message.encode(), hashlib.sha256).hexdigest()
         return f"{expires_at}.{signature}"
 
     def verify_token(self, task_id: str, token: str) -> bool:
@@ -113,10 +124,15 @@ class LogCollectUploadService:
             return False
         if int(expires_text) < int(time.time()):
             return False
-        expected = hmac.new(
-            self.secret, f"{task_id}:{expires_text}".encode(), hashlib.sha256
-        ).hexdigest()
-        return hmac.compare_digest(signature, expected)
+        # 校验消息必须与当前会话代际一致：旧代令牌在会话重建后自动失效。
+        meta = self.storage.read_meta(task_id)
+        epoch = int((meta or {}).get("delivery_epoch") or 0)
+        message = (
+            f"{task_id}:{expires_text}" if epoch == 0 else f"{task_id}:{expires_text}:{epoch}"
+        )
+        return hmac.compare_digest(
+            signature, hmac.new(self.secret, message.encode(), hashlib.sha256).hexdigest()
+        )
 
     # ── 会话 ────────────────────────────────────────────────────────────────
 
@@ -142,7 +158,13 @@ class LogCollectUploadService:
         return min(size, total_size - consumed)
 
     async def init(
-        self, task: LogCollectTask, *, total_size: int, expected_sha256: str | None
+        self,
+        task: LogCollectTask,
+        *,
+        total_size: int,
+        expected_sha256: str | None,
+        archive_fingerprint: str | None = None,
+        delivery_epoch: int | None = None,
     ) -> dict[str, Any]:
         if total_size <= 0:
             raise PartValidationError("total_size 必须为正数", code="LC-TRANSFER-002", status=400)
@@ -165,39 +187,80 @@ class LogCollectUploadService:
         meta = self.storage.read_meta(upload_id)
 
         if meta is not None:
-            if int(meta.get("total_size", 0)) != total_size:
+            # 内容身份分叉判定（第一性原理）：分片几何在 init 时按 total_size 冻结，
+            # 之后只要字节序列变了，每一片都必然不匹配。因此除大小外，还要识别
+            # 「同名包被重新采集覆盖」（指纹变化）与「服务端已签发新一代会话」（代际变化）。
+            # 老会话没有这两个字段时跳过对应判据，保证未升级的现场仍能续传。
+            old_size = int(meta.get("total_size", 0))
+            old_fp = meta.get("archive_fingerprint") or None
+            old_epoch = meta.get("delivery_epoch")
+            diverged = (
+                old_size != total_size
+                or (
+                    archive_fingerprint is not None
+                    and old_fp is not None
+                    and old_fp != archive_fingerprint
+                )
+                or (
+                    delivery_epoch is not None
+                    and old_epoch is not None
+                    and int(old_epoch) != int(delivery_epoch)
+                )
+            )
+            if diverged:
+                logger.info(
+                    "delivery.session_diverged task=%s trace_id=%s old_size=%s new_size=%s "
+                    "old_fp=%s new_fp=%s old_epoch=%s new_epoch=%s",
+                    upload_id, getattr(task, "trace_id", ""), old_size, total_size,
+                    old_fp, archive_fingerprint, old_epoch, delivery_epoch,
+                )
                 raise PartValidationError(
-                    "同一任务已存在大小不同的上传会话，请先 abort 再重新初始化",
+                    "源包内容或交付代际已变化，上传会话需按新基线重建",
                     code="LC-TRANSFER-004",
                     status=409,
                 )
             chunk_size = int(meta.get("chunk_size", self.chunk_size))
+            # 老会话首次见到新字段时补齐，后续分片才能参与代际校验。
+            if archive_fingerprint or delivery_epoch is not None:
+                merged = dict(meta)
+                if archive_fingerprint:
+                    merged["archive_fingerprint"] = archive_fingerprint
+                if delivery_epoch is not None:
+                    merged["delivery_epoch"] = int(delivery_epoch)
+                self.storage.write_meta(upload_id, merged)
+                meta = merged
         else:
             # 目录可能存在历史残留（上一次异常退出），直接清空后重建。
             await self.storage.delete_multipart(upload_id)
             chunk_size = self.chunk_size
-            self.storage.write_meta(
-                upload_id,
-                {
-                    "task_id": upload_id,
-                    "case_id": task.case_id,
-                    "total_size": total_size,
-                    "chunk_size": chunk_size,
-                    "expected_sha256": expected_sha256,
-                    "created_at": int(time.time()),
-                },
-            )
+            session_meta: dict[str, Any] = {
+                "task_id": upload_id,
+                "case_id": task.case_id,
+                "trace_id": getattr(task, "trace_id", None),
+                "total_size": total_size,
+                "chunk_size": chunk_size,
+                "expected_sha256": expected_sha256,
+                "created_at": int(time.time()),
+            }
+            if archive_fingerprint:
+                session_meta["archive_fingerprint"] = archive_fingerprint
+            if delivery_epoch is not None:
+                session_meta["delivery_epoch"] = int(delivery_epoch)
+            self.storage.write_meta(upload_id, session_meta)
+            meta = session_meta
 
         parts = self.storage.existing_parts(upload_id)
         part_count = self.part_count_for(total_size, chunk_size)
+        epoch = int(meta.get("delivery_epoch") or 0)
         return {
             "upload_id": upload_id,
-            "upload_token": self.issue_token(upload_id),
+            "upload_token": self.issue_token(upload_id, epoch),
             "chunk_size": chunk_size,
             "part_count": part_count,
             "total_size": total_size,
             "uploaded_parts": parts,
             "missing_parts": self._missing(parts, part_count),
+            "delivery_epoch": epoch,
         }
 
     async def status(self, task_id: UUID) -> dict[str, Any]:
@@ -210,14 +273,16 @@ class LogCollectUploadService:
         chunk_size = int(meta.get("chunk_size", self.chunk_size))
         part_count = self.part_count_for(total_size, chunk_size)
         parts = self.storage.existing_parts(upload_id)
+        epoch = int(meta.get("delivery_epoch") or 0)
         return {
             "upload_id": upload_id,
-            "upload_token": self.issue_token(upload_id),
+            "upload_token": self.issue_token(upload_id, epoch),
             "chunk_size": chunk_size,
             "part_count": part_count,
             "total_size": total_size,
             "uploaded_parts": parts,
             "missing_parts": self._missing(parts, part_count),
+            "delivery_epoch": epoch,
         }
 
     async def abort(self, task_id: UUID) -> None:
