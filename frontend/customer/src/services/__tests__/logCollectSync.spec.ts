@@ -3,6 +3,7 @@ import {
   blocksCreate,
   buildSyncNotice,
   decideNodeSync,
+  fallbackNodeState,
   hashReport,
   interpretArchiveProbe,
   resolveOwnership,
@@ -389,5 +390,32 @@ describe('interpretArchiveProbe：探测回包的三态判据', () => {
       expect(outcome.exists).toBeNull()
       expect(outcome.failure).toBeNull()
     }
+  })
+})
+
+/**
+ * 2026-11-06 Q2026110486009：同一 acli 版本在部分机器上输出英文，
+ * 只认中文的兜底会把"已完成 + 上传失败"读成 unknown。
+ */
+describe('fallbackNodeState 语言无关', () => {
+  it('中文样本保持原判定', () => {
+    expect(fallbackNodeState({ status: '收集任务进行中！' })).toBe('running')
+    expect(fallbackNodeState({ status: '收集任务已完成！' })).toBe('completed')
+    expect(fallbackNodeState({ status: '收集任务异常结束！' })).toBe('abnormal')
+    expect(fallbackNodeState({ status: '收集任务不存在！' })).toBe('none')
+  })
+
+  it('英文样本按同一套词义判定', () => {
+    expect(fallbackNodeState({ status: 'Collect task is in progress!' })).toBe('running')
+    expect(fallbackNodeState({ status: 'Collect task has been completed!' })).toBe('completed')
+    expect(fallbackNodeState({ status: 'Sending failed' })).toBe('abnormal')
+  })
+
+  it('英文无任务不得被 collect 抢先判成进行中', () => {
+    expect(fallbackNodeState({ status: 'Collect task does not exist!' })).toBe('none')
+  })
+
+  it('识别不了仍然返回 unknown', () => {
+    expect(fallbackNodeState({ status: '' })).toBe('unknown')
   })
 })

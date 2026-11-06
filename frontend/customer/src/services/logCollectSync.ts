@@ -384,12 +384,50 @@ export function fallbackNodeState(snapshot: {
   hosts?: unknown[]
 }): NodeState {
   const status = (snapshot.status || '').trim()
-  if (status.includes('异常结束') || status.includes('失败') || status.includes('错误')) return 'abnormal'
-  if (status.includes('完成')) return 'completed'
-  if (status.includes('进行中') || status.includes('收集中') || status.includes('上传中') || status.includes('打包')) {
+  // 文案语言随运行环境变化（同一 acli 版本在不同机器上分别输出中文与英文），
+  // 因此这里只能按词义判定。判定顺序必须与 bridge 的 classifyLogCollectNodeState 一致。
+  const lower = status.toLowerCase()
+  if (
+    status.includes('异常结束') ||
+    status.includes('失败') ||
+    status.includes('错误') ||
+    lower.includes('fail') ||
+    lower.includes('error') ||
+    lower.includes('abnormal')
+  ) {
+    return 'abnormal'
+  }
+  if (
+    status.includes('完成') ||
+    lower.includes('complete') ||
+    lower.includes('success') ||
+    lower.includes('finish') ||
+    lower.includes('done')
+  ) {
+    return 'completed'
+  }
+  // 必须先判无任务：英文 `Collect task does not exist!` 里含 collect，
+  // 放在 running 之后会被抢先命中，平台就会一直等下去。
+  if (
+    status.includes('不存在') ||
+    status.includes('无任务') ||
+    status.includes('暂无') ||
+    lower.includes('not exist') ||
+    lower.includes('no task')
+  ) {
+    return 'none'
+  }
+  if (
+    status.includes('进行中') ||
+    status.includes('收集中') ||
+    status.includes('上传中') ||
+    status.includes('打包') ||
+    lower.includes('progress') ||
+    lower.includes('running') ||
+    lower.includes('collect')
+  ) {
     return 'running'
   }
-  if (status.includes('不存在') || status.includes('无任务') || status.includes('暂无')) return 'none'
   if ((snapshot.percent ?? 0) > 0 || (snapshot.done ?? 0) > 0 || (snapshot.hosts?.length ?? 0) > 0) return 'running'
   return 'unknown'
 }
