@@ -166,6 +166,12 @@ func (r *deliveryRunner) discardDeliveredCopy(job *deliveryJob) {
 	if r == nil || job == nil {
 		return
 	}
+	// 纵深防御：调用点（advance 末尾）已经 fence 过一次，但删除是不可撤销的，
+	// 而副本路径按 task_id 命名、新旧两代共用。这里再确认一次资格，
+	// 让"被顶替的作业绝不删别人的包"成为函数自身的不变量，而不是调用方的约定。
+	if !r.ownerIntact(job) {
+		return
+	}
 	policy := localCopyPolicyFromEnv()
 	if policy.Disabled || policy.KeepDelivered {
 		return
@@ -183,7 +189,7 @@ func (r *deliveryRunner) discardDeliveredCopy(job *deliveryJob) {
 	r.mu.Lock()
 	job.LocalDeletedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	r.mu.Unlock()
-	_ = r.store.save(job)
+	_ = r.saveJob(job)
 	blog("INFO", "delivery.local_cleaned", "交付成功，已删除本地中转副本", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "local_path": path, "reason": "delivered",
 	})

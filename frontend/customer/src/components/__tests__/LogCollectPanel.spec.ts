@@ -1201,6 +1201,46 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+/**
+ * 现场回归（2026-11-06 Q2026110600112）：现场上行塌到 19 KB/s，1.81 GiB 的包
+ * 233 片只传上去 19 片就再没动，但界面全程只说「交付已登记但未完成」。
+ * 用户既看不到进度，也无法判断该继续等还是该处理——这正是要修的可观测性黑洞。
+ */
+it('交付 queued 且平台已收到分片时，显示真实片数与停滞提示', async () => {
+  vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+    total: 1,
+    items: [
+      taskFixture({
+        task_id: 'task-weak-net',
+        status: 'completed',
+        progress: 100,
+        finished_at: '2026-11-06T19:07:00+08:00',
+        upload_mode: 'bridge_relay',
+        delivery_status: 'queued',
+        detail: {
+          upload_progress: {
+            uploaded: 19,
+            total: 233,
+            chunk_size: 8388608,
+            updated_at: new Date(Date.now() - 15 * 60 * 1000).toISOString(),
+          },
+        },
+      } as Partial<LogCollectTask>),
+    ],
+  })
+
+  const wrapper = mountPanel()
+  await flushPromises()
+  await flushPromises()
+
+  const text = wrapper.find('.lc-result').text()
+  expect(text).toContain('平台已收到 19/233 片')
+  expect(text).toContain('链路可能已停滞')
+  // 必须同时告诉用户"不用重新采集"：这是现场最容易误操作的一步。
+  expect(text).toContain('无需重新采集')
+  wrapper.unmount()
+})
+
   /**
    * 现场回归（截图二，2026-10-28）：P1 采集中途失败（66%、5/6 节点失败），
    * 平台判 failed。结果卡原先按 upload_mode=acli_direct 把"无产物"讲成

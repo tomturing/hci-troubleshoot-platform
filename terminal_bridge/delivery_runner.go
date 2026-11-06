@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,7 +32,22 @@ const (
 	// 等待 acli 采集完成的上限：单次采集超 4 小时基本可以判死，避免 job 永久占位。
 	deliveryCollectTimeout = 4 * time.Hour
 	// 单个 job 的拉取+上传整体预算：20GiB @ 100Mbps 约 27 分钟，给足重试余量。
-	deliveryJobTimeout = 6 * time.Hour
+	//
+	// 从 6 小时抬到 48 小时，是因为 6 小时在弱网上小到没有意义：1.94 GiB 的包在
+	// 实测 34 KB/s 的上行下需要约 16 小时（Q2026110600112），作业会在传完之前
+	// 被墙砍断，而每一轮都已经"有进展"——这不是占位，是真在传。
+	// 真正防占位的判据换成了 deliveryStallTimeout（无进展即终止），
+	// 这个绝对上限只作为最后一道保险，不需要贴着业务时长设。
+	deliveryJobMaxTimeout = 48 * time.Hour
+	// 停摆判定：拉取/上传阶段连续这么久没有任何字节或分片增量，就认定链路已死。
+	//
+	// 阈值取 30 分钟 = 单片预算上限（20 分钟）+ 10 分钟余量：只要单片还能在预算内
+	// 完成，就一定会刷出一次进度；刷不出来说明连最保守的节奏也走不动了，
+	// 再等只是让用户盯着"上传中"看一晚上。等采集与平台合并这两个阶段不参与判定
+	// （它们各自有 deliveryCollectTimeout / deliveryCompleteTimeout）。
+	deliveryStallTimeout = 30 * time.Minute
+	// 停摆巡检间隔：判定粒度，取 30 秒足够细，且不产生任何 I/O。
+	deliveryStallPollInterval = 30 * time.Second
 	// 每传多少片落一次盘：太频繁会把磁盘打满（5120 片 × 写盘），太稀疏会丢进度。
 	deliverySaveEveryParts = 10
 	// 节点与客户机的时钟偏差容忍。判断"包是否属于本次采集"靠 mtime 与任务开始时间比较，
@@ -126,7 +142,6 @@ func (r *deliveryRunner) start() {
 	r.startLocalCopyCleanup()
 }
 
-// enqueue 非阻塞入队；队列满时保持 job 在 store 里等下一轮启动，不丢。
 // requeueEligible 判断作业是否仍有资格重排（fencing + membership）。
 //
 // 新会话 submit 时会把旧作业从 r.jobs 删除并放入新指针；指针不相等说明
@@ -140,6 +155,71 @@ func (r *deliveryRunner) requeueEligible(job *deliveryJob) bool {
 		!job.Superseded && r.jobs[job.JobID] == job
 }
 
+// errDeliverySuperseded 表示"本作业已不是该任务的合法交付执行者"。
+//
+// 它必须是独立哨兵而不是 context.Canceled：取消是**通知**（可能没送到、可能
+// 被别的 cancel 掩盖），而顶替是**资格丧失**，两者的正确处理都是落终态，
+// 但现场需要能分清"用户取消/看门狗掐断"和"被新会话顶替"。
+var errDeliverySuperseded = errors.New("superseded_by_new_session")
+
+// ownerIntact 判定作业此刻是否仍占据该任务的执行位（fencing 的唯一判据）。
+//
+// 第一性原理：一个作业能不能产生对外副作用，与它"收没收到取消信号"无关，
+// 只与它"还是不是当前执行者"有关。后者是三个可观测事实的合取：
+//  1. 没被新会话顶替（Superseded）；
+//  2. r.jobs 里占着同一个键的位置仍是指向自己——submit 顶替时会在锁内换掉指针；
+//  3. 键上没有任何作业（独立构造的作业/单测直调），视为未受管，保持放行。
+//
+// 第 3 条是刻意保留的宽松分支：把"未注册"当失败会让所有直接调用
+// upload/complete 的既有路径（含单测）无法工作，而它们本来就不存在竞争。
+func (r *deliveryRunner) ownerIntact(job *deliveryJob) bool {
+	if job == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if job.Superseded {
+		return false
+	}
+	return r.jobs[job.JobID] == nil || r.jobs[job.JobID] == job
+}
+
+// fence 是每个对外副作用之前的必过关口：返回非 nil 即不得继续。
+//
+// 调用点必须在不持有 r.mu 的位置调用（ownerIntact 内部会取锁）。
+func (r *deliveryRunner) fence(ctx context.Context, job *deliveryJob) error {
+	if !r.ownerIntact(job) {
+		return errDeliverySuperseded
+	}
+	if ctx != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// saveJob 是落盘的统一入口：只有"仍是当前执行者"的作业才能写 journal。
+//
+// 为什么必须拦：journal 文件名就是 task_id（dj-<task>），旧作业收尾时若无条件
+// save，会把新作业刚写好的记录**覆盖回旧会话的字节数/阶段**——平台上明明是
+// 19/233，本地文件却是 0/233，下一轮续传又从第一片开始。
+func (r *deliveryRunner) saveJob(job *deliveryJob) error {
+	// 这里不打日志：拉取进度回调会高频调用，僵尸作业被跳过时逐次打点会变成日志洪泛。
+	// "被顶替"本身已经由 submit 的 delivery.superseded 事件留痕。
+	if !r.ownerIntact(job) {
+		return nil
+	}
+	return r.store.save(job)
+}
+
+// saveJobLocked 是同语义的变体，要求调用方已持有 r.mu。
+func (r *deliveryRunner) saveJobLocked(job *deliveryJob) error {
+	if job == nil || job.Superseded || (r.jobs[job.JobID] != nil && r.jobs[job.JobID] != job) {
+		return nil
+	}
+	return r.store.save(job)
+}
+
+// enqueue 非阻塞入队；队列满时保持 job 在 store 里等下一轮启动，不丢。
 func (r *deliveryRunner) enqueue(job *deliveryJob) {
 	select {
 	case r.queue <- job:
@@ -192,14 +272,20 @@ func (r *deliveryRunner) submit(job *deliveryJob) *deliveryJob {
 	r.mu.Unlock()
 
 	if stale != nil {
-		// 旧作业的 goroutine 必须在锁外终止；同时把它的 JobID 换成独立值，
-		// 否则它收尾时会用同一个文件名把磁盘记录覆盖回旧会话。
+		// 旧作业的 goroutine 必须在锁外终止。
+		//
+		// 这里**不改 stale.JobID**：JobID 既是 r.cancels 的键，也是 ownerIntact
+		// 判据里的身份。在锁外改写它会与旧 goroutine 的读写形成 data race，还会让
+		// runJob 收尾时按新键 delete，把取消函数留在 map 里成孤儿。
+		// "独立的落盘文件名"只改副本（见下），共享结构从此刻起只读。
 		oldID := stale.JobID
 		if staleCancel != nil {
 			staleCancel()
 		}
-		stale.JobID = oldID + "-superseded"
-		_ = r.store.save(stale)
+		// 浅拷贝足够：save 只 marshal，不追加 UploadedParts。
+		snapshot := *stale
+		snapshot.JobID = oldID + "-superseded"
+		_ = r.store.save(&snapshot)
 		blog("WARN", "delivery.superseded", "同一任务的新上传会话覆盖了旧作业", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "old_job_id": oldID,
 			"old_submitted_size": stale.SubmittedSize, "new_submitted_size": job.SubmittedSize,
@@ -265,7 +351,7 @@ func (r *deliveryRunner) resume(jobID string) bool {
 	// 归一化成 retrying，由 advance 按已拉字节/已传分片决定从哪续。
 	job.Phase = phaseRetrying
 	r.mu.Unlock()
-	_ = r.store.save(job)
+	_ = r.saveJob(job)
 	r.enqueue(job)
 	return true
 }
@@ -284,7 +370,7 @@ func (r *deliveryRunner) cancel(jobID string) bool {
 	}
 	job.Phase = phaseFailed
 	job.LastError = "cancelled_by_user"
-	_ = r.store.save(job)
+	_ = r.saveJob(job)
 	return true
 }
 
@@ -299,11 +385,33 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 		})
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), deliveryJobTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), deliveryJobMaxTimeout)
+	// "检查是否已被顶替"与"注册取消函数"必须在同一把锁内完成。
+	//
+	// 分开做会留下一个窗口：读到 abandoned=false 之后、注册 cancels 之前被 submit
+	// 顶替，此时 submit 从 cancels 里取不到 cancel（还没注册），旧作业于是永远收不到
+	// 取消信号，会一路拉包、传分片、甚至收尾——这就是"僵尸作业重写已存在数据"。
 	r.mu.Lock()
+	if job.Superseded || (r.jobs[job.JobID] != nil && r.jobs[job.JobID] != job) {
+		r.mu.Unlock()
+		cancel()
+		blog("INFO", "delivery.superseded_skipped", "注册时已被顶替，作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "task_id": job.TaskID, "stage": "register",
+		})
+		return
+	}
 	r.cancels[job.JobID] = cancel
+	partsBefore := len(job.UploadedParts)
+	pulledBefore := job.PulledBytes
 	r.mu.Unlock()
+	// 停摆看门狗与绝对上限并存：绝对上限只防"永久占位"，是否还在干活由字节增量判定。
+	// stalled 标志用于把"看门狗掐断"与"用户取消/superseded"区分开：三者都表现为
+	// context.Canceled，但前者的正确处理是重排下一轮，后两者必须落终态。
+	var stalled atomic.Bool
+	watchDone := make(chan struct{})
+	go r.watchStall(ctx, cancel, job, watchDone, func() { stalled.Store(true) })
 	defer func() {
+		close(watchDone)
 		cancel()
 		r.mu.Lock()
 		delete(r.cancels, job.JobID)
@@ -325,15 +433,43 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	}
 	r.mu.Lock()
 	if err != nil {
-		job.Attempt++
+		// 本轮只要真的推进过分片或字节，就不该消耗重试预算。
+		//
+		// 第一性原理：attempt 预算要防的是"无意义重试"，而"每轮都多传上去几片"
+		// 有确定的意义——只是慢。按旧逻辑（transient 8 次）计算，弱网下每轮 15 分钟、
+		// 8 轮约 2 小时就把一个仍在稳定推进的 20 GiB 交付判死，平台侧只剩 19/233 片
+		// 和一个再也不会有人接的 failed。进度型重试的收敛由停摆看门狗负责。
+		progressed := len(job.UploadedParts) > partsBefore || job.PulledBytes > pulledBefore
+		if progressed {
+			job.Attempt = 0
+			blog("INFO", "delivery.progress_renewed", "本轮有新增进度，重试预算复位", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "task_id": job.TaskID,
+				"uploaded_parts_before": partsBefore, "uploaded_parts_after": len(job.UploadedParts),
+				"pulled_bytes_before": pulledBefore, "pulled_bytes_after": job.PulledBytes,
+			})
+		} else {
+			job.Attempt++
+		}
 		job.LastError = err.Error()
-		// 最高优先级：作业已被新会话顶替（fencing），或协程被显式取消。
-		// 这类错误必须直接落终态，绝不能进 retrying——否则退避重排会给它
-		// 创建一个全新的 ctx，旧作业就此"复活"并把过期失败写回平台。
-		if job.Superseded || errors.Is(err, context.Canceled) {
+		// 停摆优先于"取消"判定：看门狗也是靠 cancel 收工的，但它的语义是
+		// "这一轮链路已经死了，换下一轮"，不是"这条作业废了"。
+		if stalled.Load() {
+			job.Attempt = 0
+			job.Phase = phaseRetrying
+			job.LastError = fmt.Sprintf("交付停摆：%s 内没有任何新增进度，换下一轮继续", deliveryStallTimeout)
+			job.LastErrorCode = "delivery_stalled"
+		} else if job.Superseded || errors.Is(err, errDeliverySuperseded) {
+			// 最高优先级：作业已被新会话顶替（fencing）。
+			// 这类错误必须直接落终态，绝不能进 retrying——否则退避重排会给它
+			// 创建一个全新的 ctx，旧作业就此"复活"并把过期失败写回平台。
 			job.Phase = phaseFailed
 			job.LastError = "superseded_by_new_session"
 			job.LastErrorCode = ""
+		} else if errors.Is(err, context.Canceled) {
+			// 用户取消 / 绝对上限：同样是终态，但**不得冒充"被顶替"**。
+			// cancel() 已经把 LastError 写成 cancelled_by_user，这里覆盖成
+			// superseded_by_new_session 会让现场误以为"又被新会话顶掉了"。
+			job.Phase = phaseFailed
 		} else if isDeliveryAuthError(err) {
 			// 凭据类失败单独标记：它不是"重试能好"的错误，必须等人。
 			job.NeedsReauth = true
@@ -359,7 +495,9 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	needsReauth := job.NeedsReauth
 	r.mu.Unlock()
 
-	_ = r.store.save(job)
+	// 已不是当前执行者的作业不得写 journal：dj-<task>.json 是所有同任务作业共用的
+	// 文件名，僵尸收尾会把新作业的记录覆盖回旧会话的阶段与字节数。
+	_ = r.saveJob(job)
 	blog("INFO", "delivery.job_finished", "交付作业状态更新", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "task_id": job.TaskID, "phase": string(finalPhase),
 		"attempt": finalAttempt, "needs_reauth": needsReauth, "error": job.LastError,
@@ -383,6 +521,55 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 				})
 			}
 		}()
+	}
+}
+
+// watchStall 在拉取/上传阶段监视"是否还在动"，连续 deliveryStallTimeout 无增量即终止本轮。
+//
+// 为什么不是继续用固定墙钟：墙钟既会砍掉"只是慢但在传"的作业（弱网 16 小时 > 旧 6 小时），
+// 又会放过"卡死但没到点"的作业（用户盯着"上传中"熬一晚上）。字节增量是唯一既排除死锁
+// 又不排斥慢网的可测事实，所以判据换成它。
+func (r *deliveryRunner) watchStall(ctx context.Context, cancel context.CancelFunc, job *deliveryJob, done <-chan struct{}, markStalled func()) {
+	ticker := time.NewTicker(deliveryStallPollInterval)
+	defer ticker.Stop()
+	tracker := newStallTracker(deliveryStallTimeout)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case now := <-ticker.C:
+			signature, watched := r.progressSignature(job)
+			if !tracker.observe(now, signature, watched) {
+				continue
+			}
+			blog("WARN", "delivery.stalled", "交付长时间无进展，终止本轮等下一轮重排", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "task_id": job.TaskID,
+				"stalled_sec": int64(deliveryStallTimeout / time.Second), "signature": signature,
+			})
+			markStalled()
+			cancel()
+			return
+		}
+	}
+}
+
+// progressSignature 返回"这个作业是否在动"的可比签名。
+//
+// 第二返回值表示当前阶段是否适合用字节增量判定。签名只取单调量（已传分片数、
+// 已拉字节、当前分片序号），不取时间戳，避免"签名自己会变"造成假进展。
+func (r *deliveryRunner) progressSignature(job *deliveryJob) (string, bool) {
+	r.mu.Lock()
+	phase := job.Phase
+	parts := len(job.UploadedParts)
+	pulled := job.PulledBytes
+	r.mu.Unlock()
+	switch phase {
+	case phasePulling, phaseUploading:
+		return fmt.Sprintf("%s|parts=%d|pulled=%d", phase, parts, pulled), true
+	default:
+		return fmt.Sprintf("%s", phase), false
 	}
 }
 
@@ -448,9 +635,24 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 
 	// 平台已确认收到完整包（complete 返回 2xx），本地副本再无用途。
 	// 留着只会挤占下一次交付的空间：P2 中转盘就是客户机 C 盘（2026-11-03 Q2026110300988）。
+	//
+	// 但删除之前必须重新确认执行者资格：本地副本路径按 task_id 命名，新旧两代作业
+	// 指向**同一个文件**。被顶替的作业若在此处收尾，删掉的是新作业正在上传的那个包，
+	// 新作业下一片就会以"本地副本不存在"失败——比它自己的失败更糟。
+	// 这里只判"还是不是执行者"，**不判 ctx**：走到这一步时 complete 已经 2xx，
+	// 包已经落到平台。此时若因为看门狗/绝对上限刚巧 cancel 就返回错误，
+	// 会把一次成功的交付写成 failed——比不删副本严重得多。
+	if !r.ownerIntact(job) {
+		return errDeliverySuperseded
+	}
 	r.discardDeliveredCopy(job)
 
 	r.mu.Lock()
+	if job.Superseded {
+		// 极窄窗口：fence 通过之后到置终态之前被顶替。此时不得把自己的结论写成 done。
+		r.mu.Unlock()
+		return errDeliverySuperseded
+	}
 	job.Phase = phaseDone
 	r.mu.Unlock()
 	return nil
@@ -559,7 +761,7 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 					}
 					job.Phase = phasePulling
 					r.mu.Unlock()
-					_ = r.store.save(job)
+					_ = r.saveJob(job)
 					blog("INFO", "delivery.collect_finished", "节点采集已完成且压缩包已落定，开始交付", "", job.CaseID, job.NodeIP, "", map[string]any{
 						"job_id": job.JobID, "total": progress.Total, "archive_path": sourcePath, "size": settledSize,
 					})
@@ -726,7 +928,7 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession,
 	if err := sourceSizeGuard(submittedSize, size); err != nil {
 		return err
 	}
-	_ = r.store.save(job)
+	_ = r.saveJob(job)
 
 	blog("INFO", "delivery.direct_ready", "补交付源包校验通过，开始拉取", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "source_path": sourcePath, "size": size,
@@ -759,7 +961,7 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *SSHSes
 		job.Integrity = integrityUnverified
 		job.IntegrityNote = "未取得源包摘要：" + err.Error()
 		r.mu.Unlock()
-		_ = r.store.save(job)
+		_ = r.saveJob(job)
 		blog("WARN", "delivery.digest_unavailable", "节点无法计算源包摘要，完整性校验降级", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "source_path": job.SourcePath, "error": err.Error(),
 		})
@@ -773,7 +975,7 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *SSHSes
 	}
 	// 这里只拿到"基线"，还不代表任何一跳校验通过；Integrity 留给 pull/complete 定论。
 	r.mu.Unlock()
-	_ = r.store.save(job)
+	_ = r.saveJob(job)
 	blog("INFO", "delivery.digest_probed", "已取得节点源包摘要", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "algorithm": algo, "digest": digest, "source_size": job.SourceSize,
 	})
@@ -945,7 +1147,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 			job.SourceSize = total
 		}
 		r.mu.Unlock()
-		_ = r.store.save(job)
+		_ = r.saveJob(job)
 	})
 	if err != nil {
 		// 失败时也必须回填真实已写字节：进度上报按块步进（见 progressStep），
@@ -955,7 +1157,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 		job.PulledBytes = written
 		remaining := job.SourceSize - written
 		r.mu.Unlock()
-		_ = r.store.save(job)
+		_ = r.saveJob(job)
 
 		if isLocalDiskFull(err) {
 			// ENOSPC 之后重新探测一次：此刻的可用值才是用户真正需要看到的证据。
@@ -1032,7 +1234,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 		job.IntegrityNote = "节点未提供源包摘要，仅校验了传输一致性"
 	}
 	r.mu.Unlock()
-	_ = r.store.save(job)
+	_ = r.saveJob(job)
 	blog("INFO", "delivery.pull_verified", "拉取完成并完成完整性比对", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "size": written, "sha256": localSum,
 		"source_sha256": sourceSHA, "source_md5": sourceMD5, "integrity": job.Integrity,
@@ -1077,6 +1279,16 @@ func verifyPulledIntegrity(sourceSHA, sourceMD5, localSHA, localMD5 string, writ
 // 源包变了以后继续"跳过已传分片"会拼出前半旧包 + 后半新包的杂交产物；
 // 那种包连大小都可能对，只有整包摘要能发现，代价是又白跑一轮。
 func (r *deliveryRunner) discardLocalCopy(job *deliveryJob, reason string) {
+	// 本地副本路径按 task_id 命名（os.TempDir()/hci-log-collect/<task>.zip），
+	// 新旧两代作业指向同一个文件。被顶替的作业在这里删"自己的残包"，
+	// 删掉的其实是新作业正在上传的那个包——下一片立刻以"本地副本不存在"失败。
+	// 资格丧失时连进度都不该重置：那些字节现在是新作业的续传基线。
+	if !r.ownerIntact(job) {
+		blog("WARN", "delivery.local_discard_skipped", "作业已不是当前执行者，不删共享本地副本", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "local_path": job.LocalPath, "reason": reason,
+		})
+		return
+	}
 	r.mu.Lock()
 	path := job.LocalPath
 	job.PulledBytes = 0
@@ -1087,7 +1299,7 @@ func (r *deliveryRunner) discardLocalCopy(job *deliveryJob, reason string) {
 	if path != "" {
 		_ = os.Remove(path)
 	}
-	_ = r.store.save(job)
+	_ = r.saveJob(job)
 	blog("WARN", "delivery.local_discarded", "本地副本校验失败，已丢弃并重置分片进度", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "local_path": path, "reason": reason,
 	})
@@ -1107,7 +1319,7 @@ func platformHTTPClient(job *deliveryJob, timeout time.Duration) *http.Client {
 	return httpClientFor(job != nil && job.TLSInsecure, timeout)
 }
 
-// upload 分片上传；并发度由资源决定，已传分片自动跳过。
+// upload 分片上传；并发与单片预算按实测速率收敛，已传分片自动跳过。
 func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 	if job.UploadToken == "" || job.PlatformURL == "" {
 		return &deliveryAuthError{reason: "缺少上传令牌或平台地址"}
@@ -1127,8 +1339,15 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 	}
 
 	uploaded := job.uploadedSet()
-	parts := chunkConcurrencyFor(r.concurrency, job.ChunkSize, availableMemoryMB())
-	client := platformHTTPClient(job, logCollectPartTimeout)
+	// ceiling 是"资源允许的上限"（内存/CPU），pace 是"这条链路实际撑得住的节奏"。
+	// 两者取小：资源够但链路差时，以链路为准。
+	ceiling := chunkConcurrencyFor(r.concurrency, job.ChunkSize, availableMemoryMB())
+	r.mu.Lock()
+	pace := job.Pace.resolve(ceiling)
+	r.mu.Unlock()
+	parts := pace.Parts
+	partBudget := pace.timeout()
+	client := platformHTTPClient(job, partBudget)
 
 	var (
 		errMu     sync.Mutex
@@ -1136,7 +1355,14 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 		pending   = make(chan int)
 		wg        sync.WaitGroup
 		sinceSave int
+
+		// 本轮实测样本：只在这里被累加，用于推导下一轮节奏。
+		statMu         sync.Mutex
+		roundDoneParts int
+		roundDoneBytes int64
+		roundTimedOut  int
 	)
+	roundStart := time.Now()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -1146,15 +1372,31 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 			if ctx.Err() != nil {
 				return
 			}
-			if err := uploadOnePart(ctx, client, job, totalSize, number); err != nil {
+			written, err := uploadOnePart(ctx, client, job, totalSize, number, partBudget, func() error {
+				return r.fence(ctx, job)
+			})
+			if err != nil {
+				// 先取作业自身状态再 cancel：只有"作业还活着时超时"才算链路证据。
+				// 被 stall watchdog 或绝对上限掐断的作业若被记成弱网证据，
+				// 会把一个已经判死的作业的节奏也一起拖到最保守档，下一轮白等 20 分钟。
+				jobAlive := ctx.Err() == nil
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
 				}
 				errMu.Unlock()
+				if jobAlive && isPartTimeoutError(err) {
+					statMu.Lock()
+					roundTimedOut++
+					statMu.Unlock()
+				}
 				cancel()
 				return
 			}
+			statMu.Lock()
+			roundDoneParts++
+			roundDoneBytes += written
+			statMu.Unlock()
 			// job 是共享结构（status() 会并发读快照，save() 也会 marshal 它），
 			// 所有对 job 的读写都必须在 r.mu 下完成：addUploadedPart 改 UploadedParts，
 			// 而 store.save 会 marshal 整个 job（含 UploadedParts）。锁外 save 会与
@@ -1165,7 +1407,7 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 			shouldSave := sinceSave >= deliverySaveEveryParts
 			if shouldSave {
 				sinceSave = 0
-				_ = r.store.save(job)
+				_ = r.saveJobLocked(job)
 			}
 			r.mu.Unlock()
 		}
@@ -1191,10 +1433,21 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 	close(pending)
 	wg.Wait()
 
-	r.mu.Lock()
-	job.Phase = phaseCompleting
-	r.mu.Unlock()
-	_ = r.store.save(job)
+	r.adjustPace(job, pace, uploadRoundSample{
+		UploadedParts: roundDoneParts,
+		UploadedBytes: roundDoneBytes,
+		TimedOutParts: roundTimedOut,
+		Elapsed:       time.Since(roundStart),
+	}, ceiling)
+
+	// 只有"本轮正常收口"才可以把阶段推到 completing：被取消/被顶替的作业
+	// 一片都没传也会走到这里，无条件覆写会让前端先看到"收尾中"再变失败。
+	if ctx.Err() == nil && r.ownerIntact(job) {
+		r.mu.Lock()
+		job.Phase = phaseCompleting
+		r.mu.Unlock()
+		_ = r.saveJob(job)
+	}
 
 	if firstErr != nil {
 		// 自签证书不能靠"前端记得传 tls_insecure"来兜底：前端从未传过该字段，
@@ -1207,7 +1460,7 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 			job.Phase = phaseUploading
 			job.LastError = "平台证书不受信，已放宽校验并重新上传"
 			r.mu.Unlock()
-			_ = r.store.save(job)
+			_ = r.saveJob(job)
 			blog("WARN", "delivery.tls_relaxed", "平台证书不受信，交付通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
 				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
 			})
@@ -1219,44 +1472,103 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 	return nil
 }
 
-// uploadOnePart 上传单片（含 SHA-256 与重试）。
-func uploadOnePart(ctx context.Context, client *http.Client, job *deliveryJob, totalSize int64, number int) error {
+// adjustPace 把本轮实测结果收敛成下一轮的节奏并留痕。
+//
+// 留痕是硬要求：节奏一变，现场看到的"每片多久、几路并发"就变了，事后只有事件日志
+// 能把"为什么这一轮突然慢了/快了"解释清楚。事件里同时记前后值与本轮样本，
+// 便于用一条 SQL 复现收敛轨迹。
+func (r *deliveryRunner) adjustPace(job *deliveryJob, prev uploadPace, sample uploadRoundSample, ceiling int) {
+	next := nextUploadPace(prev, sample, job.ChunkSize, ceiling)
+	if next == prev {
+		return
+	}
+	r.mu.Lock()
+	job.Pace = next
+	_ = r.saveJobLocked(job)
+	r.mu.Unlock()
+	blog("WARN", "delivery.pace_adjusted", "按实测速率调整上传节奏", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id":                  job.JobID,
+		"chunk_size":              job.ChunkSize,
+		"part_count":              job.PartCount,
+		"parts_before":            prev.Parts,
+		"parts_after":             next.Parts,
+		"part_timeout_before_sec": prev.PartTimeout,
+		"part_timeout_after_sec":  next.PartTimeout,
+		"reason":                  next.Reason,
+		"round_uploaded_parts":    sample.UploadedParts,
+		"round_uploaded_bytes":    sample.UploadedBytes,
+		"round_timed_out_parts":   sample.TimedOutParts,
+		"round_elapsed_ms":        sample.Elapsed.Milliseconds(),
+	})
+}
+
+// uploadOnePart 上传单片（含 SHA-256 与重试），返回实际提交的字节数。
+//
+// budget 是"这一片的总墙钟预算"，由 pacing 按实测速率给出，**所有重试共享它**。
+// 改造前是"每次尝试各给 300 s"，弱网下单片最坏要烧 15 分钟才肯放手：
+// 一轮 3 次重试刚好吃满 15 分钟空转，作业就在这个循环里永远推进不了一格。
+// 共享预算后，单片最坏占用 = budget，重试只在"早早失败"时才有意义（那才是它该救的场景）。
+func uploadOnePart(ctx context.Context, client *http.Client, job *deliveryJob, totalSize int64, number int, budget time.Duration, fence func() error) (int64, error) {
+	// 分片要整片读进内存（8 MiB），所以在分配之前就先问一次资格：
+	// 已被顶替的作业连读盘都不该做，更不该把内存占住让新作业起不来 worker。
+	if fence != nil {
+		if err := fence(); err != nil {
+			return 0, err
+		}
+	}
 	offset := int64(number-1) * job.ChunkSize
 	expected := job.ChunkSize
 	if offset+expected > totalSize {
 		expected = totalSize - offset
 	}
 	if expected <= 0 {
-		return fmt.Errorf("分片 %d 大小异常", number)
+		return 0, fmt.Errorf("分片 %d 大小异常", number)
 	}
 	file, err := os.Open(job.LocalPath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer file.Close()
 	payload := make([]byte, expected)
 	if _, readErr := file.ReadAt(payload, offset); readErr != nil && readErr != io.EOF {
-		return readErr
+		return 0, readErr
 	}
 	digest := sha256Hex(payload)
+
+	if budget <= 0 {
+		budget = logCollectPartTimeout
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 
 	target := fmt.Sprintf("%s%s/%s/parts/%d", normalizePlatformURL(job.PlatformURL), logCollectDirectUploadPrefix, job.TaskID, number)
 	var lastErr error
 	for attempt := 1; attempt <= logCollectPartRetries; attempt++ {
-		lastErr = putPartBytes(ctx, client, target, job.UploadToken, digest, payload)
+		// 每次真正发 PUT 之前重新确认资格：分片按 (task_id, part_number) 落盘，
+		// 被顶替的作业迟到的 PUT 会改写新会话的同名分片。平台侧 epoch fencing
+		// 是第一道防线，这里是不依赖对端版本的本地防线。
+		if fence != nil {
+			if err := fence(); err != nil {
+				return 0, err
+			}
+		}
+		lastErr = putPartBytes(attemptCtx, client, target, job.UploadToken, digest, payload)
 		if lastErr == nil {
-			return nil
+			return expected, nil
 		}
 		if attempt == logCollectPartRetries {
 			break
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return 0, ctx.Err()
+		case <-attemptCtx.Done():
+			// 预算耗尽：再用同一条已证明不够的链路重放，只会把这一轮剩余时间也吃掉。
+			return 0, fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
 		case <-time.After(time.Duration(attempt) * time.Second):
 		}
 	}
-	return fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
+	return 0, fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
 }
 
 // buildCompletePayload 组装收尾请求体。
@@ -1286,6 +1598,12 @@ func buildCompletePayload(job *deliveryJob) map[string]any {
 
 // complete 调平台数据面收尾（用上传令牌，不需要客户 Cookie），平台随后自动做代传。
 func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
+	// 收尾是**不可撤销**的对外动作：平台收到即合并分片、启动代传。
+	// 被顶替的作业若还能收尾，就会用旧分片集把新会话的合并结果盖掉。
+	// 这道闸门同时也是平台侧 epoch fencing 之外的第二道防线（老平台 epoch=0）。
+	if err := r.fence(ctx, job); err != nil {
+		return err
+	}
 	payload := buildCompletePayload(job)
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -1307,7 +1625,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 			job.TLSInsecure = true
 			job.Phase = phaseCompleting
 			r.mu.Unlock()
-			_ = r.store.save(job)
+			_ = r.saveJob(job)
 			blog("WARN", "delivery.tls_relaxed", "平台证书不受信，收尾通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
 				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
 			})
@@ -1346,7 +1664,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 			job.IntegrityNote = ""
 		}
 		r.mu.Unlock()
-		_ = r.store.save(job)
+		_ = r.saveJob(job)
 		blog("INFO", "delivery.integrity_confirmed", "平台确认交付完整性", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "integrity": ack.IntegrityState, "sha256": ack.SHA256,
 		})
@@ -1413,9 +1731,19 @@ func sourceSizeGuard(submitted, current int64) error {
 //
 // 与 deliveryAuthError 的本质差别：这个不需要人，只需要时间。
 // 典型场景是平台正在滚动更新——空窗几十秒，期间所有请求都会拿到 503。
-type deliveryTransientError struct{ reason string }
+// deliveryTransientError 标记"暂时不可用，退避重试"。
+//
+// 它必须保留底层错误链（Unwrap）：类型是控制流的一部分，"这片到底是超时还是 5xx"
+// 决定了自适应节奏要不要降并发。2026-11-06 的弱网用例就是踩在这里——包装时只拼了
+// 字符串，导致 isPartTimeoutError 在上层拿到 false，于是每一轮都"没证据"地原地重试。
+type deliveryTransientError struct {
+	reason string
+	err    error
+}
 
 func (e *deliveryTransientError) Error() string { return e.reason }
+
+func (e *deliveryTransientError) Unwrap() error { return e.err }
 
 // isDeliveryAuthError 用 errors.As 而不是类型断言：错误会被上层用 %w 包装
 // （例如 upload() 返回 "上传中断（已传 3/15 片）: <原始错误>"），
@@ -1485,7 +1813,10 @@ func wrapTransientTransport(err error) error {
 	if err == nil || !isTransientTransportError(err) {
 		return err
 	}
-	return &deliveryTransientError{reason: "平台连接失败（暂时不可用，将退避重试）: " + err.Error()}
+	return &deliveryTransientError{
+		reason: "平台连接失败（暂时不可用，将退避重试）: " + err.Error(),
+		err:    err,
+	}
 }
 
 // sha256Hex 计算分片校验和（与服务端 X-Part-SHA256 对齐）。

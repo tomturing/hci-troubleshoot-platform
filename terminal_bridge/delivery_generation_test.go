@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 )
 
@@ -31,8 +32,16 @@ func TestSubmitMarksStaleJobSuperseded(t *testing.T) {
 	if !old.Superseded {
 		t.Fatal("旧作业必须被标记 superseded，否则还可能被重排复活")
 	}
-	if old.JobID != "dj-task-1-superseded" {
-		t.Fatalf("旧作业应改用独立 ID 落盘，实际 %s", old.JobID)
+	// 共享结构上的 JobID 必须保持不变，否则会与旧 goroutine 的读写形成 data race，
+	// 并让 r.cancels 的键漂移到 -superseded（取消函数成孤儿）。
+	// "独立落盘文件名"由 submit 内部构造的副本承担。
+	if old.JobID != "dj-task-1" {
+		t.Fatalf("旧作业的共享 ID 不得被改写，实际 %s", old.JobID)
+	}
+	if r.store.dir != "" {
+		if _, err := os.Stat(r.store.path("dj-task-1-superseded")); err != nil {
+			t.Fatalf("被顶替作业应以独立文件名落盘: %v", err)
+		}
 	}
 	old.LastErrorCode = "LC-TRANSFER-004"
 	if view := toDeliveryJobView(old); view.ErrorCode != "" {

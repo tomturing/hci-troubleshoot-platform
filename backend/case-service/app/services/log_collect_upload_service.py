@@ -42,6 +42,44 @@ logger = logging.getLogger(__name__)
 MIN_CHUNK_SIZE = 8 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
 
+# 分片进度回写的节流参数。
+#
+# 为什么必须节流：高速链路下一片只要几百毫秒，233 片就是 233 次 UPDATE，
+# 20 GiB 的包有 2560 片；每次都是一条行更新 + 一次 commit。而进度本身是给人看的，
+# 抖到"第 3 片"还是"第 4 片"没有任何意义——以「每 5 片或至少 2 秒一次」为粒度，
+# 既能让界面在十几秒内动起来，又不会给数据库添无谓的行锁。
+_UPLOAD_PROGRESS_EVERY_PARTS = 5
+_UPLOAD_PROGRESS_MIN_INTERVAL_SECONDS = 2.0
+# 进程内节流状态：task_id -> (已上报片数, 上次上报的单调时钟)。
+# 两个副本各自记各自的时间，跨副本重复上报是可接受的（同一条进度写两遍而已）。
+_upload_progress_seen: dict[str, tuple[int, float]] = {}
+
+
+def should_report_upload_progress(
+    last: tuple[int, float] | None,
+    uploaded: int,
+    now: float,
+    *,
+    total: int | None = None,
+    every_parts: int = _UPLOAD_PROGRESS_EVERY_PARTS,
+    min_interval: float = _UPLOAD_PROGRESS_MIN_INTERVAL_SECONDS,
+) -> bool:
+    """判断这次分片落盘后要不要把进度写回平台。
+
+    抽成纯函数是为了让"首次必报 / 攒够 5 片必报 / 末片必报 / 至少隔 2 秒"这些边界
+    能被单测直接钉住——它们决定了现场看到的是"进度在动"还是"界面死了"。
+    """
+    if last is None:
+        return True
+    # 末片是状态跃迁点（接下来就该合并了），必须立刻可见：
+    # 否则 5 片的包会永远停在 1/5，用户以为还差 4 片而实际只差合并。
+    if total is not None and uploaded >= total:
+        return True
+    last_parts, last_at = last
+    if uploaded >= last_parts + every_parts:
+        return True
+    return (now - last_at) >= min_interval
+
 
 class LogCollectUploadError(Exception):
     """上传类业务异常（错误码见 log_collect_error_catalog.json）。"""
@@ -337,14 +375,67 @@ class LogCollectUploadService:
                 f"分片 {part_number} 大小不符：期望 {expected}，实际 {size}"
             )
 
+        uploaded_parts = len(self.storage.existing_parts(upload_id))
+        # 先把进度写回平台，再返回：分片的落盘事实必须比"客户端看到成功"更早可见，
+        # 否则用户看到的进度永远比真实传输落后一个分片。
+        await self._report_upload_progress(
+            task_id,
+            uploaded=uploaded_parts,
+            total=part_count,
+            chunk_size=chunk_size,
+            part_number=part_number,
+        )
         return {
             "upload_id": upload_id,
             "part_number": part_number,
             "size": size,
             "sha256": digest,
-            "uploaded_parts": len(self.storage.existing_parts(upload_id)),
+            "uploaded_parts": uploaded_parts,
             "part_count": part_count,
         }
+
+    async def _report_upload_progress(
+        self,
+        task_id: UUID,
+        *,
+        uploaded: int,
+        total: int,
+        chunk_size: int,
+        part_number: int,
+    ) -> None:
+        """把"已收到第几片"写回任务 detail，供界面显示真实传输进度。
+
+        这个能力解决的是一个具体的现场黑洞：交付卡在弱网上时，平台侧
+        ``delivery_status`` 一直停在 queued、``object_size`` 恒空，界面只能说
+        「交付已登记但未完成」，用户看不到到底是 19/233 还是 200/233，
+        于是无法判断"再等等"还是"这条链已经废了"（2026-11-06 Q2026110600112
+        卡在 19/233 长达十小时，期间没有人能看出来）。
+        """
+        key = str(task_id)
+        now = time.monotonic()
+        if not should_report_upload_progress(_upload_progress_seen.get(key), uploaded, now, total=total):
+            return
+        _upload_progress_seen[key] = (uploaded, now)
+        try:
+            await self.repository.update_upload_progress(
+                task_id,
+                {
+                    "uploaded": uploaded,
+                    "total": total,
+                    "chunk_size": chunk_size,
+                    "last_part": part_number,
+                    "updated_at": datetime.now(UTC).isoformat(),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            # 硬约束：进度回写失败绝不能让分片上传失败。
+            # 进度是"锦上添花"的可观测性，字节已经落盘了；为了一个 UPDATE 抛 500
+            # 会让客户端重传整片，白白再消耗一次弱网带宽——正是本次要修的问题。
+            # 同时把节流状态清掉，避免下一次因为"已记录"而跳过上报、进度永久停住。
+            _upload_progress_seen.pop(key, None)
+            logger.warning(
+                "分片进度回写失败（不影响上传）: task_id=%s uploaded=%s/%s", key, uploaded, total, exc_info=True
+            )
 
     # ── 合并 ────────────────────────────────────────────────────────────────
 
