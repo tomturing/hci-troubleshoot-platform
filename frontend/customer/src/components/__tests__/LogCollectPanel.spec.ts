@@ -1220,6 +1220,53 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  /**
+   * 回归（2026-11-06 Q2026110600940）：P2 完成后 `archive_path` 是平台对象 key，
+   * 旧结果态曾把它拼进删除命令，用户不懂后台字段，照着执行可能误删文件。
+   * 用户要求：只给准确路径、不给任何删除命令，由用户自行确认处理。
+   * 契约：只有服务端核到节点侧证据时才展示路径，且必须是节点绝对路径。
+   */
+  it('P2 结果态只在有节点侧证据时展示准确的节点路径，且不出现删除命令', async () => {
+    const trusted = '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip'
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [taskFixture({ node_archive_path: trusted })],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain(trusted)
+    expect(text).toContain('自行处理')
+    expect(text).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
+    wrapper.unmount()
+  })
+
+  it('P2 结果态没有可信节点路径时不给路径，也不出现删除命令', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          // 模拟真实的平台对象 key
+          archive_path: 'Q2026102300001/task-1.zip',
+          node_archive_path: null,
+        }),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('不提供路径')
+    expect(text).not.toContain('/sf/data/local/acli/tmp/data/log_collect/')
+    expect(text).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
+    wrapper.unmount()
+  })
+
   // 现场反馈：产物位置是长路径，排在右列会把行高撑成两行且右侧留白；
   // 换成「产物位置在左、归档状态在右」后路径靠左读，短文案收口在右。
   it('结果态字段顺序把产物位置排在归档状态之前', async () => {

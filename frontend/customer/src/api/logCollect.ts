@@ -161,6 +161,11 @@ export interface LogCollectTask {
   /** 交付路径：acli_direct = P1 直传日志服务器；bridge_relay = P2 经平台中转 */
   upload_mode?: 'acli_direct' | 'bridge_relay' | 'none' | null
   archive_path?: string | null
+  /**
+   * 节点上采集包的绝对路径，仅当服务端在桥日志里核到节点侧证据时才返回。
+   * P2 下 `archive_path` 是平台对象 key，**不能**用于清理命令。
+   */
+  node_archive_path?: string | null
   archive_size?: number | null
   archive_sha256?: string | null
   /** 端到端完整性：verified = 源包摘要与平台副本一致；unverified = 无基线，仅传输层校验 */

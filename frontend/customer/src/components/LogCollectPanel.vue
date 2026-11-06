@@ -47,6 +47,7 @@ import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCa
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
 import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
+import { buildNodeCleanupTip } from '@/services/logCollectCleanup'
 import { isTransientPlatformError, shouldRecoverRelayLease } from '@/services/logCollectRelay'
 import {
   blocksCreate as blocksCreateAction,
@@ -1053,7 +1054,14 @@ const resultCleanupTip = computed(() => {
     return 'P1 由插件直传日志服务器，上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
   }
   if (resultMode.value === 'bridge_relay' && task.archive_path) {
-    return `平台不自动删除 HCI 上的采集包，请在节点上自行清理：rm -f ${task.archive_path}（不要删除 /sf/data/local/acli/plugins 与 tasks 目录）`
+    // 绝不能把 task.archive_path 当成节点路径展示：P2 下它是平台对象 key。
+    // 平台只提供准确路径，不提供任何删除命令，由用户自行确认处理。
+    // 只认节点侧证据：先本次对账拿到的实时路径，再服务端从桥日志核对过的路径；
+    // 两者都不可信时 buildNodeCleanupTip 会明确「不提供路径」。
+    return buildNodeCleanupTip(task.case_id || props.caseId, [
+      nodeArchivePath.value,
+      task.node_archive_path,
+    ])
   }
   return ''
 })
@@ -3305,11 +3313,11 @@ async function runP2(
     archive_size: totalSize,
   })
   stage.value = 'done'
+  // 同样不能无条件展示：archivePath 来自节点报告，但仍要过一遍白名单，
+  // 否则某个异常桥版本回传相对路径/对象 key 时就会给用户一条错误路径。
   cleanupTip.value =
-    `日志包已归档到日志服务器（${totalSize} 字节）。` +
-    '平台保留副本供回看，HCI 上的采集包仍在，请在节点上自行清理：\n' +
-    `rm -f ${archivePath}\n` +
-    '注意：不要删除 /sf/data/local/acli/plugins 与 tasks 目录。'
+    `日志包已归档到日志服务器（${totalSize} 字节）。\n` +
+    buildNodeCleanupTip(task.case_id, [archivePath])
   ElMessage.success('日志已上传平台并归档到日志服务器')
 }
 
