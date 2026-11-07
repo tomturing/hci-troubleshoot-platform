@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.35.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.34.0...v2.35.0) (2026-11-06)
+
+
+### ✨ 新功能
+
+* **log-collect:** P1 交付结论改为证据驱动状态机 ([#1450](https://github.com/tomturing/hci-troubleshoot-platform/issues/1450)) ([941c899](https://github.com/tomturing/hci-troubleshoot-platform/commit/941c899b9e3410bd784479d69b33ed9512a97f6b))
+* **log-collect:** P1 直传改用平台签发的 per-task 票据闭环 ([#1429](https://github.com/tomturing/hci-troubleshoot-platform/issues/1429)) ([ac8abbf](https://github.com/tomturing/hci-troubleshoot-platform/commit/ac8abbf60ab9f16dbd448318d4ac7be95d3dc597))
+* **log-collect:** 交付并发准入，避免多作业叠加写满客户机磁盘 ([#1435](https://github.com/tomturing/hci-troubleshoot-platform/issues/1435)) ([1df5ccc](https://github.com/tomturing/hci-troubleshoot-platform/commit/1df5ccc9a6c5df883e9deabcdee00e6184c1e2ff))
+
+
+### 🐛 Bug 修复
+
+* **case:** 修复 DSH 归档 JSON 转义被破坏导致整批入库失败 ([#1433](https://github.com/tomturing/hci-troubleshoot-platform/issues/1433)) ([d155915](https://github.com/tomturing/hci-troubleshoot-platform/commit/d155915309f4a34e08115e3479d84eca72142489))
+* **customer:** SSH 终端独立于工单，未连接统一走登录弹框 ([#1440](https://github.com/tomturing/hci-troubleshoot-platform/issues/1440)) ([23de0a9](https://github.com/tomturing/hci-troubleshoot-platform/commit/23de0a9ac15b17cc7f75f993b11215a40607e64f))
+* **customer:** 统一 SSH 入口的 Bridge 引导，删除独立下载弹窗 ([#1441](https://github.com/tomturing/hci-troubleshoot-platform/issues/1441)) ([5f429ef](https://github.com/tomturing/hci-troubleshoot-platform/commit/5f429ef990a5bff78c0b713bfef9e7c477058c72))
+* **log-collect:** P1 上传改用全局 -H 做隔离验证 ([#1442](https://github.com/tomturing/hci-troubleshoot-platform/issues/1442)) ([c8990c4](https://github.com/tomturing/hci-troubleshoot-platform/commit/c8990c4a492a28dae20192ecb77d838ac81ae205))
+* **log-collect:** 上传状态判定改为语言无关，修复英文 P1 成功被判失败 ([#1453](https://github.com/tomturing/hci-troubleshoot-platform/issues/1453)) ([9e4b11f](https://github.com/tomturing/hci-troubleshoot-platform/commit/9e4b11f7883c3c8ee0c36b4e6c9b77b6d4f42ccf))
+* **log-collect:** 交付以"包真正写完"为前提，并修复重试复用旧会话基线 ([#1437](https://github.com/tomturing/hci-troubleshoot-platform/issues/1437)) ([bf68e24](https://github.com/tomturing/hci-troubleshoot-platform/commit/bf68e2446710ae06e48329750fbb877210ea2e10))
+* **log-collect:** 代传并发闸门与提高内存配额，避免 OOM 后把成功归档判成失败 ([#1446](https://github.com/tomturing/hci-troubleshoot-platform/issues/1446)) ([c536bfc](https://github.com/tomturing/hci-troubleshoot-platform/commit/c536bfca4d551d19bdd75107edd45932ac2d992e))
+* **log-collect:** 代传接管改为周期执行，修复发布滚动后 pending 永久卡住 ([#1439](https://github.com/tomturing/hci-troubleshoot-platform/issues/1439)) ([310c106](https://github.com/tomturing/hci-troubleshoot-platform/commit/310c1062318aeb7293f8ba67b9a0e5ac57ca40f3))
+* **log-collect:** 客户机磁盘满导致交付失败时给出真实归因并回收中转副本 ([#1432](https://github.com/tomturing/hci-troubleshoot-platform/issues/1432)) ([b3a8f20](https://github.com/tomturing/hci-troubleshoot-platform/commit/b3a8f2016c006ff06592242eeda6d2c85951eed6))
+* **log-collect:** 结果态清理提示只给准确节点路径，不再展示删除命令 ([#1448](https://github.com/tomturing/hci-troubleshoot-platform/issues/1448)) ([b7ed089](https://github.com/tomturing/hci-troubleshoot-platform/commit/b7ed089d22ac8b77c7b7ffd8ff02dfefb73295fe))
+* **log-collect:** 进度解析改为语言无关，修复英文输出导致任务卡死 ([#1445](https://github.com/tomturing/hci-troubleshoot-platform/issues/1445)) ([c4eceed](https://github.com/tomturing/hci-troubleshoot-platform/commit/c4eceede4c7a5bbc35698821b9f3b0aee32d5377))
+* **ticket-sync:** 同工单多份归档时取最新包，避免同步到过期日志 ([#1443](https://github.com/tomturing/hci-troubleshoot-platform/issues/1443)) ([1ea5c86](https://github.com/tomturing/hci-troubleshoot-platform/commit/1ea5c8650b002503f2c6f759f467c204eb04c5fc))
+* 交付一致性与会话代际治理，彻底修复换包撞车与终态分叉 ([a4bb8d5](https://github.com/tomturing/hci-troubleshoot-platform/commit/a4bb8d569ed9c9d15585aa7c38fb3b9a83c775f9))
+* **日志收集:** P1 登记 delivered 时清空残留失败码 ([#1457](https://github.com/tomturing/hci-troubleshoot-platform/issues/1457)) ([1974370](https://github.com/tomturing/hci-troubleshoot-platform/commit/1974370df0317318e0cf3e4688eb75477651a081))
+* **日志收集:** 增加会话归属 L1/L2/L3 三层门禁，拦截「假完成」 ([#1455](https://github.com/tomturing/hci-troubleshoot-platform/issues/1455)) ([c730e9a](https://github.com/tomturing/hci-troubleshoot-platform/commit/c730e9a1e718bba3992a60cc0da33bd8d80a5206))
+* **日志收集:** 弱网交付自适应收敛 + 僵尸作业 fencing ([9a40851](https://github.com/tomturing/hci-troubleshoot-platform/commit/9a40851cd2c4c77145bb958b3d53b38263292690))
+
+
+### 📝 文档
+
+* 记录 P1 直传鉴权放宽与两阶段开关事件 ([#1449](https://github.com/tomturing/hci-troubleshoot-platform/issues/1449)) ([9decee9](https://github.com/tomturing/hci-troubleshoot-platform/commit/9decee98f80d539a5c275f90f5d04c3aa74a6e61))
+
 ## [2.34.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.33.0...v2.34.0) (2026-11-02)
 
 
