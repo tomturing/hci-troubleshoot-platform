@@ -82,12 +82,15 @@ vi.mock('@/api/terminal', async () => {
       setTimeout(() => fakeSocket.onopen?.(), 0)
       return fakeSocket
     }),
+    // 与真实实现保持同构：至少映射到 bridge 真正读取的字段，
+    // 否则"额外路径有没有下发"这类契约在桩里恒为 false，用例永远绿。
     buildLogCollectMessage: (caseId: string, action: string, options: any = {}) =>
       JSON.stringify({
         type: 'log_collect',
         case_id: caseId,
         log_action: action,
         node_ip: options.nodeIp,
+        ...(options.extraPaths?.length ? { extra_paths: options.extraPaths } : {}),
       }),
     // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
     buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
@@ -239,6 +242,28 @@ const ElRadioButton = {
   },
 }
 
+/**
+ * ElInput 必须渲染成真实 input：
+ * 额外路径是「用户输入 → 校验 → 入列」的交互，桩成 div 就只能断言"元素存在"，
+ * 断言不到"非法值进不来、合法值进得去"这条真正要守的契约。
+ */
+const ElInput = {
+  name: 'ElInput',
+  props: ['modelValue', 'placeholder', 'disabled'],
+  emits: ['update:modelValue', 'keyup', 'blur'],
+  setup(props: any, { emit }: any) {
+    return () =>
+      h('input', {
+        value: props.modelValue ?? '',
+        placeholder: props.placeholder ?? '',
+        disabled: props.disabled,
+        onInput: (event: any) => emit('update:modelValue', event.target.value),
+        onKeyup: (event: any) => emit('keyup', event),
+        onBlur: () => emit('blur'),
+      })
+  },
+}
+
 function mountPanel() {
   return mount(
     LogCollectPanel,
@@ -282,7 +307,7 @@ function mountPanel() {
           },
           ElDescriptionsItem,
           ElTag: passthrough('ElTag'),
-          ElInput: passthrough('ElInput'),
+          ElInput,
           ElDatePicker: passthrough('ElDatePicker'),
           ElButton: passthrough('ElButton', 'button'),
           ElProgress: passthrough('ElProgress'),
@@ -292,6 +317,9 @@ function mountPanel() {
           ElCheckbox,
           ElRadioGroup,
           ElRadioButton,
+          // 额外路径折叠区：不注册会整块不渲染，用例就看不到输入框与已选 tag
+          ElCollapse: passthrough('ElCollapse'),
+          ElCollapseItem: passthrough('ElCollapseItem'),
         },
       },
     },
@@ -1613,6 +1641,121 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
    *
    * 这里锁定：下发后报告没刷新 → 绝不写 completed。
    */
+  /**
+   * 额外路径（acli -p）是本次采集范围的一部分：
+   * 必须随 create 下发；非法路径要在提交前拦下 —— 插件把路径直接拼进
+   * `cp -r`（未加引号），一个含分号的路径等于在客户节点执行命令。
+   */
+  it('额外路径随 create 下发到 bridge', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const created = taskFixture({ status: 'pending', progress: 0, finished_at: null, archive_path: null })
+    vi.mocked(logCollectApi.createTask).mockResolvedValue(created)
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({ ...created, status: 'collecting' })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 20480,
+          log_server_reachable: false,
+          http_code: 0,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'network', label: '网络专项' }],
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+
+    // 日期是 handleStart 的第一道门；不填它后面的断言全会变成"什么都没发生"的假绿
+    wrapper.findComponent({ name: 'ElDatePicker' }).vm.$emit('update:modelValue', ['2026-11-03', '2026-11-05'])
+    await flushPromises()
+
+    const pathInput = wrapper.find('input[placeholder*="绝对路径"]')
+    expect(pathInput.exists()).toBe(true)
+    await pathInput.setValue('/sf/data/local/app/')
+    await pathInput.trigger('keyup.enter')
+    await flushPromises()
+
+    const start = wrapper.findAll('button').find((item) => item.text() === '开始收集')
+    expect(start).toBeTruthy()
+    await start!.trigger('click')
+    await flushPromises()
+
+    // 下发前对账：节点空闲，拿到基线后才会真正 create
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '空闲', percent: 0, done: 0, total: 0, node_state: 'none',
+          archive_path: '', hosts: [], raw: '状态：节点上没有采集任务',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const createMessage = sentMessages.find((item) => item.includes('"log_action":"create"'))
+    expect(createMessage).toBeTruthy()
+    expect(JSON.parse(createMessage!)).toMatchObject({ extra_paths: ['/sf/data/local/app/'] })
+    wrapper.unmount()
+  })
+
+  it('非法额外路径在提交前被拦下，不发出 create', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 20480,
+          log_server_reachable: false,
+          http_code: 0,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'network', label: '网络专项' }],
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'ElDatePicker' }).vm.$emit('update:modelValue', ['2026-11-03', '2026-11-05'])
+    await flushPromises()
+
+    // 含空格的路径会被插件的 `cp -r /a b` 拆成两个参数：必须在界面上就拒绝
+    const pathInput = wrapper.find('input[placeholder*="绝对路径"]')
+    await pathInput.setValue('/sf/bad path')
+    await pathInput.trigger('keyup.enter')
+    await flushPromises()
+    expect(wrapper.text()).toContain('不能含空格')
+
+    // 非法项不会进入已选列表，因此也不会出现在任何下发消息里
+    expect(wrapper.find('.lc-extra-path-tag').exists()).toBe(false)
+    expect(sentMessages.some((item) => item.includes('/sf/bad path'))).toBe(false)
+    wrapper.unmount()
+  })
+
   it('下发后节点仍打印上一次的完成报告时，不把平台写成 completed', async () => {
     mockStore.sshConnectionState = 'connected'
     mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }

@@ -49,6 +49,13 @@ import {
   type UploadProgressView,
   type RelayProgressView,
 } from '@/utils/logCollectDelivery'
+import {
+  EXTRA_PATH_MAX_COUNT,
+  extraPathsLimitHint,
+  normalizeExtraPaths,
+  parseExtraPathInput,
+  validateExtraPath,
+} from '@/utils/logCollectExtraPaths'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
@@ -483,7 +490,52 @@ const form = reactive({
   modules: ['vm_suspend'] as LogCollectModule[],
   dateRange: [] as string[],
   ips: 'all',
+  /**
+   * 额外收集路径（acli `-p`）。
+   *
+   * 第一性原理：`-p` 是本次采集范围的组成部分，不是"高级玩法"——
+   * 客户想收业务自定义目录时，没有它就只能手工上节点执行 acli，
+   * 收集结果会脱离平台的交付链（分片、摘要、P1/P2 都不覆盖）。
+   *
+   * 为什么必须在这里校验而不是交给后端：插件把路径直接拼进 `cp -r`（未加引号），
+   * 非法字符不是"收不到"，而是能在客户节点执行命令；提前拒绝才是安全边界。
+   */
+  extraPaths: [] as string[],
 })
+
+/** 高级选项默认收起：额外路径是补充手段，不是每次采集都要经过的决策点。 */
+const advancedOpen = ref<string[]>([])
+/** 额外路径输入框的暂存值：只有回车/失焦才真正入列，避免半截路径被提交。 */
+const extraPathInput = ref('')
+const extraPathsLimitReached = computed(() => form.extraPaths.length >= EXTRA_PATH_MAX_COUNT)
+const extraPathsHint = computed(() => extraPathsLimitHint(form.extraPaths.length))
+/** 最近一次添加的失败原因（一次展示多条，不逐条弹窗）。 */
+const extraPathError = ref('')
+
+function addExtraPaths() {
+  const raw = extraPathInput.value.trim()
+  if (!raw) return
+  extraPathError.value = ''
+  const { accepted, rejected, overflow } = parseExtraPathInput(raw, form.extraPaths)
+  if (accepted.length) form.extraPaths.push(...accepted)
+  extraPathInput.value = ''
+  if (rejected.length) {
+    extraPathError.value = rejected
+      .slice(0, 3)
+      .map((item) => `${item.value}：${item.reason}`)
+      .join('；')
+    if (rejected.length > 3) extraPathError.value += `；另有 ${rejected.length - 3} 条未通过`
+  }
+  if (overflow > 0) {
+    extraPathError.value = [extraPathError.value, `超出上限 ${EXTRA_PATH_MAX_COUNT} 条，已忽略 ${overflow} 条`]
+      .filter(Boolean)
+      .join('；')
+  }
+}
+
+function removeExtraPath(path: string) {
+  form.extraPaths = form.extraPaths.filter((item) => item !== path)
+}
 
 /**
  * 发起节点 = 当前 SSH 会话的目标主机，是既成事实，不是用户输入。
@@ -2031,6 +2083,9 @@ function applyTaskToForm(task: LogCollectTask) {
   // 空数组与 all 同义：都表示"集群全部在线节点"
   form.ips = !ips.length || ips.includes('all') ? 'all' : ips.join(',')
   if (task.modules?.length) form.modules = [...task.modules] as LogCollectModule[]
+  // 额外路径必须一起回填：重新收集时静默丢掉，用户会以为"这次范围和上次一样"，
+  // 而实际上少收了他上次特意指定的目录。
+  form.extraPaths = normalizeExtraPaths(task.extra_paths)
 }
 
 function startRecollect() {
@@ -2135,6 +2190,18 @@ async function handleStart() {
     ElMessage.warning('目标主机只能填 all 或英文逗号分隔的 IP，且 all 不能与具体 IP 混写')
     return
   }
+
+  // 额外路径在提交前再收敛一次：历史任务回填或浏览器自动填充可能带来脏值，
+  // 而 bridge 侧一旦拒绝，用户看到的只是"任务下发失败"，无法定位到具体路径。
+  const extraPaths = normalizeExtraPaths(form.extraPaths)
+  for (const path of extraPaths) {
+    const check = validateExtraPath(path)
+    if (!check.ok) {
+      ElMessage.warning(`额外路径不合法（${path}）：${check.reason}`)
+      return
+    }
+  }
+  form.extraPaths = extraPaths
 
   cleanupTip.value = ''
   errorMessage.value = ''
@@ -2247,6 +2314,9 @@ async function handleStart() {
         date_from: form.dateRange[0],
         date_to: form.dateRange[1],
         ips: targetHosts.split(','),
+        // 额外路径随任务落库：失败任务事后要能回答"这次到底多收了什么"，
+        // 只留在前端内存里，换端或关面板后就永久丢失。
+        extra_paths: form.extraPaths.length ? [...form.extraPaths] : undefined,
         remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // 交付路径必须随任务落库：只放在前端内存里的话，采集中的任务、以及
         // P1 失败降级后的任务都无法回答"当初选的是哪条路"。
@@ -2326,6 +2396,9 @@ async function handleStart() {
         dateFrom: form.dateRange[0],
         dateTo: form.dateRange[1],
         ips: targetHosts,
+        // 必须是收敛后的清单：bridge 会把它拼成逗号串交给 `-p`，
+        // 重复项会让命令行变长，空串会变成一条非法路径。
+        extraPaths: form.extraPaths.length ? [...form.extraPaths] : undefined,
         remoteUrl: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // bridge 会把它注入成 `-L 0:Authorization:Bearer <ticket>`
         uploadTicket: p1Ticket || undefined,
@@ -4719,6 +4792,48 @@ onBeforeUnmount(() => {
               {{ hostOptions.length ? '不勾选任何主机 = 全部在线节点；勾选全部同样等价于 all' : manualHostHint }}
             </div>
           </el-form-item>
+          <!--
+            额外收集路径（acli -p）刻意折叠：
+            它是「默认范围之外还要补什么」，属于补充手段；展开放在主流程上，
+            会让不需要它的用户多做一个"要不要填"的决策。
+          -->
+          <el-collapse v-model="advancedOpen" class="lc-advanced">
+            <el-collapse-item name="extra-paths">
+              <template #title>
+                <span class="lc-advanced-title">高级选项：额外收集路径</span>
+                <span v-if="form.extraPaths.length" class="lc-advanced-count">
+                  已添加 {{ form.extraPaths.length }} 条
+                </span>
+              </template>
+              <div class="lc-extra-paths">
+                <el-tag
+                  v-for="path in form.extraPaths"
+                  :key="path"
+                  closable
+                  type="info"
+                  class="lc-extra-path-tag"
+                  :disable-transitions="true"
+                  @close="removeExtraPath(path)"
+                >
+                  {{ path }}
+                </el-tag>
+                <el-input
+                  v-model="extraPathInput"
+                  size="small"
+                  class="lc-extra-path-input"
+                  placeholder="绝对路径，回车添加；可一次粘贴多条（逗号或换行分隔）"
+                  :disabled="running || extraPathsLimitReached"
+                  @keyup.enter="addExtraPaths"
+                  @blur="addExtraPaths"
+                />
+              </div>
+              <div class="lc-hint">
+                {{ extraPathsHint }}；必须是绝对路径，且不含空格、逗号与 ..；
+                收集完成后会与专项日志一起打包
+              </div>
+              <div v-if="extraPathError" class="lc-hint lc-hint-warn">{{ extraPathError }}</div>
+            </el-collapse-item>
+          </el-collapse>
         </el-form>
 
         <!-- 409：同一工单已有进行中的任务。冲突不是失败，提供"查看任务状态" -->
@@ -5157,5 +5272,45 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   line-height: 1.5;
+}
+/* 高级选项：额外收集路径。默认折叠，展开后与表单同层级但不抢主流程视线 */
+.lc-advanced {
+  border-top: none;
+  margin-top: 2px;
+}
+.lc-advanced :deep(.el-collapse-item__header) {
+  height: 34px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.lc-advanced-title {
+  font-size: 12px;
+}
+.lc-advanced-count {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--el-color-primary);
+}
+.lc-extra-paths {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+}
+/* 路径可能很长：单行省略，hover 由 el-tag 的 title 兜底，避免把表单撑宽 */
+.lc-extra-path-tag {
+  max-width: 100%;
+}
+.lc-extra-path-tag :deep(.el-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 11px;
+}
+.lc-extra-path-input {
+  flex: 1 1 240px;
+  min-width: 200px;
 }
 </style>
