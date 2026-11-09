@@ -41,6 +41,9 @@ import {
   isTerminalDeliveryFailure,
   platformCertTrusted,
   rememberPlatformCertTrust,
+  buildResultHeadline,
+  hasDeliveryEvidence,
+  isStatusTransitionRejected,
   type DeliverySubmitPayload,
   type UploadProgressView,
   type RelayProgressView,
@@ -459,6 +462,22 @@ const errorMessage = ref('')
 // 运行令牌：每次启动 / 取消都自增，后台轮询据此退出，避免取消后仍继续写状态
 let runToken = 0
 
+/**
+ * 主流程是否正在跑（一次 handleStart 从下发到交付收尾）。
+ *
+ * 为什么需要这把锁：主流程（pollUntilCollected → runP2）与 5 秒自动对账是两条
+ * **都会写平台状态**的链路。主流程在 resumeTaskFlow 入口停掉了定时器，但用户
+ * 中途关掉再打开抽屉时，restoreTaskState 会把定时器重新拉起来（那是为了接管
+ * 别人的任务），于是同一实例里两条链路并行 —— 对账先把 status 写成 completed，
+ * 主流程随后的 PATCH uploading 被状态机以 409 拒绝，交付在 0 片时被抛断
+ * （2026-11-09 Q2026110900356：平台已开会话、桥一个分片都没收到）。
+ *
+ * 约束：主流程在跑时，自动/手动对账一律不写库（只读展示由主流程自己负责）。
+ */
+const mainFlowActive = ref(false)
+/** 主流程代际：只有最新一代才能关闭 mainFlowActive，旧流程的 finally 不得抢新流程的锁。 */
+let mainFlowSeq = 0
+
 const form = reactive({
   modules: ['vm_suspend'] as LogCollectModule[],
   dateRange: [] as string[],
@@ -833,31 +852,17 @@ const resultMode = computed<'acli_direct' | 'bridge_relay' | ''>(() => {
  * 结果态标题与描述：必须说清"这是哪一次、结果如何"。
  *
  * 写死"已完成"会让失败任务的卡片撒谎——而用户正是靠这一行判断"这次到底成没成"。
+ * 同理，"采集完成"也不等于"日志已交付"：判定统一交给 buildResultHeadline，
+ * 由**交付证据**决定横幅颜色，避免绿色 success 与"平台零产物"同屏（Q2026110900356）。
  */
-const resultHeadline = computed<{ type: 'success' | 'error' | 'info'; title: string; description: string }>(() => {
-  const task = resultTask.value
-  const when = resultFinishedText.value
-  if (!task) return { type: 'info', title: '', description: '' }
-  if (task.status === 'failed') {
-    return {
-      type: 'error',
-      title: `该工单上次采集失败（${when}）`,
-      description: '以下是平台记录的最近一次采集结果；失败原因见下方错误信息，可点右下角「重新收集」再试一次。',
-    }
-  }
-  if (task.status === 'cancelled') {
-    return {
-      type: 'info',
-      title: `该工单上次采集已取消（${when}）`,
-      description: '以下是平台记录的最近一次采集结果；如需采集请点右下角「重新收集」。',
-    }
-  }
-  return {
-    type: 'success',
-    title: `该工单已完成日志收集（${when}）`,
-    description: '以下是平台记录的最近一次收集结果；如需再次采集，点右下角「重新收集」。',
-  }
-})
+const resultHeadline = computed<{ type: 'success' | 'warning' | 'error' | 'info'; title: string; description: string }>(
+  () =>
+    buildResultHeadline({
+      status: resultTask.value?.status,
+      delivered: resultDelivered.value,
+      when: resultFinishedText.value,
+    }),
+)
 
 const RESULT_STATUS_TEXT: Record<string, string> = {
   completed: '完成',
@@ -894,7 +899,10 @@ function switchDisplayTask(taskId: string) {
   const task = historyTasks.value.find((item) => item.task_id === taskId)
   if (!task) return
   showResult(task)
-  if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'manual' })
+  // 主流程在跑时它自己就是对账者：这里再发一次会与它抢写同一行（见 mainFlowActive）。
+  if (sshConnected.value && !mainFlowActive.value) {
+    void syncNodeState({ applyPatches: true, silent: true, source: 'manual' })
+  }
 }
 
 const resultDeliveryText = computed(() => {
@@ -1020,16 +1028,7 @@ const canUploadFromNode = computed(
  *   - P1：`delivery_status=delivered`（由节点报告的「发送成功」经 patch_delivered 回写）；
  *   - 老记录（upload_mode 是后补字段）：没有交付状态可比，按 P1 的口径兜底。
  */
-const resultDelivered = computed(() => {
-  const task = resultTask.value
-  if (!task) return false
-  if (task.relay_status === 'success' || task.delivery_status === 'delivered') return true
-  if (resultMode.value === 'acli_direct') {
-    // P1 成功后插件会自删压缩包：包被清理是直传成功的间接证据
-    return !task.upload_mode || task.archive_deleted
-  }
-  return false
-})
+const resultDelivered = computed(() => hasDeliveryEvidence(resultTask.value))
 
 const resultArchiveText = computed(() => {
   const task = resultTask.value
@@ -1457,7 +1456,11 @@ const percent = computed(() =>
 
 const statusText = computed(() => {
   if (stage.value === 'failed') return errorMessage.value || currentTask.value?.error_message || '任务失败'
-  if (stage.value === 'done') return '日志已归档到日志服务器'
+  // 「完成」这一步有两种结局，必须分开说：真的归档了，还是只采完没交付。
+  // 一律写"已归档"等于替平台撒谎（Q2026110900356：平台零产物、5888 found=false）。
+  if (stage.value === 'done') {
+    return hasDeliveryEvidence(currentTask.value) ? '日志已归档到日志服务器' : '采集完成，日志尚未交付'
+  }
   if (stage.value === 'collecting') {
     const p = progress.value
     return p ? `${p.status}（${p.done}/${p.total}）` : '采集进行中'
@@ -1811,6 +1814,9 @@ async function resumeTask(taskId: string) {
  */
 function startAutoSync(interval = POLL_INTERVAL) {
   stopAutoSync()
+  // 主流程独占轮询权：它自己会推进状态机，再叠一条自动对账只会两条链路抢写
+  // 同一行，输的那条拿 409 并中断交付（Q2026110900356）。
+  if (mainFlowActive.value) return
   resumeTimer = setInterval(() => {
     if (!visible.value) return
     void triggerAutoSync()
@@ -1825,6 +1831,8 @@ function stopAutoSync() {
 }
 
 async function triggerAutoSync() {
+  // 定时器可能在主流程启动前就排好了这一跳：进函数再判一次，防止迟到的对账抢先写库。
+  if (mainFlowActive.value) return
   const action = await syncNodeState({ applyPatches: true, silent: true, source: 'auto' })
   // 落终态后降频而不是停摆：平台虽已终态，节点可能仍在跑（需要「接管」）或刚异常，
   // 完全停轮询会让接管入口再也不出现；30s 一次足以发现节点态翻转。
@@ -1879,11 +1887,21 @@ async function refreshProgress(silent = false) {
     currentTask.value = latest
     // 基线跟着任务走：本地为空时（换端接管）从任务记录恢复
     if (!baselineReportHash.value) baselineReportHash.value = baselineFromTask()
-    stage.value = TASK_STATUS_STAGE[latest.status] ?? stage.value
+    // completed → done 只在"真的交付了"时成立：stage=done 的文案是「日志已归档」，
+    // 采完但平台零产物时落到 done 就是假成功（Q2026110900356）。
+    stage.value =
+      latest.status === 'completed' && !hasDeliveryEvidence(latest)
+        ? 'idle'
+        : (TASK_STATUS_STAGE[latest.status] ?? stage.value)
     if (latest.error_message) errorMessage.value = latest.error_message
 
     if (!sshConnected.value) {
       if (!silent) ElMessage.warning('SSH 会话已断开，节点侧进度不可用；已刷新平台任务状态')
+      lastRefreshAt.value = new Date()
+      return
+    }
+    // 主流程在跑时它自己就是对账者：这里再发一次会与它抢写同一行（见 mainFlowActive）。
+    if (mainFlowActive.value) {
       lastRefreshAt.value = new Date()
       return
     }
@@ -1915,6 +1933,10 @@ async function refreshProgress(silent = false) {
  * 会让用户以为"没有任务"，只能重新下发并撞插件互斥（2026-10-27 修正）。
  */
 async function restoreTaskState(force = false) {
+  // 主流程在跑时重开抽屉：任务与进度都在内存里，直接展示即可。
+  // 这里若再对账一次，两条链路会同时写状态机——对账抢先写 completed，
+  // 主流程的 PATCH uploading 就会吃 409 并中断交付（Q2026110900356）。
+  if (mainFlowActive.value) return
   if (!force && (currentTask.value || viewMode.value === 'result')) {
     // 同一会话内重开面板：任务与基线都还在，必须把自动刷新接回来。
     // 旧实现这里直接 return，于是「关抽屉 → 再打开」后自动刷新永久失效，
@@ -1974,7 +1996,10 @@ function showResult(task: LogCollectTask) {
   resultTask.value = task
   currentTask.value = task
   viewMode.value = 'result'
-  stage.value = 'done'
+  // stage=done 只表示"整条链路走完"，而它的文案是「日志已归档到日志服务器」。
+  // 采集完成但平台零产物时置 done，会让进度条变绿、步骤条 4/4、文案宣称已归档——
+  // 三个假成功信号同时出现（Q2026110900356）。没有交付证据就停在 idle。
+  stage.value = hasDeliveryEvidence(task) ? 'done' : 'idle'
   progress.value = null
   // 结果态的数据全部来自平台任务记录，本次会话的峰值到此为止
   observedArchiveSize.value = 0
@@ -2132,6 +2157,12 @@ async function handleStart() {
     ElMessage.error(error.message)
     return
   }
+
+  // 从这里到 finally 之间，状态机只允许主流程写；自动对账/重开面板都不得插手。
+  // 开跑前先把残留的自动对账停掉：它可能在上一轮终态后仍以 30s 节奏在跑。
+  const myFlow = ++mainFlowSeq
+  mainFlowActive.value = true
+  stopAutoSync()
 
   const modules = form.modules.length ? form.modules : (['other'] as LogCollectModule[])
   stage.value = 'probing'
@@ -2326,6 +2357,15 @@ async function handleStart() {
       ElMessage.warning(errorMessage.value)
       return
     }
+    // 采集结论已经落库（completed）时，剩下的失败只可能发生在交付段。
+    // 此时既不能把采集改写成 failed（状态机本来也拒绝，硬写只会多一条 409 噪音），
+    // 更不能让用户以为"采集失败要重新收集"——包好端端地在节点上，只需要补交付。
+    if (currentTask.value?.status === 'completed') {
+      errorMessage.value = `日志尚未交付：${errorMessage.value}（采集已完成，可点「上传到平台」重试，不需要重新采集）`
+      stage.value = 'idle'
+      ElMessage.warning(errorMessage.value)
+      return
+    }
     if (isOutcomeUnknownError(error)) {
       errorMessage.value = '平台暂时不可用，任务仍在后台进行；请稍后点「刷新进度」确认结果'
       stage.value = 'failed'
@@ -2346,6 +2386,18 @@ async function handleStart() {
         .catch(() => undefined)
     }
     ElMessage.error(errorMessage.value || '日志收集失败')
+  } finally {
+    // 主流程退出（成功/失败/取消）后必须交还写权限，否则自动对账永久停摆，
+    // 结果态里「上传到平台」与归档状态就再也不会随节点态刷新。
+    // 只有最新一代流程可以解锁：旧流程的 finally 迟到时不得抢走新流程的锁。
+    if (mainFlowSeq === myFlow) {
+      mainFlowActive.value = false
+      if (token === runToken && visible.value && currentTask.value) {
+        startAutoSync(
+          TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL,
+        )
+      }
+    }
   }
 }
 
@@ -3544,6 +3596,32 @@ async function probeArchiveOnNode(
  * - `direct`：包早就采好了（补交付），直接读盘搬运，**不得**再等 progress。
  * 两种模式对应两种不同前提，不能合并成一个"大概已经采完了吧"。
  */
+/**
+ * 把任务推进到 uploading（仅用于"采集刚完成"的自动衔接）。
+ *
+ * 第一性原理：交付与采集是两件正交的事。`status` 记的是**采集结论**，交付是否
+ * 能继续与它无关；`completed → uploading` 被状态机拒绝，只说明采集结论已经落库，
+ * 不代表包不能搬。因此这里只吞掉"这一跳不被允许"（409 + LC-PLATFORM-003），
+ * 其余错误（令牌、网络、5xx）照旧抛出——那才是真的传不上去。
+ *
+ * 现场依据（2026-11-09 Q2026110900356）：自动对账抢先写了 completed，本函数
+ * 所在的主流程随后 PATCH 吃 409，异常一路抛到 handleStart，/deliver 已经开好的
+ * 64 片会话一个字节都没传，bridge 连 delivery_submit 都没收到。
+ */
+async function advanceToUploading(taskId: string) {
+  // 已经是终态就不必再试：状态机会拒绝，且采集结论不能被交付阶段改写。
+  if (TERMINAL_TASK_STATUSES.includes(String(currentTask.value?.status ?? ''))) return
+  try {
+    currentTask.value = await logCollectApi.patchTask(taskId, { status: 'uploading' })
+  } catch (error) {
+    if (!isStatusTransitionRejected(error)) throw error
+    // 平台状态已被对账推进到终态：拉回真实记录后继续交付，不中断搬运。
+    const latest = await logCollectApi.getTask(taskId).catch(() => null)
+    if (latest) currentTask.value = latest
+    nodeSyncHint.value = '采集已完成，正在继续把日志包上传到平台'
+  }
+}
+
 async function runP2(
   ws: WebSocket,
   task: LogCollectTask,
@@ -3601,7 +3679,7 @@ async function runP2(
   // 只有"采集刚完成"的流程才把任务推进到 uploading：补交付时任务可能已是
   // completed（终态），PATCH uploading 会被状态机拒绝，且会抹掉采集结论。
   if (options.mode === 'collect') {
-    currentTask.value = await logCollectApi.patchTask(task.task_id, { status: 'uploading' })
+    await advanceToUploading(task.task_id)
   }
   await runDeliveryJob(
     ws,

@@ -5,6 +5,9 @@ import {
   describeRelayProgress,
   describeUploadProgress,
   formatFailureReason,
+  hasDeliveryEvidence,
+  isStatusTransitionRejected,
+  buildResultHeadline,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
@@ -305,5 +308,76 @@ describe('describeUploadProgress', () => {
     expect(describeUploadProgress({ uploaded: 5, total: 233, updated_at: 'oops' }, now)).toBe(
       '平台已收到 5/233 片',
     )
+  })
+})
+
+// 现场回归（Q2026110900356，2026-11-09）：`status=completed` + 平台零产物 + 5888
+// `found=false`，界面却给了绿色成功横幅。根因是"采集完成"被当成了"日志已交付"。
+describe('hasDeliveryEvidence', () => {
+  it('P2 只认 relay 成功或 delivered，采集完成不算交付', () => {
+    expect(hasDeliveryEvidence({ upload_mode: 'bridge_relay', relay_status: 'none', delivery_status: 'queued' })).toBe(
+      false,
+    )
+    expect(hasDeliveryEvidence({ upload_mode: 'bridge_relay', relay_status: 'running' })).toBe(false)
+    expect(hasDeliveryEvidence({ upload_mode: 'bridge_relay', relay_status: 'success' })).toBe(true)
+    expect(hasDeliveryEvidence({ upload_mode: 'bridge_relay', delivery_status: 'delivered' })).toBe(true)
+  })
+
+  it('P1 用 delivered 或"插件自删压缩包"兜底，老记录按 P1 口径', () => {
+    expect(hasDeliveryEvidence({ upload_mode: 'acli_direct', delivery_status: 'delivered' })).toBe(true)
+    expect(hasDeliveryEvidence({ upload_mode: 'acli_direct', archive_deleted: true })).toBe(true)
+    expect(hasDeliveryEvidence({ upload_mode: 'acli_direct' })).toBe(false)
+    expect(hasDeliveryEvidence({ remote_url: 'http://acli.sangfor.com.cn:5888' })).toBe(true)
+  })
+
+  it('空任务不给任何成功结论', () => {
+    expect(hasDeliveryEvidence(null)).toBe(false)
+    expect(hasDeliveryEvidence({})).toBe(false)
+  })
+})
+
+describe('isStatusTransitionRejected', () => {
+  const axiosError = (status: number, code?: string) => ({
+    isAxiosError: true,
+    response: { status, data: code ? { detail: { code } } : undefined },
+    problem: code ? { code } : undefined,
+  })
+
+  // 交付与采集正交：completed → uploading 被拒不能中断搬运
+  it('只认 409 + LC-PLATFORM-003', () => {
+    expect(isStatusTransitionRejected(axiosError(409, 'LC-PLATFORM-003'))).toBe(true)
+  })
+
+  it('同是 409 的业务冲突必须原样抛出（LC-PLUGIN-007 已有进行中任务）', () => {
+    expect(isStatusTransitionRejected(axiosError(409, 'LC-PLUGIN-007'))).toBe(false)
+  })
+
+  it('其它状态码与普通 Error 不算状态机拒绝', () => {
+    expect(isStatusTransitionRejected(axiosError(500, 'LC-PLATFORM-003'))).toBe(false)
+    expect(isStatusTransitionRejected(new Error('非法状态转换'))).toBe(false)
+    expect(isStatusTransitionRejected(null)).toBe(false)
+  })
+})
+
+describe('buildResultHeadline', () => {
+  const WHEN = '11-09 03:39'
+
+  // 本次事故的核心断言：采完但没交付，必须是 warning 而不是绿色 success
+  it('采集完成但没有交付证据：不允许出现 success 横幅', () => {
+    const headline = buildResultHeadline({ status: 'completed', delivered: false, when: WHEN })
+    expect(headline.type).toBe('warning')
+    expect(headline.title).toContain('尚未交付')
+  })
+
+  it('采集完成且已交付才给 success', () => {
+    const headline = buildResultHeadline({ status: 'completed', delivered: true, when: WHEN })
+    expect(headline.type).toBe('success')
+    expect(headline.title).toContain('并已交付')
+  })
+
+  it('失败/取消的语气保持不变', () => {
+    expect(buildResultHeadline({ status: 'failed', delivered: false, when: WHEN }).type).toBe('error')
+    expect(buildResultHeadline({ status: 'cancelled', delivered: false, when: WHEN }).type).toBe('info')
+    expect(buildResultHeadline({ status: null }).title).toBe('')
   })
 })
