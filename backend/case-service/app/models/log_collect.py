@@ -95,6 +95,15 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     archive_deleted = Column(Boolean, nullable=False, default=False, server_default="false")
     archive_deleted_at = Column(DateTime(timezone=True), nullable=True)
     archive_deleted_by = Column(String(64), nullable=True)
+    # 自定义场景（acli -c）：只追加路径，不替代 modules（config.modules 永不生效）。
+    # 三个字段缺一不可：id+revision 证明"用的哪一版"，sha256 证明"下发的就是这一版"。
+    custom_scenario_id = Column(UUID(as_uuid=True), nullable=True)
+    custom_scenario_revision = Column(Integer, nullable=True)
+    config_path = Column(Text, nullable=True)
+    config_sha256 = Column(String(64), nullable=True)
+    path_count = Column(Integer, nullable=True)
+    # 下发前预检未命中的路径：非空意味着"这次可能少收"，必须让用户看见。
+    preflight_missing = Column(JSONB, nullable=True)
     detail = Column(JSONB, nullable=False, default=dict)
     error_code = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
@@ -103,3 +112,38 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
 
     def __repr__(self) -> str:
         return f"<LogCollectTask(task_id={self.task_id}, case_id={self.case_id}, status={self.status})>"
+
+
+class LogCollectCustomScenario(Base, TimestampMixin):
+    """日志收集自定义场景（acli ``-c``）。
+
+    第一性原理：``-c`` 的物理形态是"节点上的一个 JSON 文件"，平台唯一能写节点文件
+    的通道是 bridge 的 SSH 会话。因此场景必须先在平台侧结构化保存，下发时再序列化。
+
+    版本化是硬要求：场景被任务引用后，编辑必须生成新 ``revision``（复合主键），
+    否则历史工单"当时收的是什么"会被后来的编辑永久抹掉。
+    """
+
+    __tablename__ = "log_collect_custom_scenario"
+
+    scenario_id = Column(UUID(as_uuid=True), primary_key=True, server_default="gen_random_uuid()")
+    revision = Column(Integer, primary_key=True, nullable=False, default=1)
+    code = Column(String(32), nullable=False)
+    label = Column(String(64), nullable=False)
+    summary = Column(String(200), nullable=True)
+    applies_to = Column(String(200), nullable=True)
+    # 结构化路径项：[{path, category, note}]；下发时只取 path 拼逗号串。
+    # 刻意不在库里存"下发的 JSON 原文"：平台模型与 acli 契约解耦，序列化只发生一处。
+    items = Column(JSONB, nullable=False, default=list)
+    item_count = Column(Integer, nullable=False, default=0, server_default="0")
+    config_sha256 = Column(String(64), nullable=True)
+    config_bytes = Column(Integer, nullable=True)
+    source = Column(String(16), nullable=False, default="visual", server_default="'visual'")
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    sort_order = Column(Integer, nullable=False, default=100, server_default="100")
+    review_state = Column(String(16), nullable=False, default="pending_review", server_default="'pending_review'")
+    created_by = Column(String(64), nullable=True)
+    updated_by = Column(String(64), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<LogCollectCustomScenario(code={self.code}, revision={self.revision})>"

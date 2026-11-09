@@ -3970,6 +3970,75 @@ CREATE INDEX IF NOT EXISTS idx_log_collect_scenario_order
 
 
 -- ------------------------------------------------------------
+-- 表: log_collect_custom_scenario  [模块: case-service]
+-- 说明: 自定义场景（acli log_collect -c）。一份场景 = 一组「字面路径」，
+--       create 前由 bridge 写入节点固定路径，再以 -c 引用。
+-- 约束: 必须版本化 —— 场景被任务引用后，编辑不得原地覆盖，否则历史工单
+--       「当时到底收了什么」永久不可查；任务侧记录 (scenario_id, revision)。
+--       items 只允许字面绝对路径（config 的 paths 不支持通配符与 {date} 占位）。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_custom_scenario (
+    scenario_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    revision integer NOT NULL DEFAULT 1,
+    code varchar(32) NOT NULL,
+    label varchar(64) NOT NULL,
+    summary varchar(200),
+    applies_to varchar(200),
+    items jsonb NOT NULL DEFAULT '[]'::jsonb,
+    item_count integer NOT NULL DEFAULT 0,
+    config_sha256 char(64),
+    config_bytes integer,
+    source varchar(16) NOT NULL DEFAULT 'visual',
+    enabled boolean NOT NULL DEFAULT true,
+    sort_order integer NOT NULL DEFAULT 100,
+    review_state varchar(16) NOT NULL DEFAULT 'pending_review',
+    created_by varchar(64),
+    updated_by varchar(64),
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT log_collect_custom_scenario_pkey PRIMARY KEY (scenario_id, revision),
+    CONSTRAINT uq_log_collect_custom_scenario_code_revision UNIQUE (code, revision),
+    CONSTRAINT ck_log_collect_custom_scenario_revision CHECK (revision >= 1),
+    CONSTRAINT ck_log_collect_custom_scenario_item_count CHECK (item_count >= 0),
+    CONSTRAINT ck_log_collect_custom_scenario_source CHECK ((source)::text = ANY ((ARRAY['visual'::character varying, 'json'::character varying])::text[])),
+    CONSTRAINT ck_log_collect_custom_scenario_review_state CHECK ((review_state)::text = ANY ((ARRAY['pending_review'::character varying, 'approved'::character varying])::text[]))
+);
+
+COMMENT ON TABLE log_collect_custom_scenario IS '日志收集自定义场景（acli -c）：一组字面路径，按 revision 版本化保存';
+COMMENT ON COLUMN log_collect_custom_scenario.scenario_id IS '场景逻辑 ID；同一场景的多个 revision 共享它';
+COMMENT ON COLUMN log_collect_custom_scenario.revision IS '版本号：被任务引用后编辑必须生成新 revision，保证历史任务可解释';
+COMMENT ON COLUMN log_collect_custom_scenario.code IS '稳定标识（cs_ 前缀），客户端不感知；与 revision 组成唯一键';
+COMMENT ON COLUMN log_collect_custom_scenario.items IS '路径项数组：[{path, category, note}]；下发时只取 path 拼成逗号串';
+COMMENT ON COLUMN log_collect_custom_scenario.item_count IS '路径条数（冗余，用于列表展示与上限校验，避免每次解析 jsonb）';
+COMMENT ON COLUMN log_collect_custom_scenario.config_sha256 IS '下发内容（{"paths": "..."}）的 SHA-256，任务侧据此证明用了哪份配置';
+COMMENT ON COLUMN log_collect_custom_scenario.config_bytes IS '下发内容字节数，用于限制配置文件大小';
+COMMENT ON COLUMN log_collect_custom_scenario.source IS '创建方式：visual=勾选列表；json=JSON 导入';
+COMMENT ON COLUMN log_collect_custom_scenario.review_state IS '文案审核状态；自定义场景直接面向客户，未审核项不得启用';
+
+CREATE INDEX IF NOT EXISTS idx_log_collect_custom_scenario_latest
+    ON log_collect_custom_scenario (code, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_log_collect_custom_scenario_order
+    ON log_collect_custom_scenario (enabled, sort_order, code);
+
+-- 任务侧：记录本次用的哪份配置，以及下发前预检缺失的路径。
+-- 用 ADD COLUMN IF NOT EXISTS 而不是改上面的 CREATE TABLE：生产表已存在，
+-- CREATE TABLE IF NOT EXISTS 不会补列。
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS custom_scenario_id uuid;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS custom_scenario_revision integer;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS config_path text;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS config_sha256 char(64);
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS path_count integer;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS preflight_missing jsonb;
+
+COMMENT ON COLUMN log_collect_task.custom_scenario_id IS '选用的自定义场景 ID（可空）；与 modules 并存：场景只追加路径，不替代专项';
+COMMENT ON COLUMN log_collect_task.custom_scenario_revision IS '场景版本快照：保证历史任务能解释“当时收的是什么”';
+COMMENT ON COLUMN log_collect_task.config_path IS '节点上的配置文件绝对路径（bridge 写入后回传）';
+COMMENT ON COLUMN log_collect_task.config_sha256 IS '下发配置内容摘要；与场景侧 config_sha256 一致才允许执行';
+COMMENT ON COLUMN log_collect_task.path_count IS '展开日期占位后的实际路径条数';
+COMMENT ON COLUMN log_collect_task.preflight_missing IS '下发前预检未命中的路径数组；非空时前端须提示用户确认';
+
+
+-- ------------------------------------------------------------
 -- 表: dsh_diagnosis_session  [模块: case-service]
 -- 说明: DSH（DeepSeek Harness）诊断会话的只读归档，把「AI 到底怎么诊断的」变成工单证据。
 --       DSH 是 Agent 运行时而非诊断服务：会话唯一真源是容器内

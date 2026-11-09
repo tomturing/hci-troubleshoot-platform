@@ -56,8 +56,11 @@ async def _request_upstream(
     path: str,
     request: Request,
     payload: Any | None = None,
+    *,
+    prefix: str | None = None,
 ) -> Response:
-    url = f"{settings.CASE_SERVICE_URL.rstrip('/')}{UPSTREAM_PREFIX}{path}"
+    target_prefix = prefix or UPSTREAM_PREFIX
+    url = f"{settings.CASE_SERVICE_URL.rstrip('/')}{target_prefix}{path}"
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             upstream = await client.request(method, url, json=payload, headers=_internal_headers(request))
@@ -88,3 +91,45 @@ async def create_scenario(request: Request) -> Response:
 async def update_scenario(value: str, request: Request) -> Response:
     payload = await request.json()
     return await _request_upstream("PUT", f"/{value}", request, payload)
+
+
+# ── 自定义场景（acli -c）管理端 ─────────────────────────────────────────────
+#
+# 与故障场景字典分开一个前缀：两者的数据模型与安全边界不同
+# （字典是平台文案，自定义场景含客户目录清单），混在一条路由里
+# 会让"哪些字段可以下发给客户"这种判断无处安放。
+custom_router = APIRouter(
+    prefix="/api/v1/log-collect-custom-scenarios",
+    tags=["log-collect-custom-scenarios-admin"],
+    dependencies=[Depends(require_admin)],
+)
+CUSTOM_UPSTREAM_PREFIX = "/internal/log-collect/custom-scenarios"
+
+
+@custom_router.get("")
+async def list_custom_scenarios(request: Request) -> Response:
+    return await _request_upstream("GET", "", request, prefix=CUSTOM_UPSTREAM_PREFIX)
+
+
+@custom_router.post("", status_code=201)
+async def create_custom_scenario(request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("POST", "", request, payload, prefix=CUSTOM_UPSTREAM_PREFIX)
+
+
+@custom_router.post("/validate")
+async def validate_custom_scenario(request: Request) -> Response:
+    """保存前试算（条数/字节数）；不落库，因此不写审计。"""
+    payload = await request.json()
+    return await _request_upstream("POST", "/validate", request, payload, prefix=CUSTOM_UPSTREAM_PREFIX)
+
+
+@custom_router.put("/{code}")
+async def update_custom_scenario(code: str, request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("PUT", f"/{code}", request, payload, prefix=CUSTOM_UPSTREAM_PREFIX)
+
+
+@custom_router.delete("/{code}", status_code=204)
+async def delete_custom_scenario(code: str, request: Request) -> Response:
+    return await _request_upstream("DELETE", f"/{code}", request, prefix=CUSTOM_UPSTREAM_PREFIX)
