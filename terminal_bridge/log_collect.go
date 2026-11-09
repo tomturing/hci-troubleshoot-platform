@@ -906,6 +906,89 @@ type logCollectHost struct {
 	Percent string `json:"percent,omitempty"`
 }
 
+// ── create 下发后的节点接单确认 ──────────────────────────────────────────────
+//
+// 第一性原理：exit_code=0 只证明"进程结束了"，不证明"节点建了任务"。
+// PTY 通道把 ssh.ExitError 归一化成 nil，acli 包装脚本又会吞掉内部异常，
+// 现场 Q2026110901673 因此出现「create 成功、progress 持续回收集任务不存在」。
+// 唯一可自证的正向证据是：create 之后节点真的出现 running（采集起点）。
+const (
+	logCollectCreateAckAttempts = 3
+	logCollectCreateAckInterval = 2 * time.Second
+	// 确认总预算必须远小于 handleLogCollect 的 180s 主预算：create 本身最长 180s，
+	// 若确认也占用同等预算，整条链路会被 ctx 掐断在确认阶段。
+	logCollectCreateAckBudget = 12 * time.Second
+)
+
+const (
+	logCollectAckConfirmed      = "confirmed"
+	logCollectAckNotEstablished = "not_established"
+	// 「没确认到」不等于「确认失败」：查询超时/通道抖动时保持未知，
+	// 由前端的有界等待兜底，绝不把一次正常采集判成失败。
+	logCollectAckUnknown = "unknown"
+)
+
+type logCollectCreateAckResult struct {
+	State  string   `json:"state"`
+	States []string `json:"states"`
+}
+
+// confirmLogCollectCreate 有界查询 progress，确认本次 create 是否真的被节点接单。
+//
+// run 由调用方注入（单测无需真实 SSH）。结论三态，判据从保守到确定：
+//   - 见到 running → confirmed（只认起点，不认残留的 completed 报告）；
+//   - 见到 abnormal，或每次都明确回报「无任务」→ not_established；
+//   - 查询失败、超时、出现 completed/unknown → unknown，不替节点下失败结论。
+func confirmLogCollectCreate(
+	ctx context.Context,
+	interval time.Duration,
+	run func(context.Context) (string, int, error),
+) logCollectCreateAckResult {
+	ackCtx, cancel := context.WithTimeout(ctx, logCollectCreateAckBudget)
+	defer cancel()
+	result := logCollectCreateAckResult{State: logCollectAckUnknown}
+	queryFailed := false
+	allNone := true
+	for i := 0; i < logCollectCreateAckAttempts; i++ {
+		if i > 0 {
+			select {
+			case <-ackCtx.Done():
+				return result
+			case <-time.After(interval):
+			}
+		}
+		if ackCtx.Err() != nil {
+			return result
+		}
+		output, exitCode, err := run(ackCtx)
+		if err != nil || exitCode != 0 {
+			queryFailed = true
+			result.States = append(result.States, "query_error")
+			continue
+		}
+		state := classifyLogCollectNodeState(parseLogCollectProgress(output))
+		result.States = append(result.States, state)
+		switch state {
+		case logCollectNodeRunning:
+			result.State = logCollectAckConfirmed
+			return result
+		case logCollectNodeAbnormal:
+			result.State = logCollectAckNotEstablished
+			return result
+		case logCollectNodeNone:
+			// 继续观察：create 是同步命令，但插件注册任务可能有秒级延迟。
+		default:
+			// completed 可能是上一轮任务的残留报告（acli 节点级单任务、progress 不带任务 ID，
+			// 见 Q2026110666667）；unknown 说明解析降级。两者都不能用来判失败。
+			allNone = false
+		}
+	}
+	if !queryFailed && allNone && len(result.States) == logCollectCreateAckAttempts {
+		result.State = logCollectAckNotEstablished
+	}
+	return result
+}
+
 // parseLogCollectProgress 解析插件的 progress 文本输出。
 //
 // 对抗性审查：插件版本变化可能改文案，因此解析失败必须降级为 Raw 透传，
@@ -1556,28 +1639,63 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 只写 errString(err) 会得到空串（2026-10-27 实测 19 条失败 create 的 error 全是 ""），
 		// 平台与桥侧日志都无法定因。
 		failure := errString(err)
+		// 接单确认结论必须随 create 回包与事件一起落库：事后按 trace 反查时，
+		// 要能回答"当时到底有没有看见节点 running"，而不只是"exit_code=0"。
+		ackState := logCollectAckUnknown
+		var ackStates []string
 		if err != nil || exitCode != 0 {
 			status = "error"
 			code = execErrorCode(err, exitCode)
 			failure = firstNonEmpty(failure, logCollectFailureLine(output))
 		} else {
-			outcome = "ok"
+			// 第一性原理：退出码不是"任务已建立"的证据。必须正向确认一次。
+			ack := confirmLogCollectCreate(ctx, logCollectCreateAckInterval, func(ackCtx context.Context) (string, int, error) {
+				out, ec, runErr := s.runCommandPty(ackCtx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
+				return out, ec, runErr
+			})
+			ackState, ackStates = ack.State, ack.States
+			blog("INFO", "log_collect.create_ack", "下发后节点接单确认", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"ticket_no": msg.TicketNo, "result": ackState, "node_states": ackStates,
+			})
+			switch ackState {
+			case logCollectAckConfirmed:
+				outcome = "ok"
+			case logCollectAckNotEstablished:
+				status = "error"
+				code = ErrPlugTaskNotFound
+				failure = "任务下发后节点未建立采集任务（acli 退出码为 0，但 progress 持续报告任务不存在）；请核对节点 acli 版本与所选专项"
+			default:
+				// 结果未知：不替节点下失败结论，保持 ok 并留痕，由前端有界等待兜底。
+				outcome = "ok"
+				blog("WARN", "log_collect.create_ack_unknown", "下发后未能确认节点接单", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"ticket_no": msg.TicketNo, "node_states": ackStates,
+				})
+			}
 		}
 		// 配置文件路径与预检结论必须随 create 结果回给前端落库：
 		// 只留在桥日志里，换端/关页面后就无法回答"这次到底要收什么"。
-		var createLogData any
-		if configPath != "" {
-			createLogData = map[string]any{
-				"config_path":       configPath,
-				"config_sha256":     msg.ConfigSHA256,
-				"path_count":        len(configPaths),
-				"preflight_missing": preflightMissing,
-			}
+		createLogData := map[string]any{
+			"create_ack":        ackState,
+			"create_ack_states": ackStates,
 		}
+		if configPath != "" {
+			createLogData["config_path"] = configPath
+			createLogData["config_sha256"] = msg.ConfigSHA256
+			createLogData["path_count"] = len(configPaths)
+			createLogData["preflight_missing"] = preflightMissing
+		}
+		// create 的完整输出是定位「exit_code=0 但节点没建任务」的唯一物证。
+		// 旧实现只留前 512 字节预览，而 Python Traceback 的最后一行（真正的异常类型）
+		// 恰好在尾部，被切掉后现场无法定因（2026-11-09 Q2026110901673）。
+		// 头尾保留 + 票据脱敏：既留住尾部异常，也不能把 Bearer 写进日志和 DB。
+		// 输出上限 64KiB，避免异常刷屏把日志与 WS 报文变成无界存储。
+		safeOutput := stripAnsi(redactUploadTicket(redactSensitiveText(output), msg.UploadTicket))
+		createEvidence := formatOutputPreview(safeOutput, 48*1024, 16*1024)
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
-			Message: firstNonEmpty(failure, strings.TrimSpace(output)),
+			Status: status, ExitCode: exitCode, Raw: createEvidence, ErrorCode: code,
+			// Message 只做短摘要：完整证据走 Raw，避免把 64KiB 原文塞进异常与提示。
+			Message: firstNonEmpty(failure, strings.TrimSpace(truncateString(safeOutput, 500))),
 			Detail:  redactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo, LogData: createLogData,
 		})
@@ -1589,7 +1707,12 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"config_path":             configPath,
 			"path_count":              len(configPaths),
 			"preflight_missing_count": len(preflightMissing),
-			"output_preview":          stripAnsi(truncateString(output, 512)),
+			"create_ack":              ackState,
+			"create_ack_states":       ackStates,
+			"output_len":              len(safeOutput),
+			"output_truncated":        len(safeOutput) > 48*1024+16*1024,
+			// 同一条链路 ID 贯穿 create 事件、WS 回包与任务 detail，事后可按 trace 反查全部证据。
+			"output_preview": createEvidence,
 		})
 
 	case "progress":
