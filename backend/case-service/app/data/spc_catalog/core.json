@@ -1,0 +1,64 @@
+[
+  {
+    "note": "core专项"
+  },
+  {
+    "note": "1.core文件"
+  },
+  {
+    "action": "copy",
+    "path": "/sf/data/local/kdump/*.kernel_core",
+    "filters": [
+      {
+        "action": "include",
+        "match_type": "filename",
+        "pattern": "(?P<datetime>\\d{4}_\\d{2}_\\d{2}_\\d{2}_\\d{2}_\\d{2})\\.kernel_core$",
+        "conditions": {
+          "op": "or",
+          "list": [
+            {
+              "field": "datetime",
+              "operator": "in_range",
+              "value": [
+                "START",
+                "END"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "action": "copy",
+    "path": "/sf/data/local/dump/*",
+    "filters": [
+      {
+        "action": "include",
+        "match_type": "filename",
+        "pattern": ".*-\\d+-(?P<ts>\\d{10,})$",
+        "conditions": {
+          "op": "or",
+          "list": [
+            {
+              "field": "ts",
+              "operator": "in_range",
+              "value": [
+                "START",
+                "END"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "action": "command",
+    "path": "ls -l /sf/data/local/dump/"
+  },
+  {
+    "action": "command",
+    "path": "ls -l /sf/data/local/kdump/"
+  }
+]

@@ -1,0 +1,144 @@
+[
+  {"note":  "host_offline专项"},
+  {"note":  "1.白盒日志"},
+  {"action": "copy", "path": "/sf/log/{date}.tar.gz", "date_placeholders": [{"placeholder": "{date}", "format": "%d"}]},
+  {"action": "copy", "path": "/sf/log/{date}.tar.zst", "date_placeholders": [{"placeholder": "{date}", "format": "%d"}]},
+  {"action": "copy", "path": "/sf/log/{date}.zst", "date_placeholders": [{"placeholder": "{date}", "format": "%d"}]},
+  {
+    "action": "copy",
+    "path": "/sf/log/{date}/*",
+    "date_placeholders": [
+      {
+        "placeholder": "{date}",
+        "format": "%d"
+      }
+    ],
+    "filters": [
+      {
+        "action": "exclude",
+        "match_type": "path",
+        "pattern": "/sf/log/{date}/vs/",
+        "date_placeholders": [
+          {
+            "placeholder": "{date}",
+            "format": "%d"
+          }
+        ]
+      }
+    ]
+  },
+
+  {"note":  "2.黑盒日志"},
+  {"action": "copy", "path": "/sf/log/blackbox/{date}.tar.gz", "date_placeholders": [{"placeholder": "{date}", "format": "%Y%m%d"}]},
+  {"action": "copy", "path": "/sf/log/blackbox/{date}.zst", "date_placeholders": [{"placeholder": "{date}", "format": "%Y%m%d"}]},
+  {"action": "copy", "path": "/sf/log/blackbox/{date}/*", "date_placeholders": [{"placeholder": "{date}", "format": "%Y%m%d"}]},
+  {"action": "copy", "path": "/sf/log/vn-blackbox/{date}.tar.gz", "date_placeholders": [{"placeholder": "{date}", "format": "%Y%m%d"}]},
+  {"action": "copy", "path": "/sf/log/vn-blackbox/{date}.zst", "date_placeholders": [{"placeholder": "{date}", "format": "%Y%m%d"}]},
+  {"action": "copy", "path": "/sf/log/vn-blackbox/{date}/*", "date_placeholders": [{"placeholder": "{date}", "format": "%Y%m%d"}]},
+
+  {"note":  "3.检测日志"},
+  {"action": "copy", "path": "/sf/log/checkitem/*"},
+
+  {"note":  "4.操作、告警日志"},
+  {"action": "copy", "path": "/sf/log/log_new.db"},
+
+  {"note": "5.其他日志"},
+  {"action": "copy", "path": "/boot/boot/log/install.log"},
+  {"action": "copy", "path": "/sf/log/boot.log"},
+  {"action": "copy", "path": "/sf/log/mcelog.log"},
+  {"action": "copy", "path": "/sf/log/kernel_start.log"},
+  {"action": "copy", "path": "/sf/log/pstore/*"},
+  {"action": "copy", "path": "/sf/log/host-agentd/*"},
+  {"action": "copy", "path": "/sf/log/sdn/*"},
+  {"action": "copy", "path": "/sf/log/vtp/*"},
+  {"action": "copy", "path": "/sf/log/apache2/*"},
+  {"action": "copy", "path": "/sf/log/sf-openapi/*"},
+  {"action": "copy", "path": "/sf/log/sangfor_waf/*"},
+  {"action": "copy", "path": "/sf/log/containerd/*"},
+  {"action": "copy", "path": "/sf/log/kubelet/*"},
+  {"action": "copy", "path": "/sf/log/compress_today_log.log"},
+  {"action": "copy", "path": "/sf/log/rd_rsync_check.log"},
+  {"action": "copy", "path": "/sf/log/rd_switch_today_log.log"},
+  {"action": "copy", "path": "/sf/log/switch_today_log.log"},
+  {"action": "copy", "path": "/sf/log/sfHCI_environment_init.log"},
+  {"action": "copy", "path": "/sf/sgp/license/log/sf_license/*"},
+
+  {"note": "6.集群主机配置"},
+  {"action": "copy", "path": "/boot/firmware/history"},
+  {"action": "copy", "path": "/boot/firmware/nvidia-vgpu-mgr/sgax-install.md5sum"},
+  {"action": "copy", "path": "/boot/firmware/current/package/meta-inf/version"},
+  {"action": "copy", "path": "/boot/firmware/current/package/meta-inf/kernel_version"},
+  {"action": "copy", "path": "/cfs/*"},
+  {"action": "copy", "path": "/etc/hosts"},
+  {"action": "copy", "path": "/sf/kernel_version"},
+  {"action": "copy", "path": "/sf/cfg/*","filters": [{"action": "exclude", "match_type": "path", "pattern": "/sf/cfg/vs/"}]},
+  {"action": "copy", "path": "/sf/etc/*"},
+  {"action": "copy", "path": "/sf/data/local/sgax/md5file"},
+  {"action": "copy", "path": "/sf/modules/loadmod.conf"},
+  {"action": "copy", "path": "/tmp/drs/*"},
+  {"action": "copy", "path": "/tmp/hotplug_record"},
+  {"action": "copy", "path": "/tmp/.alert*"},
+  {"action": "command", "path": "cat /proc/cpuinfo"},
+
+  {"note": "7.显卡信息"},
+  {"action": "script", "path": "get_gpuinfo.py", "docker": "vt", "interpreter": "python"},
+
+  {"note": "8.mysql数据库"},
+  {"action": "script", "path": "mysql_dump.sh", "docker": "vt", "interpreter": "/bin/bash"},
+
+  {"note": "9.硬件信息"},
+  {"action": "command", "path": "ipmitool sel time get"},
+  {"action": "command", "path": "ipmitool sel elist"},
+  {"action": "command", "path": "lspci -nnvvv"},
+  {"action": "command", "path": "lspci -tv"},
+  {"action": "command", "path": "lspci"},
+
+  {"note": "10.其他信息"},
+  {"action": "command", "path": "cat /proc/cmdline"},
+  {"action": "command", "path": "cat /proc/osinfo"},
+  {"action": "command", "path": "dmidecode -t1"},
+  {"action": "command", "path": "dmidecode -t2"},
+  {"action": "command", "path": "grep -rH \"\"  /sys/class/fc_host/host*/statistics/"},
+  {"action": "command", "path": "dmidecode -t memory"},
+  {"action": "command", "path": "dmidecode -t processor"},
+  {"action": "command", "path": "lsmod"},
+  {"action": "command", "path": "lsblk -S -m"},
+  {"action": "command", "path": "multipath -ll"},
+  {"action": "command", "path": "sysctl -a"},
+  {"action": "command", "path": "ssh 127.0.0.1 -p 22 journalctl"},
+  {"action": "command", "path": "uptime"},
+  {"action": "command", "path": "uname -a"},
+
+  {"note": "11.崩溃日志"},
+  {"action": "copy", "path": "/sf/log/kdump/*.dmesg"},
+  {"action": "copy", "path": "/sf/data/local/kdump/*.kernel_core"},
+  {"action": "copy", "path": "/sf/log/dump/*"},
+  {
+    "action": "copy",
+    "path": "/sf/data/local/dump/*",
+    "filters": [
+      {
+        "action": "include",
+        "match_type": "filename",
+        "pattern": ".*-\\d+-(?P<ts>\\d{10,})$",
+        "conditions": {
+          "op": "or",
+          "list": [
+            {
+              "field": "ts",
+              "operator": "in_range",
+              "value": [
+                "START",
+                "END"
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {"action": "command", "path": "ls -l /sf/data/local/dump/"},
+  {"action": "command", "path": "ls -l /sf/data/local/kdump/"},
+  {"action": "command", "path": "ls -l /sf/log/kdump/"},
+  {"action": "command", "path": "ls -l /sf/log/dump/"}
+]
