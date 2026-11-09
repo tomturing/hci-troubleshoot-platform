@@ -4000,7 +4000,7 @@ CREATE TABLE IF NOT EXISTS log_collect_custom_scenario (
     CONSTRAINT uq_log_collect_custom_scenario_code_revision UNIQUE (code, revision),
     CONSTRAINT ck_log_collect_custom_scenario_revision CHECK (revision >= 1),
     CONSTRAINT ck_log_collect_custom_scenario_item_count CHECK (item_count >= 0),
-    CONSTRAINT ck_log_collect_custom_scenario_source CHECK ((source)::text = ANY ((ARRAY['visual'::character varying, 'json'::character varying])::text[])),
+    CONSTRAINT ck_log_collect_custom_scenario_source CHECK ((source)::text = ANY ((ARRAY['visual'::character varying, 'json'::character varying, 'spc'::character varying])::text[])),
     CONSTRAINT ck_log_collect_custom_scenario_review_state CHECK ((review_state)::text = ANY ((ARRAY['pending_review'::character varying, 'approved'::character varying])::text[]))
 );
 
