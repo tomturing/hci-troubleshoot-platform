@@ -26,7 +26,7 @@ from app.schemas.log_collect_custom_scenario import (
     LogCollectCustomScenarioUpdate,
 )
 from app.security.auth import get_client_id
-from app.services.log_collect_custom_scenario_service import _serialize, serialize_config, serialize_spc
+from app.services.log_collect_custom_scenario_service import _serialize, serialize_config
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 

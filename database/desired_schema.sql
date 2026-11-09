@@ -4012,7 +4012,7 @@ COMMENT ON COLUMN log_collect_custom_scenario.items IS '路径项数组：[{path
 COMMENT ON COLUMN log_collect_custom_scenario.item_count IS '路径条数（冗余，用于列表展示与上限校验，避免每次解析 jsonb）';
 COMMENT ON COLUMN log_collect_custom_scenario.config_sha256 IS '下发内容（{"paths": "..."}）的 SHA-256，任务侧据此证明用了哪份配置';
 COMMENT ON COLUMN log_collect_custom_scenario.config_bytes IS '下发内容字节数，用于限制配置文件大小';
-COMMENT ON COLUMN log_collect_custom_scenario.source IS '创建方式：visual=勾选列表；json=JSON 导入';
+COMMENT ON COLUMN log_collect_custom_scenario.source IS '创建方式：visual=勾选列表；json=JSON 导入；spc=spc 收集定义';
 COMMENT ON COLUMN log_collect_custom_scenario.review_state IS '文案审核状态；自定义场景直接面向客户，未审核项不得启用';
 
 CREATE INDEX IF NOT EXISTS idx_log_collect_custom_scenario_latest
