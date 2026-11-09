@@ -4040,6 +4040,10 @@ COMMENT ON COLUMN log_collect_task.config_path IS '节点上的配置文件绝�
 COMMENT ON COLUMN log_collect_task.config_sha256 IS '下发配置内容摘要；与场景侧 config_sha256 一致才允许执行';
 COMMENT ON COLUMN log_collect_task.path_count IS '展开日期占位后的实际路径条数';
 COMMENT ON COLUMN log_collect_task.preflight_missing IS '下发前预检未命中的路径数组；非空时前端须提示用户确认';
+COMMENT ON COLUMN log_collect_task.spc_slot IS '被覆写的 spc 槽位（固定 core）';
+COMMENT ON COLUMN log_collect_task.spc_sha256 IS '覆写的场景清单摘要，用于核对写入内容与下发内容一致';
+COMMENT ON COLUMN log_collect_task.spc_hosts IS '扇出写入结果：每台节点的 ip/backup/error';
+COMMENT ON COLUMN log_collect_task.restore_status IS 'none/pending/success/failed：终态恢复是否已还原原清单';
 
 
 -- ------------------------------------------------------------

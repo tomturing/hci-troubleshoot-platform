@@ -7,6 +7,7 @@ ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS spc_hosts jsonb;
 ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS restore_status varchar(16) NOT NULL DEFAULT 'none';
 
 COMMENT ON COLUMN log_collect_task.spc_slot IS '被覆写的 spc 槽位（固定 core）';
+COMMENT ON COLUMN log_collect_task.spc_sha256 IS '覆写的场景清单摘要，用于核对写入内容与下发内容一致';
 COMMENT ON COLUMN log_collect_task.spc_hosts IS '扇出写入结果：每台节点的 ip/backup/error';
 COMMENT ON COLUMN log_collect_task.restore_status IS 'none/pending/success/failed：终态恢复是否已还原原清单';
 
