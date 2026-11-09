@@ -249,6 +249,11 @@ async def reconcile_relays_once() -> int:
         return 0
     try:
         relay_service = _build_relay_service()
+        # 先订正存量终态再抢占：已交付却仍标 running 的历史任务，光靠
+        # claim_stale 排除是不会被拉起，但状态会永久错着，界面继续转圈。
+        settled = await relay_service.settle_delivered_relays()
+        if settled:
+            logger.info("日志包代传终态订正 count=%s", settled)
         task_ids = await relay_service.claim_stale()
         for task_id in task_ids:
             _spawn_relay(relay_service, task_id)

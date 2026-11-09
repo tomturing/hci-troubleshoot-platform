@@ -258,11 +258,36 @@ class LogCollectRelayService:
             except Exception:  # noqa: BLE001 - 心跳失败不能把业务打成失败
                 logger.warning("日志包代传心跳失败 task=%s", task_id, exc_info=True)
 
+    async def settle_delivered_relays(self) -> int:
+        """收敛已交付但仍占着 running/pending 的存量任务。
+
+        旧版 _finish 把 CAS 加在成功分支，二次收敛被 WHERE 过滤，
+        relay_status 永远停在 running 并被 reconcile 反复捞起。
+        """
+        async with self.session_factory() as session:
+            result = await session.execute(
+                update(LogCollectTask)
+                .where(
+                    LogCollectTask.delivery_status == "delivered",
+                    LogCollectTask.relay_status.in_(["running", "pending"]),
+                )
+                .values(
+                    relay_status="success",
+                    relay_updated_at=func.now(),
+                    status="completed",
+                    progress=100,
+                    finished_at=func.coalesce(LogCollectTask.finished_at, func.now()),
+                )
+            )
+            await session.commit()
+            return result.rowcount or 0
+
     async def claim_stale(self, *, limit: int = 20) -> list[UUID]:
         """接管「待跑」与「租约失效」的代传任务，返回本次真正归本方执行的 task_id。
 
         只看有制品的任务：没有 archive_path 的中间态抢过来只会以 LC-TRANSFER-001
-        立即落 failed，那不是自愈而是自毁。
+        立即落 failed，那不是自愈而是自毁。已交付属于终态，
+        无论 relay_status 写没写对，都不能再拉起一次整包重复上传。
         """
 
         async with self.session_factory() as session:
@@ -270,6 +295,7 @@ class LogCollectRelayService:
                 select(LogCollectTask.task_id)
                 .where(
                     LogCollectTask.archive_path.isnot(None),
+                    LogCollectTask.delivery_status != "delivered",
                     or_(
                         LogCollectTask.relay_status == "pending",
                         and_(
@@ -649,9 +675,14 @@ class LogCollectRelayService:
         if error:
             payload["error_code"] = error_code
             payload["error_message"] = error[:2000]
-        # CAS：已交付是终态事实，旧代 relay 迟到的失败回写不得把它改回去。
+        # CAS 只用来挡「旧代 relay 迟到的失败回写」：已交付是终态事实。
+        # 成功收敛必须幂等且无条件——它本身就是写入 delivered 的那次更新，
+        # 重复执行（发布后 reconcile 重跑、补交付）也必须把 relay_status 落成
+        # success。旧实现把 CAS 加在成功分支：delivery_status 已是 delivered 时
+        # 整条 UPDATE 被 WHERE 过滤，relay_status 永远停在 running，于是每 60s
+        # 被 reconcile 重新捞起空转（2026-11-09 staging 12 条僵尸的成因）。
         stmt = update(LogCollectTask).where(LogCollectTask.task_id == task_id)
-        if not error:
+        if status != "success":
             stmt = stmt.where(LogCollectTask.delivery_status != "delivered")
         async with self.session_factory() as session:
             trace_id = (
