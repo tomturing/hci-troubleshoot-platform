@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -25,7 +26,7 @@ from app.schemas.log_collect_custom_scenario import (
     LogCollectCustomScenarioUpdate,
 )
 from app.security.auth import get_client_id
-from app.services.log_collect_custom_scenario_service import serialize_config
+from app.services.log_collect_custom_scenario_service import _serialize, serialize_config
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
@@ -126,7 +127,6 @@ def test_serialize_config_is_ascii_safe():
     [
         "relative/path",
         "/sf/a b",  # 空格：cp -r 未加引号，会被拆成两个参数
-        "/sf/a*",  # 通配符：os.path.exists 判假后静默跳过
         "/sf/a,b",  # 逗号：会被拆成两条路径
         "/sf/../etc/shadow",
         "/sf/a;id",
@@ -136,6 +136,37 @@ def test_serialize_config_is_ascii_safe():
 def test_item_rejects_dangerous_paths(path: str):
     with pytest.raises(ValidationError):
         CustomScenarioItem(path=path)
+
+
+def test_wildcard_allowed_by_schema_but_rejected_for_config():
+    # spc 侧由插件 glob，允许 *；但 -c 的 paths 不做 glob，必须在序列化层拒绝。
+    item = CustomScenarioItem(path="/sf/a*")
+    with pytest.raises(ValueError):
+        _serialize([item.model_dump()], "visual")
+    _serialize([item.model_dump()], "spc")
+
+
+def test_serialize_spc_keeps_filters_and_notes():
+    item = CustomScenarioItem(
+        action="copy",
+        path="/sf/log/{date}/*",
+        note="1.白盒日志",
+        filters=[{"action": "exclude", "match_type": "path", "pattern": "/sf/log/{date}/vs/"}],
+    )
+    text, sha256, size = _serialize([item.model_dump()], "spc")
+    payload = json.loads(text)
+    assert payload[0] == {"note": "1.白盒日志"}
+    assert payload[1]["path"] == "/sf/log/{date}/*"
+    assert payload[1]["filters"][0]["action"] == "exclude"
+    assert sha256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    assert size == len(text.encode("utf-8"))
+
+
+def test_command_item_allowed_only_for_spc():
+    item = CustomScenarioItem(action="command", path="ipmitool sel elist")
+    with pytest.raises(ValueError):
+        _serialize([item.model_dump()], "json")
+    _serialize([item.model_dump()], "spc")
 
 
 def test_item_accepts_date_placeholder():
