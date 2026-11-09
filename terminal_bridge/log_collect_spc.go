@@ -27,6 +27,7 @@ const (
 var (
 	spcSlotRe   = regexp.MustCompile("^[a-z][a-z0-9_]{1,31}$")
 	spcTaskIDRe = regexp.MustCompile("^[A-Za-z0-9._-]{1,64}$")
+	spcDirRe    = regexp.MustCompile("^/[A-Za-z0-9_./-]+$")
 )
 
 // buildSpcFindCommand 探测 spc 目录：部署路径由 ABSOLUTE_DEPLOY_PATH 决定，
@@ -133,4 +134,38 @@ func buildSpcBackupCommand(path, backup string) string {
 
 func buildSpcRestoreCommand(backup, target string) string {
 	return fmt.Sprintf("cp -p %s %s", shellQuote(backup), shellQuote(target))
+}
+
+// buildSpcBackupListCommand 按修改时间倒序列出平台留下的备份。
+//
+// 写前先恢复是整条链路的关键兜底：终态恢复依赖 bridge 进程存活，
+// 进程重启/断连会把平台清单永久留在节点上；下一次写之前先把它恢复掉，
+// 比等人工发现可靠得多。
+func buildSpcBackupListCommand(dir, slot string) (string, error) {
+	if !spcDirRe.MatchString(dir) || strings.Contains(dir, "..") {
+		return "", fmt.Errorf("spc 目录非法：%s", dir)
+	}
+	if !spcSlotRe.MatchString(slot) {
+		return "", fmt.Errorf("spc 槽位非法：%s", slot)
+	}
+	// 不加引号：需要 shell 展开 glob；目录与槽位均已过白名单，不存在注入面。
+	return fmt.Sprintf("ls -1t %s/%s.json.platform.*.bak 2>/dev/null", dir, slot), nil
+}
+
+// pickRestorableBackup 从 ls -1t 的输出里取第一个合法备份。
+//
+// 输出已按 mtime 倒序，因此第一个就是最近一次写入前的原件。
+func pickRestorableBackup(output, target string) (string, error) {
+	prefix := target + ".platform."
+	for _, line := range strings.Split(output, "\n") {
+		path := strings.TrimSpace(strings.ReplaceAll(line, "\r", ""))
+		if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, ".bak") {
+			continue
+		}
+		if strings.Contains(path, "..") {
+			continue
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("没有可恢复的备份")
 }
