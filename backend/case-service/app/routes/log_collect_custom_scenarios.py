@@ -29,6 +29,7 @@ from ..schemas.log_collect_custom_scenario import (
     LogCollectCustomScenarioUpdate,
 )
 from ..security.auth import get_client_id, require_admin_token
+from ..services.log_collect_spc_catalog import load_catalog
 from ..services.log_collect_custom_scenario_service import (
     CustomScenarioInUseError,
     CustomScenarioNotFoundError,
@@ -112,6 +113,16 @@ async def list_for_admin(
 ) -> LogCollectCustomScenarioListResponse:
     """管理端列表：含停用项与完整 items。"""
     return LogCollectCustomScenarioListResponse(scenarios=await service.list_latest(include_disabled=True))
+
+
+@admin_router.get("/catalog")
+async def get_spc_catalog() -> dict:
+    """spc 清单目录：管理端编辑器勾选的数据源。
+
+    读随镜像发布的快照而不是节点实时文件：管理员配置场景不该依赖某台机器在线；
+    节点清单漂移由「从集群刷新」覆盖并用 sha256 对比。
+    """
+    return load_catalog()
 
 
 @admin_router.post("", response_model=LogCollectCustomScenarioResponse, status_code=201)
