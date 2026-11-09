@@ -69,6 +69,14 @@ const (
 	// 18:29:20–18:29:46，而新 Pod 18:29:21 才创建、18:29:41 才启动完成，
 	// 于是"平台发版"把用户的一次上传整成了终态失败。
 	maxDeliveryTransientAttempts = 8
+	// DNS「域名不存在」（NXDOMAIN / no such host）的尝试次数（含首次）。
+	//
+	// 为什么必须比 5xx 的 8 次小得多：8 次 × 最长 60s 退避约 5 分钟，
+	// 而 hosts/DNS/代理配错不会在 5 分钟内自愈——2026-11-09 Q2026110900185
+	// 就是让用户对着「平台暂时不可用」白等了 8 轮，真实原因却是本机解析不了域名。
+	// 但也不能一次都不重试：VPN/代理切换存在秒级空窗，给 2 次机会足够区分
+	// 「抖动」与「配错」。
+	maxDeliveryDNSAttempts = 3
 )
 
 // deliveryRunner 是进程级单例。
@@ -421,16 +429,7 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	err := r.advance(ctx, job)
 	// 预算按错误性质分流：平台暂时不可用（5xx/连接失败）值得等，
 	// 业务性失败（分片长度不符、本地缺文件）等再久也不会变好。
-	budget := maxDeliveryAttempts
-	if isDeliveryTransientError(err) {
-		budget = maxDeliveryTransientAttempts
-	}
-	// 磁盘满与并发容量不足是"重试不会变好"的两类：清盘要人做，
-	// 等别的作业完成按分钟计，5 次秒级退避只会在 30 秒内把同样的失败
-	// 重放 5 遍（2026-11-03 现场正是 33 秒空转），用户还没看清提示就已终态。
-	if isDeliveryDiskFull(err) || isDeliveryAdmission(err) {
-		budget = 1
-	}
+	budget := deliveryAttemptBudget(err)
 	r.mu.Lock()
 	if err != nil {
 		// 本轮只要真的推进过分片或字节，就不该消耗重试预算。
@@ -1745,6 +1744,22 @@ func (e *deliveryTransientError) Error() string { return e.reason }
 
 func (e *deliveryTransientError) Unwrap() error { return e.err }
 
+// deliveryDNSError 表示「本机无法解析平台域名」（NXDOMAIN / no such host）。
+//
+// 为什么必须与 transient 分开：transient 的语义是「平台暂时不可用，等一会儿就好」，
+// 而域名不存在是本机的 hosts / DNS / 代理 / VPN 配错——等再久也不会自己变好。
+// 混在一起会让用户按「等平台恢复」去处理，方向完全反了（2026-11-09 现场）。
+//
+// 只覆盖 IsNotFound：DNS 超时（IsTimeout）仍属链路抖动，保留 transient 语义。
+type deliveryDNSError struct {
+	reason string
+	err    error
+}
+
+func (e *deliveryDNSError) Error() string { return e.reason }
+
+func (e *deliveryDNSError) Unwrap() error { return e.err }
+
 // isDeliveryAuthError 用 errors.As 而不是类型断言：错误会被上层用 %w 包装
 // （例如 upload() 返回 "上传中断（已传 3/15 片）: <原始错误>"），
 // 类型断言遇到包装就失效，令牌失效会被当成普通失败盲重试 5 次，
@@ -1758,6 +1773,44 @@ func isDeliveryAuthError(err error) bool {
 func isDeliveryTransientError(err error) bool {
 	var target *deliveryTransientError
 	return errors.As(err, &target)
+}
+
+// isDeliveryDNSError 同样必须穿透包装：upload() 会把底层错误包成
+// 「上传中断（已传 N/M 片）: ...」，类型断言在那一层已经失效。
+func isDeliveryDNSError(err error) bool {
+	var target *deliveryDNSError
+	return errors.As(err, &target)
+}
+
+// isDNENotFound 判断是否为「域名不存在」（NXDOMAIN / no such host）。
+//
+// 必须先于通用 net.Error 判定：*net.DNSError 同时实现 net.Error，
+// 不提前摘出就会被当成可重试的瞬时故障（2026-11-09 现场）。
+// 只认 IsNotFound：DNS 超时/临时失败仍属链路抖动，保留 transient 语义，
+// 否则会把「DNS 服务器一时不通」也误报成「域名配错」。
+func isDNENotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
+// deliveryAttemptBudget 按错误性质给出重试预算（含首次）。
+//
+// 顺序即优先级，不能随意调换：
+//   - 磁盘满 / 准入不足：重试只会再失败一次，1 次即终态（清盘要人做）；
+//   - DNS 域名不存在：本机配置问题，只给 VPN/代理切换留 2 次窗口；
+//   - 平台 5xx / 连接失败：发版空窗可达数十秒，给足 8 次；
+//   - 其余（业务性失败）：默认 5 次。
+func deliveryAttemptBudget(err error) int {
+	switch {
+	case isDeliveryDiskFull(err), isDeliveryAdmission(err):
+		return 1
+	case isDeliveryDNSError(err):
+		return maxDeliveryDNSAttempts
+	case isDeliveryTransientError(err):
+		return maxDeliveryTransientAttempts
+	default:
+		return maxDeliveryAttempts
+	}
 }
 
 // deliveryBackoff 返回第 attempt 次失败后的退避时长：2s→4s→8s→16s→32s→60s。
@@ -1801,6 +1854,11 @@ func isTransientTransportError(err error) bool {
 	if isUntrustedCertificateError(err) {
 		return false
 	}
+	// 域名不存在是本机解析配置问题，不是链路抖动；混进 transient 会让用户
+	// 对着「平台暂时不可用」等到重试预算耗尽（2026-11-09 Q2026110900185）。
+	if isDNENotFound(err) {
+		return false
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return true
@@ -1810,7 +1868,18 @@ func isTransientTransportError(err error) bool {
 
 // wrapTransientTransport 把连接类失败标成"暂时不可用"，其余原样返回。
 func wrapTransientTransport(err error) error {
-	if err == nil || !isTransientTransportError(err) {
+	if err == nil {
+		return err
+	}
+	// DNS「域名不存在」必须有自己的文案：原文案把责任指向平台，用户会去等平台恢复，
+	// 而真正要做的是检查本机 hosts / DNS / 代理 / VPN。
+	if isDNENotFound(err) {
+		return &deliveryDNSError{
+			reason: "无法解析平台域名（本机 hosts / DNS / 代理 / VPN 异常，请检查后重试）: " + err.Error(),
+			err:    err,
+		}
+	}
+	if !isTransientTransportError(err) {
 		return err
 	}
 	return &deliveryTransientError{
