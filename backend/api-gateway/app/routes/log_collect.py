@@ -109,6 +109,38 @@ async def proxy_log_collect(
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
 
+@router.get("/custom-scenarios")
+async def proxy_log_collect_custom_scenarios(
+    request: Request,
+    client_id: str = Depends(require_user),
+) -> Response:
+    """代理客户端的「自定义场景」读取，**只回元数据**。
+
+    为什么单独一条路由而不是塞进 /scenarios：两者的数据敏感度不同。
+    故障场景字典是平台文案（可以整份下发），自定义场景的 items 是客户的目录结构，
+    属于"平台内部配置 + 注入面"，客户前端只需要知道 id/名称/条数。
+    """
+    url = f"{settings.CASE_SERVICE_URL.rstrip('/')}/api/log-collect/custom-scenarios"
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
+            upstream = await client.request(
+                "GET",
+                url,
+                headers=_signed_headers(request, client_id),
+            )
+    except httpx.RequestError as exc:
+        logger.error(
+            event="log_collect_custom_scenario_proxy_error",
+            message=str(exc),
+            path="/custom-scenarios",
+            method="GET",
+        )
+        raise HTTPException(status_code=503, detail="Case Service unavailable") from exc
+
+    response_headers = {name: upstream.headers[name] for name in FORWARDED_RESPONSE_HEADERS if name in upstream.headers}
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
+
+
 @router.get("/scenarios")
 async def proxy_log_collect_scenarios(
     request: Request,

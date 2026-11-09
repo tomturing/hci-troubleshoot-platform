@@ -14,6 +14,8 @@
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+
+import CustomScenarioPanel from './components/CustomScenarioPanel.vue'
 import {
   createScenario,
   listScenarios,
@@ -28,6 +30,9 @@ const REVIEW_TEXT: Record<ScenarioReviewState, string> = {
   pending_review: '待审核',
   approved: '已审核',
 }
+
+/** 两个 tab 的职责不同：默认场景改文案，自定义场景维护会被下发的路径清单。 */
+const activeTab = ref<'default' | 'custom'>('default')
 
 const rows = ref<LogCollectScenario[]>([])
 const loading = ref(false)
@@ -285,6 +290,9 @@ function formatTime(value: string | null): string {
 
 <template>
   <div class="scenario-page">
+    <el-tabs v-model="activeTab" class="scenario-tabs">
+      <!-- 默认场景立即渲染；自定义场景用 lazy，未切过去时不额外请求 -->
+      <el-tab-pane label="默认场景" name="default">
     <el-alert type="info" :closable="false" show-icon class="scenario-intro">
       <template #title>这里是客户面板「故障场景」勾选项的文字来源</template>
       <p>
@@ -466,6 +474,11 @@ function formatTime(value: string | null): string {
         <el-button type="primary" :loading="dialogSaving" @click="submitDialog">保存</el-button>
       </template>
     </el-dialog>
+      </el-tab-pane>
+      <el-tab-pane label="自定义场景" name="custom" lazy>
+        <CustomScenarioPanel />
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 

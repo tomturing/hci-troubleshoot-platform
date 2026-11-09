@@ -23,6 +23,7 @@ from app.routes import (
     cases,
     environments,
     log_collect,
+    log_collect_custom_scenarios,
     log_collect_scenarios,
 )
 
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
     environments.set_database_manager(database_manager)
     log_collect.set_database_manager(database_manager)
     log_collect_scenarios.set_database_manager(database_manager)
+    log_collect_custom_scenarios.set_database_manager(database_manager)
     # 工单证据聚合端点：漏掉这一行不会报错，只会让两个管理端点恒返 500
     # 「Database not initialized」（2026-11-02 staging 实测），故同时保留
     # get_session 里从 app.state 兜底的逻辑，双保险。
@@ -91,6 +93,10 @@ app.include_router(log_collect.upload_router)
 # 故障场景字典：客户读（/api/log-collect/scenarios）+ 管理端读写（/internal/log-collect/scenarios）
 app.include_router(log_collect_scenarios.router)
 app.include_router(log_collect_scenarios.admin_router)
+# 自定义场景（acli -c）：客户只读元数据（/api/log-collect/custom-scenarios）
+# + 管理端 CRUD（/internal/log-collect/custom-scenarios）
+app.include_router(log_collect_custom_scenarios.router)
+app.include_router(log_collect_custom_scenarios.admin_router)
 # 工单详情证据聚合：日志收集选项/元数据 + DSH 诊断会话（只对管理端开放）
 app.include_router(case_insights.router)
 

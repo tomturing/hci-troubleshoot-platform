@@ -228,6 +228,8 @@ app.include_router(simulations.router)
 app.include_router(log_collect.router)
 # 故障场景字典：客户读走 /api/log-collect/scenarios（客户身份），管理端读写走 /api/v1/log-collect-scenarios（管理端 JWT）
 app.include_router(log_collect_admin.router)
+# 自定义场景（acli -c）管理端：/api/v1/log-collect-custom-scenarios
+app.include_router(log_collect_admin.custom_router)
 app.include_router(signal_dry_run.router)
 app.include_router(diagnosis.router)
 app.include_router(dsh.router)
