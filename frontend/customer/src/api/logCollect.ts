@@ -152,6 +152,13 @@ export interface LogCollectTask {
   date_from: string
   date_to: string
   ips: string[]
+  /**
+   * 额外收集路径（acli `-p`）。
+   *
+   * 平台在 create 时落库，接管历史任务与「重新收集」都要靠它还原
+   * "这次到底多收了什么"；缺失时按空数组处理（老任务没有这个字段）。
+   */
+  extra_paths?: string[] | null
   status: LogCollectStatus
   progress: number
   /** P1 直传时创建即带上传地址；老记录没有 upload_mode，用它兜底判定交付路径 */
