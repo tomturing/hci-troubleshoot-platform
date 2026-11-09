@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -102,6 +103,26 @@ class LogCollectCustomScenarioService:
         row = result.mappings().first()
         if row is None:
             raise CustomScenarioNotFoundError(code)
+        return _row_to_response(row)
+
+    async def get_latest_by_id(self, scenario_id: str) -> LogCollectCustomScenarioResponse:
+        """按逻辑 ID 取最新版：客户前端只知道 scenario_id，不知道 code。
+
+        为什么不以 code 为入口：code 是管理端稳定标识，让客户传它等于把
+        平台内部命名暴露给客户端，且客户改不了的历史任务要按 revision 回溯。
+        """
+        result = await self.session.execute(
+            text(
+                f"""
+                SELECT {_COLUMNS} FROM log_collect_custom_scenario
+                WHERE scenario_id = :scenario_id ORDER BY revision DESC LIMIT 1
+                """
+            ),
+            {"scenario_id": scenario_id},
+        )
+        row = result.mappings().first()
+        if row is None:
+            raise CustomScenarioNotFoundError(scenario_id)
         return _row_to_response(row)
 
     async def get_revision(self, scenario_id: str, revision: int) -> LogCollectCustomScenarioResponse:
@@ -264,3 +285,50 @@ class LogCollectCustomScenarioService:
             raise ValueError(f"路径条数不能超过 {MAX_ITEMS}")
         _, _, size = serialize_config(items)
         return len(items), size
+
+
+def expand_scenario_paths(
+    items: list[dict[str, Any]],
+    date_from: date,
+    date_to: date,
+    *,
+    extra_paths: list[str] | None = None,
+    max_count: int = 200,
+) -> list[str]:
+    """把「平台模型」展开成 acli 认的字面路径清单。
+
+    三件事一次做完，顺序不可换：
+
+    1. ``{date}`` 展开：spc 清单里大量 ``/sf/log/{date}.tar.gz`` 这种按天归档文件，
+       而 config 的 paths 完全不做占位符替换（未展开的路径会被 ``os.path.exists``
+       判假后**静默跳过**）。这里按用户选的时间范围逐天展开；
+    2. 合并 ``extra_paths``（客户临时填的 ``-p``）：同时传 ``-c`` 和 ``-p`` 时
+       CLI 会覆盖 config.paths，因此必须在平台侧合并，且只下发 ``-c``；
+    3. 去重保序：重复项不会报错，但会让体积预估翻倍。
+
+    ``{date}`` 的展开格式按 ``YYYY-MM-DD``（与 ``-d`` 参数同形）。
+    该格式需以插件 spc 的 ``date_placeholders`` 为准；若现场实际是别的格式，
+    预检会把它们列为缺失路径并由用户二次确认，不会静默收错。
+    """
+    days = (date_to - date_from).days + 1
+    result: list[str] = []
+    for item in items:
+        path = str(item.get("path", "")).strip()
+        if not path:
+            continue
+        if "{date}" in path:
+            for offset in range(days):
+                day = date_from + timedelta(days=offset)
+                result.append(path.replace("{date}", day.isoformat()))
+        else:
+            result.append(path)
+    for raw in extra_paths or []:
+        path = str(raw).strip()
+        if path:
+            result.append(path)
+
+    # 去重保序：dict 保持插入顺序，比 set 更适合"下发顺序即用户所见顺序"的契约
+    unique = list(dict.fromkeys(result))
+    if len(unique) > max_count:
+        raise ValueError(f"展开后的路径条数（{len(unique)}）超过上限 {max_count}")
+    return unique

@@ -386,6 +386,12 @@ type InMessage struct {
 	DateTo     string   `json:"date_to,omitempty"`     // YYYY-MM-DD
 	IPs        string   `json:"ips,omitempty"`         // all 或逗号分隔 IPv4
 	ExtraPaths []string `json:"extra_paths,omitempty"` // acli log_collect -p
+	// ConfigJSON 是平台生成的 `-c` 配置原文（只含 paths），由前端原样透传。
+	// 平台是唯一生成方：bridge 必须二次校验、写入节点、回读比对摘要，
+	// 绝不接受前端自行拼装的路径清单——这条链路最终会拼进 shell 命令。
+	ConfigJSON string `json:"config_json,omitempty"`
+	// ConfigSHA256 是下发内容的摘要，bridge 写完文件后回读比对，不符即拒绝执行。
+	ConfigSHA256 string `json:"config_sha256,omitempty"`
 	// RemoteURL 在 log_collect 中语义为：probe 时作为被探测的日志服务器地址；
 	// create 时作为 -u 上传目标（仅 http/https，且只认官方日志服务器白名单）。
 	RemoteURL string `json:"remote_url,omitempty"`

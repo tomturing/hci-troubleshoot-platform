@@ -16,7 +16,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from ..models.log_collect import LogCollectTask
 from ..repositories.log_collect_repo import LogCollectTaskRepository
@@ -134,7 +134,15 @@ class LogCollectService:
         if target not in _ALLOWED_TRANSITIONS.get(current, frozenset()):
             raise InvalidTransitionError(f"非法状态转换：{current} → {target}")
 
-    async def create_task(self, payload: LogCollectTaskCreate, client_id: str) -> LogCollectTask:
+    async def create_task(
+        self,
+        payload: LogCollectTaskCreate,
+        client_id: str,
+        *,
+        custom_scenario: tuple[UUID, int] | None = None,
+        config_sha256: str | None = None,
+        path_count: int | None = None,
+    ) -> LogCollectTask:
         # 应用层先判一次（友好报错），数据库部分唯一索引兜底并发。
         active = await self.repository.get_active_by_case(payload.case_id)
         if active is not None:
@@ -153,6 +161,13 @@ class LogCollectService:
             date_to=payload.date_to,
             ips=list(payload.ips),
             extra_paths=list(payload.extra_paths) or None,
+            # 自定义场景：id+revision 证明"用的哪一版"，sha256 证明"下发的就是这一版"。
+            # config 原文刻意不落库：它只在创建响应里透传给 bridge 写节点，
+            # 平台不留副本，避免同一份配置出现两个可漂移的真源。
+            custom_scenario_id=custom_scenario[0] if custom_scenario else None,
+            custom_scenario_revision=custom_scenario[1] if custom_scenario else None,
+            config_sha256=config_sha256,
+            path_count=path_count,
             remote_url=payload.remote_url,
             # 交付路径是用户的**决策**，必须在创建那一刻落库：
             # 只在交付完成时补写的话，采集中的任务与补交付失败的任务都读不到它，

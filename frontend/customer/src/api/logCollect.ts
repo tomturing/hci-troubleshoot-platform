@@ -79,6 +79,12 @@ export interface LogCollectTaskCreate {
   date_to: string
   ips: string[]
   extra_paths?: string[]
+  /**
+   * 选用的自定义场景 ID（acli `-c`）。
+   * 服务端按它取最新 revision、展开 `{date}`、合并 extra_paths 后生成配置；
+   * 前端不构造 config，只把创建响应里的 config_json 透传给 bridge。
+   */
+  custom_scenario_id?: string
   remote_url?: string
   /**
    * 交付路径（创建时确定，创建即落库）：
@@ -159,6 +165,17 @@ export interface LogCollectTask {
    * "这次到底多收了什么"；缺失时按空数组处理（老任务没有这个字段）。
    */
   extra_paths?: string[] | null
+  /**
+   * 自定义场景（acli -c）事实。config_json 只在创建响应里出现，
+   * 平台不留副本；bridge 写入节点后由 create 回执补 config_path 与预检结论。
+   */
+  custom_scenario_id?: string | null
+  custom_scenario_revision?: number | null
+  config_json?: string | null
+  config_sha256?: string | null
+  path_count?: number | null
+  config_path?: string | null
+  preflight_missing?: string[] | null
   status: LogCollectStatus
   progress: number
   /** P1 直传时创建即带上传地址；老记录没有 upload_mode，用它兜底判定交付路径 */
@@ -283,6 +300,20 @@ export interface ActiveTaskSummary {
  * 只靠短名（"中台专项"、"卡慢盘专项"），用户无法判断该选哪个也不了解多选含义。
  * 字典只补展示层事实，**不改变能力边界**——能不能选，仍然取决于集群 acli 的枚举。
  */
+/**
+ * 客户可见的自定义场景：**只有元数据**。
+ *
+ * 平台刻意不下发 items（路径清单）：它既是客户目录结构的信息泄露面，
+ * 也是前端可篡改的注入面。客户判断"该不该选"靠名称、释义与条数即可。
+ */
+export interface LogCollectCustomScenarioItem {
+  scenario_id: string
+  revision: number
+  label: string
+  summary: string | null
+  item_count: number
+}
+
 export interface LogCollectScenarioItem {
   value: string
   label: string
@@ -325,6 +356,15 @@ export const logCollectApi = {
    */
   async listScenarios(): Promise<LogCollectScenarioItem[]> {
     const { data } = await client.get('/log-collect/scenarios')
+    return data?.scenarios ?? []
+  },
+
+  /**
+   * 自定义场景列表（只含已启用项与元数据）。
+   * 失败时必须降级为空数组：字典服务挂了不应挡住默认场景采集。
+   */
+  async listCustomScenarios(): Promise<LogCollectCustomScenarioItem[]> {
+    const { data } = await client.get('/log-collect/custom-scenarios')
     return data?.scenarios ?? []
   },
 

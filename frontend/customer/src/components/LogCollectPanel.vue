@@ -23,6 +23,7 @@ import {
 import {
   logCollectApi,
   type DeliveryStatus,
+  type LogCollectCustomScenarioItem,
   type LogCollectModule,
   type LogCollectScenarioItem,
   type LogCollectTask,
@@ -501,7 +502,21 @@ const form = reactive({
    * 非法字符不是"收不到"，而是能在客户节点执行命令；提前拒绝才是安全边界。
    */
   extraPaths: [] as string[],
+  /**
+   * 场景模式：default = 现有专项多选；custom = 平台自定义场景（acli -c）。
+   *
+   * 视觉上是互斥的两块，但底层**叠加**：自定义模式固定下发 `-m other`，
+   * 配置只追加路径（config.modules 永不生效）。界面不展示专项，
+   * 是为了不误导用户以为"选了自定义就没有基础日志"。
+   */
+  scenarioMode: 'default' as 'default' | 'custom',
+  customScenarioId: '',
 })
+
+const isCustomMode = computed(() => form.scenarioMode === 'custom' && Boolean(form.customScenarioId))
+const selectedCustomScenario = computed(() =>
+  customScenarios.value.find((item) => item.scenario_id === form.customScenarioId) ?? null,
+)
 
 /** 高级选项默认收起：额外路径是补充手段，不是每次采集都要经过的决策点。 */
 const advancedOpen = ref<string[]>([])
@@ -568,6 +583,13 @@ const probeModules = ref<ModuleOption[]>([...BUILTIN_MODULES])
  * 回落到 bridge 短名 + 标记“平台未维护说明”。字典失败绝不能拦住探测与采集。
  */
 const scenarioDict = ref<LogCollectScenarioItem[]>([])
+/**
+ * 平台自定义场景（acli -c），只含元数据。
+ *
+ * 与字典同一次探测拉取、同样失败降级：一个后台配置服务不可用，
+ * 不该让整个日志收集面板变成"不可用"。
+ */
+const customScenarios = ref<LogCollectCustomScenarioItem[]>([])
 const scenarioDictLoaded = ref(false)
 /** 字典不可用时的说明（区分“未维护”与“读取失败”，不拼成一句含混提示） */
 const scenarioDictNote = ref('')
@@ -1276,18 +1298,29 @@ function mergeModuleOptions(
  * 不影响探测、下发与进度。把失败向外抛会让一个后台配置问题变成“日志收集不可用”。
  */
 async function loadScenarioDict(): Promise<void> {
-  try {
-    scenarioDict.value = await logCollectApi.listScenarios()
+  // 两个字典互相独立：任一失败都只降级自己，不能连带把另一个清空。
+  const [dictResult, customResult] = await Promise.allSettled([
+    logCollectApi.listScenarios(),
+    logCollectApi.listCustomScenarios(),
+  ])
+  if (dictResult.status === 'fulfilled') {
+    scenarioDict.value = dictResult.value
     scenarioDictNote.value = scenarioDict.value.length
       ? ''
       : '平台场景字典暂未维护，当前只显示场景名称'
-  } catch (error: any) {
+  } else {
     scenarioDict.value = []
     scenarioDictNote.value = '场景说明暂不可用（平台字典读取失败）'
-    console.warn('[log-collect] 场景字典读取失败', error?.message || error)
-  } finally {
-    scenarioDictLoaded.value = true
+    console.warn('[log-collect] 场景字典读取失败', dictResult.reason)
   }
+  if (customResult.status === 'fulfilled') {
+    // 旧后端/桩返回 undefined 时也要有确定的空列表：模板里直接读 .length。
+    customScenarios.value = Array.isArray(customResult.value) ? customResult.value : []
+  } else {
+    customScenarios.value = []
+    console.warn('[log-collect] 自定义场景读取失败', customResult.reason)
+  }
+  scenarioDictLoaded.value = true
 }
 
 /** 用探测结果覆盖目录与节点清单；场景目录以集群为准，内置目录只做兜底。 */
@@ -2086,6 +2119,14 @@ function applyTaskToForm(task: LogCollectTask) {
   // 额外路径必须一起回填：重新收集时静默丢掉，用户会以为"这次范围和上次一样"，
   // 而实际上少收了他上次特意指定的目录。
   form.extraPaths = normalizeExtraPaths(task.extra_paths)
+  // 模式必须一起回填：重新收集时静默退回默认模式，等于少收上次特意指定的路径。
+  if (task.custom_scenario_id) {
+    form.scenarioMode = 'custom'
+    form.customScenarioId = String(task.custom_scenario_id)
+  } else {
+    form.scenarioMode = 'default'
+    form.customScenarioId = ''
+  }
 }
 
 function startRecollect() {
@@ -2169,6 +2210,13 @@ async function handleStart() {
     return
   }
 
+  // 自定义模式没选场景时不能静默回落到"只跑 other"：那会让用户以为
+  // 自己指定的路径被收了，实际一条都没下发。
+  if (form.scenarioMode === 'custom' && !form.customScenarioId) {
+    ElMessage.warning('请选择一个自定义场景，或切回默认场景')
+    return
+  }
+
   // 会话必须先活着。openLogCollect 只在「打开面板那一刻」校验过，
   // 面板开着期间 SSH 可能已经断开，此时任何 bridge 动作都只会拿到 session_missing——
   // 与其把注定失败的请求发出去，不如当场告诉用户去重连。
@@ -2232,7 +2280,11 @@ async function handleStart() {
   mainFlowActive.value = true
   stopAutoSync()
 
-  const modules = form.modules.length ? form.modules : (['other'] as LogCollectModule[])
+  // 自定义模式固定 -m other：config 的 modules 永不生效，显式传 other 让
+  // "专项日志照常收"成为可预期事实，而不是依赖 acli 的默认值。
+  const modules = isCustomMode.value
+    ? (['other'] as LogCollectModule[])
+    : (form.modules.length ? form.modules : (['other'] as LogCollectModule[]))
   stage.value = 'probing'
   try {
     // 复用准备阶段的探测结果：打开面板时已经读过集群，这里再探一次纯属浪费，
@@ -2317,6 +2369,8 @@ async function handleStart() {
         // 额外路径随任务落库：失败任务事后要能回答"这次到底多收了什么"，
         // 只留在前端内存里，换端或关面板后就永久丢失。
         extra_paths: form.extraPaths.length ? [...form.extraPaths] : undefined,
+        // 只传 ID：配置内容由服务端按最新 revision 生成（含 {date} 展开、合并 -p）。
+        custom_scenario_id: isCustomMode.value ? form.customScenarioId : undefined,
         remote_url: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // 交付路径必须随任务落库：只放在前端内存里的话，采集中的任务、以及
         // P1 失败降级后的任务都无法回答"当初选的是哪条路"。
@@ -2396,9 +2450,14 @@ async function handleStart() {
         dateFrom: form.dateRange[0],
         dateTo: form.dateRange[1],
         ips: targetHosts,
-        // 必须是收敛后的清单：bridge 会把它拼成逗号串交给 `-p`，
-        // 重复项会让命令行变长，空串会变成一条非法路径。
-        extraPaths: form.extraPaths.length ? [...form.extraPaths] : undefined,
+        // 自定义模式下 extraPaths 已在服务端合并进 config.paths：
+        // 同时传 -c 与 -p 会让 CLI 覆盖 config.paths，bridge 也会直接拒绝。
+        extraPaths: isCustomMode.value
+          ? undefined
+          : (form.extraPaths.length ? [...form.extraPaths] : undefined),
+        // 平台签发的配置原文与摘要只在创建响应里出现一次，前端纯透传。
+        configJson: task.config_json || undefined,
+        configSha256: task.config_sha256 || undefined,
         remoteUrl: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // bridge 会把它注入成 `-L 0:Authorization:Bearer <ticket>`
         uploadTicket: p1Ticket || undefined,
@@ -2409,6 +2468,29 @@ async function handleStart() {
       // 下发失败的规范码必须留住：它是后面 patch failed 写库的唯一来源。
       lastNodeErrorCode = String(created.error_code || '')
       throw new Error(created.message || '任务下发失败')
+    }
+
+    // 配置文件落点 + 预检结论随任务落库：只留在桥日志里，换端/关页面后
+    // 就无法回答"这次到底要收什么、哪些路径没找到"。
+    const configReceipt = (created.log_data ?? {}) as {
+      config_path?: string
+      preflight_missing?: string[]
+    }
+    if (configReceipt.config_path) {
+      try {
+        await logCollectApi.patchTask(task.task_id, {
+          config_path: configReceipt.config_path,
+          preflight_missing: configReceipt.preflight_missing ?? [],
+        })
+      } catch (patchError: any) {
+        // 证据丢失不改变采集事实，但必须可见：不能静默当成"没发生"。
+        console.warn('[log-collect] 配置回执落库失败', patchError?.message || patchError)
+      }
+      if (configReceipt.preflight_missing?.length) {
+        ElMessage.warning(
+          `有 ${configReceipt.preflight_missing.length} 条路径在发起节点上不存在，可能不会被收集`,
+        )
+      }
     }
 
     // 平台任务必须随阶段推进：pending 不能直接跳到终态，否则 PATCH 会被状态机拒绝
@@ -4683,6 +4765,15 @@ onBeforeUnmount(() => {
           :disabled="running"
         >
           <el-form-item label="故障场景">
+            <!--
+              模式切换：自定义场景走 acli -c，底层固定 -m other（config.modules 永不生效）。
+              界面上不并列展示专项，是为了不让用户误解为"二选一就能只收这些路径"。
+            -->
+            <el-radio-group v-model="form.scenarioMode" class="lc-scenario-mode" :disabled="running">
+              <el-radio-button value="default">默认场景</el-radio-button>
+              <el-radio-button value="custom" :disabled="!customScenarios.length">自定义场景</el-radio-button>
+            </el-radio-group>
+            <template v-if="form.scenarioMode === 'default'">
             <!-- 全量平铺勾选：目录最多十余项，一次看全比"点开下拉再逐项找"少两次交互 -->
             <el-checkbox-group v-model="form.modules" class="lc-checkbox-group lc-module-group">
               <el-checkbox
@@ -4724,6 +4815,29 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+            </template>
+            <template v-else>
+              <div v-if="!customScenarios.length" class="lc-hint">
+                管理台尚未定义自定义场景，请切回默认场景
+              </div>
+              <el-radio-group v-model="form.customScenarioId" class="lc-custom-scenarios">
+                <el-radio-button
+                  v-for="item in customScenarios"
+                  :key="item.scenario_id"
+                  :value="item.scenario_id"
+                  class="lc-custom-scenario"
+                >
+                  <span class="lc-custom-name">{{ item.label }}</span>
+                  <span class="lc-custom-meta">{{ item.item_count }} 条路径 · v{{ item.revision }}</span>
+                </el-radio-button>
+              </el-radio-group>
+              <div class="lc-hint">
+                自定义场景只追加路径，会与系统基础日志一起收集；体积需把基础日志一并计入
+              </div>
+              <div v-if="selectedCustomScenario?.summary" class="lc-hint">
+                {{ selectedCustomScenario.summary }}
+              </div>
+            </template>
           </el-form-item>
           <el-form-item label="时间范围">
             <el-date-picker
@@ -5312,5 +5426,32 @@ onBeforeUnmount(() => {
 .lc-extra-path-input {
   flex: 1 1 240px;
   min-width: 200px;
+}
+/* 场景模式切换与自定义场景卡片 */
+.lc-scenario-mode {
+  display: block;
+  margin-bottom: 8px;
+}
+.lc-custom-scenarios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+.lc-custom-scenario :deep(.el-radio-button__inner) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 10px;
+  line-height: 1.45;
+}
+.lc-custom-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.lc-custom-meta {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
 }
 </style>

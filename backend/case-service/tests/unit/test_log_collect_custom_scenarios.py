@@ -229,3 +229,49 @@ async def test_admin_delete_requires_token(stub: _StubService):
     # 与 require_admin_token 的既有口径一致：缺凭证是 403（不是 401）
     assert response.status_code == 403
     assert stub.deleted == []
+
+
+# ── 路径展开（创建任务时生成 config 的唯一入口）────────────────────────────
+
+
+def test_expand_paths_replaces_date_placeholder_per_day():
+    from datetime import date
+
+    from app.services.log_collect_custom_scenario_service import expand_scenario_paths
+
+    paths = expand_scenario_paths(
+        [{"path": "/sf/log/{date}.tar.gz"}],
+        date(2026, 11, 3),
+        date(2026, 11, 5),
+    )
+    assert paths == [
+        "/sf/log/2026-11-03.tar.gz",
+        "/sf/log/2026-11-04.tar.gz",
+        "/sf/log/2026-11-05.tar.gz",
+    ]
+
+
+def test_expand_paths_merges_extra_paths_and_dedupes():
+    """同时传 -c 与 -p 会被 CLI 覆盖：extra_paths 必须在平台侧合并。"""
+    from datetime import date
+
+    from app.services.log_collect_custom_scenario_service import expand_scenario_paths
+
+    paths = expand_scenario_paths(
+        [{"path": "/sf/log/cluster/"}],
+        date(2026, 11, 3),
+        date(2026, 11, 3),
+        extra_paths=["/sf/etc/a.conf", "/sf/log/cluster/"],
+    )
+    assert paths == ["/sf/log/cluster/", "/sf/etc/a.conf"]
+
+
+def test_expand_paths_rejects_oversized_result():
+    from datetime import date
+
+    import pytest
+    from app.services.log_collect_custom_scenario_service import expand_scenario_paths
+
+    items = [{"path": f"/sf/log/p{i}/{{date}}"} for i in range(70)]
+    with pytest.raises(ValueError, match="超过上限"):
+        expand_scenario_paths(items, date(2026, 11, 1), date(2026, 11, 3), max_count=200)
