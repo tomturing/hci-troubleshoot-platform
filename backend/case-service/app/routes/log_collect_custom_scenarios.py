@@ -29,12 +29,12 @@ from ..schemas.log_collect_custom_scenario import (
     LogCollectCustomScenarioUpdate,
 )
 from ..security.auth import get_client_id, require_admin_token
-from ..services.log_collect_spc_catalog import load_catalog
 from ..services.log_collect_custom_scenario_service import (
     CustomScenarioInUseError,
     CustomScenarioNotFoundError,
     LogCollectCustomScenarioService,
 )
+from ..services.log_collect_spc_catalog import load_catalog
 from ..services.operation_audit import write_operation_audit
 
 logger = get_logger("log-collect-custom-scenarios")
