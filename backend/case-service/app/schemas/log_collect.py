@@ -252,6 +252,15 @@ class LogCollectTaskPatch(BaseModel):
     # 用于回答"配置写到哪、哪些路径在发起节点上没找到"。
     config_path: str | None = Field(default=None, max_length=512)
     preflight_missing: list[str] | None = None
+    # spc 场景（覆写 core.json）：由前端据 bridge 回执补写。
+    # spc_hosts 有上限：节点数是有限集合，不设界就等于允许客户端把任意体积
+    # JSON 塞进任务行（写放大且拖慢列表查询）。
+    spc_slot: str | None = Field(default=None, max_length=32)
+    spc_sha256: str | None = Field(default=None, max_length=64)
+    spc_hosts: list[dict] | None = Field(default=None, max_length=512)
+    # 取值域定死：还原态是判定依据，不是自由文本。客户端写入它虽无法被平台验证
+    # （桥在客户侧），但至少不能出现第二个"看似成功"的拼写。
+    restore_status: Literal["none", "pending", "success", "failed"] | None = None
 
     @model_validator(mode="after")
     def _require_any_field(self) -> LogCollectTaskPatch:
@@ -343,6 +352,13 @@ class LogCollectTaskResponse(BaseModel):
     custom_scenario_id: UUID | None = None
     custom_scenario_revision: int | None = None
     config_json: str | None = Field(default=None, description="仅创建响应：透传给 bridge 写入节点")
+    spc_json: str | None = Field(default=None, description="仅创建响应：spc 收集定义原文")
+    spc_sha256: str | None = None
+    spc_slot: str | None = None
+    # 逐台写入证据与还原态：回答"改了哪几台、备份叫什么、现在还原了没有"。
+    # 还原态不是采集状态的一部分（采集可能早已 completed），必须独立可查。
+    spc_hosts: list[dict] | None = None
+    restore_status: Literal["none", "pending", "success", "failed"] | None = None
     config_sha256: str | None = None
     path_count: int | None = None
     preflight_missing: list[str] | None = None

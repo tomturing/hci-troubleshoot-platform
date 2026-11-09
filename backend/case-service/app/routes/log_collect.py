@@ -43,6 +43,7 @@ from ..services.log_collect_custom_scenario_service import (
     LogCollectCustomScenarioService,
     expand_scenario_paths,
     serialize_config,
+    serialize_spc,
 )
 from ..services.log_collect_node_path import expected_node_archive_path
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
@@ -336,20 +337,32 @@ async def create_task(
             raise HTTPException(status_code=422, detail="自定义场景不存在或已被删除") from exc
         if not scenario.enabled:
             raise HTTPException(status_code=422, detail="该自定义场景已停用，请重新选择")
-        try:
-            paths = expand_scenario_paths(
-                [item.model_dump() for item in scenario.items],
-                payload.date_from,
-                payload.date_to,
-                extra_paths=payload.extra_paths,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # 同时传 -c 与 -p 时 CLI 会覆盖 config.paths，因此 extra_paths 必须在这里合并，
-        # 下发时只走 -c —— 这一条是整个链路最容易"看起来发了其实没发"的地方。
-        config_text, sha256, _size = serialize_config([{"path": path} for path in paths])
-        custom_scenario = (scenario.scenario_id, scenario.revision)
-        config_plan = (config_text, sha256, len(paths))
+        items = [item.model_dump() for item in scenario.items]
+        if scenario.source == "spc":
+            # spc 不做 {date} 展开：插件按 date_placeholders 与 -d 自行处理。
+            # extra_paths 在这里转成 copy 条目，与清单一起下发（不能再走 -p）。
+            for path in payload.extra_paths or []:
+                items.append({"action": "copy", "path": path, "category": "file", "note": None})
+            spc_text, spc_sha, _size = serialize_spc(items)
+            custom_scenario = (scenario.scenario_id, scenario.revision)
+            config_plan = (spc_text, spc_sha, len(items))
+            config_kind = "spc"
+            # 槽位固定 core：白名单内、原清单最轻，且已进 catalog 可勾回。
+            payload.modules = ["core"]
+        else:
+            try:
+                paths = expand_scenario_paths(
+                    items,
+                    payload.date_from,
+                    payload.date_to,
+                    extra_paths=payload.extra_paths,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            config_text, sha256, _size = serialize_config([{"path": path} for path in paths])
+            custom_scenario = (scenario.scenario_id, scenario.revision)
+            config_plan = (config_text, sha256, len(paths))
+            config_kind = "config"
 
     try:
         task = await service.create_task(
@@ -397,8 +410,13 @@ async def create_task(
     response = LogCollectTaskResponse.model_validate(task)
     if config_plan:
         # 只在创建响应里出现：bridge 需要原文写节点，平台不留副本。
-        response.config_json = config_plan[0]
-        response.config_sha256 = config_plan[1]
+        if config_kind == "spc":
+            response.spc_json = config_plan[0]
+            response.spc_sha256 = config_plan[1]
+            response.spc_slot = "core"
+        else:
+            response.config_json = config_plan[0]
+            response.config_sha256 = config_plan[1]
         response.path_count = config_plan[2]
     _attach_p1_ticket(response, tickets)
     return response

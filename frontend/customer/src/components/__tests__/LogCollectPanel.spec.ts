@@ -94,6 +94,10 @@ vi.mock('@/api/terminal', async () => {
         ...(options.configJson
           ? { config_json: options.configJson, config_sha256: options.configSha256 }
           : {}),
+        // spc 是另一条互斥载荷：桩里漏映射，就等于把"清单没送到节点"测成绿灯。
+        ...(options.spcJson
+          ? { spc_json: options.spcJson, spc_sha256: options.spcSha256 }
+          : {}),
       }),
     // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
     buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
@@ -1161,6 +1165,51 @@ describe('LogCollectPanel', () => {
     expect(wrapper.text()).not.toContain('待探测')
   })
 
+  // spc 场景：采集成功 ≠ 节点已收拾干净。core.json 被平台清单覆写过，没还原回来
+  // 就没人知道下一次采集读的是谁的定义，所以结果页必须独立展示并允许重试。
+  it('结果页展示场景清单还原态并提供重试还原入口', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          restore_status: 'pending',
+          spc_slot: 'core',
+          spc_hosts: [
+            { ip: '172.28.25.1', backup: '/sf/x/spc/core.json.platform.task-1.bak' },
+            { ip: '172.28.25.2', backup: '/sf/x/spc/core.json.platform.task-1.bak' },
+          ],
+        }),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const result = wrapper.find('.lc-result')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).toContain('待还原')
+    expect(result.text()).toContain('2 台节点使用过平台清单')
+    expect(wrapper.findAll('button').map((button) => button.text())).toContain('重试还原')
+  })
+
+  // 涉及不到节点清单的普通收集不该平白多出一行"待还原"，否则用户会怀疑平台改过文件。
+  it('普通 -c 场景不展示场景清单还原行', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [taskFixture()],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const result = wrapper.find('.lc-result')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).not.toContain('场景清单')
+    expect(result.text()).not.toContain('重试还原')
+  })
+
   // 回归：任务状态的真值在平台。完成后关掉抽屉再打开，曾经退回空白表单，用户会以为必须重收。
   it('平台已有已完成任务时优先展示完成结果，而不是默认让用户重新收集', async () => {
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({
@@ -1723,6 +1772,136 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     expect(JSON.parse(createMessage!)).toMatchObject({ config_json: configJson, config_sha256: configSha256 })
     // 自定义模式下不能再传 -p：CLI 会覆盖 config.paths
     expect(JSON.parse(createMessage!)).not.toHaveProperty('extra_paths')
+    wrapper.unmount()
+  })
+
+  /**
+   * spc 场景：清单是节点本地文件，bridge 逐台覆写 core 槽位后才下发。
+   * 锁定两件事：① 平台签发的 spc 原文必须透传到 bridge（否则节点仍按原清单收集）；
+   * ② 回执里的逐台证据要落库——关页面/换端后，备份名是唯一可复原依据。
+   */
+  it('spc 场景透传收集定义并把逐台写入证据落库', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const spcJson = '{"items":[{"action":"copy","path":"/var/log/messages"}]}'
+    const spcSha256 = 'b'.repeat(64)
+    const created = taskFixture({
+      status: 'pending',
+      progress: 0,
+      finished_at: null,
+      archive_path: null,
+    })
+    vi.mocked(logCollectApi.createTask).mockResolvedValue({
+      ...created,
+      spc_slot: 'core',
+      spc_sha256: spcSha256,
+      spc_json: spcJson,
+      restore_status: 'none',
+    })
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({ ...created, status: 'collecting' })
+    vi.mocked(logCollectApi.listCustomScenarios).mockResolvedValue([
+      { scenario_id: 'cs-1', revision: 2, label: '存储链路完整取证', summary: '卡慢盘', item_count: 3 },
+    ])
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 20480,
+          log_server_reachable: false,
+          http_code: 0,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'other', label: '默认场景' }],
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+
+    const mode = wrapper.findAll('.radio-btn').find((item) => item.attributes('data-value') === 'custom')
+    await mode!.trigger('click')
+    await flushPromises()
+    const scenario = wrapper.findAll('.radio-btn').find((item) => item.attributes('data-value') === 'cs-1')
+    await scenario!.trigger('click')
+    await flushPromises()
+    wrapper
+      .findComponent({ name: 'ElDatePicker' })
+      .vm.$emit('update:modelValue', ['2026-11-03', '2026-11-05'])
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text() === '开始收集')!
+      .trigger('click')
+    await flushPromises()
+
+    // createTask 在节点对账之后才调用，必须先给一次 progress 基线
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '空闲',
+          percent: 0,
+          done: 0,
+          total: 0,
+          node_state: 'none',
+          archive_path: '',
+          hosts: [],
+          raw: '状态：节点上没有采集任务',
+        },
+      }),
+    })
+    await flushPromises()
+
+    // create 回执：bridge 已逐台写入完成，备份名自描述任务号
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'create',
+        status: 'ok',
+        log_data: {
+          output: 'acli 已下发',
+          spc_slot: 'core',
+          spc_sha256: spcSha256,
+          spc_hosts: [
+            {
+              ip: '172.28.25.1',
+              dir: '/sf/x/spc',
+              backup: '/sf/x/spc/core.json.platform.task-1.bak',
+              written: true,
+            },
+          ],
+          restore_status: 'pending',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const createMessage = sentMessages.find((item) => item.includes('"log_action":"create"'))
+    expect(createMessage).toBeTruthy()
+    expect(JSON.parse(createMessage!)).toMatchObject({ spc_json: spcJson, spc_sha256: spcSha256 })
+
+    const patches = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.map(([, body]: any) => body)
+      .filter(Boolean)
+    const restorePatch = patches.find((body: any) => body.restore_status === 'pending')
+    expect(restorePatch).toBeTruthy()
+    expect(restorePatch.spc_slot).toBe('core')
+    expect(restorePatch.spc_hosts?.[0]).toMatchObject({
+      ip: '172.28.25.1',
+      backup: '/sf/x/spc/core.json.platform.task-1.bak',
+    })
     wrapper.unmount()
   })
 

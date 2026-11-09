@@ -4029,6 +4029,10 @@ ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS config_path text;
 ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS config_sha256 char(64);
 ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS path_count integer;
 ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS preflight_missing jsonb;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS spc_slot varchar(32);
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS spc_sha256 varchar(64);
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS spc_hosts jsonb;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS restore_status varchar(16) NOT NULL DEFAULT 'none';
 
 COMMENT ON COLUMN log_collect_task.custom_scenario_id IS '选用的自定义场景 ID（可空）；与 modules 并存：场景只追加路径，不替代专项';
 COMMENT ON COLUMN log_collect_task.custom_scenario_revision IS '场景版本快照：保证历史任务能解释“当时收的是什么”';
