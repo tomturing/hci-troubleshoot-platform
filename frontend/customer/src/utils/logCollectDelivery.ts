@@ -247,3 +247,111 @@ export function describeRelayProgress(view: RelayProgressView | null | undefined
 
   return parts.length > 0 ? parts.join(' · ') : '准备中'
 }
+
+/** 交付证据判定需要的最小任务字段（与 LogCollectTask 结构兼容，便于纯函数单测）。 */
+export interface DeliveryEvidenceTask {
+  relay_status?: string | null
+  delivery_status?: string | null
+  upload_mode?: string | null
+  remote_url?: string | null
+  archive_deleted?: boolean | null
+}
+
+/**
+ * 平台是否已有**交付**证据（产物真的到了日志服务器）。
+ *
+ * 第一性原理：`status=completed` 只说明 acli 报采集结束，与"字节有没有出客户内网"
+ * 毫无因果关系。2026-11-09 Q2026110900356 就是 `status=completed` + 平台零产物 +
+ * 日志服务器 `found=false`，界面却给了绿色成功横幅——用户据此认为 P2 已成功。
+ *
+ * 因此只有两类证据成立：
+ *   - P2：`relay_status=success`（5888 归档确认）或 `delivery_status=delivered`；
+ *   - P1：`delivery_status=delivered`，或"插件直传成功后自删压缩包"这条间接证据。
+ */
+export function hasDeliveryEvidence(task: DeliveryEvidenceTask | null | undefined): boolean {
+  if (!task) return false
+  if (task.relay_status === 'success' || task.delivery_status === 'delivered') return true
+  const isP1 = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
+  if (!isP1) return false
+  // 老记录没有 upload_mode：按 P1 口径兜底；已清理压缩包是 P1 成功的间接证据。
+  return !task.upload_mode || Boolean(task.archive_deleted)
+}
+
+/**
+ * 是否为「状态机拒绝这一跳」（409 + LC-PLATFORM-003）。
+ *
+ * 为什么必须单独识别：交付与采集状态是正交的两件事，`completed → uploading`
+ * 被拒只说明采集结论已经落库，**不说明交付不能继续**。把它当致命错误会中断
+ * 整条搬运链路（2026-11-09 Q2026110900356：平台已开好上传会话，0/64 片就被打断）。
+ *
+ * 只认这一种码：同是 409 的 `LC-PLUGIN-007`（已有进行中的任务）等业务冲突
+ * 必须原样抛出，吞掉会让真正的冲突永远不明说。
+ */
+export function isStatusTransitionRejected(error: unknown): boolean {
+  const candidate = error as
+    | {
+        isAxiosError?: boolean
+        problem?: { code?: unknown }
+        response?: { status?: number; data?: { detail?: { code?: unknown } } }
+      }
+    | null
+    | undefined
+  if (!candidate || candidate.isAxiosError !== true) return false
+  if (Number(candidate.response?.status ?? 0) !== 409) return false
+  const code =
+    (typeof candidate.problem?.code === 'string' && candidate.problem.code) ||
+    (typeof candidate.response?.data?.detail?.code === 'string' && candidate.response.data.detail.code) ||
+    ''
+  return code === 'LC-PLATFORM-003'
+}
+
+/** 结果态横幅的三态（success 只给"已交付"，采集完成未交付必须降级为 warning）。 */
+export interface ResultHeadline {
+  type: 'success' | 'warning' | 'error' | 'info'
+  title: string
+  description: string
+}
+
+/**
+ * 结果态横幅的唯一判定出口。
+ *
+ * 旧实现只看 `status !== failed/cancelled` 就给绿色 success"已完成日志收集"，
+ * 于是「采完但一个字节都没传」的任务在界面上与真成功完全同形。横幅是用户判断
+ * "这次到底成没成"的第一眼入口，必须由**交付证据**决定，而不是采集结论。
+ */
+export function buildResultHeadline(args: {
+  status?: string | null
+  delivered?: boolean
+  when?: string
+}): ResultHeadline {
+  const { status, delivered = false, when = '' } = args
+  if (!status) return { type: 'info', title: '', description: '' }
+  if (status === 'failed') {
+    return {
+      type: 'error',
+      title: `该工单上次采集失败（${when}）`,
+      description:
+        '以下是平台记录的最近一次采集结果；失败原因见下方错误信息，可点右下角「重新收集」再试一次。',
+    }
+  }
+  if (status === 'cancelled') {
+    return {
+      type: 'info',
+      title: `该工单上次采集已取消（${when}）`,
+      description: '以下是平台记录的最近一次采集结果；如需采集请点右下角「重新收集」。',
+    }
+  }
+  if (!delivered) {
+    return {
+      type: 'warning',
+      title: `该工单已完成日志收集，但日志尚未交付（${when}）`,
+      description:
+        '平台没有收到日志包，日志服务器上也没有归档件。压缩包仍在节点时可点「上传到平台」补交付，不需要重新采集。',
+    }
+  }
+  return {
+    type: 'success',
+    title: `该工单已完成日志收集并已交付（${when}）`,
+    description: '以下是平台记录的最近一次收集结果；如需再次采集，点右下角「重新收集」。',
+  }
+}

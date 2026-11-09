@@ -3027,3 +3027,42 @@ describe('LogCollectPanel acli 安装失败兜底', () => {
     expect(labels.some((text) => text.includes('重试'))).toBe(false)
   })
 })
+
+/**
+ * 现场回归（Q2026110900356，2026-11-09）：P2 交付在 0/64 片被抛断，界面却显示成功。
+ *
+ * 两个独立缺陷同时成立：
+ *   1) 主流程与自动对账并行写状态机 —— 对账先把 status 写成 completed，
+ *      主流程随后的 PATCH uploading 吃 409，异常中断整条交付；
+ *   2) `completed` 被当成"已交付" —— 进度条变绿、步骤条 4/4、"日志已归档"同屏。
+ *
+ * 这两条都是"状态机/展示"的结构约束，故用源码断言钉住，避免以后有人把它们简化掉。
+ */
+describe('LogCollectPanel P2 交付与对账互斥（结构约束）', () => {
+  const SOURCE = readFileSync(resolve(process.cwd(), 'src/components/LogCollectPanel.vue'), 'utf-8')
+
+  const functionBody = (name: string): string => {
+    const start = SOURCE.indexOf(`function ${name}(`)
+    expect(start).toBeGreaterThan(-1)
+    return SOURCE.slice(start, start + 6000)
+  }
+
+  it('主流程在跑时不得启动自动对账（两条链路抢写同一行）', () => {
+    expect(functionBody('startAutoSync')).toMatch(/if \(mainFlowActive\.value\) return/)
+    expect(functionBody('triggerAutoSync')).toMatch(/if \(mainFlowActive\.value\) return/)
+  })
+
+  it('collect 模式的 uploading 推进必须容忍状态机拒绝，不得中断交付', () => {
+    const runP2 = functionBody('runP2')
+    expect(runP2).toMatch(/await advanceToUploading\(task\.task_id\)/)
+    // 直接 await patchTask(...uploading) 会让 409 一路抛到 handleStart
+    expect(runP2).not.toMatch(/patchTask\(task\.task_id, \{ status: 'uploading' \}\)/)
+    const advance = functionBody('advanceToUploading')
+    expect(advance).toMatch(/isStatusTransitionRejected\(error\)/)
+  })
+
+  it('结果态 stage 不得由"采集完成"直接置为 done', () => {
+    const showResult = functionBody('showResult')
+    expect(showResult).toMatch(/hasDeliveryEvidence\(task\) \? 'done' : 'idle'/)
+  })
+})
