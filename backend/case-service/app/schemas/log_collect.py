@@ -81,6 +81,13 @@ class LogCollectTaskCreate(BaseModel):
     date_to: date
     ips: list[str] = Field(default_factory=lambda: ["all"], description='目标主机；["all"] 表示全部在线节点')
     extra_paths: list[str] = Field(default_factory=list, max_length=20)
+    custom_scenario_id: UUID | None = Field(
+        default=None,
+        description=(
+            "选用的自定义场景（acli -c）。服务端按该 ID 取最新 revision、展开 {date}、"
+            "合并 extra_paths 后生成配置；客户端不得自行拼 config。"
+        ),
+    )
     remote_url: str | None = Field(default=None, description="上传目标（仅 http/https 官方日志服务器）")
     upload_mode: PlannedUploadMode | None = Field(
         default=None,
@@ -241,6 +248,10 @@ class LogCollectTaskPatch(BaseModel):
     detail: dict | None = None
     error_code: str | None = Field(default=None, max_length=64)
     error_message: str | None = None
+    # 自定义场景（acli -c）：由前端在 create 成功后据 bridge 回执补写，
+    # 用于回答"配置写到哪、哪些路径在发起节点上没找到"。
+    config_path: str | None = Field(default=None, max_length=512)
+    preflight_missing: list[str] | None = None
 
     @model_validator(mode="after")
     def _require_any_field(self) -> LogCollectTaskPatch:
@@ -326,6 +337,15 @@ class LogCollectTaskResponse(BaseModel):
         default=None,
         description="票据过期时间（Unix 秒）；前端据此判断是否需要提示重新建任务",
     )
+    # ── 自定义场景（acli -c）──────────────────────────────────────────────
+    # config_json 只在**创建响应**里出现：bridge 写文件需要原文，但平台不留副本。
+    # 它是平台生成的结构化结果，前端只负责透传，不得展示为可编辑项。
+    custom_scenario_id: UUID | None = None
+    custom_scenario_revision: int | None = None
+    config_json: str | None = Field(default=None, description="仅创建响应：透传给 bridge 写入节点")
+    config_sha256: str | None = None
+    path_count: int | None = None
+    preflight_missing: list[str] | None = None
 
 
 class LogCollectTaskListResponse(BaseModel):

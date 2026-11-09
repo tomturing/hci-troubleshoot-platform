@@ -629,6 +629,12 @@ export interface LogCollectMessageOptions {
   dateTo?: string
   ips?: string
   extraPaths?: string[]
+  /**
+   * 平台生成的 acli `-c` 配置原文（只含 paths）与其摘要。
+   * 前端只负责透传，不得自行拼装或展示为可编辑项；bridge 会二次校验并回读比对。
+   */
+  configJson?: string
+  configSha256?: string
   remoteUrl?: string
   /** transfer / stat 专用：HCI 上的 zip 路径 */
   sourcePath?: string
@@ -675,6 +681,8 @@ export function buildLogCollectMessage(
     date_to: options.dateTo || undefined,
     ips: options.ips || undefined,
     extra_paths: options.extraPaths?.length ? options.extraPaths : undefined,
+    config_json: options.configJson || undefined,
+    config_sha256: options.configSha256 || undefined,
     remote_url: options.remoteUrl || undefined,
     upload_ticket: options.uploadTicket || undefined,
     source_path: options.sourcePath || undefined,

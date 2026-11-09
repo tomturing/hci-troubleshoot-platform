@@ -91,6 +91,9 @@ vi.mock('@/api/terminal', async () => {
         log_action: action,
         node_ip: options.nodeIp,
         ...(options.extraPaths?.length ? { extra_paths: options.extraPaths } : {}),
+        ...(options.configJson
+          ? { config_json: options.configJson, config_sha256: options.configSha256 }
+          : {}),
       }),
     // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
     buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
@@ -110,6 +113,8 @@ vi.mock('@/api/logCollect', () => ({
     listTasks: vi.fn(),
     // 场景字典：默认返回空数组（= 平台未维护），由各用例按需覆盖
     listScenarios: vi.fn(),
+    // 自定义场景默认空：未定义时界面切回默认场景，不影响既有采集流程
+    listCustomScenarios: vi.fn(() => Promise.resolve([])),
     patchTask: vi.fn(),
     deliverTask: vi.fn(),
     getRelay: vi.fn(),
@@ -1646,6 +1651,81 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
    * 必须随 create 下发；非法路径要在提交前拦下 —— 插件把路径直接拼进
    * `cp -r`（未加引号），一个含分号的路径等于在客户节点执行命令。
    */
+  it('自定义场景固定 -m other 并把平台签发的配置透传给 bridge', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const configJson = '{"paths":"/sf/log/a"}'
+    const configSha256 = 'a'.repeat(64)
+    const created = taskFixture({ status: 'pending', progress: 0, finished_at: null, archive_path: null })
+    vi.mocked(logCollectApi.createTask).mockResolvedValue({ ...created, config_json: configJson, config_sha256: configSha256 })
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({ ...created, status: 'collecting' })
+    vi.mocked(logCollectApi.listCustomScenarios).mockResolvedValue([
+      { scenario_id: 'cs-1', revision: 2, label: '存储链路完整取证', summary: '卡慢盘', item_count: 3 },
+    ])
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64', acli_installed: true, acli_version: '1.0.1',
+          available_mb: 20480, log_server_reachable: false, http_code: 0,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'other', label: '默认场景' }],
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+
+    const mode = wrapper.findAll('.radio-btn').find((item) => item.attributes('data-value') === 'custom')
+    expect(mode).toBeTruthy()
+    await mode!.trigger('click')
+    await flushPromises()
+
+    const scenario = wrapper.findAll('.radio-btn').find((item) => item.attributes('data-value') === 'cs-1')
+    expect(scenario).toBeTruthy()
+    await scenario!.trigger('click')
+    await flushPromises()
+
+    wrapper.findComponent({ name: 'ElDatePicker' }).vm.$emit('update:modelValue', ['2026-11-03', '2026-11-05'])
+    await flushPromises()
+
+    const start = wrapper.findAll('button').find((item) => item.text() === '开始收集')
+    expect(start).toBeTruthy()
+    await start!.trigger('click')
+    await flushPromises()
+
+    // createTask 在下发前的节点对账之后才调用，必须先给一次 progress 基线
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result', log_action: 'progress', status: 'ok',
+        log_data: {
+          status: '空闲', percent: 0, done: 0, total: 0, node_state: 'none',
+          archive_path: '', hosts: [], raw: '状态：节点上没有采集任务',
+        },
+      }),
+    })
+    await flushPromises()
+
+    const payload = vi.mocked(logCollectApi.createTask).mock.calls[0][0]
+    expect(payload.custom_scenario_id).toBe('cs-1')
+    // config.modules 永不生效，专项必须由 CLI 明确给出
+    expect(payload.modules).toEqual(['other'])
+
+    const createMessage = sentMessages.find((item) => item.includes('"log_action":"create"'))
+    expect(createMessage).toBeTruthy()
+    expect(JSON.parse(createMessage!)).toMatchObject({ config_json: configJson, config_sha256: configSha256 })
+    // 自定义模式下不能再传 -p：CLI 会覆盖 config.paths
+    expect(JSON.parse(createMessage!)).not.toHaveProperty('extra_paths')
+    wrapper.unmount()
+  })
+
   it('额外路径随 create 下发到 bridge', async () => {
     mockStore.sshConnectionState = 'connected'
     mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }

@@ -1486,6 +1486,47 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		})
 
 	case "create":
+		// ── 自定义场景（acli -c）：先证明配置写对了，再下发采集 ──────────────
+		rejectConfig := func(errType, reason string) {
+			sendMsg(ws, OutMessage{
+				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
+				Status: "error", ErrorType: errType, ErrorCode: validationErrorCode(errType),
+				Message: reason, TraceID: traceID, CustomUI: cui,
+			})
+			blog("ERROR", "log_collect.config_rejected", "自定义场景配置校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"error_type": errType, "reason": reason, "ticket_no": msg.TicketNo,
+			})
+		}
+
+		var configPath string
+		var configPaths []string
+		var preflightMissing []string
+		if strings.TrimSpace(msg.ConfigJSON) != "" {
+			// -c 与 -p 不能并存：CLI 的 -p 会覆盖 config.paths（get_param 的 CLI 优先）。
+			// 平台已在服务端把 extra_paths 合并进 config；这里还收到 -p，说明调用方
+			// 是旧版本或载荷被改过，继续执行只会"看起来发了其实没发"。
+			if len(msg.ExtraPaths) > 0 {
+				rejectConfig("config_path_conflict", "自定义场景与额外路径不能同时下发，请升级客户端")
+				return
+			}
+			paths, parseErr := parseLogCollectConfig(msg.ConfigJSON)
+			if parseErr != nil {
+				rejectConfig("invalid_config", fmt.Sprintf("自定义场景配置非法：%v", parseErr))
+				return
+			}
+			path, writeErr := writeLogCollectConfig(ctx, s, firstNonEmpty(msg.ExecID, traceID), msg.ConfigJSON, msg.ConfigSHA256)
+			if writeErr != nil {
+				rejectConfig("config_write_failed", fmt.Sprintf("配置文件写入/校验失败：%v", writeErr))
+				return
+			}
+			configPath, configPaths = path, paths
+			preflightMissing = preflightLogCollectPaths(ctx, s, paths)
+			blog("INFO", "log_collect.config_written", "自定义场景配置已写入节点", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"config_path": path, "config_sha256": msg.ConfigSHA256,
+				"path_count": len(paths), "preflight_missing": preflightMissing,
+			})
+		}
+
 		command, errType, errMsg := buildLogCollectCreateCommand(msg)
 		if errType != "" {
 			sendMsg(ws, OutMessage{
@@ -1501,6 +1542,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 参数串由 buildLogCollectCreateCommand 校验并拼装，执行前必须经统一解析前缀，
 		// 与探测同源（否则非交互 PATH 缺 /sf/bin 时会 command not found）。
 		// 先保住上一次的包，再开始新的采集：产物路径固定同名，新采集会直接覆盖旧包。
+		// -c 追加在最后：配置文件路径已由平台签发、bridge 回读校验过，
+		// 且此时 msg.ExtraPaths 必为空（否则上面已拒绝），不存在 -p 覆盖风险。
+		if configPath != "" {
+			command += " -c " + shellQuote(configPath)
+		}
 		archiveStaleLogCollectArchive(ctx, s, msg.CaseID, traceID, cui)
 		output, exitCode, err := s.runCommandPty(ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
 		status := "ok"
@@ -1517,18 +1563,33 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		} else {
 			outcome = "ok"
 		}
+		// 配置文件路径与预检结论必须随 create 结果回给前端落库：
+		// 只留在桥日志里，换端/关页面后就无法回答"这次到底要收什么"。
+		var createLogData any
+		if configPath != "" {
+			createLogData = map[string]any{
+				"config_path":       configPath,
+				"config_sha256":     msg.ConfigSHA256,
+				"path_count":        len(configPaths),
+				"preflight_missing": preflightMissing,
+			}
+		}
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
 			Message: firstNonEmpty(failure, strings.TrimSpace(output)),
 			Detail:  redactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
-			TicketNo: msg.TicketNo,
+			TicketNo: msg.TicketNo, LogData: createLogData,
 		})
 		blog("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": failure,
-			"command":        redactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)),
-			"p1_ticket_used": msg.UploadTicket != "",
-			"output_preview": stripAnsi(truncateString(output, 512)),
+			"command":                 redactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)),
+			"p1_ticket_used":          msg.UploadTicket != "",
+			"config_used":             configPath != "",
+			"config_path":             configPath,
+			"path_count":              len(configPaths),
+			"preflight_missing_count": len(preflightMissing),
+			"output_preview":          stripAnsi(truncateString(output, 512)),
 		})
 
 	case "progress":
