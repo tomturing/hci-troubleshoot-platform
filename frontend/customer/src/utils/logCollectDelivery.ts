@@ -305,6 +305,22 @@ export function isStatusTransitionRejected(error: unknown): boolean {
   return code === 'LC-PLATFORM-003'
 }
 
+/**
+ * 吞掉「状态机拒绝」之后，是否仍可继续交付。
+ *
+ * 对抗性审查：`isStatusTransitionRejected` 只认错误码，而 `cancelled → uploading`
+ * 同样是 `LC-PLATFORM-003`。若无条件继续，用户取消的任务会被照常把字节发到日志
+ * 服务器——那是违背用户意图的对外副作用，必须由**服务端最新状态**裁决：
+ *
+ *   - `completed`：采集已成功、只是状态被对账推进，交付继续（本次要修的现场）；
+ *   - `cancelled` / `failed` / 其它：立即中止，绝不用交付把终态"复活"。
+ *
+ * 取不到状态（网络失败）同样中止：不确定时不做不可撤销的对外动作。
+ */
+export function canResumeDeliveryAfterReject(status?: string | null): boolean {
+  return String(status ?? '').trim() === 'completed'
+}
+
 /** 结果态横幅的三态（success 只给"已交付"，采集完成未交付必须降级为 warning）。 */
 export interface ResultHeadline {
   type: 'success' | 'warning' | 'error' | 'info'
