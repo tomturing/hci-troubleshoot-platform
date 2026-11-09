@@ -906,6 +906,89 @@ type logCollectHost struct {
 	Percent string `json:"percent,omitempty"`
 }
 
+// ── create 下发后的节点接单确认 ──────────────────────────────────────────────
+//
+// 第一性原理：exit_code=0 只证明"进程结束了"，不证明"节点建了任务"。
+// PTY 通道把 ssh.ExitError 归一化成 nil，acli 包装脚本又会吞掉内部异常，
+// 现场 Q2026110901673 因此出现「create 成功、progress 持续回收集任务不存在」。
+// 唯一可自证的正向证据是：create 之后节点真的出现 running（采集起点）。
+const (
+	logCollectCreateAckAttempts = 3
+	logCollectCreateAckInterval = 2 * time.Second
+	// 确认总预算必须远小于 handleLogCollect 的 180s 主预算：create 本身最长 180s，
+	// 若确认也占用同等预算，整条链路会被 ctx 掐断在确认阶段。
+	logCollectCreateAckBudget = 12 * time.Second
+)
+
+const (
+	logCollectAckConfirmed      = "confirmed"
+	logCollectAckNotEstablished = "not_established"
+	// 「没确认到」不等于「确认失败」：查询超时/通道抖动时保持未知，
+	// 由前端的有界等待兜底，绝不把一次正常采集判成失败。
+	logCollectAckUnknown = "unknown"
+)
+
+type logCollectCreateAckResult struct {
+	State  string   `json:"state"`
+	States []string `json:"states"`
+}
+
+// confirmLogCollectCreate 有界查询 progress，确认本次 create 是否真的被节点接单。
+//
+// run 由调用方注入（单测无需真实 SSH）。结论三态，判据从保守到确定：
+//   - 见到 running → confirmed（只认起点，不认残留的 completed 报告）；
+//   - 见到 abnormal，或每次都明确回报「无任务」→ not_established；
+//   - 查询失败、超时、出现 completed/unknown → unknown，不替节点下失败结论。
+func confirmLogCollectCreate(
+	ctx context.Context,
+	interval time.Duration,
+	run func(context.Context) (string, int, error),
+) logCollectCreateAckResult {
+	ackCtx, cancel := context.WithTimeout(ctx, logCollectCreateAckBudget)
+	defer cancel()
+	result := logCollectCreateAckResult{State: logCollectAckUnknown}
+	queryFailed := false
+	allNone := true
+	for i := 0; i < logCollectCreateAckAttempts; i++ {
+		if i > 0 {
+			select {
+			case <-ackCtx.Done():
+				return result
+			case <-time.After(interval):
+			}
+		}
+		if ackCtx.Err() != nil {
+			return result
+		}
+		output, exitCode, err := run(ackCtx)
+		if err != nil || exitCode != 0 {
+			queryFailed = true
+			result.States = append(result.States, "query_error")
+			continue
+		}
+		state := classifyLogCollectNodeState(parseLogCollectProgress(output))
+		result.States = append(result.States, state)
+		switch state {
+		case logCollectNodeRunning:
+			result.State = logCollectAckConfirmed
+			return result
+		case logCollectNodeAbnormal:
+			result.State = logCollectAckNotEstablished
+			return result
+		case logCollectNodeNone:
+			// 继续观察：create 是同步命令，但插件注册任务可能有秒级延迟。
+		default:
+			// completed 可能是上一轮任务的残留报告（acli 节点级单任务、progress 不带任务 ID，
+			// 见 Q2026110666667）；unknown 说明解析降级。两者都不能用来判失败。
+			allNone = false
+		}
+	}
+	if !queryFailed && allNone && len(result.States) == logCollectCreateAckAttempts {
+		result.State = logCollectAckNotEstablished
+	}
+	return result
+}
+
 // parseLogCollectProgress 解析插件的 progress 文本输出。
 //
 // 对抗性审查：插件版本变化可能改文案，因此解析失败必须降级为 Raw 透传，
@@ -1501,6 +1584,33 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		var configPath string
 		var configPaths []string
 		var preflightMissing []string
+		// ── spc 场景：收集清单是节点本地文件，必须逐台写入 ────────────────────
+		// sfd_main 只下发 single_collect.py，不推送 spc；每台节点各自现场读本机
+		// 那份 core.json。只写发起节点，其余节点会静默按原清单收集（缺失仅 warning），
+		// 这是本功能要消灭的"看起来成功了"。
+		var spcState *spcTaskState
+		if strings.TrimSpace(msg.SpcJSON) != "" {
+			// spc 与 -c 互斥：两者都决定"收什么"，叠加执行等于后写的静默覆盖前一个。
+			if strings.TrimSpace(msg.ConfigJSON) != "" {
+				rejectConfig("spc_config_conflict", "spc 场景与 -c 配置不能同时下发")
+				return
+			}
+			// 平台已把 extra_paths 合并进 spc 条目；还收到 -p 说明载荷来自旧客户端。
+			if len(msg.ExtraPaths) > 0 {
+				rejectConfig("spc_path_conflict", "spc 场景与额外路径不能同时下发，请升级客户端")
+				return
+			}
+			state, rejection := b.prepareSpcScenario(ctx, s, msg, traceID, cui)
+			if rejection != nil {
+				rejectConfig(rejection.ErrType, rejection.Message)
+				return
+			}
+			spcState = state
+			// 下发范围必须与写入集合逐台一致：继续用 all 会把"本轮不可达而未写入"的
+			// 节点也拉进来，采集结果就成了"平台清单 + 原清单"的混合体。
+			msg.IPs = strings.Join(state.writtenTargets(), ",")
+			msg.Modules = []string{state.Slot}
+		}
 		if strings.TrimSpace(msg.ConfigJSON) != "" {
 			// -c 与 -p 不能并存：CLI 的 -p 会覆盖 config.paths（get_param 的 CLI 优先）。
 			// 平台已在服务端把 extra_paths 合并进 config；这里还收到 -p，说明调用方
@@ -1537,6 +1647,12 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			blog("ERROR", "log_collect.rejected", "日志收集参数校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"error_type": errType, "reason": errMsg, "ticket_no": msg.TicketNo,
 			})
+			// 参数被拒 = 不会有任务，也就永远等不到"终态恢复"：写下去的平台清单
+			// 必须就地还原，否则 core 槽位会被它长期占住。回包已先发出，
+			// 恢复不占用动作预算（多节点串行可能要几十秒）。
+			if spcState != nil {
+				go b.restoreSpcTask(s, spcState, "create_rejected", traceID, msg.CaseID, msg.NodeIP, cui)
+			}
 			return
 		}
 		// 参数串由 buildLogCollectCreateCommand 校验并拼装，执行前必须经统一解析前缀，
@@ -1556,28 +1672,79 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 只写 errString(err) 会得到空串（2026-10-27 实测 19 条失败 create 的 error 全是 ""），
 		// 平台与桥侧日志都无法定因。
 		failure := errString(err)
+		// 接单确认结论必须随 create 回包与事件一起落库：事后按 trace 反查时，
+		// 要能回答"当时到底有没有看见节点 running"，而不只是"exit_code=0"。
+		ackState := logCollectAckUnknown
+		var ackStates []string
 		if err != nil || exitCode != 0 {
 			status = "error"
 			code = execErrorCode(err, exitCode)
 			failure = firstNonEmpty(failure, logCollectFailureLine(output))
 		} else {
-			outcome = "ok"
+			// 第一性原理：退出码不是"任务已建立"的证据。必须正向确认一次。
+			ack := confirmLogCollectCreate(ctx, logCollectCreateAckInterval, func(ackCtx context.Context) (string, int, error) {
+				out, ec, runErr := s.runCommandPty(ackCtx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
+				return out, ec, runErr
+			})
+			ackState, ackStates = ack.State, ack.States
+			blog("INFO", "log_collect.create_ack", "下发后节点接单确认", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"ticket_no": msg.TicketNo, "result": ackState, "node_states": ackStates,
+			})
+			switch ackState {
+			case logCollectAckConfirmed:
+				outcome = "ok"
+			case logCollectAckNotEstablished:
+				status = "error"
+				code = ErrPlugTaskNotFound
+				failure = "任务下发后节点未建立采集任务（acli 退出码为 0，但 progress 持续报告任务不存在）；请核对节点 acli 版本与所选专项"
+			default:
+				// 结果未知：不替节点下失败结论，保持 ok 并留痕，由前端有界等待兜底。
+				outcome = "ok"
+				blog("WARN", "log_collect.create_ack_unknown", "下发后未能确认节点接单", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"ticket_no": msg.TicketNo, "node_states": ackStates,
+				})
+			}
 		}
 		// 配置文件路径与预检结论必须随 create 结果回给前端落库：
 		// 只留在桥日志里，换端/关页面后就无法回答"这次到底要收什么"。
-		var createLogData any
-		if configPath != "" {
-			createLogData = map[string]any{
-				"config_path":       configPath,
-				"config_sha256":     msg.ConfigSHA256,
-				"path_count":        len(configPaths),
-				"preflight_missing": preflightMissing,
-			}
+		// spc 的写入证据必须随 create 回包落库：涉及逐台改节点文件，
+		// 事后要能回答"哪几台写了、备份叫什么、现在还原了没有"，只靠桥日志不可查。
+		// 快照只算一次：回包与事件日志必须引用同一份数据，否则两边对不上。
+		var spcSlotLabel string
+		var spcHostsTrail []map[string]any
+		if spcState != nil {
+			spcSlotLabel = spcState.Slot
+			spcHostsTrail = spcPersistHosts(spcState.hostsCopy())
 		}
+		createLogData := map[string]any{
+			"create_ack":        ackState,
+			"create_ack_states": ackStates,
+		}
+		if configPath != "" {
+			createLogData["config_path"] = configPath
+			createLogData["config_sha256"] = msg.ConfigSHA256
+			createLogData["path_count"] = len(configPaths)
+			createLogData["preflight_missing"] = preflightMissing
+		}
+		if spcState != nil {
+			createLogData["spc_slot"] = spcSlotLabel
+			createLogData["spc_sha256"] = spcSHA256(msg.SpcJSON)
+			createLogData["spc_hosts"] = spcHostsTrail
+			// 落库即 pending：出现不等于已还原，还原结果由后续 restore 回执改写。
+			createLogData["restore_status"] = "pending"
+		}
+		// create 的完整输出是定位「exit_code=0 但节点没建任务」的唯一物证。
+		// 旧实现只留前 512 字节预览，而 Python Traceback 的最后一行（真正的异常类型）
+		// 恰好在尾部，被切掉后现场无法定因（2026-11-09 Q2026110901673）。
+		// 头尾保留 + 票据脱敏：既留住尾部异常，也不能把 Bearer 写进日志和 DB。
+		// 输出上限 64KiB，避免异常刷屏把日志与 WS 报文变成无界存储。
+		safeOutput := stripAnsi(redactUploadTicket(redactSensitiveText(output), msg.UploadTicket))
+		createEvidence := formatOutputPreview(safeOutput, 48*1024, 16*1024)
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
-			Message: firstNonEmpty(failure, strings.TrimSpace(output)),
+			Status: status, ExitCode: exitCode, Raw: createEvidence, ErrorCode: code,
+			// Message 只做短摘要：完整证据走 Raw，避免把 64KiB 原文塞进异常与提示。
+			Message: firstNonEmpty(failure, strings.TrimSpace(truncateString(safeOutput, 500))),
 			Detail:  redactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo, LogData: createLogData,
 		})
@@ -1589,8 +1756,27 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"config_path":             configPath,
 			"path_count":              len(configPaths),
 			"preflight_missing_count": len(preflightMissing),
-			"output_preview":          stripAnsi(truncateString(output, 512)),
+			"create_ack":              ackState,
+			"create_ack_states":       ackStates,
+			"output_len":              len(safeOutput),
+			"output_truncated":        len(safeOutput) > 48*1024+16*1024,
+			// 同一条链路 ID 贯穿 create 事件、WS 回包与任务 detail，事后可按 trace 反查全部证据。
+			"output_preview": createEvidence,
+			"spc_used":       spcState != nil,
+			"spc_slot":       spcSlotLabel,
+			"spc_hosts":      spcHostsTrail,
 		})
+		if spcState != nil {
+			if status != "ok" {
+				// 任务没建立就没有终态可等：立刻还原，别让平台清单占着槽位。
+				// 回包已发出，恢复是集合性串行操作，放进协程不占动作预算。
+				go b.restoreSpcTask(s, spcState, "create_failed", traceID, msg.CaseID, msg.NodeIP, cui)
+			} else {
+				// 终态恢复交给常驻进程：平台侧轮询只在页面打开时发生，
+				// 操作员一关页面就没人收尾，节点会一直挂着平台清单。
+				b.watchSpcRestore(s, spcState, traceID, msg.CaseID, msg.NodeIP, cui)
+			}
+		}
 
 	case "progress":
 		output, exitCode, err := s.runCommandPty(ctx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
@@ -1774,11 +1960,34 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"output_preview": stripAnsi(truncateString(output, 512)),
 		})
 
+	case "restore_spc":
+		// 平台侧兜底入口：bridge 进程被杀/重启后内存态丢失，终态恢复协程也就没了。
+		// 备份名自描述（<file>.platform.<task_id>.bak），因此不需要内存也能重放恢复。
+		// 双路径都幂等：备份不存在返回 skipped，绝不把"没备份"报成"已恢复"。
+		logData, restoreErrType, restoreErrMsg := b.handleSpcRestore(ctx, s, msg)
+		restoreStatus := "ok"
+		restoreCode := ""
+		if restoreErrType != "" {
+			restoreStatus = "error"
+			restoreCode = validationErrorCode(restoreErrType)
+		} else {
+			outcome = "ok"
+		}
+		sendMsg(ws, OutMessage{
+			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
+			Status: restoreStatus, ErrorType: restoreErrType, ErrorCode: restoreCode,
+			Message: restoreErrMsg, LogData: logData, TraceID: traceID, CustomUI: cui,
+		})
+		blog("INFO", "log_collect.spc_restore_requested", "平台请求恢复场景槽位", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"task_id": msg.ExecID, "spc_slot": msg.SpcSlot,
+			"status": restoreStatus, "error_type": restoreErrType, "message": restoreErrMsg,
+		})
+
 	default:
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: "error", ErrorType: "invalid_action", ErrorCode: ErrPlugInvalidAction,
-			Message: "log_action 仅支持 probe / create / progress / cancel / stat / transfer",
+			Message: "log_action 仅支持 probe / create / progress / cancel / stat / transfer / restore_spc",
 			TraceID: traceID, CustomUI: cui,
 		})
 	}

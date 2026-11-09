@@ -1,0 +1,4 @@
+[
+  {"note":  "卡慢盘专项"},
+  {"action": "script", "path": "log_slow_disk.py", "docker": "vt", "interpreter": "python"}
+]

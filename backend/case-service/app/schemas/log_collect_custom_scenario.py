@@ -15,52 +15,74 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # 与 bridge 的 logCollectPathRe 同源；`{date}` 先替换成单字符再校验。
 # 注意这里刻意不允许 `*`：config 的 paths 不做 glob，`*` 只会静默跳过。
 _PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_./-]+$")
+# spc 侧 copy 允许 * 与 {date}：插件自己做 glob 与占位替换，不经过 shell。
+_COPY_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_./*-]+$")
+_SCRIPT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 _DATE_PLACEHOLDER = "{date}"
 
 MAX_ITEMS = 200
 MAX_PATH_LENGTH = 512
 CODE_PATTERN = r"^[a-z][a-z0-9_]{1,31}$"
 
-ScenarioSource = Literal["visual", "json"]
+ScenarioSource = Literal["visual", "json", "spc"]
+ScenarioAction = Literal["copy", "command", "script"]
 ScenarioReviewState = Literal["pending_review", "approved"]
 ScenarioCategory = Literal["log", "config", "file"]
 
 
 class CustomScenarioItem(BaseModel):
-    """一个路径项。
+    """一个收集条目。
 
-    category 只用于管理端分组展示，不进 config —— acli 不认识业务分类。
+    action 决定 path 的语义，校验必须跟着分叉：copy 允许通配与 {date}
+    （spc 侧由插件处理），script 只能是脚本名，command 是节点上执行的命令、
+    只允许管理端写入。
     """
 
+    action: ScenarioAction = "copy"
     path: str = Field(min_length=1, max_length=MAX_PATH_LENGTH)
     category: ScenarioCategory = "log"
     note: str | None = Field(default=None, max_length=100)
+    filters: list[dict[str, Any]] = Field(default_factory=list)
+    date_placeholders: list[dict[str, Any]] = Field(default_factory=list)
+    docker: str | None = Field(default=None, max_length=32)
+    interpreter: str | None = Field(default=None, max_length=64)
 
     @field_validator("path")
     @classmethod
     def _validate_path(cls, value: str) -> str:
         raw = (value or "").strip()
         if not raw:
-            raise ValueError("路径不能为空")
-        if not raw.startswith("/"):
-            raise ValueError("路径必须是绝对路径（以 / 开头）")
-        if ".." in raw:
-            raise ValueError("路径不允许包含 ..（禁止路径穿越）")
-        # 只放行 {date}：其余花括号/引号/通配符一律拒绝。
-        probe = raw.replace(_DATE_PLACEHOLDER, "D")
-        if not _PATH_PATTERN.match(probe):
-            raise ValueError(
-                "路径只允许字母、数字、下划线、点、斜杠、短横线与 {date} 占位，且不能包含空格、逗号或通配符"
-            )
+            raise ValueError("path 不能为空")
+        if "\n" in raw or "\r" in raw or "\x00" in raw:
+            raise ValueError("path 不能包含换行或空字符")
         return raw
+
+    @model_validator(mode="after")
+    def _validate_by_action(self):
+        if self.action == "copy":
+            if not self.path.startswith("/"):
+                raise ValueError("copy 条目必须是绝对路径（以 / 开头）")
+            if ".." in self.path:
+                raise ValueError("路径不允许包含 ..（禁止路径穿越）")
+            if "," in self.path:
+                raise ValueError("路径不能包含逗号")
+            probe = self.path.replace(_DATE_PLACEHOLDER, "D").replace("*", "D")
+            if not _COPY_PATH_PATTERN.match(probe):
+                raise ValueError("copy 路径只允许字母、数字、下划线、点、斜杠、短横线、* 与 {date}")
+        elif self.action == "script":
+            if not _SCRIPT_NAME_PATTERN.match(self.path):
+                raise ValueError("script 只允许脚本文件名（字母、数字、下划线、点、短横线）")
+        elif len(self.path) > 2000:
+            raise ValueError("command 不能超过 2000 字符")
+        return self
 
 
 def _normalize_items(items: list[CustomScenarioItem] | None) -> list[CustomScenarioItem]:

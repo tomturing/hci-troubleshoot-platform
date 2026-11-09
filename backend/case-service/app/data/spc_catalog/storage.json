@@ -1,0 +1,4 @@
+[
+  {"note":  "虚拟存储专项"},
+  {"action": "script", "path": "collect_vs_log.py", "docker": "vt", "interpreter": "python"}
+]

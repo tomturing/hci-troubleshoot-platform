@@ -4,6 +4,7 @@ import {
   buildSyncNotice,
   decideNodeSync,
   classifyUploadState,
+  CREATE_ACK_GRACE_MS,
   DELIVERY_EVIDENCE_WAIT_MS,
   fallbackNodeState,
   hashReport,
@@ -165,8 +166,60 @@ describe('decideNodeSync 节点态直映射', () => {
     ).toBe('patch_completed')
   })
 
-  it('采集中 + 节点已无任务且无包 → 采集中断，判失败', () => {
-    expect(decideNodeSync({ platformStatus: 'collecting', nodeState: 'none' }).action).toBe('patch_failed')
+  // 回归护栏（工单 Q2026110901673）：create 是同步命令，但插件注册任务有秒级延迟。
+  // 旧实现在 create 后 6 秒就把「节点无任务」写成 failed，且文案误称「采集中断」。
+  it('采集中 + 节点无任务 + 本次亲自下发且未超接单宽限 → 有界等待，不写终态', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'none',
+      requireSessionAdopt: true,
+      sessionAdopted: false,
+      taskAgeMs: 5_000,
+    })
+    expect(action.action).toBe('wait_refresh')
+    expect(action.reason).toContain('尚未接单')
+  })
+
+  it('采集中 + 节点无任务 + 超接单宽限 → 判失败并带规范码', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'none',
+      requireSessionAdopt: true,
+      sessionAdopted: false,
+      taskAgeMs: CREATE_ACK_GRACE_MS + 1,
+    })
+    expect(action.action).toBe('patch_failed')
+    expect(action.errorCode).toBe('LC-PLUGIN-008')
+    expect(action.reason).toContain('未建立采集任务')
+  })
+
+  it('采集中 + 曾见过 running 后节点无任务 → 仍是采集中断且不等宽限', () => {
+    const action = decideNodeSync({
+      platformStatus: 'collecting',
+      nodeState: 'none',
+      requireSessionAdopt: true,
+      sessionAdopted: true,
+      taskAgeMs: 5_000,
+    })
+    expect(action.action).toBe('patch_failed')
+    expect(action.reason).toBe('节点上已无任务，采集中断')
+  })
+
+  it('采集中 + 节点无任务 + 接管历史任务 → 不等宽限', () => {
+    expect(
+      decideNodeSync({
+        platformStatus: 'collecting',
+        nodeState: 'none',
+        requireSessionAdopt: false,
+        taskAgeMs: 5_000,
+      }).action,
+    ).toBe('patch_failed')
+  })
+
+  it('采集中 + 节点已无任务且无包 → 判失败并补齐错误码', () => {
+    const action = decideNodeSync({ platformStatus: 'collecting', nodeState: 'none' })
+    expect(action.action).toBe('patch_failed')
+    expect(action.errorCode).toBe('LC-PLUGIN-008')
   })
 
   it('平台失败但节点仍在跑 → 接管', () => {

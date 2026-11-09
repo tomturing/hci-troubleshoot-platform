@@ -4000,7 +4000,7 @@ CREATE TABLE IF NOT EXISTS log_collect_custom_scenario (
     CONSTRAINT uq_log_collect_custom_scenario_code_revision UNIQUE (code, revision),
     CONSTRAINT ck_log_collect_custom_scenario_revision CHECK (revision >= 1),
     CONSTRAINT ck_log_collect_custom_scenario_item_count CHECK (item_count >= 0),
-    CONSTRAINT ck_log_collect_custom_scenario_source CHECK ((source)::text = ANY ((ARRAY['visual'::character varying, 'json'::character varying])::text[])),
+    CONSTRAINT ck_log_collect_custom_scenario_source CHECK ((source)::text = ANY ((ARRAY['visual'::character varying, 'json'::character varying, 'spc'::character varying])::text[])),
     CONSTRAINT ck_log_collect_custom_scenario_review_state CHECK ((review_state)::text = ANY ((ARRAY['pending_review'::character varying, 'approved'::character varying])::text[]))
 );
 
@@ -4012,7 +4012,7 @@ COMMENT ON COLUMN log_collect_custom_scenario.items IS '路径项数组：[{path
 COMMENT ON COLUMN log_collect_custom_scenario.item_count IS '路径条数（冗余，用于列表展示与上限校验，避免每次解析 jsonb）';
 COMMENT ON COLUMN log_collect_custom_scenario.config_sha256 IS '下发内容（{"paths": "..."}）的 SHA-256，任务侧据此证明用了哪份配置';
 COMMENT ON COLUMN log_collect_custom_scenario.config_bytes IS '下发内容字节数，用于限制配置文件大小';
-COMMENT ON COLUMN log_collect_custom_scenario.source IS '创建方式：visual=勾选列表；json=JSON 导入';
+COMMENT ON COLUMN log_collect_custom_scenario.source IS '创建方式：visual=勾选列表；json=JSON 导入；spc=spc 收集定义';
 COMMENT ON COLUMN log_collect_custom_scenario.review_state IS '文案审核状态；自定义场景直接面向客户，未审核项不得启用';
 
 CREATE INDEX IF NOT EXISTS idx_log_collect_custom_scenario_latest
@@ -4029,6 +4029,10 @@ ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS config_path text;
 ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS config_sha256 char(64);
 ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS path_count integer;
 ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS preflight_missing jsonb;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS spc_slot varchar(32);
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS spc_sha256 varchar(64);
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS spc_hosts jsonb;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS restore_status varchar(16) NOT NULL DEFAULT 'none';
 
 COMMENT ON COLUMN log_collect_task.custom_scenario_id IS '选用的自定义场景 ID（可空）；与 modules 并存：场景只追加路径，不替代专项';
 COMMENT ON COLUMN log_collect_task.custom_scenario_revision IS '场景版本快照：保证历史任务能解释“当时收的是什么”';
@@ -4036,6 +4040,10 @@ COMMENT ON COLUMN log_collect_task.config_path IS '节点上的配置文件绝�
 COMMENT ON COLUMN log_collect_task.config_sha256 IS '下发配置内容摘要；与场景侧 config_sha256 一致才允许执行';
 COMMENT ON COLUMN log_collect_task.path_count IS '展开日期占位后的实际路径条数';
 COMMENT ON COLUMN log_collect_task.preflight_missing IS '下发前预检未命中的路径数组；非空时前端须提示用户确认';
+COMMENT ON COLUMN log_collect_task.spc_slot IS '被覆写的 spc 槽位（固定 core）';
+COMMENT ON COLUMN log_collect_task.spc_sha256 IS '覆写的场景清单摘要，用于核对写入内容与下发内容一致';
+COMMENT ON COLUMN log_collect_task.spc_hosts IS '扇出写入结果：每台节点的 ip/backup/error';
+COMMENT ON COLUMN log_collect_task.restore_status IS 'none/pending/success/failed：终态恢复是否已还原原清单';
 
 
 -- ------------------------------------------------------------

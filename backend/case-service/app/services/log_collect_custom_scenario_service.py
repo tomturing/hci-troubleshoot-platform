@@ -60,6 +60,51 @@ def serialize_config(items: list[dict[str, Any]]) -> tuple[str, str, int]:
     return body, hashlib.sha256(encoded).hexdigest(), len(encoded)
 
 
+def serialize_spc(items: list[dict[str, Any]]) -> tuple[str, str, int]:
+    """把平台模型序列化成 spc/<slot>.json 的内容。
+
+    与 config 的差别：保留 action/filters/date_placeholders/docker/interpreter，
+    不做任何简化；filters 里的 START/END 原样保留，由插件按 -d 注入时间范围。
+    """
+    payload: list[dict[str, Any]] = []
+    current_note: str | None = None
+    for item in items:
+        note = str(item.get("note") or "").strip()
+        if note and note != current_note:
+            payload.append({"note": note})
+            current_note = note
+        entry: dict[str, Any] = {"action": item.get("action") or "copy", "path": item["path"]}
+        for key in ("filters", "date_placeholders", "docker", "interpreter"):
+            value = item.get(key)
+            if value:
+                entry[key] = value
+        payload.append(entry)
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    encoded = body.encode("utf-8")
+    return body, hashlib.sha256(encoded).hexdigest(), len(encoded)
+
+
+def _validate_items_for_source(items: list[dict[str, Any]], source: str) -> None:
+    # -c 通道只做逐条 cp -r：非 copy、通配符、filters 都会被静默跳过，必须在这里拒绝。
+    if source == "spc":
+        return
+    for index, item in enumerate(items):
+        if item.get("action", "copy") != "copy":
+            raise ValueError(f"第 {index + 1} 条：-c 通道只支持 copy 条目")
+        if "*" in str(item.get("path", "")):
+            raise ValueError(f"第 {index + 1} 条：-c 通道不支持通配符")
+        if item.get("filters"):
+            raise ValueError(f"第 {index + 1} 条：-c 通道不支持 filters")
+
+
+def _serialize(items: list[dict[str, Any]], source: str) -> tuple[str, str, int]:
+    """按通道选择序列化器：两条通道的产物完全不同，绝不能混用。"""
+    _validate_items_for_source(items, source)
+    if source == "spc":
+        return serialize_spc(items)
+    return serialize_config(items)
+
+
 def _row_to_response(row: Any) -> LogCollectCustomScenarioResponse:
     data = dict(row)
     raw_items = data.get("items") or []
@@ -145,7 +190,7 @@ class LogCollectCustomScenarioService:
         self, payload: LogCollectCustomScenarioCreate, *, actor: str | None
     ) -> LogCollectCustomScenarioResponse:
         items = [item.model_dump() for item in payload.items]
-        config_text, sha256, size = serialize_config(items)
+        config_text, sha256, size = _serialize(items, payload.source)
         result = await self.session.execute(
             text(
                 f"""
@@ -204,7 +249,7 @@ class LogCollectCustomScenarioService:
         if "items" in changes and changes["items"] is not None:
             items = payload.items or []
         item_dicts = [item.model_dump() for item in items]
-        config_text, sha256, size = serialize_config(item_dicts)
+        config_text, sha256, size = _serialize(item_dicts, current.source)
 
         next_revision = current.revision + 1
         result = await self.session.execute(
@@ -283,7 +328,7 @@ class LogCollectCustomScenarioService:
         items = [item.model_dump() for item in payload.items]
         if len(items) > MAX_ITEMS:
             raise ValueError(f"路径条数不能超过 {MAX_ITEMS}")
-        _, _, size = serialize_config(items)
+        _, _, size = _serialize(items, payload.source)
         return len(items), size
 
 
