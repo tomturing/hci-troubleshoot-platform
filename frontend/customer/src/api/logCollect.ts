@@ -176,6 +176,12 @@ export interface LogCollectTask {
   path_count?: number | null
   config_path?: string | null
   preflight_missing?: string[] | null
+  /** spc 场景：原文只在创建响应出现；回执补 slot/sha/hosts/restore。 */
+  spc_json?: string | null
+  spc_sha256?: string | null
+  spc_slot?: string | null
+  spc_hosts?: Array<{ ip: string; backup?: string; error?: string }> | null
+  restore_status?: string | null
   status: LogCollectStatus
   progress: number
   /** P1 直传时创建即带上传地址；老记录没有 upload_mode，用它兜底判定交付路径 */

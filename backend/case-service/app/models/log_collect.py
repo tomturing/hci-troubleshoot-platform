@@ -104,6 +104,13 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     path_count = Column(Integer, nullable=True)
     # 下发前预检未命中的路径：非空意味着"这次可能少收"，必须让用户看见。
     preflight_missing = Column(JSONB, nullable=True)
+    # spc 场景：清单是节点本地文件，bridge 逐台覆写后再下发。
+    # 必须落库"写了哪几台、备份叫什么、还原了没有"——否则事后无法判断
+    # 节点上残留的是平台清单还是原件，也无法知道哪台需要人工兜底。
+    spc_slot = Column(String(32), nullable=True)
+    spc_sha256 = Column(String(64), nullable=True)
+    spc_hosts = Column(JSONB, nullable=True)
+    restore_status = Column(String(16), nullable=False, default="none", server_default="'none'")
     detail = Column(JSONB, nullable=False, default=dict)
     error_code = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)

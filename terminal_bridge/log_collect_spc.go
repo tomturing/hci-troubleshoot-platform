@@ -36,8 +36,8 @@ func buildSpcFindCommand() string {
 	return "find /sf/data/local -maxdepth 6 -type d -name spc -path '*support_bundle_cluster*' 2>/dev/null"
 }
 
-// pickSpcDir 解析探测结果：0 个视为未安装，多个视为无法确定，都不猜。
-func pickSpcDir(output string) (string, error) {
+// parseSpcDirs 归一化目录探测输出：去空行、去重、只留绝对路径、排序。
+func parseSpcDirs(output string) []string {
 	dirs := make([]string, 0, 2)
 	seen := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
@@ -49,6 +49,12 @@ func pickSpcDir(output string) (string, error) {
 		dirs = append(dirs, dir)
 	}
 	sort.Strings(dirs)
+	return dirs
+}
+
+// pickSpcDir 解析探测结果：0 个视为未安装，多个视为无法确定，都不猜。
+func pickSpcDir(output string) (string, error) {
+	dirs := parseSpcDirs(output)
 	switch len(dirs) {
 	case 0:
 		return "", fmt.Errorf("未找到 spc 目录（该节点可能未安装日志收集插件）")
@@ -56,6 +62,20 @@ func pickSpcDir(output string) (string, error) {
 		return dirs[0], nil
 	default:
 		return "", fmt.Errorf("找到多个 spc 目录，拒绝猜测：%s", strings.Join(dirs, ", "))
+	}
+}
+
+// spcResolveDir 是 pickSpcDir 的"错误码版"：扇出逐台失败要按稳定码归类，
+// 而不是把自由文本拼进回执（前端与平台都要按码做提示与统计）。
+func spcResolveDir(output string) (string, string) {
+	dirs := parseSpcDirs(output)
+	switch len(dirs) {
+	case 0:
+		return "", spcErrDirMissing
+	case 1:
+		return dirs[0], ""
+	default:
+		return "", spcErrDirAmbiguous
 	}
 }
 

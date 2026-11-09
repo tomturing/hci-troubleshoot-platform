@@ -380,6 +380,13 @@ const p1UnavailableReason = computed(() => {
   return ''
 })
 const currentTask = ref<LogCollectTask | null>(null)
+// spc 场景：平台清单是否仍覆写在节点的 core 槽位上（true = 需要还原）。
+// 只当"要不要发 restore_spc"的开关用，不参与采集状态判定——采集可能早已 completed，
+// 而槽位还原是独立于采集的生命周期事实。
+const spcPendingRestore = ref(false)
+// 逐台写入证据：还原只能靠 backup 名（<file>.platform.<task_id>.bak）重放，
+// 因此这几项必须随任务落库并展示，否则换端后无法判断哪台残留平台清单。
+const spcHosts = ref<Array<{ ip: string; backup?: string; error?: string }>>([])
 // 面板视图：form = 新建收集；result = 该工单已完成收集的只读结果
 const viewMode = ref<'form' | 'result'>('form')
 const resultTask = ref<LogCollectTask | null>(null)
@@ -1209,6 +1216,75 @@ const resultFailureText = computed(() => {
   return `${code}${task.error_message || '平台未记录失败原因（可在桥日志中按工单号检索）'}`
 })
 
+/**
+ * spc 场景的槽位还原卡片。
+ *
+ * 这条信息与采集结论正交：任务可能早已 completed，节点上的 core.json 却仍是平台清单。
+ * 只在真的动过节点清单时出现（restore_status=none 且无逐台证据 → 不渲染），
+ * 避免给普通 -c 场景平白多出一行"正在还原"。
+ */
+const spcRestoreCard = computed(() => {
+  const task = resultTask.value
+  if (!task) return null
+  const status = task.restore_status ?? 'none'
+  const hosts = task.spc_hosts ?? []
+  if (status === 'none' && hosts.length === 0) return null
+  const written = hosts.filter((host) => !host.error)
+  const rejected = hosts.filter((host) => host.error)
+  const label =
+    status === 'success'
+      ? '已还原为节点原清单'
+      : status === 'failed'
+        ? '还原未完成'
+        : '待还原'
+  const tone = status === 'success' ? 'success' : status === 'failed' ? 'error' : 'warning'
+  // 备份名是唯一的恢复依据（<file>.platform.<task_id>.bak），必须让用户看到可追溯，
+  // 但它不是删除目标：界面只解释"改过哪几台"，不作为清理指引。
+  const tip = [
+    written.length ? `${written.length} 台节点使用过平台清单` : '',
+    rejected.length ? `${rejected.length} 台写入失败` : '',
+    status === 'success'
+      ? '节点已回到采集前状态'
+      : '备份仍在节点上，可重试还原',
+  ]
+    .filter(Boolean)
+    .join('；')
+  return { label, tone, tip, canRetry: status !== 'success' }
+})
+
+const spcRetrying = ref(false)
+
+/**
+ * 重试还原：bridge 后台协程与主流程收尾都失效（进程重启 + 页面已关）时的人工兜底。
+ * 每次新建连接——此刻不在采集中，复用长连接只会拿到可能已被关闭的 socket。
+ */
+async function retrySpcRestore(): Promise<void> {
+  const task = resultTask.value ?? currentTask.value
+  if (!task || spcRetrying.value) return
+  spcRetrying.value = true
+  let ws: WebSocket | null = null
+  try {
+    ws = await openSocket()
+    spcPendingRestore.value = true
+    await restoreSpcSlot(ws, task.task_id)
+    // 回读平台记录：还原结论要由服务端确认，不能用本地 ref 自证。
+    const fresh = await logCollectApi.getTask(task.task_id).catch(() => null)
+    if (fresh) {
+      resultTask.value = fresh
+      spcHosts.value = fresh.spc_hosts ?? spcHosts.value
+    }
+  } catch (error: any) {
+    ElMessage.warning(error?.message || '还原请求未能发出，请确认桥连接正常')
+  } finally {
+    spcRetrying.value = false
+    try {
+      ws?.close()
+    } catch {
+      /* 关闭失败不影响结论 */
+    }
+  }
+}
+
 const resultCleanupTip = computed(() => {
   const task = resultTask.value
   if (!task || task.archive_deleted) return ''
@@ -1770,6 +1846,8 @@ function sendAndWait(
     | 'stat'
     | 'transfer'
     | 'acli_sync'
+    // 平台兜底还原 spc 槽位：bridge 后台协程会做一次，这里用于重放（幂等）
+    | 'restore_spc'
     | 'delivery_submit'
     | 'delivery_status'
     | 'delivery_resume'
@@ -1841,7 +1919,14 @@ function sendAndWait(
           props.caseId,
           // 上面的分支已排除 acli_sync / delivery_*，走到这里只剩真正的 log_collect 动作，
           // 显式收窄，避免带前缀的联合类型被 TS 拒绝（TS2345）。
-          action as 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer',
+          action as
+            | 'probe'
+            | 'create'
+            | 'progress'
+            | 'cancel'
+            | 'stat'
+            | 'transfer'
+            | 'restore_spc',
           {
             ...(options as any),
             nodeIp: nodeIp.value,
@@ -1883,6 +1968,10 @@ async function resumeTask(taskId: string) {
     resumedTaskId.value = taskId
     // 基线跟着任务走：关面板 / 换浏览器 / 重启后接管，仍能判断报告归属
     baselineReportHash.value = String((task.detail ?? {})['baseline_report_hash'] ?? '')
+    // spc 生命周期事实必须随任务继承：上次可能没走完还原（关页面 / bridge 重启），
+    // 若这里默认 false，界面会显示"已还原"而节点上还留着平台清单。
+    spcPendingRestore.value = task.restore_status === 'pending'
+    spcHosts.value = task.spc_hosts ?? []
     // 关键：把"这次下发到底收了什么"回填到表单。
     // 平台记录里一直有 modules / 时间范围 / 目标主机，但旧实现接管时只更新进度，
     // 表单仍是空白默认值 → 用户只能看到"采集 0%"，看不到收集内容。
@@ -2220,6 +2309,11 @@ async function handleStart() {
     return
   }
 
+  // 新一轮收集先清空上一轮的 spc 生命周期事实：残留的 pending 会在 finally 里
+  // 对着新任务发 restore_spc，把"根本没动过清单"的任务标成 pending/success。
+  spcPendingRestore.value = false
+  spcHosts.value = []
+
   // 自定义模式没选场景时不能静默回落到"只跑 other"：那会让用户以为
   // 自己指定的路径被收了，实际一条都没下发。
   if (form.scenarioMode === 'custom' && !form.customScenarioId) {
@@ -2470,6 +2564,9 @@ async function handleStart() {
         // 平台签发的配置原文与摘要只在创建响应里出现一次，前端纯透传。
         configJson: task.config_json || undefined,
         configSha256: task.config_sha256 || undefined,
+        // spc 场景：原文与摘要直接透传，bridge 负责扇出写入与终态恢复。
+        spcJson: task.spc_json || undefined,
+        spcSha256: task.spc_sha256 || undefined,
         remoteUrl: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // bridge 会把它注入成 `-L 0:Authorization:Bearer <ticket>`
         uploadTicket: p1Ticket || undefined,
@@ -2507,6 +2604,37 @@ async function handleStart() {
       if (configReceipt.preflight_missing?.length) {
         ElMessage.warning(
           `有 ${configReceipt.preflight_missing.length} 条路径在发起节点上不存在，可能不会被收集`,
+        )
+      }
+    }
+
+    // spc 回执：此刻平台清单正覆写在每台节点的 core 槽位上，备份已就位。
+    // 逐台证据必须落库——换端/关页面后，只看桥日志无法回答"改了哪几台、
+    // 备份叫什么"，而恢复只能靠备份名（<file>.platform.<task_id>.bak）重放。
+    const spcReceipt = (created.log_data ?? {}) as {
+      spc_slot?: string
+      spc_sha256?: string
+      spc_hosts?: Array<{ ip: string; backup?: string; error?: string }>
+      restore_status?: string
+    }
+    if (spcReceipt.spc_slot || spcReceipt.spc_hosts?.length) {
+      spcPendingRestore.value = true
+      spcHosts.value = spcReceipt.spc_hosts ?? []
+      try {
+        await logCollectApi.patchTask(task.task_id, {
+          spc_slot: spcReceipt.spc_slot ?? 'core',
+          spc_sha256: spcReceipt.spc_sha256,
+          spc_hosts: spcReceipt.spc_hosts ?? [],
+          restore_status: spcReceipt.restore_status ?? 'pending',
+        })
+      } catch (patchError: any) {
+        // 证据丢失不改变采集事实，但恢复要靠它：必须可见，不能静默吞掉。
+        console.warn('[log-collect] spc 回执落库失败', patchError?.message || patchError)
+      }
+      const missing = (spcReceipt.spc_hosts ?? []).filter((host) => host.error)
+      if (missing.length) {
+        ElMessage.warning(
+          `有 ${missing.length} 台节点未能写入场景清单，已在发起节点前中止本次采集`,
         )
       }
     }
@@ -2573,6 +2701,12 @@ async function handleStart() {
         startAutoSync(
           TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL,
         )
+      }
+      // spc 槽位必须在流程退出时还原：失败/取消同样要撤掉平台清单，
+      // 否则下一次采集会拿着上一轮的场景继续收，且没人知道它来自哪里。
+      // 旧流程（token 已换代）不得插手新任务的节点状态。
+      if (token === runToken && spcPendingRestore.value && currentTask.value) {
+        void restoreSpcSlot(ws, currentTask.value.task_id)
       }
     }
   }
@@ -3536,6 +3670,50 @@ async function cancelAndRetry() {
   stage.value = 'idle'
   errorMessage.value = ''
   await handleStart()
+}
+
+/**
+ * 收尾还原 spc 槽位。
+ *
+ * 为什么平台还要主动发一次：bridge 的内存态随进程消失（重启/被杀），
+ * 那时后台恢复协程已经不存在，而"平台清单留在节点"只有备份名这一个可复原依据。
+ * 这里把还原变成确定性收尾，而不是"希望后台协程还活着"。
+ *
+ * 幂等：节点上备份不存在时 bridge 返回 skipped，仍按 success 记。
+ * 写库口径：只有拿到逐台结果才写 restore_status；通道异常一律保持 pending——
+ * 把"结果未知"写成 failed 与 relay 误判（Q2026110601054）是同一类错误。
+ */
+async function restoreSpcSlot(ws: WebSocket, taskId: string): Promise<void> {
+  if (ws.readyState !== WebSocket.OPEN) return
+  try {
+    const result = await sendAndWait(
+      ws,
+      'restore_spc',
+      { ticketNo: props.caseId, execId: taskId },
+      200000,
+    )
+    const data = (result.log_data ?? {}) as {
+      restore_status?: string
+      spc_hosts?: Array<{ ip: string; backup?: string; error?: string }>
+    }
+    const status = result.status === 'ok' ? String(data.restore_status || 'success') : ''
+    if (!status) {
+      console.warn('[log-collect] 场景槽位还原失败', result.message || result.error_code)
+      return
+    }
+    spcPendingRestore.value = status !== 'success'
+    if (data.spc_hosts?.length) spcHosts.value = data.spc_hosts
+    await logCollectApi
+      .patchTask(taskId, { restore_status: status, spc_hosts: spcHosts.value })
+      .catch((error: any) =>
+        console.warn('[log-collect] 还原结果落库失败', error?.message || error),
+      )
+    if (status !== 'success') {
+      ElMessage.warning('场景清单未能完整还原，可在任务详情里重试还原')
+    }
+  } catch (error: any) {
+    console.warn('[log-collect] 场景槽位还原请求异常', error?.message || error)
+  }
 }
 
 async function pollUntilCollected(
@@ -4619,6 +4797,24 @@ onBeforeUnmount(() => {
           <el-descriptions-item label="归档状态">{{ resultArchiveText }}</el-descriptions-item>
           <el-descriptions-item label="完整性">{{ resultIntegrityText }}</el-descriptions-item>
           <!--
+            spc 场景的第三类事实：采集成功 ≠ 节点已收拾干净。core.json 被平台清单覆写过，
+            没还原回来就没人知道下一次采集读的是谁的定义，所以必须单独一行并可重试。
+          -->
+          <el-descriptions-item v-if="spcRestoreCard" label="场景清单" :span="descColumns">
+            <div class="lc-spc-restore">
+              <el-tag :type="spcRestoreCard.tone" size="small">{{ spcRestoreCard.label }}</el-tag>
+              <span class="lc-hint">{{ spcRestoreCard.tip }}</span>
+              <el-button
+                v-if="spcRestoreCard.canRetry"
+                size="small"
+                :loading="spcRetrying"
+                @click="retrySpcRestore"
+              >
+                重试还原
+              </el-button>
+            </div>
+          </el-descriptions-item>
+          <!--
             failed / cancelled 才出现：失败原因是采集结论的一部分，不是可选调试信息。
             顶部提示条说"失败原因见下方错误信息"，就必须真的有这一行。
           -->
@@ -5253,6 +5449,16 @@ onBeforeUnmount(() => {
 /* 选择与探测结论冲突时只加色不改文案：提示必须同时说清"劝你别选"和"但你仍可以选" */
 .lc-hint-warn {
   color: var(--el-color-warning);
+}
+/* 场景清单还原：标签 + 说明 + 重试按钮同排，窄屏自动换行，避免按钮被挤出可视区 */
+.lc-spc-restore {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lc-spc-restore .lc-hint {
+  margin-top: 0;
 }
 /* 探测失败原文：可能夹着 acli 的日志行，必须保留空白与长串，不能截断成一句 */
 .lc-probe-detail {

@@ -635,6 +635,9 @@ export interface LogCollectMessageOptions {
    */
   configJson?: string
   configSha256?: string
+  /** spc 场景：平台生成的收集定义原文，与 configJson 互斥。 */
+  spcJson?: string
+  spcSha256?: string
   remoteUrl?: string
   /** transfer / stat 专用：HCI 上的 zip 路径 */
   sourcePath?: string
@@ -664,7 +667,9 @@ export interface LogCollectMessageOptions {
  */
 export function buildLogCollectMessage(
   caseId: string,
-  action: 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer',
+  // restore_spc：平台兜底还原场景槽位。bridge 后台也会在任务终态自动还原，
+  // 该动作用于 bridge 重启/页面关闭后按备份名幂等重放（备份不存在返回 skipped）。
+  action: 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer' | 'restore_spc',
   options: LogCollectMessageOptions = {},
 ): string {
   return JSON.stringify({
@@ -683,6 +688,8 @@ export function buildLogCollectMessage(
     extra_paths: options.extraPaths?.length ? options.extraPaths : undefined,
     config_json: options.configJson || undefined,
     config_sha256: options.configSha256 || undefined,
+    spc_json: options.spcJson || undefined,
+    spc_sha256: options.spcSha256 || undefined,
     remote_url: options.remoteUrl || undefined,
     upload_ticket: options.uploadTicket || undefined,
     source_path: options.sourcePath || undefined,
