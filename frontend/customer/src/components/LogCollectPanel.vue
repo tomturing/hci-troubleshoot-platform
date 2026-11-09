@@ -167,6 +167,16 @@ function logDeliveryDecision(
 // 否则 error_code 恒为 NULL（2026-10-27 实测 35/38），错误码目录无法统计与分流。
 let lastNodeErrorCode = ''
 
+/**
+ * 本次 create 的完整（脱敏后）节点输出。
+ *
+ * bridge 已按头尾保留，Python Traceback 的尾部异常类型不会再被 512 字节预览切掉
+ * （2026-11-09 Q2026110901673：exit_code=0 但节点从未建任务，现场查不到真因）。
+ * 只在任务失败时写进 detail.create_output：正常成功不产生额外写库。
+ * detail 在服务端按字典合并，不会冲掉 baseline_report_hash / probe。
+ */
+let createOutputEvidence = ''
+
 interface ModuleOption {
   value: LogCollectModule
   label: string
@@ -2264,6 +2274,8 @@ async function handleStart() {
   relayStatus.value = 'none'
   // 新任务重新开始：上一次失败的规范码不能带进来，否则会把旧码写到新任务上。
   lastNodeErrorCode = ''
+  // create 输出证据同样属于某一次下发，不能跨任务继承。
+  createOutputEvidence = ''
   const token = ++runToken
 
   let ws: WebSocket
@@ -2464,6 +2476,12 @@ async function handleStart() {
       },
       180000,
     )
+    // 无论 status 是否 ok 都要留证：exit_code=0 但节点没接单时，
+    // 这份输出是唯一能定位 acli 侧真因的物证。兼容旧版 bridge：
+    // 旧桥的 raw 未脱敏，落库前必须再抹一次 Bearer，且限长避免写放大。
+    createOutputEvidence = String(created.raw || '')
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [REDACTED]')
+      .slice(0, 16 * 1024)
     if (created.status !== 'ok') {
       // 下发失败的规范码必须留住：它是后面 patch failed 写库的唯一来源。
       lastNodeErrorCode = String(created.error_code || '')
@@ -2538,6 +2556,9 @@ async function handleStart() {
           // 平台侧异常同样要保留规范码——只写 axios 原文（"Request failed with
           // status code 500"）会让 error_code 永远为空，事后完全无法归因。
           error_code: lastNodeErrorCode || platformErrorCode(error) || undefined,
+          // 失败必须留下节点原始证据：只写一句「节点上已无任务」时，
+          // 事后无法区分是 acli 崩溃、专项配置错误还是会话被踢。
+          ...(createOutputEvidence ? { detail: { create_output: createOutputEvidence } } : {}),
         })
         .catch(() => undefined)
     }
@@ -3152,7 +3173,9 @@ async function syncNodeState(
                 : {
                     status: 'failed' as const,
                     error_message: normalizeErrorMessage(action.reason),
-                    error_code: lastNodeErrorCode || undefined,
+                    // 判定层给的码优先：节点从未接单时桥侧往往没有可用码，
+                    // 只能靠 action.errorCode 让 error_code 不再恒为空。
+                    error_code: action.errorCode || lastNodeErrorCode || undefined,
                   }
             // 归档核验已在判定前统一做过一次（archiveVerified），此处不再重复调用：
             // 核验明确否定时动作已被改写成 wait_delivery，根本不会走到写终态的分支。
@@ -3562,6 +3585,9 @@ async function pollUntilCollected(
           progressTotal: snapshot.total,
           expectedHosts: expectedHostCount(),
           reportRefreshed: baselineHash ? hashReport(snapshot.raw ?? '') !== baselineHash : undefined,
+          // 主流程是采集期间唯一的采样者：不把"本次亲自下发"传进判定层，
+          // create 接单宽限门永远不会生效，又会在下发后几秒把任务写成失败。
+          requireSessionAdopt: requireSessionAdopt.value,
           sessionAdopted: sessionAdoptedOf(),
           taskAgeMs: taskAgeMsOf(),
           reportTotalSeconds: reportTotalSecondsOf(snapshot),
@@ -3581,6 +3607,9 @@ async function pollUntilCollected(
           return snapshot
         }
         if (action.action === 'patch_failed') {
+          // 判定层的规范码必须带回主流程：这里的失败以 throw 收尾，
+          // 若不在抛出前留底，catch 里写库时 error_code 恒为空。
+          if (action.errorCode) lastNodeErrorCode = action.errorCode
           throw new Error(action.reason)
         }
         if (action.action === 'wait_refresh') {

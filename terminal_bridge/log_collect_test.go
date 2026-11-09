@@ -1075,3 +1075,65 @@ func TestParseLogCollectModuleCatalogEnglishFallback(t *testing.T) {
 		t.Fatalf("没有白名单枚举时不应返回目录：%+v", got)
 	}
 }
+
+// ── create 接单确认 ─────────────────────────────────────────────────────────
+// 现场 Q2026110901673：create exit_code=0，但 progress 一直回「收集任务不存在！」。
+// 这组用例锁定三条边界：只认 running、不认残留 completed、查询失败不误判失败。
+func TestConfirmLogCollectCreate(t *testing.T) {
+	const (
+		noneReport      = "状态：收集任务不存在！\n总进度：0% - 0/0"
+		runningReport   = "状态：收集任务进行中！\n总进度：10% - 1/3"
+		completedReport = "状态：收集任务已完成！\n总进度：100% - 3/3"
+		abnormalReport  = "状态：收集任务异常结束！"
+	)
+	fast := time.Millisecond
+
+	cases := []struct {
+		name   string
+		rounds []string
+		want   string
+	}{
+		{"三次都无任务判未接单", []string{noneReport, noneReport, noneReport}, logCollectAckNotEstablished},
+		{"第三轮才接单判已接单", []string{noneReport, noneReport, runningReport}, logCollectAckConfirmed},
+		{"残留完成报告不认且不下失败结论", []string{completedReport, completedReport, completedReport}, logCollectAckUnknown},
+		{"节点明确异常判未接单", []string{abnormalReport}, logCollectAckNotEstablished},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx := 0
+			got := confirmLogCollectCreate(context.Background(), fast, func(context.Context) (string, int, error) {
+				if idx >= len(tc.rounds) {
+					return tc.rounds[len(tc.rounds)-1], 0, nil
+				}
+				out := tc.rounds[idx]
+				idx++
+				return out, 0, nil
+			})
+			if got.State != tc.want {
+				t.Fatalf("结论 = %s，期望 %s；节点态序列 %v", got.State, tc.want, got.States)
+			}
+		})
+	}
+
+	t.Run("查询失败保持未知不误杀", func(t *testing.T) {
+		got := confirmLogCollectCreate(context.Background(), fast, func(context.Context) (string, int, error) {
+			return "", -1, context.DeadlineExceeded
+		})
+		if got.State != logCollectAckUnknown {
+			t.Fatalf("查询失败应为 unknown，实际 %s", got.State)
+		}
+	})
+
+	t.Run("上下文取消立即退出", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		calls := 0
+		got := confirmLogCollectCreate(ctx, fast, func(context.Context) (string, int, error) {
+			calls++
+			return noneReport, 0, nil
+		})
+		if got.State != logCollectAckUnknown || calls != 0 {
+			t.Fatalf("取消后应不查询且结论 unknown，实际 state=%s calls=%d", got.State, calls)
+		}
+	})
+}

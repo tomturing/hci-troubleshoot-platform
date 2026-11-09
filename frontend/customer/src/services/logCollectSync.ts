@@ -79,6 +79,19 @@ export const DELIVERY_EVIDENCE_WAIT_MS = 10 * 60 * 1000
 export const SESSION_ADOPT_GRACE_MS = 10 * 60 * 1000
 
 /**
+ * create 下发后的接单宽限（90 秒）。
+ *
+ * 与 10 分钟的 L1 窗口不是一回事：那道门防的是"把上一轮完成报告当成本轮"，
+ * 这里防的是"插件还没注册任务，平台就宣布采集中断"。create 是同步命令，
+ * 正常接单在秒级可见，所以窗口必须短且是硬上限——窗口太长会把真实的
+ * 接单失败掩盖成永久转圈（2026-11-09 Q2026110901673：create 后 6 秒即写 failed）。
+ *
+ * 只对「本次会话亲自下发、且从未观测到 running」的任务生效；接管历史任务
+ * 与已经见过起点的任务都不等，避免 Q2026101401683 那种真完成被卡住。
+ */
+export const CREATE_ACK_GRACE_MS = 90 * 1000
+
+/**
  * `Total time` 否决的时钟松弛（秒）。
  *
  * 平台的 `created_at` 与 acli 内部计时起点之间隔着"命令下发 → 插件接单"的几秒到几十秒，
@@ -243,6 +256,13 @@ export interface SyncAction {
    * - `deliver`：节点已采完但平台没交付，接管后直接继续交付（不重新采集）。
    */
   adoptMode?: 'resume' | 'deliver'
+  /**
+   * 失败时的规范错误码（LC-<LAYER>-<NNN>）。
+   *
+   * 判定层比调用方更清楚"这次到底败在哪一层"：节点从未接单不能沿用
+   * 桥侧的旧码（往往为空），必须由判定直接给出 LC-PLUGIN-008。
+   */
+  errorCode?: string
 }
 
 const ACTIVE_STATUSES = new Set(['pending', 'probing', 'installing', 'collecting', 'packaging', 'uploading'])
@@ -602,7 +622,33 @@ function decideNodeSyncUnchecked(input: SyncInput): SyncAction {
       if (input.archivePath) {
         return { action: 'patch_completed', reason: '节点任务已结束且压缩包路径已生成', ownership }
       }
-      return { action: 'patch_failed', reason: '节点上已无任务，采集中断', ownership }
+      // 本次会话亲自下发、且从未见过采集起点时，先给插件一段注册任务的时间。
+      // 三个条件缺一不可：接管/重开页面不等待，见过 running 的任务不等待，
+      // 超窗不等待——否则真实接单失败会被掩盖成永久转圈。
+      if (
+        input.requireSessionAdopt === true &&
+        input.sessionAdopted !== true &&
+        input.taskAgeMs != null &&
+        input.taskAgeMs < CREATE_ACK_GRACE_MS
+      ) {
+        return {
+          action: 'wait_refresh',
+          reason: '任务已下发，节点尚未接单；正在等待采集起点（acli 注册任务可能有秒级延迟）',
+          ownership,
+        }
+      }
+      // 文案必须区分"曾经跑过之后消失"与"这次根本没接单"：
+      // 现场 Q2026110901673 的 create 从未落地，界面却断言「采集中断」，
+      // 把用户引向"重新采集"而不是"检查节点 acli"。
+      const adopted = input.sessionAdopted === true
+      return {
+        action: 'patch_failed',
+        reason: adopted
+          ? '节点上已无任务，采集中断'
+          : '任务下发后节点未建立采集任务；请核对节点 acli 版本与所选专项，完整节点输出见任务详情',
+        errorCode: 'LC-PLUGIN-008',
+        ownership,
+      }
     }
     return { action: 'none', reason: '节点任务进行中', ownership }
   }
