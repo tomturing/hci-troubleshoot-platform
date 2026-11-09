@@ -8,6 +8,7 @@ import {
   hasDeliveryEvidence,
   isStatusTransitionRejected,
   buildResultHeadline,
+  canResumeDeliveryAfterReject,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
   platformCertTrusted,
@@ -379,5 +380,22 @@ describe('buildResultHeadline', () => {
     expect(buildResultHeadline({ status: 'failed', delivered: false, when: WHEN }).type).toBe('error')
     expect(buildResultHeadline({ status: 'cancelled', delivered: false, when: WHEN }).type).toBe('info')
     expect(buildResultHeadline({ status: null }).title).toBe('')
+  })
+})
+
+// 对抗性审查（2026-11-09）：`cancelled → uploading` 同样是 LC-PLATFORM-003。
+// 吞掉这个码之后必须用服务端最新状态裁决，否则会把用户已取消的包照常传出去。
+describe('canResumeDeliveryAfterReject', () => {
+  it('只有采集已完成才继续交付', () => {
+    expect(canResumeDeliveryAfterReject('completed')).toBe(true)
+  })
+
+  it('取消/失败/未知一律中止，不用交付把终态复活', () => {
+    expect(canResumeDeliveryAfterReject('cancelled')).toBe(false)
+    expect(canResumeDeliveryAfterReject('failed')).toBe(false)
+    expect(canResumeDeliveryAfterReject('uploading')).toBe(false)
+    expect(canResumeDeliveryAfterReject(null)).toBe(false)
+    expect(canResumeDeliveryAfterReject(undefined)).toBe(false)
+    expect(canResumeDeliveryAfterReject('  ')).toBe(false)
   })
 })

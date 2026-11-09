@@ -42,6 +42,7 @@ import {
   platformCertTrusted,
   rememberPlatformCertTrust,
   buildResultHeadline,
+  canResumeDeliveryAfterReject,
   hasDeliveryEvidence,
   isStatusTransitionRejected,
   type DeliverySubmitPayload,
@@ -3589,14 +3590,6 @@ async function probeArchiveOnNode(
 }
 
 /**
- * P2 中转交付。
- *
- * `mode` 决定 bridge 侧怎么起作业：
- * - `collect`：采集刚完成、由主流程衔接而来，允许 bridge 等采集写完再搬；
- * - `direct`：包早就采好了（补交付），直接读盘搬运，**不得**再等 progress。
- * 两种模式对应两种不同前提，不能合并成一个"大概已经采完了吧"。
- */
-/**
  * 把任务推进到 uploading（仅用于"采集刚完成"的自动衔接）。
  *
  * 第一性原理：交付与采集是两件正交的事。`status` 记的是**采集结论**，交付是否
@@ -3615,13 +3608,27 @@ async function advanceToUploading(taskId: string) {
     currentTask.value = await logCollectApi.patchTask(taskId, { status: 'uploading' })
   } catch (error) {
     if (!isStatusTransitionRejected(error)) throw error
-    // 平台状态已被对账推进到终态：拉回真实记录后继续交付，不中断搬运。
+    // 409 只是"这一跳不被允许"，但**不代表可以继续**：cancelled → uploading 同样是
+    // LC-PLATFORM-003。必须用服务端最新状态裁决，否则会把用户已取消的包传出去。
     const latest = await logCollectApi.getTask(taskId).catch(() => null)
-    if (latest) currentTask.value = latest
+    if (!latest || !canResumeDeliveryAfterReject(latest.status)) {
+      throw new Error(
+        `任务状态已变为「${latest?.status ?? '未知'}」，本次交付已中止；如需交付请重新采集后再试`,
+      )
+    }
+    currentTask.value = latest
     nodeSyncHint.value = '采集已完成，正在继续把日志包上传到平台'
   }
 }
 
+/**
+ * P2 中转交付。
+ *
+ * `mode` 决定 bridge 侧怎么起作业：
+ * - `collect`：采集刚完成、由主流程衔接而来，允许 bridge 等采集写完再搬；
+ * - `direct`：包早就采好了（补交付），直接读盘搬运，**不得**再等 progress。
+ * 两种模式对应两种不同前提，不能合并成一个"大概已经采完了吧"。
+ */
 async function runP2(
   ws: WebSocket,
   task: LogCollectTask,
