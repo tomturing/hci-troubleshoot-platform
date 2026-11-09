@@ -521,6 +521,62 @@ async def test_finish_marks_delivery_status(storage):
     assert values["error_code"] == "LC-TRANSFER-003"
 
 
+async def test_finish_success_is_idempotent_after_delivered(storage):
+    """成功终态必须无条件收敛：已交付任务重复 _finish 也要写 relay_status=success。"""
+    statements: list = []
+    service = LogCollectRelayService(
+        lambda: _RecordingSession(_FakeResult(rowcount=1), statements),
+        storage,
+        SangforRelayClient("http://relay"),
+    )
+
+    await service._finish(uuid4(), "success")
+    stmt = statements[-1]
+    where = _sql(stmt).split("WHERE", 1)[1]
+    assert "delivery_status" not in where, "成功收敛不得被已交付状态挡住"
+    assert _values_by_name(stmt)["relay_status"] == "success"
+
+
+async def test_finish_failure_cannot_rollback_delivered(storage):
+    """CAS 只应挡失败回写：旧代 relay 迟到的失败不能把 delivered 改回 failed。"""
+    statements: list = []
+    service = LogCollectRelayService(
+        lambda: _RecordingSession(_FakeResult(rowcount=1), statements),
+        storage,
+        SangforRelayClient("http://relay"),
+    )
+
+    await service._finish(uuid4(), "failed", error="迟到的失败回写")
+    where = _sql(statements[-1]).split("WHERE", 1)[1]
+    assert "delivery_status" in where and "!=" in where
+
+
+async def test_claim_stale_skips_delivered(storage):
+    """已交付是终态：即使 relay_status 写错也不能再拉起一次整包上传。"""
+    sink: list = []
+    service = _lease_service(storage, _FakeResult(rows=[]), sink, stale_after=60)
+
+    await service.claim_stale()
+    assert "delivery_status" in _sql(sink[0])
+
+
+async def test_settle_delivered_relays_converges_stale_status(storage):
+    """存量订正：把 (delivered, running/pending) 一次性收敛为 success。"""
+    statements: list = []
+    service = LogCollectRelayService(
+        lambda: _RecordingSession(_FakeResult(rowcount=2), statements),
+        storage,
+        SangforRelayClient("http://relay"),
+    )
+
+    assert await service.settle_delivered_relays() == 2
+    values = _values_by_name(statements[-1])
+    assert values["relay_status"] == "success"
+    assert values["status"] == "completed"
+    where = _sql(statements[-1]).split("WHERE", 1)[1]
+    assert "delivery_status" in where
+
+
 async def test_finish_preserves_original_error_code(storage):
     """失败终态必须保留异常自身的错误码。
 
@@ -983,7 +1039,10 @@ async def test_startup_reconcile_spawns_claimed_relays(monkeypatch):
     monkeypatch.setattr(
         routes,
         "_build_relay_service",
-        lambda: SimpleNamespace(claim_stale=AsyncMock(return_value=claimed)),
+        lambda: SimpleNamespace(
+            claim_stale=AsyncMock(return_value=claimed),
+            settle_delivered_relays=AsyncMock(return_value=0),
+        ),
     )
     spawned: list = []
     monkeypatch.setattr(routes, "_spawn_relay", lambda _svc, task_id: spawned.append(task_id))
