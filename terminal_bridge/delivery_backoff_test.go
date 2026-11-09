@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,5 +111,76 @@ func TestTransportErrorClassification(t *testing.T) {
 	}
 	if isTransientTransportError(errors.New("分片 3 大小异常")) {
 		t.Fatal("业务性错误不应被当成网络暂时故障")
+	}
+}
+
+// 现场回归（Q2026110900185，2026-11-09）：
+// 客户机 DNS 解析不了 acli.sangfor.com.cn，桥侧把它归成「平台暂时不可用」，
+// 8 次 × 最长 60s 退避让用户白等约 5 分钟，而真正要做的是改本机 hosts/代理。
+func TestDNSNotFoundIsNotTransient(t *testing.T) {
+	dnsErr := &url.Error{
+		Op:  "Put",
+		URL: "https://acli.sangfor.com.cn:4443/api/direct/log-collect-uploads/x/parts/1",
+		Err: &net.DNSError{Err: "no such host", Name: "acli.sangfor.com.cn", IsNotFound: true},
+	}
+	if isTransientTransportError(dnsErr) {
+		t.Fatal("域名不存在不是平台暂时不可用，不应走瞬时故障预算")
+	}
+
+	classified := wrapTransientTransport(dnsErr)
+	if !isDeliveryDNSError(classified) {
+		t.Fatalf("应归类为 deliveryDNSError，实际 %T", classified)
+	}
+	if isDeliveryTransientError(classified) {
+		t.Fatal("DNS 分类不应同时是 transient：两种处置动作完全相反")
+	}
+	message := classified.Error()
+	if !strings.Contains(message, "无法解析平台域名") || !strings.Contains(message, "hosts") {
+		t.Fatalf("文案必须指出是本机解析问题并给出处置方向，实际 %q", message)
+	}
+}
+
+// upload() 会把底层错误包成「上传中断（已传 N/M 片）: ...」，
+// 分类必须穿透包装，否则会退化成盲重试。
+func TestDNSNotFoundSurvivesWrapping(t *testing.T) {
+	wrapped := fmt.Errorf("上传中断（已传 0/339 片）: %w",
+		wrapTransientTransport(&net.DNSError{Err: "no such host", Name: "acli.sangfor.com.cn", IsNotFound: true}))
+	if !isDeliveryDNSError(wrapped) {
+		t.Fatal("被包装的 DNS 错误必须仍能识别")
+	}
+	if isDeliveryTransientError(wrapped) {
+		t.Fatal("被包装后不得退回 transient")
+	}
+}
+
+// DNS 超时仍属链路抖动：不能因为修 DNS 分类把「DNS 服务器一时不通」也判成配置错误。
+func TestDNSTimeoutStaysTransient(t *testing.T) {
+	timeout := &net.DNSError{Err: "i/o timeout", Name: "acli.sangfor.com.cn", IsTimeout: true}
+	if isDNENotFound(timeout) {
+		t.Fatal("IsTimeout 不是 IsNotFound")
+	}
+	if !isTransientTransportError(timeout) {
+		t.Fatal("DNS 超时应保留瞬时故障语义")
+	}
+	if got := deliveryAttemptBudget(wrapTransientTransport(timeout)); got != maxDeliveryTransientAttempts {
+		t.Fatalf("DNS 超时预算应为 %d，实际 %d", maxDeliveryTransientAttempts, got)
+	}
+}
+
+func TestDeliveryAttemptBudgetByErrorKind(t *testing.T) {
+	dns := wrapTransientTransport(&net.DNSError{Err: "no such host", Name: "acli.sangfor.com.cn", IsNotFound: true})
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"DNS 域名不存在", dns, maxDeliveryDNSAttempts},
+		{"平台 5xx", &deliveryTransientError{reason: "平台收尾失败 HTTP 503"}, maxDeliveryTransientAttempts},
+		{"业务性失败", errors.New("分片 3 大小异常"), maxDeliveryAttempts},
+	}
+	for _, tc := range cases {
+		if got := deliveryAttemptBudget(tc.err); got != tc.want {
+			t.Fatalf("%s 预算应为 %d，实际 %d", tc.name, tc.want, got)
+		}
 	}
 }
