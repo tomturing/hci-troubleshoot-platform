@@ -392,6 +392,10 @@ type InMessage struct {
 	ConfigJSON string `json:"config_json,omitempty"`
 	// ConfigSHA256 是下发内容的摘要，bridge 写完文件后回读比对，不符即拒绝执行。
 	ConfigSHA256 string `json:"config_sha256,omitempty"`
+	// SpcJSON 是平台生成的 spc 收集定义（source=spc 的场景）。
+	// 与 ConfigJSON 互斥：一个任务只能走一条下发通道。
+	SpcJSON   string `json:"spc_json,omitempty"`
+	SpcSHA256 string `json:"spc_sha256,omitempty"`
 	// RemoteURL 在 log_collect 中语义为：probe 时作为被探测的日志服务器地址；
 	// create 时作为 -u 上传目标（仅 http/https，且只认官方日志服务器白名单）。
 	RemoteURL string `json:"remote_url,omitempty"`

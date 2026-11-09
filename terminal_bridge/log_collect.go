@@ -1581,6 +1581,29 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			})
 		}
 
+		// ── spc 场景（source=spc）：先扇出写到每台节点，再下发采集 ──
+		var spcPlan *logCollectSpcPlan
+		if strings.TrimSpace(msg.SpcJSON) != "" {
+			if strings.TrimSpace(msg.ConfigJSON) != "" {
+				rejectConfig("spc_config_conflict", "spc 场景与 -c 配置不能同时下发")
+				return
+			}
+			hosts, hostErr := resolveSpcHosts(ctx, s, msg.IPs)
+			if hostErr != nil {
+				rejectConfig("spc_hosts_unavailable", fmt.Sprintf("无法确定 spc 目标节点：%v", hostErr))
+				return
+			}
+			plan, spcErr := prepareLogCollectSpc(ctx, s, firstNonEmpty(msg.ExecID, traceID), msg.SpcJSON, msg.SpcSHA256, localIPv4(ctx, s), hosts)
+			if spcErr != nil {
+				rejectConfig("spc_write_failed", fmt.Sprintf("spc 场景写入/校验失败：%v", spcErr))
+				return
+			}
+			spcPlan = plan
+			blog("INFO", "log_collect.spc_written", "spc 场景已扇出写入", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"slot": plan.Slot, "sha256": plan.SHA256, "hosts": len(plan.Hosts),
+			})
+		}
+
 		var configPath string
 		var configPaths []string
 		var preflightMissing []string
@@ -1610,6 +1633,10 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			})
 		}
 
+		if spcPlan != nil {
+			// spc 模式下模块必须是槽位本身；服务端也会重写，这里是最后一道防线。
+			msg.Modules = []string{logCollectSpcSlot}
+		}
 		command, errType, errMsg := buildLogCollectCreateCommand(msg)
 		if errType != "" {
 			sendMsg(ws, OutMessage{
@@ -1674,9 +1701,18 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		}
 		// 配置文件路径与预检结论必须随 create 结果回给前端落库：
 		// 只留在桥日志里，换端/关页面后就无法回答"这次到底要收什么"。
+		if spcPlan != nil && status == "ok" {
+			// 终态恢复：create 成功后异步等待采集结束，再逐台还原 core.json。
+			go s.awaitAndRestoreSpc(spcPlan, traceID, msg.CaseID, cui)
+		}
 		createLogData := map[string]any{
 			"create_ack":        ackState,
 			"create_ack_states": ackStates,
+		}
+		if spcPlan != nil {
+			createLogData["spc_slot"] = spcPlan.Slot
+			createLogData["spc_sha256"] = spcPlan.SHA256
+			createLogData["spc_hosts"] = spcPlan.Hosts
 		}
 		if configPath != "" {
 			createLogData["config_path"] = configPath
