@@ -141,6 +141,26 @@ class SangforRelayClient:
         response.raise_for_status()
         return response.json()
 
+    async def upload_progress(
+        self, client: httpx.AsyncClient, filename: str
+    ) -> tuple[str, dict[str, Any] | None]:
+        """按产物名查 P1 直传的真实进度（5888 新增的只读端点）。
+
+        返回 ``(state, data)``：``unsupported`` 表示旧版 5888 还没部署这个端点。
+        404 在这里就地降级而不抛异常，是为了让**平台可以先于 5888 发布**——
+        重启 5888 的窗口本来就难约，不该成为平台上线的阻塞。
+        """
+        response = await client.get(
+            f"{self.base_url}/upload_progress",
+            params={"filename": filename},
+            headers=self._headers(),
+        )
+        if response.status_code == 404:
+            return "unsupported", None
+        response.raise_for_status()
+        data = response.json()
+        return "ok", data if isinstance(data, dict) else None
+
 
 class LogCollectRelayService:
     def __init__(

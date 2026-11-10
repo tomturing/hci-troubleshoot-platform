@@ -78,12 +78,13 @@ const router = createRouter({
       meta: { title: 'Catalog基线', icon: 'Collection', order: 5.5 },
     },
     {
-      // order 取 5.6：紧跟「Catalog 基线」(5.5)，因为它同属「平台内置文案/配置」类目，
-      // 与后面的 KBD 管理(6) 在语义上不是一回事
+      // order 取 4.1：归入「可观测性」(4) 分组，排在 DSH诊断(4.5) 之前。
+      // 页面已含「日志上传 / 默认场景 / 自定义场景」三个页签，主入口是采集进展，
+      // 不再是纯文案字典，所以文案改为「日志收集」并从配置基线组移出。
       path: '/log-collect-scenarios',
       name: 'LogCollectScenarios',
       component: () => import('@/views/LogCollectScenarioView.vue'),
-      meta: { title: '日志收集场景', icon: 'Memo', order: 5.6 },
+      meta: { title: '日志收集', icon: 'Memo', order: 4.1 },
     },
     {
       path: '/knowledge/kbd-review',

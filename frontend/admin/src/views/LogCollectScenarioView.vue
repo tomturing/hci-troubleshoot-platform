@@ -16,6 +16,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import CustomScenarioPanel from './components/CustomScenarioPanel.vue'
+import LogUploadPanel from './components/LogUploadPanel.vue'
 import {
   createScenario,
   listScenarios,
@@ -31,8 +32,8 @@ const REVIEW_TEXT: Record<ScenarioReviewState, string> = {
   approved: '已审核',
 }
 
-/** 两个 tab 的职责不同：默认场景改文案，自定义场景维护会被下发的路径清单。 */
-const activeTab = ref<'default' | 'custom'>('default')
+/** 三个 tab：日志上传看进展（只读），默认场景改文案，自定义场景维护下发的清单。 */
+const activeTab = ref<'upload' | 'default' | 'custom'>('default')
 
 const rows = ref<LogCollectScenario[]>([])
 const loading = ref(false)
@@ -291,6 +292,10 @@ function formatTime(value: string | null): string {
 <template>
   <div class="scenario-page">
     <el-tabs v-model="activeTab" class="scenario-tabs">
+      <!-- 日志上传放在最左；lazy 保证不切过去时不启动 10s/30s 轮询 -->
+      <el-tab-pane label="日志上传" name="upload" lazy>
+        <LogUploadPanel />
+      </el-tab-pane>
       <!-- 默认场景立即渲染；自定义场景用 lazy，未切过去时不额外请求 -->
       <el-tab-pane label="默认场景" name="default">
     <el-alert type="info" :closable="false" show-icon class="scenario-intro">
