@@ -58,9 +58,13 @@ async def _request_upstream(
     payload: Any | None = None,
     *,
     prefix: str | None = None,
+    query: str | None = None,
 ) -> Response:
     target_prefix = prefix or UPSTREAM_PREFIX
     url = f"{settings.CASE_SERVICE_URL.rstrip('/')}{target_prefix}{path}"
+    # query 已经是 URL 编码后的原始串，原样透传即可；重新编码会把 %20 变成 %2520。
+    if query:
+        url = f"{url}?{query}"
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
             upstream = await client.request(method, url, json=payload, headers=_internal_headers(request))
@@ -143,3 +147,32 @@ async def update_custom_scenario(code: str, request: Request) -> Response:
 @custom_router.delete("/{code}", status_code=204)
 async def delete_custom_scenario(code: str, request: Request) -> Response:
     return await _request_upstream("DELETE", f"/{code}", request, prefix=CUSTOM_UPSTREAM_PREFIX)
+
+
+# ── 日志上传（管理端跨工单只读）───────────────────────────────────────────
+#
+# 与客户身份链路彻底分开：客户路由把 X-Client-ID 重签给下游且强制 case_id，
+# 这里只允许 admin JWT + 内部令牌，下游用 require_admin_token 再验一次。
+# 只挂 GET，管理端没有任何写路径（已确认：不允许重新核验/终止/重传）。
+tasks_router = APIRouter(
+    prefix="/api/v1/log-collect/admin/tasks",
+    tags=["log-collect-admin-tasks"],
+    dependencies=[Depends(require_admin)],
+)
+TASKS_UPSTREAM_PREFIX = "/internal/log-collect/admin/tasks"
+
+
+@tasks_router.get("")
+async def list_admin_tasks(request: Request) -> Response:
+    """跨工单分页列表 + 汇总条；筛选参数原样透传给 case-service 解析。"""
+    return await _request_upstream(
+        "GET", "", request, prefix=TASKS_UPSTREAM_PREFIX, query=request.url.query,
+    )
+
+
+@tasks_router.get("/{task_id}/destination-progress")
+async def get_destination_progress(task_id: str, request: Request) -> Response:
+    """日志服务器真实进度（P1 按产物名 / P2 按 relay_upload_id），只读。"""
+    return await _request_upstream(
+        "GET", f"/{task_id}/destination-progress", request, prefix=TASKS_UPSTREAM_PREFIX,
+    )
