@@ -39,6 +39,8 @@ P1 直传由节点上的 acli 自己调用 `/init_upload`，平台从来没有 `
 | `rollback.sh` | 从最近备份恢复并校验回到基线 |
 | `preflight_restart.py` | 重启硬门禁：会话/分片活跃度、合片进程、ESTABLISHED 连接、healthz |
 | `verify_endpoint.py` | 重启前在隔离目录用 Flask `test_client` 跑契约断言 |
+| `roll_workers.py` | 零提权触发 gunicorn 自然轮换，20/20 命中判定 |
+| `verify_live.py` | worker 生效后现网只读验收：真实样本、鉴权、调用链、只读性 |
 | `SHA256SUMS` | 全部交付物摘要，远程 apply 前核对 |
 
 基线：`192.168.0.2:/acli/app.py`，commit `0f4764e`，1484 行，
@@ -73,9 +75,9 @@ ssh 192.168.0.2 'APP=/acli/app.py PATCH=/tmp/app.py.patch bash /tmp/apply.sh'
 # 5. 重启前隔离验证：必须全 PASS，此时现网 worker 仍是旧代码
 ssh 192.168.0.2 '/acli/.venv/bin/python /tmp/verify_endpoint.py'
 
-# 6. 让新代码生效（二选一，见第六节）
-# 6a 优雅重载（推荐，需提权）：sudo -A kill -HUP <MainPID>
-# 6b 无提权时靠 gunicorn max_requests=1000 自然轮换 worker
+# 6. 让新代码生效（2026-11-11 实际采用 6b，见第六节）
+# 6a 优雅重载（需提权；本次凭据校验失败，已按「不重试、不绕过」弃用）
+# 6b 零提权自然轮换：/acli/.venv/bin/python /tmp/roll_workers.py
 
 # 7. 现网验证：连续 20 次请求全部 200（确认 4 个 worker 都已换代码）
 # 8. /acli 本地 git commit（中文，引用平台 PR 号 + patch sha256）
@@ -92,6 +94,11 @@ ssh 192.168.0.2 '/acli/.venv/bin/python /tmp/verify_endpoint.py'
   `/tmp/.ap_tmp`），不写进任何仓库、文档、日志或提交信息；
 - 命令行里不带明文密码（会被环境审批策略拦截）；
 - 只用一次，只执行 `kill -HUP` 或 `systemctl restart`，不做其他 root 操作。
+
+**2026-11-11 实测**：`SUDO_ASKPASS` + `sudo -A -v` 返回 3 次
+`Sorry, try again.`，说明既有凭据已失效。按「不重试、不绕过」立即停用提权
+路径，含凭据的临时文件已本地/远端双向删除，改用第六节的自然轮换。后续如确需
+`kill -HUP`，必须由用户重新提供凭据，不要从记忆或旧文件里翻找。
 
 ## 六、生效方式（按风险从低到高）
 

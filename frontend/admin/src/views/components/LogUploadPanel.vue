@@ -7,8 +7,10 @@
  * acli 还没 init_upload、旧版 5888 没部署进度端点，都会造成同样的空结果。
  * 因此进度列只陈述观测结果，绝不写「失败」；只有 done + target_path 才算收妥。
  *
- * 刷新策略（已确认）：列表 10s 自动刷新；真实进度只对「进行中」的行按 30s 查，
- * 且并发分批，避免 N 个任务 × 轮询把单进程 5888 打爆。组件卸载必须清定时器。
+ * 刷新策略（已确认）：列表 10s 自动刷新；30s 真实进度轮询只对「进行中」的行，
+ * 且并发分批，避免 N 个任务 × 轮询把单进程 5888 打爆。首次加载/查询时额外对
+ * 已交付但尚无观测的行做一次性补查并缓存，让终态 P1 的归档结果可见，之后不再请求。
+ * 组件卸载必须清定时器。
  */
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -98,8 +100,16 @@ async function load() {
   }
 }
 
-async function pollProgress() {
-  const targets = rows.value.filter(isActive).map((task) => task.task_id)
+async function pollProgress(includeDelivered = false) {
+  // 30s 定时器只查在途行（已确认策略，避免 N 个任务 × 轮询打爆单进程 5888）。
+  // 首次加载/查询时额外对「已交付但尚无观测」的行做一次性补查：否则终态
+  // 的 P1 永远不在轮询里，进度列会一直停在「查询中…」，用户看不到归档结果。
+  // 结果写入 progressMap 缓存后不再请求，平台侧还有 10s TTL 缓存兜底。
+  const targets = rows.value
+    .filter((task) => isActive(task)
+      || (includeDelivered && task.delivery_status === 'delivered'
+        && !progressMap.value[task.task_id]))
+    .map((task) => task.task_id)
   if (!targets.length || destroyed) return
   const seq = ++progressSeq
   for (let i = 0; i < targets.length; i += PROGRESS_CONCURRENCY) {
@@ -117,7 +127,7 @@ async function pollProgress() {
 function search() {
   page.value = 1
   progressSeq += 1
-  void load().then(pollProgress)
+  void load().then(() => pollProgress(true))
 }
 
 function resetFilters() {
@@ -128,7 +138,7 @@ function resetFilters() {
 }
 
 onMounted(() => {
-  void load().then(pollProgress)
+  void load().then(() => pollProgress(true))
   listTimer = setInterval(() => void load(), LIST_REFRESH_MS)
   progressTimer = setInterval(() => void pollProgress(), PROGRESS_REFRESH_MS)
 })
@@ -163,8 +173,10 @@ function formatTime(value: string | null): string {
 
 /** 只陈述观测结果：查不到就是查不到，不替日志服务器下"失败"结论。 */
 function progressText(task: AdminLogCollectTask): string {
-  if (!isActive(task) && task.delivery_status !== 'delivered') return '—'
   const item = progressMap.value[task.task_id]
+  // 终态行不在 30s 轮询里；没有观测记录就留白，不能显示「查询中…」——
+  // 那个结果永远等不到，会把「已交付」误呈现成「卡住」。
+  if (!isActive(task) && !item) return '—'
   if (!item) return '查询中…'
   if (item.state === 'done') {
     return item.sha256 ? '日志服务器已收妥（sha256 与源包一致）' : '日志服务器已收妥'

@@ -3,7 +3,8 @@
  *
  * 守住四条已确认的边界：
  * 1. 客户名与 client_id 同时展示；未关联客户时显示占位而不是编造名字；
- * 2. 真实进度只对「进行中」的行查询（终态行不查，避免打爆单进程 5888）；
+ * 2. 30s 真实进度轮询只查「进行中」的行；首次加载对已交付行一次性补查并缓存，
+ *    既让终态 P1 的归档结果可见，又不把 N 个终态任务塞进轮询；
  * 3. 「查不到 ≠ 失败」：no_record/unsupported 只陈述观测，不出现失败结论；
  * 4. 页面全只读：没有重新核验/终止/重传/导出入口，也不出现删除命令；
  *    定时器在卸载时必须清理，切走页签后不能继续轮询。
@@ -108,11 +109,34 @@ describe('LogUploadPanel', () => {
     wrapper.unmount()
   })
 
-  it('真实进度只查进行中的行', async () => {
+  it('首次加载对已交付行补查一次，30s 轮询仍只查在途行', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const wrapper = await mountPanel()
+      expect(api.getDestinationProgress).toHaveBeenCalledTimes(2)
+      expect(api.getDestinationProgress).toHaveBeenCalledWith('task-active')
+      expect(api.getDestinationProgress).toHaveBeenCalledWith('task-done')
+      expect(wrapper.text()).toContain('日志服务器已收妥（sha256 与源包一致）')
+
+      api.getDestinationProgress.mockClear()
+      vi.advanceTimersByTime(30_000)
+      await flushPromises()
+      expect(api.getDestinationProgress).toHaveBeenCalledTimes(1)
+      expect(api.getDestinationProgress).toHaveBeenCalledWith('task-active')
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('终态行没有观测记录时留白，不显示永远等不到结果的「查询中…」', async () => {
+    api.listAdminTasks.mockResolvedValue({
+      items: [doneTask], total: 1, page: 1, page_size: 20, summary,
+    })
+    api.getDestinationProgress.mockRejectedValue(new Error('5888 暂时不可达'))
     const wrapper = await mountPanel()
-    expect(api.getDestinationProgress).toHaveBeenCalledTimes(1)
-    expect(api.getDestinationProgress).toHaveBeenCalledWith('task-active')
-    expect(wrapper.text()).toContain('日志服务器已收妥（sha256 与源包一致）')
+    expect(wrapper.text()).not.toContain('查询中…')
+    expect(wrapper.text()).not.toContain('上传失败')
     wrapper.unmount()
   })
 
