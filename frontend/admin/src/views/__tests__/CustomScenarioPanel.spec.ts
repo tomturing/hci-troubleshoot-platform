@@ -259,4 +259,64 @@ describe('CustomScenarioPanel', () => {
     expect(wrapper.text()).toContain('[{"action":"copy","path":"/sf/log/cluster/"}]')
     wrapper.unmount()
   })
+
+  it('第一屏默认平铺清单：库里没有场景也能看到可勾选项', async () => {
+    api.listCustomScenarios.mockResolvedValue([])
+    const wrapper = await mountPanel()
+    expect(api.getSpcCatalog).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('插件清单速选')
+    expect(wrapper.text()).toContain('/sf/log/core/{date}/*.log')
+    expect(wrapper.findAll('.cs-catalog-card .el-table__body tr')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('清单支持按路径搜索与模块筛选', async () => {
+    const wrapper = await mountPanel()
+    await wrapper.find('input[placeholder="按路径 / 分组 / 模块搜索"]').setValue('core.log')
+    await flushPromises()
+    expect(wrapper.findAll('.cs-catalog-card .el-table__body tr')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('主区勾选后 JSON 视图取服务端序列化结果', async () => {
+    const wrapper = await mountPanel()
+    const boxes = wrapper.findAll('.cs-catalog-card .el-table__body input[type="checkbox"]')
+    await boxes[0].setValue(true)
+    await flushPromises()
+    expect(wrapper.text()).toContain('已选 1 条')
+
+    await buttonByText(wrapper, '查看 JSON（只读）').trigger('click')
+    await flushPromises()
+    expect(api.validateCustomScenario).toHaveBeenCalledWith(
+      expect.objectContaining({ source: 'spc', code: 'draft_preview' }),
+    )
+    expect(wrapper.text()).toContain('[{"action":"copy","path":"/sf/log/cluster/"}]')
+    wrapper.unmount()
+  })
+
+  it('带入新增场景时保留 filters 与 date_placeholders', async () => {
+    api.createCustomScenario.mockResolvedValue(spcRow)
+    const wrapper = await mountPanel()
+    const boxes = wrapper.findAll('.cs-catalog-card .el-table__body input[type="checkbox"]')
+    // 第二条是带 filters / 通配符的条目
+    await boxes[1].setValue(true)
+    await flushPromises()
+    await buttonByText(wrapper, '带入新增场景').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('收集条目（1 条）')
+    await wrapper.findAll('input').find((item) =>
+      (item.element as HTMLInputElement).placeholder?.includes('cs_storage_full'))!.setValue('cs_flat_e2e')
+    await wrapper.findAll('input').find((item) =>
+      (item.element as HTMLInputElement).placeholder?.includes('存储链路完整取证'))!.setValue('平铺清单验收')
+    await buttonByText(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    expect(api.createCustomScenario).toHaveBeenCalledTimes(1)
+    const payload = api.createCustomScenario.mock.calls[0][0]
+    expect(payload.items[0].path).toBe('/sf/log/core/{date}/*.log')
+    expect(payload.items[0].filters).toEqual([{ placeholder: '{date}' }])
+    expect(payload.items[0].date_placeholders).toEqual([{ placeholder: '{date}', format: '%Y-%m-%d' }])
+    wrapper.unmount()
+  })
 })
