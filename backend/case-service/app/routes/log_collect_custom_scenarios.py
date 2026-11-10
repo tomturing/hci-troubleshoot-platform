@@ -20,6 +20,7 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy.exc import IntegrityError
 
 from ..schemas.log_collect_custom_scenario import (
+    CustomScenarioValidationIssue,
     CustomScenarioValidationResponse,
     LogCollectCustomScenarioClientItem,
     LogCollectCustomScenarioClientListResponse,
@@ -202,10 +203,27 @@ async def validate_scenario(
     payload: LogCollectCustomScenarioCreate,
     service: LogCollectCustomScenarioService = Depends(get_service),
 ) -> CustomScenarioValidationResponse:
-    """保存前试算：返回条数与下发字节数，不落库。
+    """保存前试算：返回条数、下发字节数与真实序列化文本，不落库。
 
-    编辑器需要在不产生副作用的前提下回答"这份配置多大、会不会超限"，
-    否则用户只能靠保存失败来发现。
+    编辑器需要在不产生副作用的前提下回答"这份配置多大、会不会超限、
+    最终下发长什么样"，否则用户只能靠保存失败来发现。
+
+    通道与条目不匹配（例如切回 -c 但残留 filters 条目）属于**可预期的用户错误**，
+    必须返回 ok=false + issues 让编辑器就地提示，而不是抛 500：
+    这类错误恰恰发生在管理员修改配置的过程中，报"服务器错误"会让人无从下手。
     """
-    item_count, config_bytes = await service.validate(payload)
-    return CustomScenarioValidationResponse(ok=True, issues=[], item_count=item_count, config_bytes=config_bytes)
+    try:
+        item_count, config_bytes, preview_text, preview_kind = await service.validate(payload)
+    except ValueError as exc:
+        return CustomScenarioValidationResponse(
+            ok=False,
+            issues=[CustomScenarioValidationIssue(field="items", message=str(exc))],
+        )
+    return CustomScenarioValidationResponse(
+        ok=True,
+        issues=[],
+        item_count=item_count,
+        config_bytes=config_bytes,
+        preview_kind=preview_kind,
+        preview_text=preview_text,
+    )

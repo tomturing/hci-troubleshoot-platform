@@ -117,6 +117,16 @@ async def create_custom_scenario(request: Request) -> Response:
     return await _request_upstream("POST", "", request, payload, prefix=CUSTOM_UPSTREAM_PREFIX)
 
 
+@custom_router.get("/catalog")
+async def get_spc_catalog(request: Request) -> Response:
+    """spc 清单快照（只读）：管理端编辑器的勾选数据源。
+
+    返回的 11 份清单随镜像发布，不依赖任何节点在线；条目自带
+    ``usable_by_config`` 标注，前端据此决定 -c 通道下哪些条目可勾选。
+    """
+    return await _request_upstream("GET", "/catalog", request, prefix=CUSTOM_UPSTREAM_PREFIX)
+
+
 @custom_router.post("/validate")
 async def validate_custom_scenario(request: Request) -> Response:
     """保存前试算（条数/字节数）；不落库，因此不写审计。"""

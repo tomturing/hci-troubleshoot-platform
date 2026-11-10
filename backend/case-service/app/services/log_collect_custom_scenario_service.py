@@ -249,7 +249,10 @@ class LogCollectCustomScenarioService:
         if "items" in changes and changes["items"] is not None:
             items = payload.items or []
         item_dicts = [item.model_dump() for item in items]
-        config_text, sha256, size = _serialize(item_dicts, current.source)
+        # 通道可以切换（spc ⇄ -c），序列化器必须跟着**新**通道走：
+        # 沿用 current.source 会把 spc 条目按 paths 拼成 -c 文本，静默丢掉 filters。
+        source = changes.get("source") or current.source
+        config_text, sha256, size = _serialize(item_dicts, source)
 
         next_revision = current.revision + 1
         result = await self.session.execute(
@@ -277,7 +280,7 @@ class LogCollectCustomScenarioService:
                 "item_count": len(item_dicts),
                 "sha256": sha256,
                 "size": size,
-                "source": current.source,
+                "source": source,
                 "enabled": changes.get("enabled", current.enabled),
                 "sort_order": changes.get("sort_order", current.sort_order),
                 "review_state": changes.get("review_state", current.review_state),
@@ -319,17 +322,20 @@ class LogCollectCustomScenarioService:
             {"code": code},
         )
 
-    async def validate(self, payload: LogCollectCustomScenarioCreate) -> tuple[int, int]:
-        """不落库的校验：返回 (item_count, config_bytes)。
+    async def validate(self, payload: LogCollectCustomScenarioCreate) -> tuple[int, int, str, str]:
+        """不落库的校验：返回 (item_count, config_bytes, preview_text, preview_kind)。
 
-        pydantic 已经挡住了非法路径；这里额外回答前端"会生成多大一份配置"，
-        避免用户保存后才发现超过节点写入上限。
+        pydantic 已经挡住了非法路径；这里额外回答前端两件事：
+        1. "会生成多大一份配置"——避免用户保存后才发现超过节点写入上限；
+        2. "最终下发长什么样"——直接返回 ``_serialize`` 的真实产物，
+           前端不再自行拼装协议，预览与实际下发不可能不一致。
         """
         items = [item.model_dump() for item in payload.items]
         if len(items) > MAX_ITEMS:
             raise ValueError(f"路径条数不能超过 {MAX_ITEMS}")
-        _, _, size = _serialize(items, payload.source)
-        return len(items), size
+        text, _, size = _serialize(items, payload.source)
+        kind = "spc" if payload.source == "spc" else "config"
+        return len(items), size, text, kind
 
 
 def expand_scenario_paths(

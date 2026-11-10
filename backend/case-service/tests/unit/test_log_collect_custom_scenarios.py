@@ -26,7 +26,11 @@ from app.schemas.log_collect_custom_scenario import (
     LogCollectCustomScenarioUpdate,
 )
 from app.security.auth import get_client_id
-from app.services.log_collect_custom_scenario_service import _serialize, serialize_config
+from app.services.log_collect_custom_scenario_service import (
+    LogCollectCustomScenarioService,
+    _serialize,
+    serialize_config,
+)
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
@@ -83,7 +87,10 @@ class _StubService:
         self.deleted.append(code)
 
     async def validate(self, payload):
-        return len(payload.items), 128
+        # 与真实服务同构：真源是 _serialize，通道不匹配时抛 ValueError 由路由转成 issues。
+        text, _, size = _serialize([item.model_dump() for item in payload.items], payload.source)
+        kind = "spc" if payload.source == "spc" else "config"
+        return len(payload.items), size, text, kind
 
 
 @pytest.fixture
@@ -174,6 +181,13 @@ def test_item_accepts_date_placeholder():
     assert item.path == "/sf/log/{date}.tar.gz"
 
 
+def test_update_can_switch_channel():
+    """通道可改：它决定节点上写什么，管理员需要能纠正建错的场景。"""
+    payload = LogCollectCustomScenarioUpdate(source="spc")
+    assert payload.source == "spc"
+    assert payload.model_dump(exclude_unset=True) == {"source": "spc"}
+
+
 def test_create_dedupes_items():
     payload = LogCollectCustomScenarioCreate(
         code="cs_demo",
@@ -239,7 +253,8 @@ async def test_admin_update_reports_new_revision(stub: _StubService):
 
 
 @pytest.mark.asyncio
-async def test_admin_validate_returns_size_without_persisting(stub: _StubService):
+async def test_admin_validate_returns_size_and_server_preview(stub: _StubService):
+    """预览文本必须来自服务端序列化：前端复刻协议迟早与真实下发漂移。"""
     async with _client() as client:
         response = await client.post(
             "/internal/log-collect/custom-scenarios/validate",
@@ -248,8 +263,53 @@ async def test_admin_validate_returns_size_without_persisting(stub: _StubService
         )
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "issues": [], "item_count": 1, "config_bytes": 128}
+    body = response.json()
+    assert body["ok"] is True
+    assert body["item_count"] == 1
+    assert body["preview_kind"] == "config"
+    assert body["preview_text"] == '{"paths":"/sf/a"}'
+    assert body["config_bytes"] == len(b'{"paths":"/sf/a"}')
     assert stub.create_calls == []
+
+
+@pytest.mark.asyncio
+async def test_admin_validate_preview_follows_spc_channel(stub: _StubService):
+    async with _client() as client:
+        response = await client.post(
+            "/internal/log-collect/custom-scenarios/validate",
+            json={
+                "code": "cs_demo",
+                "label": "演示",
+                "source": "spc",
+                "items": [
+                    {"action": "command", "path": "ipmitool sel elist", "note": "1.硬件"},
+                ],
+            },
+            headers=_ADMIN_HEADERS,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["preview_kind"] == "spc"
+    payload = json.loads(body["preview_text"])
+    assert payload[0] == {"note": "1.硬件"}
+    assert payload[1] == {"action": "command", "path": "ipmitool sel elist"}
+
+
+@pytest.mark.asyncio
+async def test_admin_validate_reports_channel_mismatch_as_issue(stub: _StubService):
+    """切回 -c 但残留通配符条目是可预期的用户错误：返回 issues，不能 500。"""
+    async with _client() as client:
+        response = await client.post(
+            "/internal/log-collect/custom-scenarios/validate",
+            json={"code": "cs_demo", "label": "演示", "source": "visual", "items": [{"path": "/sf/a*"}]},
+            headers=_ADMIN_HEADERS,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "通配符" in body["issues"][0]["message"]
 
 
 @pytest.mark.asyncio
@@ -306,3 +366,107 @@ def test_expand_paths_rejects_oversized_result():
     items = [{"path": f"/sf/log/p{i}/{{date}}"} for i in range(70)]
     with pytest.raises(ValueError, match="超过上限"):
         expand_scenario_paths(items, date(2026, 11, 1), date(2026, 11, 3), max_count=200)
+
+
+# ── 通道切换后的序列化（不连数据库）──────────────────────────────────────
+
+
+def _current_row(*, source: str = "visual") -> dict:
+    now = datetime(2026, 11, 10, 9, 0, 0, tzinfo=UTC)
+    return {
+        "scenario_id": uuid4(),
+        "revision": 1,
+        "code": "cs_demo",
+        "label": "演示",
+        "summary": None,
+        "applies_to": None,
+        "items": [{"action": "copy", "path": "/sf/a", "category": "log"}],
+        "item_count": 1,
+        "config_sha256": "b" * 64,
+        "config_bytes": 10,
+        "source": source,
+        "enabled": True,
+        "sort_order": 100,
+        "review_state": "pending_review",
+        "created_by": "ops",
+        "updated_by": "ops",
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+class _FakeMappings:
+    def __init__(self, rows: list[dict]):
+        self._rows = rows
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def one(self):
+        return self._rows[0]
+
+
+class _FakeResult:
+    def __init__(self, rows: list[dict]):
+        self._rows = rows
+
+    def mappings(self) -> _FakeMappings:
+        return _FakeMappings(self._rows)
+
+
+class _CapturingSession:
+    """只捕获 update 的落库参数，替代真实 AsyncSession。"""
+
+    def __init__(self, current: dict):
+        self.current = current
+        self.insert_params: dict | None = None
+
+    async def execute(self, statement, params=None):
+        if "ORDER BY revision DESC LIMIT 1" in str(statement):
+            return _FakeResult([self.current])
+        self.insert_params = params
+        row = dict(self.current)
+        row.update(
+            {
+                "revision": params["revision"],
+                "label": params["label"],
+                "item_count": params["item_count"],
+                "config_sha256": params["sha256"],
+                "config_bytes": params["size"],
+                "source": params["source"],
+            }
+        )
+        return _FakeResult([row])
+
+
+@pytest.mark.asyncio
+async def test_update_serializes_with_switched_channel():
+    """切到 spc 后必须用 spc 序列化器。
+
+    沿用 current.source 会把 spc 条目降级成 -c 的 paths 文本，
+    filters/action 全部丢失且不报错 —— 这正是本次要锁死的回归点。
+    """
+    current = _current_row()
+    session = _CapturingSession(current)
+    service = LogCollectCustomScenarioService(session)  # type: ignore[arg-type]
+
+    updated = await service.update("cs_demo", LogCollectCustomScenarioUpdate(source="spc"), actor="ops")
+
+    assert session.insert_params is not None
+    assert session.insert_params["source"] == "spc"
+    assert session.insert_params["sha256"] == _serialize(current["items"], "spc")[1]
+    assert session.insert_params["sha256"] != _serialize(current["items"], "visual")[1]
+    assert updated.source == "spc"
+
+
+@pytest.mark.asyncio
+async def test_update_keeps_current_channel_when_source_absent():
+    current = _current_row(source="spc")
+    session = _CapturingSession(current)
+    service = LogCollectCustomScenarioService(session)  # type: ignore[arg-type]
+
+    await service.update("cs_demo", LogCollectCustomScenarioUpdate(label="改名"), actor="ops")
+
+    assert session.insert_params is not None
+    assert session.insert_params["source"] == "spc"
+    assert session.insert_params["sha256"] == _serialize(current["items"], "spc")[1]

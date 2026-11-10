@@ -140,12 +140,19 @@ class LogCollectCustomScenarioCreate(BaseModel):
 
 
 class LogCollectCustomScenarioUpdate(BaseModel):
-    """修改场景：`code` 不可改（历史任务按 code+revision 回溯）。"""
+    """修改场景：`code` 不可改（历史任务按 code+revision 回溯）。
+
+    ``source`` 允许修改：它是**下发通道**而非录入方式，管理员需要能在
+    「spc 覆写清单」与「-c 路径清单」之间纠错（例如误建了 spc 但节点无 spc 目录）。
+    切换后 items 必须对新通道重新过 ``_validate_items_for_source``：
+    带 filters/通配符的条目不能留在 -c 通道里，否则会被插件静默跳过。
+    """
 
     label: str | None = Field(default=None, min_length=1, max_length=64)
     summary: str | None = Field(default=None, max_length=200)
     applies_to: str | None = Field(default=None, max_length=200)
     items: list[CustomScenarioItem] | None = None
+    source: ScenarioSource | None = None
     enabled: bool | None = None
     sort_order: int | None = None
     review_state: ScenarioReviewState | None = None
@@ -224,7 +231,17 @@ class CustomScenarioValidationIssue(BaseModel):
 
 
 class CustomScenarioValidationResponse(BaseModel):
+    """保存前试算结果。
+
+    ``preview_text`` 是**服务端真实序列化产物**（``_serialize`` 的返回值），
+    不是前端复刻：两条通道的下发格式完全不同（-c 是 ``{"paths":"a,b"}``，
+    spc 是带 note 分组与 filters 的数组），前端各写一份必然漂移，
+    管理员看到的预览就与实际下发的内容不一致。
+    """
+
     ok: bool
     issues: list[CustomScenarioValidationIssue] = Field(default_factory=list)
     item_count: int = 0
     config_bytes: int = 0
+    preview_kind: Literal["config", "spc"] = "config"
+    preview_text: str = ""
