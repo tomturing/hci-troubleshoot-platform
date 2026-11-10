@@ -1,0 +1,183 @@
+--- a/app.py
++++ b/app.py
+@@ -14,7 +14,7 @@
+ import hashlib
+ import hmac
+ from werkzeug.utils import secure_filename
+-from datetime import datetime, timedelta
++from datetime import datetime, timedelta, timezone
+ 
+ import archive_index
+ 
+@@ -1440,6 +1440,171 @@
+     }), 200
+ 
+ 
++def _unix_to_utc_iso(value):
++    """把会话时间戳统一成带 +00:00 的 UTC ISO。
++
++    平台 ``_session_matches_generation`` 会拿它和 aware 的 ``created_at``
++    比较，返回 naive 字符串会直接抛 TypeError 变成 500；旧会话里若是
++    naive ISO，按 5888 本机时区解释后再转 UTC，不能粗暴补 UTC。
++    """
++    if value is None:
++        return None
++    try:
++        if isinstance(value, str):
++            parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
++            if parsed.tzinfo is None:
++                parsed = parsed.astimezone()
++            return parsed.astimezone(timezone.utc).isoformat()
++        return datetime.fromtimestamp(float(value), tz=timezone.utc).isoformat()
++    except (TypeError, ValueError, OSError, OverflowError):
++        return None
++
++
++def _latest_archived(filename):
++    """只读地找该工单最新归档件；会话被 24h reaper 清掉后靠它兜底。
++
++    与 ``archive_status`` 同一套命名规则：同名件或 ``{工单号}-{时间戳}.zip``，
++    取 mtime 最新。绝不写文件、绝不现算摘要（大包逐字节读会拖垮上传）。
++    """
++    case_id = filename[: -len('.zip')]
++    case_dir = os.path.join(UPLOAD_FOLDER, case_id)
++    if not os.path.isdir(case_dir):
++        return None
++    candidates = []
++    try:
++        for name in os.listdir(case_dir):
++            if name == filename or (name.startswith(case_id + '-') and name.endswith('.zip')):
++                path = os.path.join(case_dir, name)
++                if os.path.isfile(path):
++                    candidates.append(path)
++    except OSError:
++        return None
++    if not candidates:
++        return None
++    latest = max(candidates, key=lambda p: os.path.getmtime(p))
++    try:
++        stat = os.stat(latest)
++    except OSError:
++        return None
++    return {
++        'path': latest,
++        'size': stat.st_size,
++        'mtime_iso': _unix_to_utc_iso(stat.st_mtime),
++    }
++
++
++@app.route('/upload_progress', methods=['GET'])
++def upload_progress():
++    """按产物名回报 P1 直传的真实进度（平台管理端进度代理的数据源）。
++
++    为什么单独做端点：P1 由节点 acli 自己 ``init_upload``，平台拿不到
++    ``upload_id``，产物名是两侧唯一公共键；``/upload_status`` 需要
++    ``upload_id``，``/archive_status`` 只有「落地/没落地」两态，都回答
++    不了「传到百分之几」。
++
++    四条硬约束：
++    1. **只读**：不创建/删除会话，不删分片，不改状态。因此绝不能调用
++       ``load_upload_session``——它发现会话过期会顺手删会话与分片；
++    2. **代际**：同一工单可能有多轮上传，取 ``start_time`` 最新会话，并
++       转成 UTC ISO，平台据此与 ``task.created_at`` 对齐，避免把上一轮
++       的 100% 当成本轮；
++    3. **终态不丢**：会话被 24h reaper 清掉后，归档件仍是权威事实，兜底
++       回报 ``status=done`` / ``progress=100``；否则「已交付的 P1」会被
++       显示成「暂无记录」，正是 Q2026111000243 那类误判的翻版；
++    4. **查不到 ≠ 失败**：两者都无才返回 ``found=false`` 且 HTTP 200，
++       平台显示「暂无记录」，不写交付失败。
++    """
++    filename = (request.args.get('filename') or '').strip()
++    if not validate_filename(filename):
++        return jsonify({'error': 'Invalid filename'}), 400
++
++    session_store = app.config['SESSION_STORE']
++    best = None
++    try:
++        for name in os.listdir(session_store):
++            if not name.endswith('.json'):
++                continue
++            try:
++                with open(os.path.join(session_store, name), 'r') as handle:
++                    data = json.load(handle)
++            except (OSError, ValueError):
++                # 上传进程正在原子替换，读到半截或文件消失都只跳过本条
++                continue
++            if not isinstance(data, dict) or data.get('filename') != filename:
++                continue
++            # 只读地跳过过期会话；不调用会删文件的 load_upload_session
++            last = data.get('last_updated')
++            try:
++                if last and (datetime.now() - datetime.fromisoformat(str(last))) > timedelta(
++                        hours=SESSION_EXPIRE_HOURS):
++                    continue
++            except (TypeError, ValueError):
++                pass
++            if best is None or float(data.get('start_time') or 0) > float(
++                    best.get('start_time') or 0):
++                best = data
++    except OSError as exc:
++        # 目录暂时不可读：降级成「查不到」，绝不让管理页拿到 500
++        app.logger.warning(
++            f'[REQ] upload_progress session_store_unavailable err={exc} '
++            f'trace={_trace_id()} metric=upload_progress_scan_degraded_total')
++
++    if best is None:
++        archived = _latest_archived(filename)
++        if archived is None:
++            app.logger.info(
++                f'[REQ] upload_progress not_found file={filename} '
++                f'trace={_trace_id()} metric=upload_progress_not_found_total')
++            return jsonify({'found': False, 'filename': filename}), 200
++        app.logger.info(
++            f'[REQ] upload_progress archived file={filename} '
++            f'trace={_trace_id()} metric=upload_progress_archived_total')
++        return jsonify({
++            'found': True,
++            'upload_id': None,
++            'filename': filename,
++            'status': 'done',
++            'uploaded_size': archived['size'],
++            'file_size': archived['size'],
++            'progress': 100,
++            'received_chunks': None,
++            'chunk_total': None,
++            'error': None,
++            'target_path': archived['path'],
++            'digest': None,
++            'start_time': archived['mtime_iso'],
++            'last_updated': archived['mtime_iso'],
++            'finished_at': archived['mtime_iso'],
++        }), 200
++
++    file_size = int(best.get('file_size') or 0)
++    uploaded_size = int(best.get('uploaded_size') or 0)
++    progress = min(100, int(uploaded_size * 100 / file_size)) if file_size > 0 else 0
++    chunks = best.get('chunks')
++    received = len(chunks) if isinstance(chunks, (list, dict)) else 0
++
++    app.logger.info(
++        f'[REQ] upload_progress hit file={filename} status={best.get("status")} '
++        f'progress={progress} trace={_trace_id()} metric=upload_progress_hit_total')
++    return jsonify({
++        'found': True,
++        'upload_id': best.get('upload_id'),
++        'filename': filename,
++        'status': best.get('status'),
++        'uploaded_size': uploaded_size,
++        'file_size': file_size,
++        'progress': progress,
++        'received_chunks': received,
++        'chunk_total': best.get('chunk_total'),
++        'error': best.get('error'),
++        'target_path': best.get('target_path'),
++        'digest': best.get('digest'),
++        'start_time': _unix_to_utc_iso(best.get('start_time')),
++        'last_updated': best.get('last_updated'),
++        'finished_at': _unix_to_utc_iso(best.get('finished_at')),
++    }), 200
++
++
+ @app.route('/healthz', methods=['GET'])
+ def healthz():
+     """探活端点：只回报进程存活与目录可写，不做任何重活。
