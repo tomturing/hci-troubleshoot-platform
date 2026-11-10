@@ -255,6 +255,67 @@ export interface DeliveryEvidenceTask {
   upload_mode?: string | null
   remote_url?: string | null
   archive_deleted?: boolean | null
+  detail?: Record<string, unknown> | null
+}
+
+/**
+ * P1 落盘侧核验快照（后端写在 `task.detail.p1_archive_check`）。
+ *
+ * 这是平台能拿到的**唯一**交付证据来源：平台不留副本、也没有独立回执，
+ * 除了"去日志服务器按产物名查一次"，没有任何别的办法回答"包到了没有"。
+ * 因此界面必须把"这次查的结果与时刻"摆出来，而不是替外部系统下结论。
+ */
+export interface ArchiveCheckView {
+  verified?: boolean
+  /** archive_missing / size_mismatch / stale_archive / archive_size_invalid / verified */
+  reason?: string | null
+  checked_at?: string | null
+  expected_size?: number | null
+  archived_size?: number | null
+  filename?: string | null
+}
+
+/** 取出最近一次 P1 归档核验快照；结构不对一律当"没有快照"，不猜。 */
+export function p1ArchiveCheckOf(task: DeliveryEvidenceTask | null | undefined): ArchiveCheckView | null {
+  const raw = task?.detail?.['p1_archive_check']
+  if (!raw || typeof raw !== 'object') return null
+  return raw as ArchiveCheckView
+}
+
+/** 体积展示：与结果态其他行一致（GB 保留两位、MB 保留一位）。 */
+function formatCheckSize(size: number | null | undefined): string {
+  const value = Number(size ?? 0)
+  if (!(value > 0)) return '未知体积'
+  const mb = value / 1024 / 1024
+  return mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb.toFixed(1)} MB`
+}
+
+/**
+ * 核验快照 → 一句可读事实。
+ *
+ * 措辞纪律：只描述**观测**（什么时候、在日志服务器上看到了什么），
+ * 绝不说"上传失败"或"平台没有收到"——单次查不到既可能是还没传完，
+ * 也可能是 5888 抖动（2026-11-10 Q2026111000243 上传成功后仍被显示成交付失败）。
+ */
+export function describeArchiveCheck(check: ArchiveCheckView | null | undefined): string {
+  if (!check) return ''
+  const stamp = Date.parse(String(check.checked_at ?? ''))
+  const head = Number.isFinite(stamp)
+    ? `最近一次核验（${new Date(stamp).toLocaleString('zh-CN', { hour12: false })}）`
+    : '最近一次核验'
+  if (check.verified === true) return `${head}：日志服务器上已查到该工单的归档件`
+  switch (String(check.reason ?? '')) {
+    case 'archive_missing':
+      return `${head}：日志服务器上暂未查到该工单的归档件`
+    case 'size_mismatch':
+      return `${head}：归档件体积 ${formatCheckSize(check.archived_size)}，小于平台记录的 ${formatCheckSize(check.expected_size)}`
+    case 'stale_archive':
+      return `${head}：日志服务器上只有采集之前就存在的同名包，不能算本次结果`
+    case 'archive_size_invalid':
+      return `${head}：归档件体积异常，无法确认`
+    default:
+      return `${head}：未核验到该工单的归档件`
+  }
 }
 
 /**
@@ -339,8 +400,12 @@ export function buildResultHeadline(args: {
   status?: string | null
   delivered?: boolean
   when?: string
+  /** 最近一次落盘侧核验快照（`task.detail.p1_archive_check`），可缺省 */
+  archiveCheck?: ArchiveCheckView | null
+  /** 结果态此刻是否真的提供「上传到平台」入口：按钮不存在就不能写"可点" */
+  canUpload?: boolean
 }): ResultHeadline {
-  const { status, delivered = false, when = '' } = args
+  const { status, delivered = false, when = '', archiveCheck = null, canUpload = false } = args
   if (!status) return { type: 'info', title: '', description: '' }
   if (status === 'failed') {
     return {
@@ -358,11 +423,19 @@ export function buildResultHeadline(args: {
     }
   }
   if (!delivered) {
+    // 这里只能说"平台未核验到"，不能说"日志服务器上没有"：
+    // 单次回查（尤其采集刚结束时的那次）看到的是**瞬时**观测，上传往往才刚开始；
+    // 而 P1 平台本就没有独立回执（Q2026111000243 上传成功后仍被写成"交付失败"）。
+    const observed = describeArchiveCheck(archiveCheck)
+    const next = canUpload
+      ? '可点「重新核验归档」再查一次；若确认没传上去，压缩包仍在节点时点「上传到平台」补交付（不会重新采集）。'
+      : '可点「重新核验归档」再查一次；上传可能仍在进行，包已不在节点时请到日志服务器人工核对归档件。'
     return {
       type: 'warning',
-      title: `该工单已完成日志收集，但日志尚未交付（${when}）`,
-      description:
-        '平台没有收到日志包，日志服务器上也没有归档件。压缩包仍在节点时可点「上传到平台」补交付，不需要重新采集。',
+      title: `该工单已完成日志收集，平台尚未核验到归档件（${when}）`,
+      description: `P1 由插件直传日志服务器，平台不留副本、也拿不到独立回执，只能按归档件回查。${
+        observed ? `${observed}。` : ''
+      }${next}`,
     }
   }
   return {

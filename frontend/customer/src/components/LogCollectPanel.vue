@@ -44,8 +44,10 @@ import {
   rememberPlatformCertTrust,
   buildResultHeadline,
   canResumeDeliveryAfterReject,
+  describeArchiveCheck,
   hasDeliveryEvidence,
   isStatusTransitionRejected,
+  p1ArchiveCheckOf,
   type DeliverySubmitPayload,
   type UploadProgressView,
   type RelayProgressView,
@@ -953,6 +955,10 @@ const resultHeadline = computed<{ type: 'success' | 'warning' | 'error' | 'info'
       status: resultTask.value?.status,
       delivered: resultDelivered.value,
       when: resultFinishedText.value,
+      // 「还没核验到」和「日志服务器上确实没有」是两件事：横幅必须带上核验时刻与观测结果，
+      // 否则用户只能理解成"平台说我没传"（Q2026111000243 的现场反应）。
+      archiveCheck: p1ArchiveCheckOf(resultTask.value),
+      canUpload: canUploadFromNode.value,
     }),
 )
 
@@ -1122,6 +1128,49 @@ const canUploadFromNode = computed(
  */
 const resultDelivered = computed(() => hasDeliveryEvidence(resultTask.value))
 
+/**
+ * 结果态是否提供「重新核验归档」。
+ *
+ * 为什么必须有这个入口：P1 平台无独立回执，唯一的交付证据是"去日志服务器查一次"，
+ * 而那次查询很可能发生在上传还没结束的时候。没有重跑入口时，一条误判的记录只能靠
+ * 重新采集来"洗掉"，可包其实早就到了（2026-11-10 Q2026111000243）。
+ */
+const canReverifyArchive = computed(
+  () =>
+    resultMode.value === 'acli_direct' &&
+    resultTask.value?.status === 'completed' &&
+    !resultDelivered.value,
+)
+const reverifyingArchive = ref(false)
+
+/**
+ * 重跑落盘侧核验。
+ *
+ * 交付终态一律由服务端写（single-writer），这里只做两件事：触发一次权威回查、
+ * 把最新任务快照拉回来重绘。前端绝不在本地拼"已交付"。
+ */
+async function reverifyArchive() {
+  const task = resultTask.value
+  if (!task || reverifyingArchive.value) return
+  reverifyingArchive.value = true
+  try {
+    const verdict = await logCollectApi.verifyP1Archive(task.task_id, task.archive_size ?? null)
+    const latest = await logCollectApi.getTask(task.task_id)
+    const index = historyTasks.value.findIndex((item) => item.task_id === latest.task_id)
+    if (index >= 0) historyTasks.value.splice(index, 1, latest)
+    showResult(latest)
+    if (verdict?.verified === true) {
+      ElMessage.success('日志服务器上已查到该工单归档件，平台已登记为已交付')
+    } else {
+      ElMessage.warning(describeArchiveCheck(p1ArchiveCheckOf(latest)) || '本次仍未核验到归档件')
+    }
+  } catch (error: any) {
+    ElMessage.warning(`核验未完成：${error?.message || '平台或日志服务器暂时不可用，请稍后再试'}`)
+  } finally {
+    reverifyingArchive.value = false
+  }
+}
+
 const resultArchiveText = computed(() => {
   const task = resultTask.value
   if (!task) return ''
@@ -1131,6 +1180,16 @@ const resultArchiveText = computed(() => {
     return `归档失败：${formatFailureReason(task, '平台未记录原因（可在桥日志中按工单号检索）')}`
   }
   if (task.delivery_status === 'failed') {
+    // P1 的交付失败**只可能**来自落盘侧核验（acli_direct 没有别的写入者）。
+    // 它回答的是"回查时日志服务器上有没有这个包"，不是"上传动作失败了"：
+    // 采集刚结束就去回查时上传往往才刚开始，一次"查不到"会被永久记成失败
+    // （2026-11-10 Q2026111000243：包已落 /sf/log，界面红着写「交付失败」）。
+    // 因此这里如实转述核验快照，并且不再承诺一个可能根本不存在的按钮。
+    if (resultMode.value === 'acli_direct') {
+      const observed = describeArchiveCheck(p1ArchiveCheckOf(task))
+      if (observed) return observed
+      return '未核验到归档件（平台无独立回执，可点「重新核验归档」再查一次）'
+    }
     // 磁盘满与并发容量不足都能给出可操作原因：原因由 bridge 生成
     // （含 need/free/path），前端只转述，不自己编数字。
     // 历史文案只有一句"交付失败"，用户照着去清盘却不知道清哪里（2026-11-03 Q2026110300988）。
@@ -1166,10 +1225,13 @@ const resultArchiveText = computed(() => {
   // 失败任务没有"归档/交付"可言：兜底显示未归档，避免落到「未记录」让人以为还在路上。
   if (task.status === 'failed') return '采集失败，未归档'
   if (resultDelivered.value) {
-    // P1 平台拿不到回执：文案必须说清"这是节点自报"，不能让用户以为平台核验过。
-    return resultMode.value === 'acli_direct'
-      ? '已由插件直传日志服务器（节点自报，平台无独立回执）'
-      : '已归档到日志服务器'
+    // P1 平台拿不到回执：只有回查过归档件才能说"已核验"，否则必须说清是节点自报。
+    if (resultMode.value === 'acli_direct') {
+      return p1ArchiveCheckOf(task)?.verified === true
+        ? '已核验：日志服务器上存在该工单归档件'
+        : '已由插件直传日志服务器（节点自报，平台无独立回执）'
+    }
+    return '已归档到日志服务器'
   }
   if (task.status === 'completed') return '采集完成，尚未交付'
   return '未记录'
@@ -1295,8 +1357,13 @@ const resultCleanupTip = computed(() => {
   if (canUploadFromNode.value) return ''
   if (resultMode.value === 'acli_direct') {
     if (!resultDelivered.value) {
-      // 这里不能断言"包仍在节点"：没有 stat 证据，且 P1 成功后插件已自删。
-      return '平台尚未登记交付结论；P1 发送成功后插件会自动删除节点上的压缩包，无需人工清理。'
+      // 未交付时只说**清理**这一件事，不再顺带复述交付结论：横幅与归档状态已经在说
+      // "未核验到归档件"，第三条"平台尚未收到交付结论"只会叠加同一件事、
+      // 却让人误读出"平台完全没收到任何东西"（Q2026111000243）。
+      // 有产物位置就是有 stat 证据；没有证据时不能断言"包仍在节点"。
+      return task.archive_path
+        ? '压缩包仍在节点上（见「产物位置」）；P1 发送成功后插件会自动删除，无需人工清理。'
+        : '无需人工清理：P1 发送成功后插件会自动删除节点上的压缩包。'
     }
     return 'P1 由插件直传日志服务器，上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
   }
@@ -5220,6 +5287,17 @@ onBeforeUnmount(() => {
               而包就在节点上，重采一遍是纯粹的浪费。这里把补交付提为主操作。
             -->
             <el-button v-if="canUploadFromNode" type="primary" @click="adoptNodeTask">上传到平台</el-button>
+            <!--
+              P1 的"未交付"只代表"这次回查没查到"，不代表真的没传上去：
+              给用户一个重跑核验的入口，避免只能用「重新收集」去洗掉一条误判记录。
+            -->
+            <el-button
+              v-if="canReverifyArchive"
+              :loading="reverifyingArchive"
+              @click="reverifyArchive"
+            >
+              重新核验归档
+            </el-button>
             <el-button :type="canUploadFromNode ? 'default' : 'primary'" @click="startRecollect">
               重新收集
             </el-button>

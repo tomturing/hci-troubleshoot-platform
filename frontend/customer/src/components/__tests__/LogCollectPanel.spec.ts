@@ -2402,6 +2402,97 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
   })
 
   /**
+   * 现场回归（工单 Q2026111000243，2026-11-10）：
+   * P1 已上传成功、包就在 /sf/log，平台却因为一次"采集刚结束时的回查"把交付记成 failed，
+   * 面板于是显示「交付失败（可点「上传到平台」重传）」+「日志服务器上也没有归档件」，
+   * 用户据此认定本次上传失败（实际截图里根本没有「上传到平台」按钮）。
+   * 契约：
+   *   1) 归档状态只转述核验快照（何时回查、看到什么），不写"交付失败"；
+   *   2) 不对日志服务器下"没有"的结论，也不让用户去点不存在的按钮；
+   *   3) 必须提供「重新核验归档」，让误判可以自助纠正。
+   */
+  it('P1 核验否定时如实展示核验快照，并给「重新核验归档」入口', async () => {
+    const done = taskFixture({
+      task_id: 'task-p1-unverified',
+      status: 'completed',
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      archive_path: '/data/local/acl/mp/tmp/log_collect/Q2026111000243.zip',
+      archive_deleted: false,
+      relay_status: 'none',
+      delivery_status: 'failed',
+      error_code: 'LC-TRANSFER-007',
+      ips: ['all'],
+      detail: {
+        p1_archive_check: {
+          verified: false,
+          reason: 'archive_missing',
+          checked_at: '2026-11-10T03:01:00Z',
+          filename: 'Q2026111000243.zip',
+        },
+      },
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('暂未查到该工单的归档件')
+    // 平台没有独立回执，不能替外部系统下结论
+    expect(text).not.toContain('日志服务器上也没有归档件')
+    expect(text).not.toContain('平台没有收到日志包')
+    // 没有任何补交付入口时，不能告诉用户去点「上传到平台」
+    expect(text).not.toContain('交付失败（可点')
+    expect(wrapper.findAll('button').some((item) => item.text() === '重新核验归档')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('点「重新核验归档」通过后横幅转 success、按钮消失', async () => {
+    const done = taskFixture({
+      task_id: 'task-p1-unverified-retry',
+      status: 'completed',
+      upload_mode: 'acli_direct',
+      remote_url: 'http://acli.sangfor.com.cn:5888',
+      archive_path: '/data/local/acl/mp/tmp/log_collect/Q2026111000243.zip',
+      archive_deleted: false,
+      relay_status: 'none',
+      delivery_status: 'failed',
+      error_code: 'LC-TRANSFER-007',
+      ips: ['all'],
+      detail: { p1_archive_check: { verified: false, reason: 'archive_missing' } },
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
+    // 交付终态由服务端写：getTask 必须返回核验之后的权威快照，而不是回显入参
+    vi.mocked(logCollectApi.getTask).mockResolvedValue({
+      ...done,
+      delivery_status: 'delivered',
+      error_code: null,
+      detail: { p1_archive_check: { verified: true, reason: 'verified' } },
+    })
+    vi.mocked(logCollectApi.verifyP1Archive).mockResolvedValue({ verified: true, reason: 'verified' } as any)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    const button = wrapper.findAll('button').find((item) => item.text() === '重新核验归档')
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await flushPromises()
+
+    expect(vi.mocked(logCollectApi.verifyP1Archive)).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('并已交付')
+    expect(wrapper.findAll('button').some((item) => item.text() === '重新核验归档')).toBe(false)
+    wrapper.unmount()
+  })
+
+  /**
    * 现场回归（工单 Q2026102701294 / 2026-10-27）：
    * 节点采集 100%、289 MiB 包仍在盘，平台侧却是终态且零产物。
    *

@@ -9,8 +9,10 @@ import {
   isStatusTransitionRejected,
   buildResultHeadline,
   canResumeDeliveryAfterReject,
+  describeArchiveCheck,
   isCertificateUntrusted,
   isTerminalDeliveryFailure,
+  p1ArchiveCheckOf,
   platformCertTrusted,
   rememberPlatformCertTrust,
 } from '../logCollectDelivery'
@@ -367,7 +369,56 @@ describe('buildResultHeadline', () => {
   it('采集完成但没有交付证据：不允许出现 success 横幅', () => {
     const headline = buildResultHeadline({ status: 'completed', delivered: false, when: WHEN })
     expect(headline.type).toBe('warning')
-    expect(headline.title).toContain('尚未交付')
+    expect(headline.title).toContain('未核验到归档件')
+  })
+
+  /**
+   * 现场回归（工单 Q2026111000243，2026-11-10）：
+   * P1 已上传成功、包就在 /sf/log，界面却写「平台没有收到日志包，日志服务器上也没有归档包」，
+   * 用户据此认定本次上传失败。平台对外部系统的断言只能到"本次回查没看到"这一层。
+   */
+  it('没有交付证据时不得断言"日志服务器上也没有归档件"', () => {
+    const headline = buildResultHeadline({ status: 'completed', delivered: false, when: WHEN })
+    expect(headline.description).not.toContain('没有收到日志包')
+    expect(headline.description).not.toContain('也没有归档件')
+  })
+
+  it('带上核验快照时按观测时刻与结果如实表述', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: false,
+      when: WHEN,
+      archiveCheck: {
+        verified: false,
+        reason: 'archive_missing',
+        checked_at: '2026-11-10T03:01:00Z',
+      },
+    })
+    expect(headline.description).toContain('最近一次核验')
+    expect(headline.description).toContain('暂未查到该工单的归档件')
+    // 只是一次观测，不能升级成"上传失败"
+    expect(headline.description).not.toContain('上传失败')
+  })
+
+  it('没有「上传到平台」按钮时不得让用户去点它', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: false,
+      when: WHEN,
+      canUpload: false,
+    })
+    expect(headline.description).toContain('重新核验归档')
+    expect(headline.description).not.toContain('上传到平台')
+  })
+
+  it('包仍在节点（有补交付入口）时才提「上传到平台」', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: false,
+      when: WHEN,
+      canUpload: true,
+    })
+    expect(headline.description).toContain('上传到平台')
   })
 
   it('采集完成且已交付才给 success', () => {
@@ -380,6 +431,38 @@ describe('buildResultHeadline', () => {
     expect(buildResultHeadline({ status: 'failed', delivered: false, when: WHEN }).type).toBe('error')
     expect(buildResultHeadline({ status: 'cancelled', delivered: false, when: WHEN }).type).toBe('info')
     expect(buildResultHeadline({ status: null }).title).toBe('')
+  })
+})
+
+describe('P1 归档核验快照', () => {
+  it('结构不对一律当"没有快照"，不猜', () => {
+    expect(p1ArchiveCheckOf(null)).toBeNull()
+    expect(p1ArchiveCheckOf({})).toBeNull()
+    expect(p1ArchiveCheckOf({ detail: { p1_archive_check: 'oops' } })).toBeNull()
+    expect(p1ArchiveCheckOf({ detail: { p1_archive_check: { verified: false } } })).not.toBeNull()
+  })
+
+  it('体积不符时把两个数都摆出来，供人工对照', () => {
+    const text = describeArchiveCheck({
+      verified: false,
+      reason: 'size_mismatch',
+      checked_at: '2026-11-10T03:01:00Z',
+      expected_size: 885_000_000,
+      archived_size: 884_000_000,
+    })
+    expect(text).toContain('843.0 MB')
+    expect(text).toContain('844.0 MB')
+    expect(text).toContain('小于平台记录')
+  })
+
+  it('查不到只说"暂未查到"，不替日志服务器下"没有"的结论', () => {
+    const text = describeArchiveCheck({ verified: false, reason: 'archive_missing' })
+    expect(text).toContain('暂未查到')
+  })
+
+  it('核验通过时明确说已查到归档件', () => {
+    expect(describeArchiveCheck({ verified: true })).toContain('已查到该工单的归档件')
+    expect(describeArchiveCheck(null)).toBe('')
   })
 })
 

@@ -463,8 +463,15 @@ def _judge_p1_archive(
 
     判据刻意只用 O(1) 可得的落盘事实：P1 链路上平台没有源包副本，重算 sha256
     既拿不到源端基准、又会让 5888 在读大包时卡住别的上传。因此用
-    「存在 + 大小一致 + 不是历史遗留」三条，足以拦住截断上传与错包；
+    「存在 + 体积不小于记录值 + 不是历史遗留」三条，足以拦住截断上传与错包；
     更弱的完整性只能靠 P2（或重新采集）。
+
+    为什么不是「大小必须相等」：expected_size 是**平台侧观测到的峰值**（P1 成功后
+    插件会自删压缩包，落盘后就没有可信的源包体积了），它可能停在 zip 收尾前一刻。
+    用这个估计值去要求字节级相等，会把一份完整归档判成 size_mismatch——2026-11-10
+    Q2026111000243 现场就是这样把已上传成功的包记成了「交付失败」。
+    截断只会让体积**变小**，因此只拦"比记录值小"，并在核验快照里同时留下两个数，
+    让人工可以直接对照。
     """
     if not archive.get("found"):
         return False, "archive_missing", None, None
@@ -472,7 +479,7 @@ def _judge_p1_archive(
     archived_size = archive.get("size")
     if not isinstance(archived_size, int) or archived_size <= 0:
         return False, "archive_size_invalid", None, None
-    if expected_size is not None and archived_size != expected_size:
+    if expected_size is not None and archived_size < expected_size:
         return False, "size_mismatch", archived_size, None
 
     mtime = archive.get("mtime")
@@ -488,6 +495,50 @@ def _judge_p1_archive(
             return False, "stale_archive", archived_size, archived_at
 
     return True, "verified", archived_size, archived_at
+
+
+def _p1_verify_patch(
+    task,
+    *,
+    verified: bool,
+    check: dict,
+    checked_at: datetime,
+) -> LogCollectTaskPatch:
+    """把一次归档回查翻译成任务 patch：**只有核验通过才写交付终态**。
+
+    否定结论一律不写 ``delivery_status``：
+      - ``archive_missing``：5888 要等整包收完才发布正式文件名（上传中写暂存名），
+        所以"查不到"最常见的原因是上传还没结束，而不是没传——acli 的状态序列是
+        Success → Sending → Success，采集报完成时上传往往才刚开始；
+      - ``size_mismatch`` / ``stale_archive``：同工单目录里可能还留着上一轮的历史包，
+        一次探测分不清"这是这次的包"还是"上次没清掉的包"。
+
+    把这两类瞬时/歧义观测写成 failed，就会留下"字节已经到了日志服务器、平台却红着
+    说交付失败"的记录，而且此后没有任何写入者会纠正它
+    （2026-11-10 Q2026111000243：包已在 /sf/log，界面写「交付失败」）。
+    因此否定分支只落核验快照（何时、谁、看到了什么），交付状态保持原样，
+    由前端如实展示"未核验到归档件"，并把「重新核验」留给用户重跑。
+    """
+    detail: dict = {"p1_archive_check": check}
+    if verified:
+        detail["delivery_evidence"] = "archive_verified"
+        detail["delivery_evidence_note"] = "P1 直传：已由日志服务器按产物名回查归档件，体积不小于任务记录"
+        return LogCollectTaskPatch(
+            delivery_status="delivered",
+            delivery_error=None,
+            delivery_finished_at=checked_at,
+            detail=detail,
+        )
+
+    # 已 delivered 的记录不被一次否定观测改写：交付事实不可逆，后续探测失败只当
+    # 本次观测留档（可能是 5888 抖动，或归档件被人工挪走）。
+    if task.delivery_status != "delivered":
+        detail["delivery_evidence"] = "archive_unverified"
+        detail["delivery_evidence_note"] = (
+            f"P1 直传：本次回查未核验到归档件（{check.get('reason')}）；这只代表本次观测，"
+            "不代表上传失败——上传可能仍在进行，节点侧插件成功后自删压缩包，平台无独立回执"
+        )
+    return LogCollectTaskPatch(detail=detail)
 
 
 _UPLOAD_STATE_FAILED_TOKENS = (
@@ -610,6 +661,10 @@ async def verify_p1_archive(
 
     这里只对 ``acli_direct`` 生效：P2 在分片合并阶段已有 sha256 全链路校验，
     用更弱的判据覆盖更强的结论只会制造假阳性。
+
+    写入契约（2026-11-10 修正）：**只有核验通过才写 delivered，否定结论不写终态**。
+    否定只落 ``detail.p1_archive_check`` 快照，交付状态保持原样。理由见下方实现注释：
+    单次探测分不清"还没传完"与"传失败了"，而 failed 一旦写下就没有第二个写入者纠正。
     """
     try:
         task = await service.get_task(task_id)
@@ -647,36 +702,19 @@ async def verify_p1_archive(
     verified, reason, archived_size, archived_at = _judge_p1_archive(task, archive, expected_size)
 
     checked_at = datetime.now(UTC)
-    detail = {
-        "p1_archive_check": {
-            "verified": verified,
-            "reason": reason,
-            "filename": filename,
-            "stored_name": archive.get("stored_name"),
-            "expected_size": expected_size,
-            "archived_size": archived_size,
-            "checked_at": checked_at.isoformat(),
-        },
-        "delivery_evidence": "archive_verified" if verified else "archive_unverified",
-        "delivery_evidence_note": (
-            "P1 直传：已由日志服务器按产物名回查归档件，大小与任务记录一致"
-            if verified
-            else f"P1 直传：日志服务器归档核验未通过（{reason}）；"
-            "节点侧插件在上传成功后会自删压缩包，此时通常无法补交付"
-        ),
+    check = {
+        "verified": verified,
+        "reason": reason,
+        "filename": filename,
+        "stored_name": archive.get("stored_name"),
+        "expected_size": expected_size,
+        "archived_size": archived_size,
+        "checked_at": checked_at.isoformat(),
     }
-    patch = LogCollectTaskPatch(
-        delivery_status="delivered" if verified else "failed",
-        delivery_error=None if verified else f"P1 归档核验未通过：{reason}",
-        delivery_finished_at=checked_at,
-        detail=detail,
-    )
-    if not verified:
-        patch.error_code = "LC-TRANSFER-007"
-        patch.error_message = f"P1 归档核验未通过：{reason}"
+    patch = _p1_verify_patch(task, verified=verified, check=check, checked_at=checked_at)
 
-    # 服务端核验归档后写终态：这是"经过独立事实核验"的内部调用，
-    # 必须绕过公共 PATCH 的客户端写入拦截（single-writer 的权威入口）。
+    # 交付终态只能由这个内部入口写：这是"经过独立事实核验"的权威调用，
+    # 必须绕过公共 PATCH 的客户端写入拦截（single-writer）。
     await service.update_task(task_id, patch, server_authoritative=True)
 
     logger.info(
@@ -697,7 +735,9 @@ async def verify_p1_archive(
         archived_size=archived_size,
         archived_at=archived_at,
         target_path=archive.get("target_path"),
-        detail=detail,
+        # 响应回带本次核验快照。原实现引用了未定义的 `detail`（NameError → 500），
+        # 「重新核验归档」按钮因此一直失败；前端会重新拉任务，但端点本身不该炸。
+        detail=check,
     )
 
 
@@ -956,7 +996,10 @@ async def deliver_task(
         # 不把死锁抛给用户；分片几何在 init 时冻结，旧分片继续传必然每片失败。
         logger.warning(
             "delivery.session_rebuilt task_id=%s trace_id=%s epoch=%s detail=%s",
-            task_id, task.trace_id, epoch, exc,
+            task_id,
+            task.trace_id,
+            epoch,
+            exc,
         )
         await upload_service.abort(task_id)
         try:
