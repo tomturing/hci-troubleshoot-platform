@@ -17,7 +17,7 @@
  *
  * 预览文本一律来自服务端 `validate`（`preview_text`），前端不复刻序列化协议。
  */
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
@@ -115,6 +115,9 @@ function normalizeItem(item: CustomScenarioItem): CustomScenarioItem {
 }
 
 async function refreshPreview() {
+  // 抽屉可能已经关掉（或组件已卸载），排队中的试算不该再发请求，
+  // 否则上一个页面/上一个测试的定时器会污染下一个用例，也会打到线上接口。
+  if (!drawerVisible.value) return
   if (!codeValid.value) {
     previewText.value = ''
     previewBytes.value = 0
@@ -357,6 +360,12 @@ onMounted(() => {
   // 清单随镜像发布，页面打开即拉：第一屏必须能看到可勾选项，
   // 不能因为"库里还没有场景"就呈现一张空表。
   void ensureCatalog()
+})
+
+onUnmounted(() => {
+  if (previewTimer) clearTimeout(previewTimer)
+  // 让在途响应的序号失效，卸载后不再写回任何状态。
+  previewSeq += 1
 })
 
 function resetForm() {

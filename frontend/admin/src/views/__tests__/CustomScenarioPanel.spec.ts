@@ -319,4 +319,19 @@ describe('CustomScenarioPanel', () => {
     expect(payload.items[0].date_placeholders).toEqual([{ placeholder: '{date}', format: '%Y-%m-%d' }])
     wrapper.unmount()
   })
+
+  it('组件卸载后排队中的试算不再发请求（防定时器泄漏）', async () => {
+    const wrapper = await mountPanel()
+    await buttonByText(wrapper, '新增自定义场景').trigger('click')
+    await flushPromises()
+    const codeInput = wrapper.findAll('input').find((item) =>
+      (item.element as HTMLInputElement).placeholder?.includes('cs_storage_full'))
+    expect(codeInput).toBeTruthy()
+    await codeInput!.setValue('cs_leak_guard')
+    wrapper.unmount()
+
+    api.validateCustomScenario.mockClear()
+    await settlePreview()
+    expect(api.validateCustomScenario).not.toHaveBeenCalled()
+  })
 })
