@@ -17,7 +17,7 @@
  *
  * 预览文本一律来自服务端 `validate`（`preview_text`），前端不复刻序列化协议。
  */
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
@@ -115,6 +115,9 @@ function normalizeItem(item: CustomScenarioItem): CustomScenarioItem {
 }
 
 async function refreshPreview() {
+  // 抽屉可能已经关掉（或组件已卸载），排队中的试算不该再发请求，
+  // 否则上一个页面/上一个测试的定时器会污染下一个用例，也会打到线上接口。
+  if (!drawerVisible.value) return
   if (!codeValid.value) {
     previewText.value = ''
     previewBytes.value = 0
@@ -176,17 +179,121 @@ const catalogRows = computed<SpcCatalogItem[]>(() => {
   return result
 })
 
-async function togglePicker() {
-  pickerVisible.value = !pickerVisible.value
-  if (!pickerVisible.value || catalog.value || catalogLoading.value) return
+async function ensureCatalog() {
+  if (catalog.value || catalogLoading.value) return
   catalogLoading.value = true
   try {
     catalog.value = await getSpcCatalog()
     activeModule.value = catalog.value.modules[0]?.module ?? ''
+    catalogReady.value = true
   } catch (error: any) {
     ElMessage.error(`加载 spc 清单失败：${error?.response?.data?.detail ?? error?.message ?? error}`)
   } finally {
     catalogLoading.value = false
+  }
+}
+
+async function togglePicker() {
+  pickerVisible.value = !pickerVisible.value
+  if (!pickerVisible.value) return
+  await ensureCatalog()
+}
+
+// ── 主区清单速选 ────────────────────────────────────────────────────────
+// 这里不是"再来一份编辑器"：清单展示与勾选放在第一屏，保存仍走同一个抽屉，
+// 避免两处各自拼装条目、各自序列化，产生两份不一致的下发内容。
+const draftPaths = ref<Set<string>>(new Set())
+const catalogModule = ref('')
+const catalogAction = ref('')
+const onlyConfigUsable = ref(false)
+const mainKeyword = ref('')
+const catalogReady = ref(false)
+
+const allCatalogItems = computed<SpcCatalogItem[]>(() =>
+  (catalog.value?.modules ?? []).flatMap((module) => module.groups.flatMap((group) => group.items)),
+)
+
+const mainCatalogRows = computed<SpcCatalogItem[]>(() => {
+  const keyword = mainKeyword.value.trim().toLowerCase()
+  return allCatalogItems.value.filter((item) => {
+    if (catalogModule.value && item.module !== catalogModule.value) return false
+    if (catalogAction.value && item.action !== catalogAction.value) return false
+    if (onlyConfigUsable.value && !item.usable_by_config) return false
+    return !keyword
+      || item.path.toLowerCase().includes(keyword)
+      || item.group.toLowerCase().includes(keyword)
+      || item.module.toLowerCase().includes(keyword)
+  })
+})
+
+const selectedDraftItems = computed<SpcCatalogItem[]>(() => {
+  const byPath = new Map(allCatalogItems.value.map((item) => [item.path, item]))
+  return [...draftPaths.value]
+    .map((path) => byPath.get(path))
+    .filter((item): item is SpcCatalogItem => Boolean(item))
+})
+
+function catalogToItem(item: SpcCatalogItem): CustomScenarioItem {
+  return {
+    action: item.action,
+    path: item.path,
+    category: 'log',
+    note: item.group || null,
+    filters: item.filters.map((entry) => ({ ...entry })),
+    date_placeholders: item.date_placeholders.map((entry) => ({ ...entry })),
+    docker: item.docker,
+    interpreter: item.interpreter,
+  }
+}
+
+function toggleDraftItem(item: SpcCatalogItem, checked: boolean) {
+  // 通道是「场景」的属性，不是「清单」的属性。主区只负责从快照里挑条目，
+  // 通道在抽屉保存时决定；切到 -c 后装不下的条目由抽屉当场提示并拒绝保存。
+  // 页面上放两个同名「下发通道」控件会让人分不清改的是哪一个，故此处不设通道。
+  const next = new Set(draftPaths.value)
+  if (checked) next.add(item.path)
+  else next.delete(item.path)
+  draftPaths.value = next
+}
+
+function clearDraft() {
+  draftPaths.value = new Set()
+}
+
+/** 勾选结果只做一次「带入」：保存、校验、序列化仍全部复用抽屉的既有链路。 */
+function bringDraftToDrawer() {
+  const selected = selectedDraftItems.value
+  if (!selected.length) {
+    ElMessage.warning('请先在清单中勾选至少一条')
+    return
+  }
+  openCreate()
+  items.value = selected.map(catalogToItem)
+  ElMessage.success(`已带入 ${selected.length} 条，确认后保存`)
+}
+
+const jsonDialogVisible = ref(false)
+const jsonText = ref('')
+const jsonPending = ref(false)
+
+/** 只读 JSON 视图同样取服务端序列化结果，不在前端复刻下发协议。 */
+async function openJsonView() {
+  jsonDialogVisible.value = true
+  jsonPending.value = true
+  try {
+    const result = await validateCustomScenario({
+      code: 'draft_preview',
+      label: '草稿预览',
+      source: 'spc',
+      items: selectedDraftItems.value.map(catalogToItem),
+    })
+    jsonText.value = result.ok
+      ? result.preview_text
+      : result.issues.map((issue) => issue.message).join('\n') || '当前条目无法按所选通道序列化'
+  } catch (error: any) {
+    jsonText.value = `试算失败：${error?.response?.data?.detail ?? error?.message ?? error}`
+  } finally {
+    jsonPending.value = false
   }
 }
 
@@ -248,7 +355,18 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  void load()
+  // 清单随镜像发布，页面打开即拉：第一屏必须能看到可勾选项，
+  // 不能因为"库里还没有场景"就呈现一张空表。
+  void ensureCatalog()
+})
+
+onUnmounted(() => {
+  if (previewTimer) clearTimeout(previewTimer)
+  // 让在途响应的序号失效，卸载后不再写回任何状态。
+  previewSeq += 1
+})
 
 function resetForm() {
   Object.assign(form, {
@@ -447,6 +565,88 @@ function formatTime(value: string | null): string {
         不支持通配符与 filters —— 放进去会被插件静默跳过，任务仍显示成功但少收了内容。
       </p>
     </el-alert>
+
+    <!-- 第一屏就是可勾选清单：不依赖库里有没有场景，也不把入口藏进抽屉。 -->
+    <el-card shadow="never" class="cs-catalog-card">
+      <div class="cs-items-head">
+        <span>插件清单速选（{{ mainCatalogRows.length }} / {{ allCatalogItems.length }} 条）</span>
+        <span class="cs-sub">随平台发布的 11 份 spc 快照，不依赖节点在线</span>
+      </div>
+      <div class="cs-catalog-toolbar">
+        <el-tag size="small" type="warning">spc 清单原文</el-tag>
+        <span class="cs-sub">通道在保存时选；此处只挑条目</span>
+        <el-select v-model="catalogModule" clearable placeholder="全部模块" size="small" style="width: 200px">
+          <el-option
+            v-for="module in catalog?.modules ?? []"
+            :key="module.module"
+            :label="`${module.label}（${module.item_count}）`"
+            :value="module.module"
+          />
+        </el-select>
+        <el-select v-model="catalogAction" clearable placeholder="全部动作" size="small" style="width: 130px">
+          <el-option v-for="(text, value) in ACTION_TEXT" :key="value" :label="text" :value="value" />
+        </el-select>
+        <el-input v-model="mainKeyword" clearable placeholder="按路径 / 分组 / 模块搜索" size="small" style="width: 220px" />
+        <el-checkbox v-model="onlyConfigUsable">只看 -c 可用</el-checkbox>
+      </div>
+
+      <el-table
+        v-loading="catalogLoading"
+        :data="mainCatalogRows"
+        size="small"
+        border
+        row-key="path"
+        max-height="360"
+      >
+        <el-table-column width="52">
+          <template #default="{ row }">
+            <el-checkbox
+              :model-value="draftPaths.has(row.path)"
+              @change="(value: any) => toggleDraftItem(row, Boolean(value))"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="模块" width="150">
+          <template #default="{ row }"><span class="cs-sub">{{ row.module }}</span></template>
+        </el-table-column>
+        <el-table-column label="分组" width="160">
+          <template #default="{ row }"><span class="cs-sub">{{ row.group }}</span></template>
+        </el-table-column>
+        <el-table-column label="动作" width="80">
+          <template #default="{ row }">
+            <el-tag size="small" type="info">{{ ACTION_TEXT[row.action as CustomScenarioAction] }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="路径 / 命令" min-width="240">
+          <template #default="{ row }"><code class="cs-path">{{ row.path }}</code></template>
+        </el-table-column>
+        <el-table-column label="-c 可用" width="90">
+          <template #default="{ row }">
+            <el-tag :type="row.usable_by_config ? 'success' : 'danger'" size="small">
+              {{ row.usable_by_config ? '可用' : '不可用' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="附加" width="140">
+          <template #default="{ row }">
+            <div class="cs-sub">
+              <span v-if="row.filters.length">filters {{ row.filters.length }} </span>
+              <span v-if="row.has_wildcard">通配符 </span>
+              <span v-if="row.needs_date_expand">{date}</span>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+
+      <div class="cs-draft-bar">
+        <span>已选 <b>{{ selectedDraftItems.length }}</b> 条</span>
+        <el-button size="small" :disabled="!selectedDraftItems.length" @click="clearDraft">清空</el-button>
+        <el-button size="small" @click="openJsonView">查看 JSON（只读）</el-button>
+        <el-button size="small" type="primary" :disabled="!selectedDraftItems.length" @click="bringDraftToDrawer">
+          带入新增场景
+        </el-button>
+      </div>
+    </el-card>
 
     <el-card shadow="never">
       <div class="cs-toolbar">
@@ -709,6 +909,13 @@ function formatTime(value: string | null): string {
         <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
       </template>
     </el-drawer>
+
+    <el-dialog v-model="jsonDialogVisible" title="当前勾选的下发内容（服务端序列化 · 只读）" width="720px">
+      <pre v-loading="jsonPending" class="cs-json-pre">{{ jsonText || '尚未勾选任何条目' }}</pre>
+      <template #footer>
+        <el-button @click="jsonDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -818,6 +1025,36 @@ function formatTime(value: string | null): string {
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 140px;
+  overflow: auto;
+}
+.cs-catalog-card {
+  border-radius: 6px;
+}
+.cs-catalog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.cs-draft-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.cs-json-pre {
+  margin: 0;
+  padding: 12px;
+  background: #1e1f22;
+  color: #abb2bf;
+  border-radius: 4px;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 420px;
   overflow: auto;
 }
 </style>
