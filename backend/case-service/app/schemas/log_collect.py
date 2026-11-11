@@ -258,6 +258,8 @@ class LogCollectTaskPatch(BaseModel):
     spc_slot: str | None = Field(default=None, max_length=32)
     spc_sha256: str | None = Field(default=None, max_length=64)
     spc_hosts: list[dict] | None = Field(default=None, max_length=512)
+    # 多槽位：平台兜底 restore_spc 依据它逐槽位还原；槽位名必须是 acli 模块短名。
+    spc_slots: list[str] | None = Field(default=None, max_length=16)
     # 取值域定死：还原态是判定依据，不是自由文本。客户端写入它虽无法被平台验证
     # （桥在客户侧），但至少不能出现第二个"看似成功"的拼写。
     restore_status: Literal["none", "pending", "success", "failed"] | None = None
@@ -355,6 +357,10 @@ class LogCollectTaskResponse(BaseModel):
     spc_json: str | None = Field(default=None, description="仅创建响应：spc 收集定义原文")
     spc_sha256: str | None = None
     spc_slot: str | None = None
+    # 默认场景多槽位：每份清单对应一个 acli 模块，前端原样透传给 bridge。
+    # 只在创建响应里出现（平台不留副本），与单槽位 spc_json 互斥。
+    spc_files: list[dict] | None = Field(default=None, description="仅创建响应：逐槽位清单原文与摘要")
+    spc_slots: list[str] | None = Field(default=None, description="仅创建响应：本次覆写的槽位集合，供兜底还原")
     # 逐台写入证据与还原态：回答"改了哪几台、备份叫什么、现在还原了没有"。
     # 还原态不是采集状态的一部分（采集可能早已 completed），必须独立可查。
     spc_hosts: list[dict] | None = None

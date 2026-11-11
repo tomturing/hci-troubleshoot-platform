@@ -34,6 +34,17 @@ export type LogCollectStatus =
 
 export type RelayStatus = 'none' | 'pending' | 'running' | 'success' | 'failed'
 
+/** 默认场景清单只读预览：客户侧只展示路径，不下发可执行条目。 */
+export interface LogCollectDefaultManifest {
+  module: string
+  label: string
+  customized: boolean
+  revision: number
+  item_count: number
+  sha256: string
+  preview: Array<{ path: string; category: string; note?: string | null }>
+}
+
 /** 探测历史条目（bridge 事件 extra 为自由结构，按需读取已知字段）。 */
 export interface ProbeHistoryItem {
   created_at: string
@@ -181,6 +192,9 @@ export interface LogCollectTask {
   spc_sha256?: string | null
   spc_slot?: string | null
   spc_hosts?: Array<{ ip: string; backup?: string; error?: string }> | null
+  /** 默认场景多槽位：原文只在创建响应出现，槽位集合用于兜底还原。 */
+  spc_files?: Array<{ slot: string; content: string; sha256: string }> | null
+  spc_slots?: string[] | null
   restore_status?: string | null
   status: LogCollectStatus
   progress: number
@@ -372,6 +386,19 @@ export const logCollectApi = {
   async listCustomScenarios(): Promise<LogCollectCustomScenarioItem[]> {
     const { data } = await client.get('/log-collect/custom-scenarios')
     return data?.scenarios ?? []
+  },
+
+  /**
+   * 默认场景清单只读预览。
+   * 失败必须降级为空：清单服务挂了不应挡住原生默认场景采集。
+   */
+  async listDefaultManifests(): Promise<LogCollectDefaultManifest[]> {
+    try {
+      const { data } = await client.get('/log-collect/default-scenario-manifests')
+      return data?.manifests ?? []
+    } catch {
+      return []
+    }
   },
 
   async listTasks(caseId: string, limit = 20): Promise<{ total: number; items: LogCollectTask[] }> {

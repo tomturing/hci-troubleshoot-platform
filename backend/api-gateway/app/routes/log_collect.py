@@ -109,6 +109,32 @@ async def proxy_log_collect(
     return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
 
 
+@router.get("/default-scenario-manifests")
+async def proxy_default_scenario_manifests(
+    request: Request,
+    client_id: str = Depends(require_user),
+) -> Response:
+    """代理客户端的「默认场景清单」只读预览。
+
+    与自定义场景一样按客户身份重签；下游只回路径与归类，不回可执行条目。
+    """
+    url = f"{settings.CASE_SERVICE_URL.rstrip('/')}/api/log-collect/default-scenario-manifests"
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
+            upstream = await client.request("GET", url, headers=_signed_headers(request, client_id))
+    except httpx.RequestError as exc:
+        logger.error(
+            event="log_collect_default_manifest_proxy_error",
+            message=str(exc),
+            path="/default-scenario-manifests",
+            method="GET",
+        )
+        raise HTTPException(status_code=503, detail="Case Service unavailable") from exc
+
+    response_headers = {name: upstream.headers[name] for name in FORWARDED_RESPONSE_HEADERS if name in upstream.headers}
+    return Response(content=upstream.content, status_code=upstream.status_code, headers=response_headers)
+
+
 @router.get("/custom-scenarios")
 async def proxy_log_collect_custom_scenarios(
     request: Request,

@@ -25,6 +25,7 @@ from app.routes import (
     log_collect,
     log_collect_admin_tasks,
     log_collect_custom_scenarios,
+    log_collect_default_scenarios,
     log_collect_scenarios,
 )
 
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
     log_collect.set_database_manager(database_manager)
     log_collect_scenarios.set_database_manager(database_manager)
     log_collect_custom_scenarios.set_database_manager(database_manager)
+    log_collect_default_scenarios.set_database_manager(database_manager)
     log_collect_admin_tasks.set_database_manager(database_manager)
     # 工单证据聚合端点：漏掉这一行不会报错，只会让两个管理端点恒返 500
     # 「Database not initialized」（2026-11-02 staging 实测），故同时保留
@@ -99,6 +101,9 @@ app.include_router(log_collect_scenarios.admin_router)
 # + 管理端 CRUD（/internal/log-collect/custom-scenarios）
 app.include_router(log_collect_custom_scenarios.router)
 app.include_router(log_collect_custom_scenarios.admin_router)
+# 默认场景清单：客户只读预览 + 管理端编辑/恢复
+app.include_router(log_collect_default_scenarios.router)
+app.include_router(log_collect_default_scenarios.admin_router)
 app.include_router(log_collect_admin_tasks.admin_router)
 # 工单详情证据聚合：日志收集选项/元数据 + DSH 诊断会话（只对管理端开放）
 app.include_router(case_insights.router)

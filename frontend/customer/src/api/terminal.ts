@@ -638,6 +638,14 @@ export interface LogCollectMessageOptions {
   /** spc 场景：平台生成的收集定义原文，与 configJson 互斥。 */
   spcJson?: string
   spcSha256?: string
+  /**
+   * 默认场景逐槽位清单：每个槽位对应 acli 的一个 -m 模块，
+   * 与各模块在节点上的同名清单文件一一替换。与 spcJson 互斥。
+   * 前端只透传，不自造；旧桥必须由 capabilities 探测拦下。
+   */
+  spcFiles?: Array<{ slot: string; content: string; sha256: string }>
+  /** 平台兜底 restore_spc 要还原的槽位集合。 */
+  spcSlots?: string[]
   remoteUrl?: string
   /** transfer / stat 专用：HCI 上的 zip 路径 */
   sourcePath?: string
@@ -669,7 +677,7 @@ export function buildLogCollectMessage(
   caseId: string,
   // restore_spc：平台兜底还原场景槽位。bridge 后台也会在任务终态自动还原，
   // 该动作用于 bridge 重启/页面关闭后按备份名幂等重放（备份不存在返回 skipped）。
-  action: 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer' | 'restore_spc',
+  action: 'probe' | 'create' | 'progress' | 'cancel' | 'stat' | 'transfer' | 'restore_spc' | 'capabilities',
   options: LogCollectMessageOptions = {},
 ): string {
   return JSON.stringify({
@@ -690,6 +698,8 @@ export function buildLogCollectMessage(
     config_sha256: options.configSha256 || undefined,
     spc_json: options.spcJson || undefined,
     spc_sha256: options.spcSha256 || undefined,
+    spc_files: options.spcFiles?.length ? options.spcFiles : undefined,
+    spc_slots: options.spcSlots?.length ? options.spcSlots : undefined,
     remote_url: options.remoteUrl || undefined,
     upload_ticket: options.uploadTicket || undefined,
     source_path: options.sourcePath || undefined,

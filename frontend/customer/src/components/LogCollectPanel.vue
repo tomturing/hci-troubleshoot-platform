@@ -24,6 +24,7 @@ import {
   logCollectApi,
   type DeliveryStatus,
   type LogCollectCustomScenarioItem,
+  type LogCollectDefaultManifest,
   type LogCollectModule,
   type LogCollectScenarioItem,
   type LogCollectTask,
@@ -613,6 +614,12 @@ const customScenarios = ref<LogCollectCustomScenarioItem[]>([])
 const scenarioDictLoaded = ref(false)
 /** 字典不可用时的说明（区分“未维护”与“读取失败”，不拼成一句含混提示） */
 const scenarioDictNote = ref('')
+/** 默认场景清单只读预览：失败降级为空，不挡原生采集。 */
+const defaultManifests = ref<LogCollectDefaultManifest[]>([])
+const selectedManifestPreviews = computed(() => {
+  const selected = form.modules as string[]
+  return defaultManifests.value.filter((item) => selected.includes(item.module))
+})
 const moduleOptions = computed<ModuleOption[]>(() =>
   mergeModuleOptions(probeModules.value, scenarioDict.value),
 )
@@ -1453,9 +1460,10 @@ function mergeModuleOptions(
  */
 async function loadScenarioDict(): Promise<void> {
   // 两个字典互相独立：任一失败都只降级自己，不能连带把另一个清空。
-  const [dictResult, customResult] = await Promise.allSettled([
+  const [dictResult, customResult, manifestResult] = await Promise.allSettled([
     logCollectApi.listScenarios(),
     logCollectApi.listCustomScenarios(),
+    logCollectApi.listDefaultManifests(),
   ])
   if (dictResult.status === 'fulfilled') {
     scenarioDict.value = dictResult.value
@@ -1473,6 +1481,12 @@ async function loadScenarioDict(): Promise<void> {
   } else {
     customScenarios.value = []
     console.warn('[log-collect] 自定义场景读取失败', customResult.reason)
+  }
+  if (manifestResult.status === 'fulfilled') {
+    defaultManifests.value = Array.isArray(manifestResult.value) ? manifestResult.value : []
+  } else {
+    defaultManifests.value = []
+    console.warn('[log-collect] 默认场景清单预览读取失败', manifestResult.reason)
   }
   scenarioDictLoaded.value = true
 }
@@ -1916,6 +1930,8 @@ function sendAndWait(
     | 'acli_sync'
     // 平台兜底还原 spc 槽位：bridge 后台协程会做一次，这里用于重放（幂等）
     | 'restore_spc'
+    // 能力探测：旧桥不认识 spc_files，必须先确认再启用平台清单
+    | 'capabilities'
     | 'delivery_submit'
     | 'delivery_status'
     | 'delivery_resume'
@@ -2599,6 +2615,10 @@ async function handleStart() {
       }
       throw createError
     }
+    // 一次性载荷只出现在创建响应里（平台不留副本）：后续任何 patch 都可能把它
+    // 从 task 上抹掉。先固化成局部事实，能力探测与下发都认它。
+    const issuedSpcFiles = task.spc_files ?? undefined
+    const issuedSpcSlots = task.spc_slots ?? undefined
     // P1 凭据只在建任务响应里出现一次：拿不到就说明平台没配票据密钥，
     // 此时发 P1 只会换来一次 401，并在界面上留下一个"直传失败"的假故障。
     //
@@ -2610,13 +2630,16 @@ async function handleStart() {
       if (!p1Ticket) {
         ElMessage.warning('平台未配置日志服务器直传凭据，本次已自动改走平台中转')
         pathMode.value = 'P2'
-        task = await logCollectApi.patchTask(task.task_id, {
+        // 合并而不是整体替换：创建响应里的 config_json / spc_json / spc_files
+        // 只在内存里出现一次，被 patch 结果整体覆盖就等于"平台没下发过"。
+        const patched = await logCollectApi.patchTask(task.task_id, {
           upload_mode: 'bridge_relay',
           detail: {
             upload_mode_switched_from: 'acli_direct',
             upload_mode_switched_reason: '平台未配置 P1 直传票据，创建时改走 P2',
           },
         })
+        task = { ...task, ...patched }
       }
     }
     currentTask.value = task
@@ -2626,6 +2649,25 @@ async function handleStart() {
     requireSessionAdopt.value = true
 
     stage.value = 'creating'
+    // 旧桥不认识 spc_files 会直接忽略并继续按节点原清单收集，这是最危险的
+    // 「看起来成功了」：必须先探测能力，不支持就明确报错，绝不静默降级。
+    if (issuedSpcFiles?.length) {
+      let capabilities: any = null
+      try {
+        capabilities = await sendAndWait(
+          ws,
+          'capabilities',
+          { ticketNo: props.caseId, execId: task.task_id, traceId },
+          8000,
+        )
+      } catch {
+        capabilities = null
+      }
+      if (!capabilities || capabilities.status !== 'ok' || !capabilities.log_data?.multi_slot_spc) {
+        throw new Error('当前终端桥不支持按场景清单收集，请先升级桌面桥再重试（不会按原清单静默收集）')
+      }
+    }
+
     const created = await sendAndWait(
       ws,
       'create',
@@ -2652,6 +2694,9 @@ async function handleStart() {
         // spc 场景：原文与摘要直接透传，bridge 负责扇出写入与终态恢复。
         spcJson: task.spc_json || undefined,
         spcSha256: task.spc_sha256 || undefined,
+        // 默认场景逐槽位清单：单场景时就是「替换 vm_start.json + -m vm_start」。
+        spcFiles: issuedSpcFiles,
+        spcSlots: issuedSpcSlots,
         remoteUrl: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // bridge 会把它注入成 `-L 0:Authorization:Bearer <ticket>`
         uploadTicket: p1Ticket || undefined,
@@ -2698,6 +2743,7 @@ async function handleStart() {
     // 备份叫什么"，而恢复只能靠备份名（<file>.platform.<task_id>.bak）重放。
     const spcReceipt = (created.log_data ?? {}) as {
       spc_slot?: string
+      spc_slots?: string[]
       spc_sha256?: string
       spc_hosts?: Array<{ ip: string; backup?: string; error?: string }>
       restore_status?: string
@@ -2708,6 +2754,7 @@ async function handleStart() {
       try {
         await logCollectApi.patchTask(task.task_id, {
           spc_slot: spcReceipt.spc_slot ?? 'core',
+          spc_slots: spcReceipt.spc_slots ?? [],
           spc_sha256: spcReceipt.spc_sha256,
           spc_hosts: spcReceipt.spc_hosts ?? [],
           restore_status: spcReceipt.restore_status ?? 'pending',
@@ -3774,7 +3821,12 @@ async function restoreSpcSlot(ws: WebSocket, taskId: string): Promise<void> {
     const result = await sendAndWait(
       ws,
       'restore_spc',
-      { ticketNo: props.caseId, execId: taskId },
+      {
+        ticketNo: props.caseId,
+        execId: taskId,
+        // 多槽位必须逐槽位还原；空数组时桥回退到内存态/单槽位兼容路径。
+        spcSlots: currentTask.value?.spc_slots ?? [],
+      },
       200000,
     )
     const data = (result.log_data ?? {}) as {
@@ -5125,6 +5177,29 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+            <!-- 默认场景清单：展示本次各场景实际会收集的日志/配置文件与来源 -->
+            <el-collapse v-if="selectedManifestPreviews.length" class="lc-manifest-preview">
+              <el-collapse-item title="本次各场景实际收集的日志 / 配置文件">
+                <div v-for="manifest in selectedManifestPreviews" :key="manifest.module" class="lc-manifest-block">
+                  <div class="lc-manifest-head">
+                    {{ manifest.label }}（{{ manifest.module }}）
+                    <span class="lc-manifest-badge">
+                      {{ manifest.customized ? `已自定义 v${manifest.revision}` : '平台默认快照' }}
+                    </span>
+                    <span>{{ manifest.item_count }} 条</span>
+                  </div>
+                  <div v-for="(entry, index) in manifest.preview.slice(0, 8)" :key="index" class="lc-manifest-path">
+                    {{ entry.path }}
+                  </div>
+                  <div v-if="manifest.preview.length > 8" class="lc-hint">
+                    另有 {{ manifest.preview.length - 8 }} 条，完整清单以管理台为准
+                  </div>
+                </div>
+                <div class="lc-hint">
+                  存在自定义清单时，平台会为本次勾选的全部场景下发同名清单文件，采集结束后逐场景还原。
+                </div>
+              </el-collapse-item>
+            </el-collapse>
             </template>
             <template v-else>
               <div v-if="!customScenarios.length" class="lc-hint">

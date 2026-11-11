@@ -149,6 +149,39 @@ async def delete_custom_scenario(code: str, request: Request) -> Response:
     return await _request_upstream("DELETE", f"/{code}", request, prefix=CUSTOM_UPSTREAM_PREFIX)
 
 
+# ── 默认场景清单（按模块覆写）管理端 ───────────────────────────────────────
+# 与自定义场景分开前缀：一个是用户创建的场景，一个是平台默认模块清单，
+# 删除语义也完全不同（前者停用，后者恢复为镜像快照）。
+default_router = APIRouter(
+    prefix="/api/v1/log-collect-default-scenarios",
+    tags=["log-collect-default-scenarios-admin"],
+    dependencies=[Depends(require_admin)],
+)
+DEFAULT_UPSTREAM_PREFIX = "/internal/log-collect/default-scenarios"
+
+
+@default_router.get("")
+async def list_default_manifests(request: Request) -> Response:
+    return await _request_upstream("GET", "", request, prefix=DEFAULT_UPSTREAM_PREFIX)
+
+
+@default_router.post("/validate")
+async def validate_default_manifest(request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("POST", "/validate", request, payload, prefix=DEFAULT_UPSTREAM_PREFIX)
+
+
+@default_router.put("/{module}")
+async def save_default_manifest(module: str, request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("PUT", f"/{module}", request, payload, prefix=DEFAULT_UPSTREAM_PREFIX)
+
+
+@default_router.delete("/{module}", status_code=204)
+async def reset_default_manifest(module: str, request: Request) -> Response:
+    return await _request_upstream("DELETE", f"/{module}", request, prefix=DEFAULT_UPSTREAM_PREFIX)
+
+
 # ── 日志上传（管理端跨工单只读）───────────────────────────────────────────
 #
 # 与客户身份链路彻底分开：客户路由把 X-Client-ID 重签给下游且强制 case_id，
