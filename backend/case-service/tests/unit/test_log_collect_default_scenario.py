@@ -12,7 +12,6 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-
 from app.schemas.log_collect_custom_scenario import CustomScenarioItem
 from app.services.log_collect_custom_scenario_service import serialize_spc
 from app.services.log_collect_default_scenario_service import (

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models.log_collect import LogCollectDefaultScenario
 from ..schemas.log_collect_custom_scenario import CustomScenarioItem
 from .log_collect_custom_scenario_service import serialize_spc
-from .log_collect_spc_catalog import MODULE_LABELS, M_WHITELIST, load_catalog
+from .log_collect_spc_catalog import M_WHITELIST, MODULE_LABELS, load_catalog
 
 MAX_MANIFEST_ITEMS = 200
 
