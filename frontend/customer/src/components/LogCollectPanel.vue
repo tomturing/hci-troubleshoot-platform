@@ -59,6 +59,7 @@ import {
   parseExtraPathInput,
   validateExtraPath,
 } from '@/utils/logCollectExtraPaths'
+import { checkDateRange } from '@/utils/logCollectDateRange'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
@@ -2373,6 +2374,15 @@ async function handlePrimaryAction(): Promise<void> {
 async function handleStart() {
   if (!form.dateRange || form.dateRange.length !== 2) {
     ElMessage.warning('请选择时间范围')
+    return
+  }
+
+  // 跨度必须在提交前收敛：后端只接受 30 天内，超了回 422 且不回显原因。
+  // 放在最前面是因为它不需要任何前置条件（会话/探测/路径都不影响这个判断），
+  // 注定失败的请求连 bridge 通道都不该打开。
+  const dateRangeCheck = checkDateRange(form.dateRange[0], form.dateRange[1])
+  if (!dateRangeCheck.ok) {
+    ElMessage.warning(dateRangeCheck.reason)
     return
   }
 
@@ -5140,7 +5150,9 @@ onBeforeUnmount(() => {
               end-placeholder="结束日期"
               :disabled-date="disableFutureDate"
             />
-            <div class="lc-hint">日志按天归档，将收集所选日期全天日志（最多 30 天）</div>
+            <div class="lc-hint">
+              日志按天归档，将收集所选日期全天日志（单次最多 30 天，超出会在下发前拦下）
+            </div>
           </el-form-item>
           <el-form-item label="交付路径">
             <!--

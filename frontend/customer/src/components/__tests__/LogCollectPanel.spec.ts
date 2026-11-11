@@ -1696,6 +1696,58 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
    * 这里锁定：下发后报告没刷新 → 绝不写 completed。
    */
   /**
+   * 现场回归（工单 Q2026111100469 / 2026-11-11）：客户把时间范围选成
+   * 2026-05-30 ~ 2026-11-11（166 天），点「开始收集」后前端照发请求，
+   * 服务端回 422，界面只有 `Request failed with status code 422`。
+   *
+   * 契约：跨度超过单次上限必须在**下发前**拦下——既不建任务，也不打开 bridge 通道。
+   */
+  it('时间跨度超过 30 天时在下发前拦下，不建任务也不发 create', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    vi.mocked(logCollectApi.createTask).mockReset()
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+
+    // 先让按钮退出「正在读取环境」：探测成功 + 节点清单就绪
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.0',
+          available_mb: 15480,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'other', label: '默认场景' }],
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+
+    wrapper
+      .findComponent({ name: 'ElDatePicker' })
+      .vm.$emit('update:modelValue', ['2026-05-30', '2026-11-11'])
+    await flushPromises()
+
+    const start = wrapper.findAll('button').find((item) => item.text() === '开始收集')
+    expect(start).toBeTruthy()
+    await start!.trigger('click')
+    await flushPromises()
+
+    expect(logCollectApi.createTask).not.toHaveBeenCalled()
+    expect(sentMessages.some((item) => item.includes('"log_action":"create"'))).toBe(false)
+    wrapper.unmount()
+  })
+
+  /**
    * 额外路径（acli -p）是本次采集范围的一部分：
    * 必须随 create 下发；非法路径要在提交前拦下 —— 插件把路径直接拼进
    * `cp -r`（未加引号），一个含分号的路径等于在客户节点执行命令。

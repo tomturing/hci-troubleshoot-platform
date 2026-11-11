@@ -68,6 +68,46 @@ describe('extractApiProblem', () => {
     expect(problem?.request_id).toBe('req-2')
   })
 
+  // 2026-11-11 Q2026111100469：日志收集选了 166 天，后端回 422，
+  // 而前端只显示 `Request failed with status code 422`。FastAPI 的
+  // RequestValidationError 把原因放在 detail 数组里，旧解析把它当成普通对象展开，
+  // 得到全空 problem，最终一条信息都没留下。
+  it('识别 FastAPI 参数校验的 detail 数组', () => {
+    const problem = extractApiProblem({
+      detail: [
+        {
+          type: 'value_error',
+          loc: ['body'],
+          msg: 'Value error, 收集范围不能超过 30 天',
+          ctx: { error: '收集范围不能超过 30 天' },
+        },
+      ],
+    })
+    // 必须去掉框架的 `Value error, ` 前缀：客户读的是一句话，不是 pydantic 术语
+    expect(problem?.detail).toBe('收集范围不能超过 30 天')
+  })
+
+  it('detail 数组缺 ctx.error 时退回 msg 并去前缀', () => {
+    const problem = extractApiProblem({ detail: [{ loc: ['body', 'ips'], msg: 'Value error, 非法主机 IP：1.1.1' }] })
+    expect(problem?.detail).toBe('非法主机 IP：1.1.1')
+  })
+
+  it('detail 数组多条校验错误去重后拼接', () => {
+    const problem = extractApiProblem({
+      detail: [
+        { msg: 'Value error, 收集范围不能超过 30 天' },
+        { msg: 'Value error, 收集范围不能超过 30 天' },
+        { msg: 'Value error, 结束日期不能早于开始日期' },
+      ],
+    })
+    expect(problem?.detail).toBe('收集范围不能超过 30 天；结束日期不能早于开始日期')
+  })
+
+  it('detail 数组无法解析出原因时返回 null（不造空 problem）', () => {
+    expect(extractApiProblem({ detail: [] })).toBeNull()
+    expect(extractApiProblem({ detail: [{ loc: ['body'] }] })).toBeNull()
+  })
+
   it('非结构化响应返回 null（保持 axios 原行为）', () => {
     expect(extractApiProblem('<html>502 Bad Gateway</html>')).toBeNull()
     expect(extractApiProblem(undefined)).toBeNull()
@@ -96,6 +136,29 @@ describe('createApiClient 错误增强', () => {
     await expect(client.get('/log-collect/tasks/x/uploads')).rejects.toMatchObject({
       message: expect.stringContaining('[LC-PLATFORM-007]'),
       problem: expect.objectContaining({ code: 'LC-PLATFORM-007' }),
+    })
+  })
+
+  /**
+   * 422 回归（2026-11-11 Q2026111100469）：创建日志收集任务时选了 166 天，
+   * 界面只弹 `Request failed with status code 422`，现场无法判断是网络、权限还是参数。
+   * 契约：参数校验错误必须把服务端的中文原因提升成 message。
+   */
+  it('把 422 参数校验数组提升为可读 message', async () => {
+    const client = createApiClient('/api')
+    client.defaults.adapter = failingAdapter(422, {
+      detail: [
+        {
+          type: 'value_error',
+          loc: ['body'],
+          msg: 'Value error, 收集范围不能超过 30 天',
+          ctx: { error: '收集范围不能超过 30 天' },
+        },
+      ],
+    })
+
+    await expect(client.post('/log-collect/tasks', {})).rejects.toMatchObject({
+      message: expect.stringContaining('收集范围不能超过 30 天'),
     })
   })
 

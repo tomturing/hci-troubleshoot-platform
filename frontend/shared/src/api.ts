@@ -68,11 +68,40 @@ export interface ApiProblem {
 }
 
 /**
+ * 把 FastAPI 参数校验错误的 `detail` 数组压成一行人话。
+ *
+ * `RequestValidationError` 的 detail 是数组，元素形如
+ * `{ type, loc, msg, ctx: { error } }`。它此前被当成普通对象展开：
+ * `problem.detail` / `problem.message` 都不存在，得到一个全空 problem，
+ * `formatApiProblem` 返回空串，`error.message` 于是原样保留 axios 的
+ * `Request failed with status code 422`。
+ * 2026-11-11 Q2026111100469 即此：真实原因「收集范围不能超过 30 天」被整段吞掉，
+ * 现场只能看到一个没有任何信息量的状态码，只能靠翻服务端日志才还原。
+ */
+function extractValidationMessages(items: unknown[]): string {
+  const messages: string[] = []
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const entry = item as Record<string, unknown>
+    const ctx = entry.ctx as Record<string, unknown> | undefined
+    // Pydantic v2 把原始 ValueError 放在 ctx.error；msg 会多一个 `Value error, ` 前缀。
+    // 优先取原文，去掉框架前缀后再展示，客户才看得懂该改什么。
+    const raw = typeof ctx?.error === 'string' && ctx.error.trim() ? ctx.error : entry.msg
+    if (typeof raw !== 'string') continue
+    const text = raw.replace(/^Value error,\s*/, '').trim()
+    if (text) messages.push(text)
+  }
+  // 同一批校验里多个字段常报同一条错：去重后按出现顺序拼接，不重复刷屏
+  return Array.from(new Set(messages)).join('；')
+}
+
+/**
  * 从错误响应中提取结构化 problem。
  *
- * 兼容三种后端形态：
+ * 兼容四种后端形态：
  * - `{"detail": {code,title,detail,user_hint}}`（case-service 业务错误）
  * - `{"detail": "..."}`（FastAPI 默认）
+ * - `{"detail": [{type,loc,msg,ctx}]}`（FastAPI 参数校验 422）
  * - `{"error": {code,message,request_id}}`（shared 兜底 500）
  */
 export function extractApiProblem(data: unknown): ApiProblem | null {
@@ -80,6 +109,12 @@ export function extractApiProblem(data: unknown): ApiProblem | null {
   const payload = data as Record<string, unknown>
   const candidate = payload.detail ?? payload.error
   if (typeof candidate === 'string') return { detail: candidate }
+  // 数组必须在对象分支之前判：数组 typeof 也是 'object'，会漏进下面的展开逻辑
+  if (Array.isArray(candidate)) {
+    const detail = extractValidationMessages(candidate)
+    // 解析不出任何原因时返回 null：宁可保留 axios 原文，也不要造一个空 problem
+    return detail ? { detail } : null
+  }
   if (!candidate || typeof candidate !== 'object') return null
   const problem = candidate as Record<string, unknown>
   const detail = problem.detail ?? problem.message
