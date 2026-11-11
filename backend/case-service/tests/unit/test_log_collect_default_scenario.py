@@ -82,6 +82,9 @@ def test_build_spc_files_covers_every_selected_module():
     assert files[0]["content"]
     assert files[0]["sha256"] == serialize_spc(items)[1]
     assert all(len(entry["sha256"]) == 64 for entry in files)
+    # 每项带 revision：任务证据据此回答「当时用的是哪一版覆写」。
+    assert files[0]["revision"] == 2
+    assert files[1]["revision"] == 0
 
 
 def test_build_spc_files_ignores_unsupported_modules():

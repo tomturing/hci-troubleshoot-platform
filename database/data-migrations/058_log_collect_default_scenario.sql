@@ -21,7 +21,8 @@ COMMENT ON TABLE log_collect_default_scenario IS '日志收集默认场景清单
 COMMENT ON COLUMN log_collect_default_scenario.module_code IS 'acli -m 模块名，也是节点上被覆写的清单文件名（不含 .json）';
 COMMENT ON COLUMN log_collect_default_scenario.revision IS '覆写版本号：每次保存递增，历史任务可解释当时用的是哪一版';
 COMMENT ON COLUMN log_collect_default_scenario.items IS '收集条目数组；结构与自定义场景一致，下发时按 spc 序列化';
-COMMENT ON COLUMN log_collect_default_scenario.config_sha256 IS '本次序列化原文的 SHA-256，与桥侧回读校验对齐';
+-- config_sha256 的注释已随 059 删列一并移除。本文件会被 Atlas 门禁全量重放，
+-- 且重放发生在 desired_schema 建表之后；保留该 COMMENT 会因列不存在而中止整个 Job。
 COMMENT ON COLUMN log_collect_default_scenario.trace_id IS '唯一调用链：把保存动作与后续下发、还原事件串起来';
 
 -- 任务侧记录本次实际覆写的槽位集合：终态还原与平台兜底 restore_spc 都依赖它。

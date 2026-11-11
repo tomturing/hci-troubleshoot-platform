@@ -814,8 +814,8 @@ describe('LogCollectPanel', () => {
     // 文案取字典（不再是 bridge 的短名）
     expect(wrapper.text()).toContain('虚拟机挂起恢复专项')
     expect(wrapper.text()).toContain('挂起失败或恢复失败的专项日志')
-    // 字典没维护的枚举必须被点名，不能默默显示一个无说明的短名
-    expect(wrapper.text()).toContain('1 个场景平台尚未维护说明')
+    // 字典维护状态是平台内部实现细节，不再暴露给客户面板
+    expect(wrapper.text()).not.toContain('平台尚未维护说明')
   })
 
   it('能力边界只认 probe：字典有、集群没返回的枚举不得展示', async () => {
@@ -861,28 +861,28 @@ describe('LogCollectPanel', () => {
     expect(group.find('.cbx[data-value="vm_suspend"]').attributes('data-disabled')).toBe('1')
   })
 
-  it('字典为空时回落 bridge 短名，并说明平台暂未维护', async () => {
+  it('字典为空时回落 bridge 短名，不暴露平台维护状态', async () => {
     const wrapper = await mountAndProbe({
       modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
     })
 
     expect(wrapper.find('.lc-module-group').text()).toContain('虚拟机挂起专项')
-    expect(wrapper.text()).toContain('平台场景字典暂未维护')
+    expect(wrapper.text()).not.toContain('平台场景字典暂未维护')
   })
 
-  it('字典接口失败不阻塞探测：仍能完成探测并给出降级说明', async () => {
+  it('字典接口失败不阻塞探测', async () => {
     vi.mocked(logCollectApi.listScenarios).mockRejectedValue(new Error('503'))
     const wrapper = await mountAndProbe({
       modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
     })
 
-    // 探测结论仍然落地（右侧“环境探测”区），只是说明文案退化
+    // 探测结论仍然落地（右侧“环境探测”区）
     expect(wrapper.find('.lc-probe').text()).toContain('1.0.1')
-    expect(wrapper.text()).toContain('场景说明暂不可用')
+    expect(wrapper.text()).not.toContain('场景说明暂不可用')
     expect(wrapper.find('.lc-module-group').findAll('.cbx').length).toBe(1)
   })
 
-  it('来源文案拆成能力与文案两句，不再出现“目录来自集群 acli”', async () => {
+  it('来源文案只保留能力出处，不再解释文案出处', async () => {
     vi.mocked(logCollectApi.listScenarios).mockResolvedValue(scenarioDictFixture)
     const wrapper = await mountAndProbe({
       modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
@@ -891,7 +891,7 @@ describe('LogCollectPanel', () => {
     const text = wrapper.text()
     expect(text).not.toContain('目录来自集群')
     expect(text).toContain('可选场景由集群 acli 提供')
-    expect(text).toContain('场景说明来自平台字典')
+    expect(text).not.toContain('场景说明来自平台字典')
   })
 
   it('空选时提示按默认收集专项下发', async () => {

@@ -554,19 +554,6 @@ function formatTime(value: string | null): string {
 
 <template>
   <div class="custom-scenario">
-    <el-alert type="info" :closable="false" show-icon class="cs-intro">
-      <template #title>自定义场景 = 一份下发给 acli 的收集定义，两条通道产物不同</template>
-      <p>
-        <b>日志清单（spc）</b>：覆写节点 <code>spc/&lt;槽位&gt;.json</code>，支持
-        <code>copy / command / script</code>、filters、<code>{date}</code> 与分组，能力与插件原生清单一致。
-      </p>
-      <p>
-        <b>-c 路径清单</b>：写入节点上一个 JSON 文件，只做逐条 <code>cp -r</code>。
-        不支持通配符与 filters —— 放进去会被插件静默跳过，任务仍显示成功但少收了内容。
-      </p>
-    </el-alert>
-
-    <!-- 第一屏就是可勾选清单：不依赖库里有没有场景，也不把入口藏进抽屉。 -->
     <el-card shadow="never" class="cs-catalog-card">
       <div class="cs-items-head">
         <span>插件清单速选（{{ mainCatalogRows.length }} / {{ allCatalogItems.length }} 条）</span>

@@ -68,9 +68,7 @@ class LogCollectDefaultScenarioService:
         self.session = session
 
     async def _overrides(self) -> dict[str, LogCollectDefaultScenario]:
-        result = await self.session.execute(
-            select(LogCollectDefaultScenario).where(LogCollectDefaultScenario.enabled.is_(True))
-        )
+        result = await self.session.execute(select(LogCollectDefaultScenario))
         return {row.module_code: row for row in result.scalars().all()}
 
     @staticmethod
@@ -114,11 +112,13 @@ class LogCollectDefaultScenarioService:
             manifests.append(row)
         return manifests
 
-    async def build_spc_files(self, modules: list[str] | None) -> list[dict[str, str]]:
+    async def build_spc_files(self, modules: list[str] | None) -> list[dict[str, Any]]:
         """任一勾选模块被覆写 → 所有勾选模块都按平台清单下发。
 
         只下发被改过的模块会让 bridge 把 -m 收窄成该模块，用户勾选的其它场景
         会被静默丢掉；因此要么全部按平台清单走，要么完全不启用（零行为变化）。
+
+        每项带 revision：任务证据据此回答「当时用的是哪一版覆写」。
         """
         selected: list[str] = []
         for raw in modules or []:
@@ -130,13 +130,18 @@ class LogCollectDefaultScenarioService:
         overrides = await self._overrides()
         if not any(module in overrides for module in selected):
             return []
-        files: list[dict[str, str]] = []
+        files: list[dict[str, Any]] = []
         for module in selected:
-            items, _, _ = self._items(module, overrides.get(module))
+            items, _, revision = self._items(module, overrides.get(module))
             if not items:
                 continue
             content, sha, _size = serialize_spc(items)
-            files.append({"slot": module, "content": content, "sha256": sha})
+            files.append({
+                "slot": module,
+                "content": content,
+                "sha256": sha,
+                "revision": revision,
+            })
         return files
 
     async def save(
@@ -158,11 +163,6 @@ class LogCollectDefaultScenarioService:
         else:
             row.revision = int(row.revision) + 1
         row.items = normalized
-        row.item_count = len(normalized)
-        row.config_sha256 = sha
-        row.config_bytes = size
-        row.enabled = True
-        row.updated_by = actor
         row.trace_id = trace_id
         await self.session.commit()
         return {

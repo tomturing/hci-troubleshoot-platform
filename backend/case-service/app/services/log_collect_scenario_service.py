@@ -18,13 +18,14 @@ from ..schemas.log_collect_scenario import (
     LogCollectScenarioResponse,
     LogCollectScenarioUpdate,
 )
+from .log_collect_spc_catalog import M_WHITELIST
 
 logger = logging.getLogger(__name__)
 
 # 列清单集中一处：RETURNING / SELECT 共用，避免加字段时漏掉某一处导致响应缺列。
 _SCENARIO_COLUMNS = (
     "value, label, summary, collects, typical_symptoms, duration_hint, "
-    "exclusive, sort_order, enabled, review_state, updated_by, created_at, updated_at"
+    "exclusive, sort_order, enabled"
 )
 
 # 可更新列白名单：模型字段名会直接拼进 SET 子句，绝不能依赖"pydantic 只送合法字段"这种外部假设。
@@ -38,7 +39,6 @@ _UPDATABLE_COLUMNS = frozenset(
         "exclusive",
         "sort_order",
         "enabled",
-        "review_state",
     }
 )
 
@@ -67,22 +67,24 @@ class LogCollectScenarioService:
         return [LogCollectScenarioResponse(**row) for row in result.mappings()]
 
     async def create_scenario(
-        self, payload: LogCollectScenarioCreate, *, updated_by: str | None
+        self, payload: LogCollectScenarioCreate
     ) -> LogCollectScenarioResponse:
-        """新建字典项。
+        """补录字典项；枚举必须是 acli -m 白名单内的真实能力。
 
-        value 冲突时抛 IntegrityError 由路由层转 409：字典是运营手工维护的低频数据，
-        不需要"静默覆盖"这种危险语义。
+        白名单校验是硬约束：平台字典只是展示层文案，造一个 acli 不支持的枚举
+        会让客户看到永远无法采集的选项，且旧的场景表没有删除接口、无法清理。
         """
+        if payload.value not in M_WHITELIST:
+            raise ValueError(f"不是 acli 支持的场景枚举：{payload.value}")
         result = await self.session.execute(
             text(
                 f"""
                 INSERT INTO log_collect_scenario
                     (value, label, summary, collects, typical_symptoms, duration_hint,
-                     exclusive, sort_order, enabled, review_state, updated_by)
+                     exclusive, sort_order, enabled)
                 VALUES
                     (:value, :label, :summary, :collects, :typical_symptoms, :duration_hint,
-                     :exclusive, :sort_order, :enabled, :review_state, :updated_by)
+                     :exclusive, :sort_order, :enabled)
                 RETURNING {_SCENARIO_COLUMNS}
                 """
             ),
@@ -96,8 +98,6 @@ class LogCollectScenarioService:
                 "exclusive": payload.exclusive,
                 "sort_order": payload.sort_order,
                 "enabled": payload.enabled,
-                "review_state": payload.review_state,
-                "updated_by": updated_by,
             },
         )
         row = result.mappings().one()
@@ -107,12 +107,10 @@ class LogCollectScenarioService:
         self,
         value: str,
         payload: LogCollectScenarioUpdate,
-        *,
-        updated_by: str | None,
     ) -> LogCollectScenarioResponse:
         """按需更新字段（只写调用方显式给出的列）。
 
-        用 `model_dump(exclude_unset=True)` 而不是"全量覆盖"：管理端表格里只改一个开关时，
+        用 `model_dump(exclude_unset=True)` 而不是"全量覆盖"：只改一个开关时，
         全量覆盖会把没提交的说明文本清空——对运营是数据丢失，对客户是文案突然消失。
         """
         changes = payload.model_dump(exclude_unset=True)
@@ -128,12 +126,12 @@ class LogCollectScenarioService:
             text(
                 f"""
                 UPDATE log_collect_scenario
-                SET {set_clause}, updated_by = :updated_by, updated_at = CURRENT_TIMESTAMP
+                SET {set_clause}
                 WHERE value = :value
                 RETURNING {_SCENARIO_COLUMNS}
                 """
             ),
-            {**changes, "value": value, "updated_by": updated_by},
+            {**changes, "value": value},
         )
         row = result.mappings().first()
         if row is None:

@@ -3944,12 +3944,7 @@ CREATE TABLE IF NOT EXISTS log_collect_scenario (
     exclusive boolean NOT NULL DEFAULT false,
     sort_order integer NOT NULL DEFAULT 100,
     enabled boolean NOT NULL DEFAULT true,
-    review_state varchar(16) NOT NULL DEFAULT 'pending_review',
-    updated_by varchar(64),
-    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT log_collect_scenario_pkey PRIMARY KEY (value),
-    CONSTRAINT ck_log_collect_scenario_review_state CHECK ((review_state)::text = ANY ((ARRAY['pending_review'::character varying, 'approved'::character varying])::text[]))
+    CONSTRAINT log_collect_scenario_pkey PRIMARY KEY (value)
 );
 
 COMMENT ON TABLE log_collect_scenario IS '日志收集故障场景字典 — 展示文案与互斥规则的唯一真源；可选范围仍由集群 acli 枚举决定';
@@ -3962,8 +3957,6 @@ COMMENT ON COLUMN log_collect_scenario.duration_hint IS '耗时提示（如单�
 COMMENT ON COLUMN log_collect_scenario.exclusive IS '与其他场景互斥：true 表示选中它必须清空其它项（当前无场景启用；other 已实机确认为叠加语义）';
 COMMENT ON COLUMN log_collect_scenario.sort_order IS '客户端展示顺序，数值小的在前';
 COMMENT ON COLUMN log_collect_scenario.enabled IS '是否在客户端展示；停用不影响历史任务与结果态回显';
-COMMENT ON COLUMN log_collect_scenario.review_state IS '文案审核状态：pending_review=草稿待支持工程师审核；approved=已审核可对外';
-COMMENT ON COLUMN log_collect_scenario.updated_by IS '最近一次修改者（管理端登录账号）';
 
 CREATE INDEX IF NOT EXISTS idx_log_collect_scenario_order
     ON log_collect_scenario (enabled, sort_order);
@@ -4028,24 +4021,15 @@ CREATE TABLE IF NOT EXISTS log_collect_default_scenario (
     module_code varchar(32) NOT NULL,
     revision integer NOT NULL DEFAULT 1,
     items jsonb NOT NULL DEFAULT '[]'::jsonb,
-    item_count integer NOT NULL DEFAULT 0,
-    config_sha256 char(64) NOT NULL,
-    config_bytes integer NOT NULL DEFAULT 0,
-    enabled boolean NOT NULL DEFAULT true,
-    updated_by varchar(64),
     trace_id varchar(64),
-    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT log_collect_default_scenario_pkey PRIMARY KEY (module_code),
-    CONSTRAINT ck_log_collect_default_scenario_revision CHECK (revision >= 1),
-    CONSTRAINT ck_log_collect_default_scenario_item_count CHECK (item_count >= 0)
+    CONSTRAINT ck_log_collect_default_scenario_revision CHECK (revision >= 1)
 );
 
 COMMENT ON TABLE log_collect_default_scenario IS '日志收集默认场景清单覆写：按 acli 模块保存管理员修改过的收集条目';
 COMMENT ON COLUMN log_collect_default_scenario.module_code IS 'acli -m 模块名，也是节点上被覆写的清单文件名（不含 .json）';
 COMMENT ON COLUMN log_collect_default_scenario.revision IS '覆写版本号：每次保存递增，历史任务可解释当时用的是哪一版';
 COMMENT ON COLUMN log_collect_default_scenario.items IS '收集条目数组；结构与自定义场景一致，下发时按 spc 序列化';
-COMMENT ON COLUMN log_collect_default_scenario.config_sha256 IS '本次序列化原文的 SHA-256，与桥侧回读校验对齐';
 COMMENT ON COLUMN log_collect_default_scenario.trace_id IS '唯一调用链：把保存动作与后续下发、还原事件串起来';
 
 -- 任务侧记录本次实际覆写的槽位集合：终态还原与平台兜底 restore_spc 都依赖它。

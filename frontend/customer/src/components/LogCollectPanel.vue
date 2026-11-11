@@ -878,11 +878,8 @@ const probedAtText = computed(() =>
 )
 
 /**
- * 场景目录的**来源**说明。
- *
- * 旧文案写的是“目录来自集群 acli”，但它只代表集群返回过枚举：bridge 只拿 help 确认枚举存在，
- * 展示的短名与顺序始终来自平台内置表。客户看到这句会以为“选项和说明都是集群给的”，
- * 这正好是本次要消除的误解，所以两件事分开说：能力范围来自集群，文案来自平台字典。
+ * 环境探测区只保留可观测的**能力出处**：集群是否返回过枚举。
+ * 文案出处属于平台内部实现细节，不再展示给客户。
  */
 const catalogSourceText = computed(() => {
   if (prepareState.value === 'probing') return '正在从集群读取可选场景…'
@@ -890,14 +887,6 @@ const catalogSourceText = computed(() => {
   return probeResult.value.catalog_source === 'acli_help'
     ? '可选场景由集群 acli 提供'
     : '平台内置场景列表（集群未返回枚举）'
-})
-
-/** 文案来源：与能力来源分开显示，各自都能解释“为何看到这些字”。 */
-const scenarioDictSourceText = computed(() => {
-  if (prepareState.value === 'probing') return '正在读取平台场景字典…'
-  if (scenarioDictNote.value) return scenarioDictNote.value
-  if (!scenarioDictLoaded.value) return '尚未读取平台场景字典'
-  return '场景说明来自平台字典'
 })
 
 // ── 结果态文案（全部由平台任务记录派生，不做本地推断）──────────────────────
@@ -1533,9 +1522,6 @@ function moduleDisabled(value: LogCollectModule): boolean {
   if (form.modules.length > 0) return exclusiveModules.value.has(value)
   return false
 }
-
-/** 平台字典尚未维护的枚举数：用一句汇总量提醒，不给每个选项贴“未维护”标签。 */
-const undocumentedCount = computed(() => moduleOptions.value.filter((item) => !item.documented).length)
 
 /** 已选场景的详细说明：直接回答“这次到底会收什么、典型症状对不对得上”。 */
 const selectedScenarioDocs = computed(() =>
@@ -5127,16 +5113,13 @@ onBeforeUnmount(() => {
           :disabled="running"
         >
           <el-form-item label="故障场景">
-            <!--
-              模式切换：自定义场景走 acli -c，底层固定 -m other（config.modules 永不生效）。
-              界面上不并列展示专项，是为了不让用户误解为"二选一就能只收这些路径"。
-            -->
             <el-radio-group v-model="form.scenarioMode" class="lc-scenario-mode" :disabled="running">
               <el-radio-button value="default">默认场景</el-radio-button>
-              <el-radio-button value="custom" :disabled="!customScenarios.length">自定义场景</el-radio-button>
+              <el-radio-button value="custom" :disabled="!customScenarios.length">
+                自定义场景（含基础日志）
+              </el-radio-button>
             </el-radio-group>
             <template v-if="form.scenarioMode === 'default'">
-            <!-- 全量平铺勾选：目录最多十余项，一次看全比"点开下拉再逐项找"少两次交互 -->
             <el-checkbox-group v-model="form.modules" class="lc-checkbox-group lc-module-group">
               <el-checkbox
                 v-for="item in moduleOptions"
@@ -5151,18 +5134,11 @@ onBeforeUnmount(() => {
                 <span v-if="item.summary" class="lc-module-summary">{{ item.summary }}</span>
               </el-checkbox>
             </el-checkbox-group>
-            <div class="lc-hint">
-              {{ catalogSourceText }}；{{ scenarioDictSourceText }}
-              <span v-if="probeResult?.catalog_note">；{{ probeResult.catalog_note }}</span>
-            </div>
-            <div v-if="undocumentedCount" class="lc-hint lc-hint-warn">
-              其中 {{ undocumentedCount }} 个场景平台尚未维护说明，当前只显示名称
-            </div>
             <div v-if="hasModuleConflict" class="lc-hint lc-hint-warn">
               当前选择同时包含「不收集上述场景」与其他专项（沿历史任务回填），建议只保留其中一类
             </div>
+            <!-- 空选会发生什么是反馈，不是说明：必须保留，否则用户不知道默认会收什么 -->
             <div v-if="emptyModulesHint" class="lc-hint">{{ emptyModulesHint }}</div>
-            <!-- 已选场景的详细说明：用户最关心的是"这次到底会收什么"，而不是选项叫什么 -->
             <div v-if="selectedScenarioDocs.length" class="lc-scenario-docs">
               <div v-for="item in selectedScenarioDocs" :key="item.value" class="lc-scenario-doc">
                 <div class="lc-scenario-doc-head">
@@ -5177,7 +5153,6 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <!-- 默认场景清单：展示本次各场景实际会收集的日志/配置文件与来源 -->
             <el-collapse v-if="selectedManifestPreviews.length" class="lc-manifest-preview">
               <el-collapse-item title="本次各场景实际收集的日志 / 配置文件">
                 <div v-for="manifest in selectedManifestPreviews" :key="manifest.module" class="lc-manifest-block">
@@ -5191,12 +5166,6 @@ onBeforeUnmount(() => {
                   <div v-for="(entry, index) in manifest.preview.slice(0, 8)" :key="index" class="lc-manifest-path">
                     {{ entry.path }}
                   </div>
-                  <div v-if="manifest.preview.length > 8" class="lc-hint">
-                    另有 {{ manifest.preview.length - 8 }} 条，完整清单以管理台为准
-                  </div>
-                </div>
-                <div class="lc-hint">
-                  存在自定义清单时，平台会为本次勾选的全部场景下发同名清单文件，采集结束后逐场景还原。
                 </div>
               </el-collapse-item>
             </el-collapse>
@@ -5216,9 +5185,6 @@ onBeforeUnmount(() => {
                   <span class="lc-custom-meta">{{ item.item_count }} 条路径 · v{{ item.revision }}</span>
                 </el-radio-button>
               </el-radio-group>
-              <div class="lc-hint">
-                自定义场景只追加路径，会与系统基础日志一起收集；体积需把基础日志一并计入
-              </div>
               <div v-if="selectedCustomScenario?.summary" class="lc-hint">
                 {{ selectedCustomScenario.summary }}
               </div>

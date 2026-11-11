@@ -111,9 +111,11 @@ async def create_scenario(
     x_admin_user: str | None = Header(default=None, alias="X-Admin-User"),
 ) -> LogCollectScenarioResponse:
     try:
-        created = await service.create_scenario(payload, updated_by=x_admin_user)
+        created = await service.create_scenario(payload)
     except IntegrityError as exc:
         raise HTTPException(status_code=409, detail=f"场景已存在：{payload.value}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     await _audit("log_collect.scenario.create", payload.value, payload.model_dump(), x_admin_user)
     logger.info(
@@ -135,7 +137,7 @@ async def update_scenario(
 ) -> LogCollectScenarioResponse:
     """按需更新；`value` 不可改（历史任务里存的就是它）。"""
     try:
-        updated = await service.update_scenario(value, payload, updated_by=x_admin_user)
+        updated = await service.update_scenario(value, payload)
     except LogCollectScenarioNotFoundError as exc:
         raise _not_found(value) from exc
     except ValueError as exc:

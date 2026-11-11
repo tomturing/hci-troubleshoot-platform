@@ -411,24 +411,35 @@ async def create_task(
     # 默认场景：任一勾选模块存在清单覆写 → 为所有勾选模块签发平台清单。
     # 放在建任务成功之后：冲突/校验失败不该多打一次库；清单服务异常只降级为
     # 原生默认场景（零行为变化），不能把采集整体挡住。
-    spc_files: list[dict[str, str]] = []
+    spc_files: list[dict] = []
+    manifest_degraded = False
     if payload.custom_scenario_id is None:
         try:
             manifest_service = LogCollectDefaultScenarioService(service.repository.session)
             spc_files = await manifest_service.build_spc_files(payload.modules)
         except Exception as exc:
+            manifest_degraded = True
             logging.getLogger(__name__).warning(
                 "log_collect.manifest_lookup_degraded case_id=%s err=%s", payload.case_id, exc,
             )
             spc_files = []
 
     response = LogCollectTaskResponse.model_validate(task)
+    if manifest_degraded:
+        # 清单读取失败会按节点原生清单采集，必须留痕，避免事后无法解释"这次为什么没用平台清单"。
+        task.detail = {
+            **(task.detail or {}),
+            "manifest": {"mode": "native_fallback", "degraded": True, "trace_id": task.trace_id},
+        }
+        await service.repository.session.commit()
+        response.detail = task.detail
     if spc_files:
         slots = [str(item["slot"]) for item in spc_files]
         evidence = {
             "mode": "platform_manifest",
             "slots": slots,
             "sha256": {str(item["slot"]): str(item["sha256"]) for item in spc_files},
+            "revision": {str(item["slot"]): int(item.get("revision", 0)) for item in spc_files},
             "trace_id": task.trace_id,
         }
         # 证据必须落库：换端/关页面后仍能回答"这次按哪份清单收的"。
