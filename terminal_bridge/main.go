@@ -337,6 +337,13 @@ func (c runtimeConfig) originAllowed(origin, requestHost string) bool {
 
 // ── 消息结构 ─────────────────────────────────────────────────────────────────
 
+// SpcFile 是平台签发的一份槽位清单原文；摘要由桥独立复算，不信任调用方。
+type SpcFile struct {
+	Slot    string `json:"slot"`
+	Content string `json:"content"`
+	SHA256  string `json:"sha256"`
+}
+
 type InMessage struct {
 	Type           string         `json:"type"`
 	CaseID         string         `json:"case_id"`
@@ -403,6 +410,13 @@ type InMessage struct {
 	// SpcSlot 是覆写槽位，留空取 core；非白名单值直接拒绝，避免未来平台在
 	// 不升级 bridge 的前提下悄悄换槽位，把厂商原文件指到别的模块上。
 	SpcSlot string `json:"spc_slot,omitempty"`
+	// SpcFiles 是默认场景的逐槽位清单：每个槽位对应 acli 的一个 -m 模块，
+	// 各自覆写同名清单文件。与 SpcJSON 互斥，后者是自定义场景的单槽位通道。
+	// 旧桥不认识此字段会静默忽略，前端必须先做 capabilities 探测再启用。
+	SpcFiles []SpcFile `json:"spc_files,omitempty"`
+	// SpcSlots 供平台兜底 restore_spc 指定要还原的槽位集合；
+	// 留空时桥按内存态/单槽位兼容路径还原。
+	SpcSlots []string `json:"spc_slots,omitempty"`
 	// RemoteURL 在 log_collect 中语义为：probe 时作为被探测的日志服务器地址；
 	// create 时作为 -u 上传目标（仅 http/https，且只认官方日志服务器白名单）。
 	RemoteURL string `json:"remote_url,omitempty"`

@@ -1589,7 +1589,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 那份 core.json。只写发起节点，其余节点会静默按原清单收集（缺失仅 warning），
 		// 这是本功能要消灭的"看起来成功了"。
 		var spcState *spcTaskState
-		if strings.TrimSpace(msg.SpcJSON) != "" {
+		if strings.TrimSpace(msg.SpcJSON) != "" || len(msg.SpcFiles) > 0 {
 			// spc 与 -c 互斥：两者都决定"收什么"，叠加执行等于后写的静默覆盖前一个。
 			if strings.TrimSpace(msg.ConfigJSON) != "" {
 				rejectConfig("spc_config_conflict", "spc 场景与 -c 配置不能同时下发")
@@ -1609,7 +1609,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			// 下发范围必须与写入集合逐台一致：继续用 all 会把"本轮不可达而未写入"的
 			// 节点也拉进来，采集结果就成了"平台清单 + 原清单"的混合体。
 			msg.IPs = strings.Join(state.writtenTargets(), ",")
-			msg.Modules = []string{state.Slot}
+			if len(state.Slots) > 0 {
+				msg.Modules = append([]string(nil), state.Slots...)
+			} else {
+				msg.Modules = []string{state.Slot}
+			}
 		}
 		if strings.TrimSpace(msg.ConfigJSON) != "" {
 			// -c 与 -p 不能并存：CLI 的 -p 会覆盖 config.paths（get_param 的 CLI 优先）。
@@ -1711,9 +1715,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// 事后要能回答"哪几台写了、备份叫什么、现在还原了没有"，只靠桥日志不可查。
 		// 快照只算一次：回包与事件日志必须引用同一份数据，否则两边对不上。
 		var spcSlotLabel string
+		var spcSlotLabels []string
 		var spcHostsTrail []map[string]any
 		if spcState != nil {
 			spcSlotLabel = spcState.Slot
+			spcSlotLabels = append([]string(nil), spcState.Slots...)
 			spcHostsTrail = spcPersistHosts(spcState.hostsCopy())
 		}
 		createLogData := map[string]any{
@@ -1728,7 +1734,19 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		}
 		if spcState != nil {
 			createLogData["spc_slot"] = spcSlotLabel
-			createLogData["spc_sha256"] = spcSHA256(msg.SpcJSON)
+			createLogData["spc_slots"] = spcSlotLabels
+			if len(msg.SpcFiles) > 0 {
+				// 多槽位没有单份原文：用「槽位:摘要」拼出本次下发的整体指纹，
+				// 前端按槽位落库后可与各模块清单逐一比对。
+				parts := make([]string, 0, len(msg.SpcFiles))
+				for _, file := range msg.SpcFiles {
+					parts = append(parts, strings.TrimSpace(file.Slot)+":"+strings.ToLower(strings.TrimSpace(file.SHA256)))
+				}
+				createLogData["spc_sha256"] = spcSHA256(strings.Join(parts, "|"))
+				createLogData["spc_files"] = parts
+			} else {
+				createLogData["spc_sha256"] = spcSHA256(msg.SpcJSON)
+			}
 			createLogData["spc_hosts"] = spcHostsTrail
 			// 落库即 pending：出现不等于已还原，还原结果由后续 restore 回执改写。
 			createLogData["restore_status"] = "pending"
@@ -1983,11 +2001,27 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			"status": restoreStatus, "error_type": restoreErrType, "message": restoreErrMsg,
 		})
 
+	case "capabilities":
+		// 能力探测：旧桥对未知 action 会明确返回 invalid_action，前端据此 fail-closed，
+		// 避免把 spc_files 静默忽略后按节点原清单收集（最危险的"看起来成功了"）。
+		outcome = "ok"
+		sendMsg(ws, OutMessage{
+			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
+			Status: "ok", LogData: map[string]any{
+				"multi_slot_spc": true,
+				"spc_max_slots":  len(logCollectModules),
+			},
+			TraceID: traceID, CustomUI: cui,
+		})
+		blog("INFO", "log_collect.capabilities", "日志收集能力探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"multi_slot_spc": true, "spc_max_slots": len(logCollectModules),
+		})
+
 	default:
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: "error", ErrorType: "invalid_action", ErrorCode: ErrPlugInvalidAction,
-			Message: "log_action 仅支持 probe / create / progress / cancel / stat / transfer / restore_spc",
+			Message: "log_action 仅支持 probe / create / progress / cancel / stat / transfer / restore_spc / capabilities",
 			TraceID: traceID, CustomUI: cui,
 		})
 	}

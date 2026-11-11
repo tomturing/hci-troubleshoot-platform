@@ -63,6 +63,21 @@ const (
 )
 
 // spcHostState 是一台目标主机的写入 / 恢复结果。
+// spcHostSlotState 是一台主机上一个槽位的写入/还原证据。
+// 逐槽位保存而不是只记"这台写成功了"：多槽位下某个模块文件缺失或校验失败时，
+// 必须能回答"到底哪个槽位挡住了下发"，否则排障只能靠猜。
+type spcHostSlotState struct {
+	Slot         string `json:"slot"`
+	Path         string `json:"path,omitempty"`
+	Backup       string `json:"backup,omitempty"`
+	OriginalSHA  string `json:"original_sha256,omitempty"`
+	Written      bool   `json:"written"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorDetail  string `json:"error_detail,omitempty"`
+	RestoreState string `json:"restore_state,omitempty"`
+	RestoreError string `json:"restore_error,omitempty"`
+}
+
 type spcHostState struct {
 	IP          string `json:"ip"`
 	Dir         string `json:"dir,omitempty"`
@@ -73,6 +88,8 @@ type spcHostState struct {
 	Prepared    bool   `json:"prepared"`
 	ErrorCode   string `json:"error_code,omitempty"`
 	ErrorDetail string `json:"error_detail,omitempty"`
+	// Slots 为多槽位证据；单槽位通道保持为空，兼容既有回执与测试。
+	Slots []spcHostSlotState `json:"slots,omitempty"`
 	// RestoreState 取值：pending / restored / skipped / failed。
 	RestoreState string `json:"restore_state,omitempty"`
 	RestoreError string `json:"restore_error,omitempty"`
@@ -85,6 +102,7 @@ type spcHostState struct {
 type spcTaskSnapshot struct {
 	TaskID       string           `json:"task_id"`
 	Slot         string           `json:"slot"`
+	Slots        []string         `json:"slots,omitempty"`
 	HostCount    int              `json:"host_count"`
 	Written      int              `json:"written"`
 	Failed       int              `json:"failed"`
@@ -107,6 +125,7 @@ type spcHostFailure struct {
 type spcTaskState struct {
 	TaskID    string
 	Slot      string
+	Slots     []string
 	Targets   []string
 	LocalIPs  map[string]bool
 	CreatedAt time.Time
@@ -195,6 +214,7 @@ func (st *spcTaskState) snapshot() spcTaskSnapshot {
 	snapshot := spcTaskSnapshot{
 		TaskID:       st.TaskID,
 		Slot:         st.Slot,
+		Slots:        append([]string(nil), st.Slots...),
 		HostCount:    len(st.hosts),
 		RestoreState: firstNonEmpty(st.restoreState, "pending"),
 		RestoreError: st.restoreError,
@@ -274,17 +294,35 @@ type spcRejection struct {
 // spcRestorePlan 描述一次恢复要做的事；不依赖内存状态，平台显式调用时也能用。
 type spcRestorePlan struct {
 	Slot     string
+	Slots    []string
 	TaskID   string
 	Targets  []string
 	LocalIPs map[string]bool
 	Dirs     map[string]string
 }
 
+// spcSlotFile 是归一化后的单槽位写入输入。
+type spcSlotFile struct {
+	Slot    string
+	Content string
+	SHA256  string
+}
+
 // spcApplySpec 是写入所需的全部输入。
+// Files 非空表示多槽位；为空时退回单槽位字段，保证存量自定义场景零改动。
 type spcApplySpec struct {
 	Slot    string
 	TaskID  string
 	Content string
+	Files   []spcSlotFile
+}
+
+// files 归一化成待写入槽位列表，顺序即下发 -m 的模块顺序。
+func (s spcApplySpec) files() []spcSlotFile {
+	if len(s.Files) > 0 {
+		return s.Files
+	}
+	return []spcSlotFile{{Slot: s.Slot, Content: s.Content, SHA256: spcSHA256(s.Content)}}
 }
 
 // spcTargetSet 决定本次要写哪些节点。
@@ -526,29 +564,93 @@ func spcBase64(raw string) string {
 	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
-// prepareSpcScenario 完成「解析目标主机 + 逐台写入 + 全量校验」，成功才返回现场。
+// parseSpcFiles 校验平台签发的逐槽位清单。
+// 槽位必须是 acli 合法模块、内容必须过 spc 二级校验、摘要必须自洽：
+// 任何一项不合规都拒绝下发，绝不带着半份清单去改节点文件。
+func parseSpcFiles(msg InMessage) ([]spcSlotFile, *spcRejection) {
+	if len(msg.SpcFiles) == 0 {
+		return nil, nil
+	}
+	if strings.TrimSpace(msg.SpcJSON) != "" {
+		return nil, &spcRejection{"spc_config_conflict", "spc_files 与 spc_json 不能同时下发"}
+	}
+	seen := map[string]bool{}
+	files := make([]spcSlotFile, 0, len(msg.SpcFiles))
+	for _, raw := range msg.SpcFiles {
+		slot := strings.TrimSpace(raw.Slot)
+		if !spcSlotRe.MatchString(slot) || !logCollectModules[slot] {
+			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("不支持的清单槽位：%s", slot)}
+		}
+		if seen[slot] {
+			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("清单槽位重复：%s", slot)}
+		}
+		seen[slot] = true
+		if len(raw.Content) == 0 || len(raw.Content) > logCollectSpcMaxBytes {
+			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("槽位 %s 的清单为空或超过 %d 字节", slot, logCollectSpcMaxBytes)}
+		}
+		if err := validateSpcContent(raw.Content); err != nil {
+			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("槽位 %s 的清单非法：%v", slot, err)}
+		}
+		digest := spcSHA256(raw.Content)
+		if declared := strings.ToLower(strings.TrimSpace(raw.SHA256)); declared != "" && declared != digest {
+			return nil, &spcRejection{"spc_digest_mismatch", fmt.Sprintf("槽位 %s 的清单摘要与内容不一致（传输可能被截断或改写）", slot)}
+		}
+		files = append(files, spcSlotFile{Slot: slot, Content: raw.Content, SHA256: digest})
+	}
+	return files, nil
+}
+
+// prepareSpcScenario 完成「解析目标主机 + 逐台逐槽位写入 + 全量校验」，成功才返回现场。
 //
-// 任何一台写不进去都回滚并拒绝：宁可这一次不发任务，也不能让节点之间用不同的清单
-// 收集——那种结果事后无法从采集结果里看出来。
+// 任何一台、任一槽位写不进去都回滚并拒绝：宁可这一次不发任务，也不能让节点之间
+// 用不同的清单收集——那种结果事后无法从采集结果里看出来。
 func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMessage, traceID, customUI string) (*spcTaskState, *spcRejection) {
+	files, rejection := parseSpcFiles(msg)
+	if rejection != nil {
+		return nil, rejection
+	}
+	multi := len(files) > 0
+
 	slot := strings.TrimSpace(msg.SpcSlot)
 	if slot == "" {
 		slot = logCollectSpcSlot
 	}
-	if slot != logCollectSpcSlot {
+	if multi {
+		// 多槽位时 SpcSlot 只是兼容字段，不能覆盖平台签发的槽位集合。
+		slot = files[0].Slot
+	} else if slot != logCollectSpcSlot {
 		return nil, &spcRejection{"spc_slot_unsupported", fmt.Sprintf("不支持的 spc 槽位：%s（bridge 仅支持 %s）", slot, logCollectSpcSlot)}
 	}
-	if err := validateSpcContent(msg.SpcJSON); err != nil {
-		return nil, &spcRejection{"invalid_spc", fmt.Sprintf("场景内容非法：%v", err)}
+
+	spec := spcApplySpec{Slot: slot}
+	var digest string
+	var spcBytes int
+	var slots, digests []string
+	if multi {
+		spec.Files = files
+		for _, file := range files {
+			slots = append(slots, file.Slot)
+			digests = append(digests, file.Slot+":"+file.SHA256)
+			spcBytes += len(file.Content)
+		}
+		digest = spcSHA256(strings.Join(digests, "|"))
+	} else {
+		if err := validateSpcContent(msg.SpcJSON); err != nil {
+			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("场景内容非法：%v", err)}
+		}
+		digest = spcSHA256(msg.SpcJSON)
+		if declared := strings.ToLower(strings.TrimSpace(msg.SpcSHA256)); declared != "" && declared != digest {
+			return nil, &spcRejection{"spc_digest_mismatch", "场景摘要与内容不一致（传输可能被截断或改写）"}
+		}
+		spec.Content = msg.SpcJSON
+		spcBytes = len(msg.SpcJSON)
 	}
-	digest := spcSHA256(msg.SpcJSON)
-	if declared := strings.ToLower(strings.TrimSpace(msg.SpcSHA256)); declared != "" && declared != digest {
-		return nil, &spcRejection{"spc_digest_mismatch", "场景摘要与内容不一致（传输可能被截断或改写）"}
-	}
+
 	taskID := strings.TrimSpace(msg.ExecID)
 	if !spcTaskIDRe.MatchString(taskID) {
 		return nil, &spcRejection{"invalid_task_id", "缺少合法的任务 ID，无法确定备份归属"}
 	}
+	spec.TaskID = taskID
 
 	var hosts []logCollectHostOption
 	if value := strings.TrimSpace(msg.IPs); value == "" || strings.EqualFold(value, "all") {
@@ -562,17 +664,18 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 	state := &spcTaskState{
 		TaskID:       taskID,
 		Slot:         slot,
+		Slots:        slots,
 		Targets:      targets,
 		LocalIPs:     s.spcLocalAddresses(ctx),
 		CreatedAt:    time.Now(),
 		restoreState: "pending",
 	}
 	blog("INFO", "log_collect.spc_fanout_start", "开始把场景写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
-		"task_id": taskID, "slot": slot, "spc_sha256": digest,
-		"hosts_count": len(targets), "ips_all": all, "spc_bytes": len(msg.SpcJSON),
+		"task_id": taskID, "slot": slot, "slots": slots, "spc_sha256": digest,
+		"spc_digests": digests, "hosts_count": len(targets), "ips_all": all, "spc_bytes": spcBytes,
 	})
 
-	results := b.applySpcAll(ctx, s, state, spcApplySpec{Slot: slot, TaskID: taskID, Content: msg.SpcJSON})
+	results := b.applySpcAll(ctx, s, state, spec)
 	state.setHosts(results)
 
 	written, broken, unreachable := spcClassifyHosts(results)
@@ -673,6 +776,10 @@ func spcHostTrailItem(host spcHostState, errorKey string) map[string]any {
 	if host.ErrorCode != "" {
 		item[errorKey] = host.ErrorCode
 	}
+	// 多槽位逐条证据：检索时要能回答"哪个模块文件没写成/没还原"。
+	if len(host.Slots) > 0 {
+		item["slots"] = host.Slots
+	}
 	if host.RestoreState != "" {
 		item["restore_state"] = host.RestoreState
 	}
@@ -714,7 +821,10 @@ func (b *Bridge) applySpcAll(ctx context.Context, s *SSHSession, state *spcTaskS
 	return results
 }
 
-// applySpcToHost 在单台主机上完成探测 → 备份（含自愈）→ 写入 → 回读校验。
+// applySpcToHost 在单台主机上完成目录探测 → 逐槽位备份（含自愈）→ 写入 → 回读校验。
+//
+// 多槽位下任一槽位失败即把整台标为失败：写不全就绝不能下发，
+// 否则部分模块用平台清单、部分用节点原清单，产物无法解释。
 func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcApplySpec, ip string, local bool) spcHostState {
 	state := spcHostState{IP: ip, RestoreState: "pending"}
 
@@ -731,13 +841,39 @@ func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcAppl
 	}
 	state.Dir = dir
 
-	target, pathErr := spcFilePath(dir, spec.Slot)
+	files := spec.files()
+	for _, file := range files {
+		slotState := b.applySpcSlotToHost(ctx, s, ip, local, dir, spec.TaskID, file)
+		if len(files) > 1 {
+			state.Slots = append(state.Slots, slotState)
+		}
+		// 单槽位兼容：既有回执字段仍指向唯一/首个槽位，存量前端与测试不改也能读。
+		if len(state.Slots) <= 1 {
+			state.Path, state.Backup, state.OriginalSHA = slotState.Path, slotState.Backup, slotState.OriginalSHA
+		}
+		if slotState.OriginalSHA != "" {
+			state.Prepared = true
+		}
+		if slotState.ErrorCode != "" {
+			state.ErrorCode = slotState.ErrorCode
+			state.ErrorDetail = fmt.Sprintf("槽位 %s：%s", file.Slot, firstNonEmpty(slotState.ErrorDetail, slotState.ErrorCode))
+			return state
+		}
+	}
+	state.Written = true
+	return state
+}
+
+// applySpcSlotToHost 在已探测到的目录里完成一个槽位的完整写入闭环。
+func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip string, local bool, dir, taskID string, file spcSlotFile) spcHostSlotState {
+	state := spcHostSlotState{Slot: file.Slot}
+	target, pathErr := spcFilePath(dir, file.Slot)
 	if pathErr != nil {
 		state.ErrorCode = spcErrFileMissing
 		state.ErrorDetail = pathErr.Error()
 		return state
 	}
-	backup, backupErr := spcBackupPath(target, spec.TaskID)
+	backup, backupErr := spcBackupPath(target, taskID)
 	if backupErr != nil {
 		state.ErrorCode = spcErrBackup
 		state.ErrorDetail = backupErr.Error()
@@ -755,12 +891,10 @@ func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcAppl
 		state.ErrorCode = firstNonEmpty(spcMarkerField(prepareOut, "reason"), spcErrBackup)
 		return state
 	}
-	state.Prepared = true
 	state.OriginalSHA = spcMarkerField(prepareOut, "orig")
 
-	writeOut, _, writeErr := s.runSpcOnHost(ctx, ip, local, buildSpcWriteVerifyCommand(target, backup, spec.Content))
+	writeOut, _, writeErr := s.runSpcOnHost(ctx, ip, local, buildSpcWriteVerifyCommand(target, backup, file.Content))
 	if writeErr != nil {
-		// 命令通道中断时无法确定写没写进去：标记为不可达，由调用方决定是否回滚。
 		state.ErrorCode = spcErrUnreachable
 		state.ErrorDetail = errString(writeErr)
 		return state
@@ -779,7 +913,7 @@ func (b *Bridge) rollbackSpcAll(s *SSHSession, st *spcTaskState, reason string) 
 	ctx, cancel := context.WithTimeout(context.Background(), spcRestoreActionBudget)
 	defer cancel()
 	results := b.restoreSpcHosts(ctx, s, spcRestorePlan{
-		Slot: st.Slot, TaskID: st.TaskID, Targets: st.Targets,
+		Slot: st.Slot, Slots: st.Slots, TaskID: st.TaskID, Targets: st.Targets,
 		LocalIPs: st.LocalIPs, Dirs: st.dirs(),
 	})
 	restored, failed := spcCountRestore(results)
@@ -828,19 +962,63 @@ func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *SSHSession, plan spcRe
 		}
 		dir = resolved
 	}
-	target, pathErr := spcFilePath(dir, plan.Slot)
+	state.Dir = dir
+
+	slots := plan.Slots
+	if len(slots) == 0 {
+		slots = []string{plan.Slot}
+	}
+	restored, skipped, failed := 0, 0, 0
+	firstErr := ""
+	for _, slot := range slots {
+		slotState := b.restoreSpcSlotOnHost(ctx, s, ip, local, dir, plan.TaskID, slot)
+		if len(slots) > 1 {
+			state.Slots = append(state.Slots, slotState)
+		}
+		if len(state.Slots) <= 1 {
+			state.Path, state.Backup = slotState.Path, slotState.Backup
+		}
+		switch slotState.RestoreState {
+		case "restored":
+			restored++
+		case "skipped":
+			skipped++
+		default:
+			failed++
+			if firstErr == "" {
+				firstErr = firstNonEmpty(slotState.RestoreError, spcErrWrite)
+			}
+		}
+	}
+	// 任一槽位没还原成功就不能报 success：残留一份平台清单就会污染下一次采集。
+	switch {
+	case failed > 0:
+		state.RestoreState = "failed"
+		state.RestoreError = firstErr
+	case restored > 0:
+		state.RestoreState = "restored"
+	default:
+		state.RestoreState = "skipped"
+	}
+	return state
+}
+
+// restoreSpcSlotOnHost 恢复单个槽位：备份不存在返回 skipped，幂等重放不误报。
+func (b *Bridge) restoreSpcSlotOnHost(ctx context.Context, s *SSHSession, ip string, local bool, dir, taskID, slot string) spcHostSlotState {
+	state := spcHostSlotState{Slot: slot}
+	target, pathErr := spcFilePath(dir, slot)
 	if pathErr != nil {
 		state.RestoreState = "failed"
 		state.RestoreError = spcErrFileMissing
 		return state
 	}
-	backup, backupErr := spcBackupPath(target, plan.TaskID)
+	backup, backupErr := spcBackupPath(target, taskID)
 	if backupErr != nil {
 		state.RestoreState = "failed"
 		state.RestoreError = spcErrBackup
 		return state
 	}
-	state.Dir, state.Path, state.Backup = dir, target, backup
+	state.Path, state.Backup = target, backup
 
 	output, _, err := s.runSpcOnHost(ctx, ip, local, buildSpcRestoreScript(target, backup))
 	if err != nil {
@@ -939,7 +1117,7 @@ func (b *Bridge) restoreSpcTask(s *SSHSession, st *spcTaskState, reason, traceID
 	ctx, cancel := context.WithTimeout(context.Background(), spcRestoreActionBudget)
 	defer cancel()
 	results := b.restoreSpcHosts(ctx, s, spcRestorePlan{
-		Slot: st.Slot, TaskID: st.TaskID, Targets: st.Targets,
+		Slot: st.Slot, Slots: st.Slots, TaskID: st.TaskID, Targets: st.Targets,
 		LocalIPs: st.LocalIPs, Dirs: st.dirs(),
 	})
 	restored, failed := spcCountRestore(results)
@@ -970,11 +1148,24 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *SSHSession, msg InMess
 	if slot == "" {
 		slot = logCollectSpcSlot
 	}
-	if slot != logCollectSpcSlot {
-		return nil, "spc_slot_unsupported", fmt.Sprintf("不支持的 spc 槽位：%s", slot)
-	}
 	state := spcTaskStore.get(taskID)
-	plan := spcRestorePlan{Slot: slot, TaskID: taskID}
+	slots := append([]string(nil), msg.SpcSlots...)
+	if len(slots) == 0 && state != nil {
+		slots = append(slots, state.Slots...)
+	}
+	if len(slots) == 0 {
+		if slot != logCollectSpcSlot {
+			return nil, "spc_slot_unsupported", fmt.Sprintf("不支持的 spc 槽位：%s", slot)
+		}
+	} else {
+		for _, name := range slots {
+			if !spcSlotRe.MatchString(name) || !logCollectModules[name] {
+				return nil, "spc_slot_unsupported", fmt.Sprintf("不支持的 spc 槽位：%s", name)
+			}
+		}
+		slot = slots[0]
+	}
+	plan := spcRestorePlan{Slot: slot, Slots: slots, TaskID: taskID}
 	if state != nil {
 		plan.Targets = state.Targets
 		plan.LocalIPs = state.LocalIPs
@@ -1004,6 +1195,7 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *SSHSession, msg InMess
 	logData := map[string]any{
 		"task_id":        taskID,
 		"spc_slot":       slot,
+		"spc_slots":      slots,
 		"restore_status": status,
 		"spc_hosts":      spcPersistHosts(results),
 		"restored_count": restored,

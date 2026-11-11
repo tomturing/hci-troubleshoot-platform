@@ -110,6 +110,8 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     spc_slot = Column(String(32), nullable=True)
     spc_sha256 = Column(String(64), nullable=True)
     spc_hosts = Column(JSONB, nullable=True)
+    # 本次下发的全部槽位；多槽位时终态与平台兜底还原必须逐槽位重放。
+    spc_slots = Column(JSONB, nullable=True)
     restore_status = Column(String(16), nullable=False, default="none", server_default="'none'")
     detail = Column(JSONB, nullable=False, default=dict)
     error_code = Column(String(64), nullable=True)
@@ -154,3 +156,28 @@ class LogCollectCustomScenario(Base, TimestampMixin):
 
     def __repr__(self) -> str:
         return f"<LogCollectCustomScenario(code={self.code}, revision={self.revision})>"
+
+
+class LogCollectDefaultScenario(Base, TimestampMixin):
+    """默认场景清单覆写（按 acli 模块）。
+
+    平台只存"被改过的模块"：没改过的模块用随镜像发布的清单快照，
+    恢复默认即删除本行。``module_code`` 同时是节点上被覆写的清单文件名，
+    因此必须与 acli ``-m`` 白名单一致（由 service 层校验）。
+    """
+
+    __tablename__ = "log_collect_default_scenario"
+
+    module_code = Column(String(32), primary_key=True)
+    revision = Column(Integer, nullable=False, default=1)
+    items = Column(JSONB, nullable=False, default=list)
+    item_count = Column(Integer, nullable=False, default=0)
+    config_sha256 = Column(String(64), nullable=False)
+    config_bytes = Column(Integer, nullable=False, default=0)
+    enabled = Column(Boolean, nullable=False, default=True)
+    updated_by = Column(String(64), nullable=True)
+    # 唯一调用链：把覆写保存动作与之后的下发/还原事件串成一条可检索链路。
+    trace_id = Column(String(64), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<LogCollectDefaultScenario(module={self.module_code}, revision={self.revision})>"

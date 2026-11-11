@@ -33,7 +33,11 @@ var (
 // buildSpcFindCommand 探测 spc 目录：部署路径由 ABSOLUTE_DEPLOY_PATH 决定，
 // 不同集群可能不同，硬编码等于赌某个版本的目录布局。
 func buildSpcFindCommand() string {
-	return "find /sf/data/local -maxdepth 6 -type d -name spc -path '*support_bundle_cluster*' 2>/dev/null"
+	// 现场导出的目录是 /sf/data/local 下第 7 层（acli/plugins/log_collect/tools/
+	// lmt_collect_info/support_bundle_cluster/spc），原来的 maxdepth 6 遍历不到它，
+	// 会误判成"节点未安装插件"。留 3 层余量兼容部署路径更深/更浅的集群，
+	// 仍用 -path 过滤与命中数判定防止写错版本。
+	return "find /sf/data/local -maxdepth 10 -type d -name spc -path '*support_bundle_cluster*' 2>/dev/null"
 }
 
 // parseSpcDirs 归一化目录探测输出：去空行、去重、只留绝对路径、排序。

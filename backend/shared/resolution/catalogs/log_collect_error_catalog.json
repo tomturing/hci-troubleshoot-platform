@@ -402,6 +402,17 @@
       "ops_hint": "log_action 仅支持 probe / create / progress / cancel。"
     },
     {
+      "code": "LC-PLUGIN-014",
+      "layer": "PLUGIN",
+      "stage": "create",
+      "title_zh": "任务 ID 缺失或非法",
+      "owner": "platform",
+      "retryable": false,
+      "http_status": 400,
+      "user_hint": "日志收集任务 ID 缺失，无法确定场景清单备份归属。",
+      "ops_hint": "create 消息必须携带平台任务 ID（exec_id），需匹配正则 ^[A-Za-z0-9._-]{1,64}$；核对前端 create 载荷与建任务响应。"
+    },
+    {
       "code": "LC-TRANSFER-001",
       "layer": "TRANSFER",
       "stage": "package",

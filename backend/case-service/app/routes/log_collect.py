@@ -45,6 +45,7 @@ from ..services.log_collect_custom_scenario_service import (
     serialize_config,
     serialize_spc,
 )
+from ..services.log_collect_default_scenario_service import LogCollectDefaultScenarioService
 from ..services.log_collect_node_path import expected_node_archive_path
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
 from ..services.log_collect_service import (
@@ -407,7 +408,39 @@ async def create_task(
             trace_id=task.trace_id,
         )
 
+    # 默认场景：任一勾选模块存在清单覆写 → 为所有勾选模块签发平台清单。
+    # 放在建任务成功之后：冲突/校验失败不该多打一次库；清单服务异常只降级为
+    # 原生默认场景（零行为变化），不能把采集整体挡住。
+    spc_files: list[dict[str, str]] = []
+    if payload.custom_scenario_id is None:
+        try:
+            manifest_service = LogCollectDefaultScenarioService(service.repository.session)
+            spc_files = await manifest_service.build_spc_files(payload.modules)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "log_collect.manifest_lookup_degraded case_id=%s err=%s", payload.case_id, exc,
+            )
+            spc_files = []
+
     response = LogCollectTaskResponse.model_validate(task)
+    if spc_files:
+        slots = [str(item["slot"]) for item in spc_files]
+        evidence = {
+            "mode": "platform_manifest",
+            "slots": slots,
+            "sha256": {str(item["slot"]): str(item["sha256"]) for item in spc_files},
+            "trace_id": task.trace_id,
+        }
+        # 证据必须落库：换端/关页面后仍能回答"这次按哪份清单收的"。
+        task.detail = {**(task.detail or {}), "manifest": evidence}
+        await service.repository.session.commit()
+        response.detail = task.detail
+        response.spc_files = spc_files
+        response.spc_slots = slots
+        logging.getLogger(__name__).info(
+            "log_collect.manifest_selected case_id=%s task_id=%s trace_id=%s slots=%s",
+            payload.case_id, task.task_id, task.trace_id, ",".join(slots),
+        )
     if config_plan:
         # 只在创建响应里出现：bridge 需要原文写节点，平台不留副本。
         if config_kind == "spc":

@@ -16,6 +16,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import CustomScenarioPanel from './components/CustomScenarioPanel.vue'
+import DefaultScenarioPanel from './components/DefaultScenarioPanel.vue'
 import LogUploadPanel from './components/LogUploadPanel.vue'
 import {
   createScenario,
@@ -482,6 +483,9 @@ function formatTime(value: string | null): string {
       </el-tab-pane>
       <el-tab-pane label="自定义场景" name="custom" lazy>
         <CustomScenarioPanel />
+      </el-tab-pane>
+      <el-tab-pane label="默认场景清单" name="manifest" lazy>
+        <DefaultScenarioPanel />
       </el-tab-pane>
     </el-tabs>
   </div>

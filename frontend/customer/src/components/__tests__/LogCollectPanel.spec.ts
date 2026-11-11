@@ -98,6 +98,13 @@ vi.mock('@/api/terminal', async () => {
         ...(options.spcJson
           ? { spc_json: options.spcJson, spc_sha256: options.spcSha256 }
           : {}),
+        // 任务归属与调用链：漏了 exec_id 会被新桥以 invalid_task_id 拒发，
+        // 这类契约缺口必须在桩里可见，不能测成绿灯。
+        ...(options.execId ? { exec_id: options.execId } : {}),
+        ...(options.traceId ? { trace_id: options.traceId } : {}),
+        // 逐槽位清单：桩里漏映射，等于把"平台清单根本没下发"测成绿灯。
+        ...(options.spcFiles?.length ? { spc_files: options.spcFiles } : {}),
+        ...(options.spcSlots?.length ? { spc_slots: options.spcSlots } : {}),
       }),
     // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
     buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
@@ -119,6 +126,8 @@ vi.mock('@/api/logCollect', () => ({
     listScenarios: vi.fn(),
     // 自定义场景默认空：未定义时界面切回默认场景，不影响既有采集流程
     listCustomScenarios: vi.fn(() => Promise.resolve([])),
+    // 默认场景清单预览：默认空（平台未启用覆写），由用例按需覆盖
+    listDefaultManifests: vi.fn(() => Promise.resolve([])),
     patchTask: vi.fn(),
     deliverTask: vi.fn(),
     getRelay: vi.fn(),
@@ -1824,6 +1833,8 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     expect(JSON.parse(createMessage!)).toMatchObject({ config_json: configJson, config_sha256: configSha256 })
     // 自定义模式下不能再传 -p：CLI 会覆盖 config.paths
     expect(JSON.parse(createMessage!)).not.toHaveProperty('extra_paths')
+    // 零行为变化：没有启用默认场景覆写时，绝不能带逐槽位载荷。
+    expect(JSON.parse(createMessage!)).not.toHaveProperty('spc_files')
     wrapper.unmount()
   })
 
@@ -1941,7 +1952,13 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
 
     const createMessage = sentMessages.find((item) => item.includes('"log_action":"create"'))
     expect(createMessage).toBeTruthy()
-    expect(JSON.parse(createMessage!)).toMatchObject({ spc_json: spcJson, spc_sha256: spcSha256 })
+    expect(JSON.parse(createMessage!)).toMatchObject({
+      spc_json: spcJson,
+      spc_sha256: spcSha256,
+      // 备份名按任务隔离：create 不带 exec_id 会被新桥以 LC-PLUGIN-014 拒绝下发。
+      exec_id: created.task_id,
+    })
+    expect(JSON.parse(createMessage!).trace_id).toMatch(/^lc-/)
 
     const patches = vi
       .mocked(logCollectApi.patchTask)
@@ -1954,6 +1971,114 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
       ip: '172.28.25.1',
       backup: '/sf/x/spc/core.json.platform.task-1.bak',
     })
+    wrapper.unmount()
+  })
+
+  /** 逐槽位载荷的消息契约：字段与动作类型都必须在真实构造函数里可达。 */
+  it('buildLogCollectMessage 透传逐槽位清单与槽位集合', async () => {
+    const actual = await vi.importActual<typeof import('@/api/terminal')>('@/api/terminal')
+    const files = [
+      { slot: 'vm_start', content: '[{"action":"copy","path":"/var/log/vm.log"}]', sha256: 'c'.repeat(64) },
+    ]
+    const message = JSON.parse(
+      actual.buildLogCollectMessage('Q2026110302155', 'create', {
+        execId: 'task-1',
+        traceId: 'lc-1',
+        spcFiles: files,
+        spcSlots: ['vm_start'],
+      }),
+    )
+    expect(message.spc_files).toEqual(files)
+    expect(message.spc_slots).toEqual(['vm_start'])
+    expect(message.exec_id).toBe('task-1')
+    expect(message.trace_id).toBe('lc-1')
+    const capabilities = JSON.parse(
+      actual.buildLogCollectMessage('Q2026110302155', 'capabilities', {}),
+    )
+    expect(capabilities.log_action).toBe('capabilities')
+  })
+
+  /**
+   * 旧桥不认识 spc_files 会静默忽略并继续按节点原清单收集，这是最危险的
+   * 「看起来成功了」：能力探测失败必须 fail-closed，绝不发 create。
+   */
+  it('旧桥不支持逐槽位清单时拦下 create，不静默降级', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const created = taskFixture({
+      status: 'pending',
+      progress: 0,
+      finished_at: null,
+      archive_path: null,
+    })
+    vi.mocked(logCollectApi.createTask).mockResolvedValue({
+      ...created,
+      spc_files: [{ slot: 'vm_start', content: '[]', sha256: 'd'.repeat(64) }],
+      spc_slots: ['vm_start'],
+    })
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({ ...created, status: 'collecting' })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.0',
+          available_mb: 15480,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'vm_start', label: '虚拟机开机失败' }],
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        },
+      }),
+    })
+    await flushPromises()
+    wrapper
+      .findComponent({ name: 'ElDatePicker' })
+      .vm.$emit('update:modelValue', ['2026-11-03', '2026-11-05'])
+    await flushPromises()
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text() === '开始收集')!
+      .trigger('click')
+    await flushPromises()
+
+    // 节点对账基线：createTask 在它之后才调用
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'progress',
+        status: 'ok',
+        log_data: {
+          status: '空闲', percent: 0, done: 0, total: 0, node_state: 'none',
+          archive_path: '', hosts: [], raw: '状态：节点上没有采集任务',
+        },
+      }),
+    })
+    await flushPromises()
+
+    // 旧桥对未知动作返回 invalid_action；重复投递覆盖 waiter 注册时序
+    for (let i = 0; i < 6; i += 1) {
+      fakeSocket.onmessage?.({
+        data: JSON.stringify({
+          type: 'log_collect_result',
+          log_action: 'capabilities',
+          status: 'error',
+          error_type: 'invalid_action',
+        }),
+      })
+      await flushPromises()
+    }
+
+    expect(logCollectApi.createTask).toHaveBeenCalled()
+    expect(sentMessages.some((item) => item.includes('"log_action":"create"'))).toBe(false)
     wrapper.unmount()
   })
 
