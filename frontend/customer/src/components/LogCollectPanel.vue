@@ -2539,6 +2539,10 @@ async function handleStart() {
     sessionAdopted.value = false
     uploadPhaseSeen.value = false
 
+    // 唯一调用链：REST 建任务与 WS 下发必须共用同一个 trace_id。
+    // 缺了它，桥侧只能回退到 lc-unknown，日志无法把「建任务 → 下发 → 进度」串起来。
+    const traceId = `lc-${props.caseId}-${Date.now()}`
+
     let task: LogCollectTask
     try {
       task = await logCollectApi.createTask({
@@ -2581,7 +2585,7 @@ async function handleStart() {
               note: probeResult.value.note,
             }
           : undefined,
-        trace_id: `lc-${props.caseId}-${Date.now()}`,
+        trace_id: traceId,
       })
     } catch (createError: any) {
       if (createError?.response?.status === 409) {
@@ -2629,6 +2633,10 @@ async function handleStart() {
         nodeIp: targetNode,
         // acli -s 与任务归属使用同一个平台工单号
         ticketNo: props.caseId,
+        // spc 覆写按任务隔离备份（core.json.platform.<task_id>.bak）：
+        // 缺 exec_id 会被桥以 LC-PLUGIN-014 拒绝，且终态无法还原清单。
+        execId: task.task_id,
+        traceId,
         modules,
         dateFrom: form.dateRange[0],
         dateTo: form.dateRange[1],

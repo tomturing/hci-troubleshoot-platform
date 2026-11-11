@@ -98,6 +98,10 @@ vi.mock('@/api/terminal', async () => {
         ...(options.spcJson
           ? { spc_json: options.spcJson, spc_sha256: options.spcSha256 }
           : {}),
+        // 任务归属与调用链：漏了 exec_id 会被新桥以 invalid_task_id 拒发，
+        // 这类契约缺口必须在桩里可见，不能测成绿灯。
+        ...(options.execId ? { exec_id: options.execId } : {}),
+        ...(options.traceId ? { trace_id: options.traceId } : {}),
       }),
     // 交付动作走独立消息类型：载荷字段原样透传，用例才能断言 delivery_mode 是否送到 bridge
     buildDeliveryMessage: (action: string, caseId: string, options: any = {}) =>
@@ -1941,7 +1945,13 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
 
     const createMessage = sentMessages.find((item) => item.includes('"log_action":"create"'))
     expect(createMessage).toBeTruthy()
-    expect(JSON.parse(createMessage!)).toMatchObject({ spc_json: spcJson, spc_sha256: spcSha256 })
+    expect(JSON.parse(createMessage!)).toMatchObject({
+      spc_json: spcJson,
+      spc_sha256: spcSha256,
+      // 备份名按任务隔离：create 不带 exec_id 会被新桥以 LC-PLUGIN-014 拒绝下发。
+      exec_id: created.task_id,
+    })
+    expect(JSON.parse(createMessage!).trace_id).toMatch(/^lc-/)
 
     const patches = vi
       .mocked(logCollectApi.patchTask)

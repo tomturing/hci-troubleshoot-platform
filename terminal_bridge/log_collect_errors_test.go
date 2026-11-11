@@ -101,6 +101,7 @@ func TestValidationErrorCodeMapping(t *testing.T) {
 		"invalid_path":       ErrPlugInvalidPath,
 		"invalid_remote_url": ErrPlugInvalidURL,
 		"invalid_action":     ErrPlugInvalidAction,
+		"invalid_task_id":    ErrPlugInvalidTaskID,
 	}
 	for errType, want := range cases {
 		if got := validationErrorCode(errType); got != want {

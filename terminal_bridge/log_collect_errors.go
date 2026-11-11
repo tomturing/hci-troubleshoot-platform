@@ -60,6 +60,9 @@ const (
 	ErrPlugCancelFailed  = "LC-PLUGIN-011"
 	ErrPlugPartialHosts  = "LC-PLUGIN-012"
 	ErrPlugInvalidAction = "LC-PLUGIN-013"
+	// spc 清单备份按任务隔离，create 缺合法 exec_id 时桥会拒绝下发；
+	// 此前该分支没有规范码，失败记录只剩文案，事后无法自动归因。
+	ErrPlugInvalidTaskID = "LC-PLUGIN-014"
 
 	ErrTransferArchiveMissing = "LC-TRANSFER-001"
 	ErrTransferChecksum       = "LC-TRANSFER-002"
@@ -153,6 +156,7 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrPlugCancelFailed:  {"PLUGIN", "customer", "true", "cancel"},
 	ErrPlugPartialHosts:  {"PLUGIN", "customer", "manual", "collect"},
 	ErrPlugInvalidAction: {"PLUGIN", "platform", "false", "create"},
+	ErrPlugInvalidTaskID: {"PLUGIN", "platform", "false", "create"},
 
 	ErrTransferArchiveMissing: {"TRANSFER", "customer", "manual", "package"},
 	ErrTransferChecksum:       {"TRANSFER", "platform", "true", "upload"},
@@ -197,6 +201,8 @@ func validationErrorCode(errType string) string {
 		return ErrPlugInvalidURL
 	case "invalid_action":
 		return ErrPlugInvalidAction
+	case "invalid_task_id":
+		return ErrPlugInvalidTaskID
 	default:
 		return ""
 	}
