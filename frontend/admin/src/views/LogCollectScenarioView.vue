@@ -1,68 +1,84 @@
 <script setup lang="ts">
 /**
- * 日志收集「故障场景」字典维护（管理台）。
+ * 日志收集场景维护（管理台）。
  *
- * 这个页面存在的唯一理由：客户面板上那 10 个勾选项的中文名与说明**不是集群给的**，
- * 是平台自己维护的字典。集群 acli 只决定"哪些枚举真的存在"，所以这里能改文案，
- * 却改不出一个集群不支持的场景来（value 创建后锁死，新建需由支持工程师确认枚举）。
+ * 默认场景是 acli -m 的固定枚举闭集，能力边界由集群决定，平台只维护文案与清单。
+ * 一次只编辑一个场景，因此用二级页签做选择器；不做搜索、筛选、场景列表，
+ * 也不提供新增（枚举由集群定义，平台造不出新场景）。
  *
- * 三条编辑口径：
- *  1. `value` 只读：它是 acli `-m` 的枚举值，也是历史任务表里存的值；
- *  2. `label` / `summary` 必填：前者是勾选框第一行，后者是第二行，缺一行用户就读不懂；
- *  3. `collects` / `typical_symptoms` 无 acli 依据，只能人工写，因此带 `review_state`
- *     标注是否已由支持工程师审核，避免把草稿当成官方释义。
+ * 切换页签前必须拦截未保存改动：概要与清单是两次独立提交，
+ * 若不拦截，用户改完短名直接点另一个场景，改动会静默丢失。
  */
-import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import CustomScenarioPanel from './components/CustomScenarioPanel.vue'
 import DefaultScenarioPanel from './components/DefaultScenarioPanel.vue'
 import LogUploadPanel from './components/LogUploadPanel.vue'
 import {
-  createScenario,
   listScenarios,
-  toggleScenario,
   updateScenario,
   type LogCollectScenario,
-  type ScenarioReviewState,
   type ScenarioUpdatePayload,
 } from '@/api/logCollectScenario'
 
-const REVIEW_TEXT: Record<ScenarioReviewState, string> = {
-  pending_review: '待审核',
-  approved: '已审核',
-}
-
-/** 三个 tab：日志上传看进展（只读），默认场景改文案，自定义场景维护下发的清单。 */
 const activeTab = ref<'upload' | 'default' | 'custom'>('default')
 
 const rows = ref<LogCollectScenario[]>([])
 const loading = ref(false)
-const keyword = ref('')
-const onlyPending = ref(false)
-const onlyDisabled = ref(false)
-// 逐行保存标记：同一个表格里多行可能同时保存，用一个集合点亮各自的 loading。
-const saving = reactive<Record<string, boolean>>({})
+const selectedModule = ref('')
+const savingSummary = ref(false)
+const summaryDirty = ref(false)
+const manifestDirty = ref(false)
 
-const visibleRows = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return rows.value.filter((row) => {
-    if (onlyPending.value && row.review_state !== 'pending_review') return false
-    if (onlyDisabled.value && row.enabled) return false
-    if (!kw) return true
-    return [row.value, row.label, row.summary ?? ''].some((text) => text.toLowerCase().includes(kw))
-  })
+const current = computed(
+  () => rows.value.find((row) => row.value === selectedModule.value) ?? null,
+)
+const isDirty = computed(() => summaryDirty.value || manifestDirty.value)
+
+const form = reactive({
+  label: '',
+  summary: '',
+  sort_order: 100,
+  enabled: true,
 })
+let formSnapshot = ''
 
-const enabledCount = computed(() => rows.value.filter((row) => row.enabled).length)
-const pendingCount = computed(() => rows.value.filter((row) => row.review_state === 'pending_review').length)
+function snapshotForm() {
+  formSnapshot = JSON.stringify({ ...form })
+  summaryDirty.value = false
+}
+
+function applyCurrent() {
+  const row = current.value
+  if (!row) return
+  Object.assign(form, {
+    label: row.label,
+    summary: row.summary ?? '',
+    sort_order: row.sort_order,
+    enabled: row.enabled,
+  })
+  snapshotForm()
+}
+
+watch(
+  form,
+  () => {
+    summaryDirty.value = JSON.stringify({ ...form }) !== formSnapshot
+  },
+  { deep: true },
+)
 
 async function load() {
   loading.value = true
   try {
     rows.value = await listScenarios()
+    if (!selectedModule.value || !rows.value.some((row) => row.value === selectedModule.value)) {
+      selectedModule.value = rows.value[0]?.value ?? ''
+    }
+    applyCurrent()
   } catch (error: any) {
-    ElMessage.error(`加载场景字典失败：${error?.message ?? error}`)
+    ElMessage.error(`加载场景失败：${error?.message ?? error}`)
   } finally {
     loading.value = false
   }
@@ -70,424 +86,226 @@ async function load() {
 
 onMounted(load)
 
-/** 失败后从服务端回读全量，避免界面停留在"看起来存了其实没存"的状态。 */
-async function reloadRows() {
-  try {
-    rows.value = await listScenarios()
-  } catch {
-    // 回读失败就保持现状：下次保存或刷新还会重新对齐，不必再弹一次错。
-  }
-}
-
-async function commitField(
-  row: LogCollectScenario,
-  field: 'label' | 'summary' | 'sort_order',
-) {
-  const patch: ScenarioUpdatePayload = {}
-  if (field === 'label') {
-    const label = (row.label ?? '').trim()
-    if (!label) {
-      ElMessage.warning('场景短名不能为空，已恢复原值')
-      await reloadRows()
+async function selectModule(value: string | number) {
+  const name = String(value)
+  if (name === selectedModule.value) return
+  if (isDirty.value) {
+    try {
+      await ElMessageBox.confirm('当前场景有未保存的修改，切换后将丢失。', '未保存的修改', {
+        type: 'warning',
+      })
+    } catch {
       return
     }
-    patch.label = label
-  } else if (field === 'summary') {
-    const summary = (row.summary ?? '').trim()
-    if (!summary) {
-      ElMessage.warning('一句话释义不能为空（勾选框第二行要显示它），已恢复原值')
-      await reloadRows()
-      return
-    }
-    patch.summary = summary
-  } else {
-    patch.sort_order = row.sort_order
   }
-
-  saving[row.value] = true
-  try {
-    const updated = await updateScenario(row.value, patch)
-    replaceRow(updated)
-    ElMessage.success(`已保存 ${updated.value}`)
-  } catch (error: any) {
-    ElMessage.error(`保存失败：${error?.message ?? error}`)
-    await reloadRows()
-  } finally {
-    saving[row.value] = false
-  }
-}
-
-async function commitSwitch(
-  row: LogCollectScenario,
-  field: 'enabled' | 'exclusive',
-) {
-  const previous = !row[field]
-  saving[row.value] = true
-  try {
-    const updated =
-      field === 'enabled'
-        ? await toggleScenario(row.value, row.enabled)
-        : await updateScenario(row.value, { exclusive: row.exclusive })
-    replaceRow(updated)
-    if (field === 'enabled') {
-      ElMessage.success(`${updated.value} 已${updated.enabled ? '启用' : '停用'}`)
-    }
-  } catch (error: any) {
-    row[field] = previous
-    ElMessage.error(`保存失败：${error?.message ?? error}`)
-  } finally {
-    saving[row.value] = false
-  }
+  selectedModule.value = name
+  manifestDirty.value = false
+  applyCurrent()
 }
 
 function replaceRow(updated: LogCollectScenario) {
   const index = rows.value.findIndex((item) => item.value === updated.value)
   if (index >= 0) rows.value[index] = updated
-  else rows.value.push(updated)
 }
 
-// ── 弹窗编辑（collects / typical_symptoms / duration_hint 等长文本）───────────
+async function saveSummary() {
+  const row = current.value
+  if (!row) return
+  const label = form.label.trim()
+  const summary = form.summary.trim()
+  if (!label) {
+    ElMessage.warning('场景短名不能为空')
+    return
+  }
+  if (!summary) {
+    ElMessage.warning('一句话释义不能为空')
+    return
+  }
+  const patch: ScenarioUpdatePayload = {
+    label,
+    summary,
+    sort_order: form.sort_order,
+    enabled: form.enabled,
+  }
+  savingSummary.value = true
+  try {
+    const updated = await updateScenario(row.value, patch)
+    replaceRow(updated)
+    applyCurrent()
+    ElMessage.success('已保存概要')
+  } catch (error: any) {
+    ElMessage.error(`保存失败：${error?.message ?? error}`)
+  } finally {
+    savingSummary.value = false
+  }
+}
 
+// 采集说明、典型症状、耗时提示与互斥收在弹窗里，主界面不占列。
 const dialogVisible = ref(false)
-const dialogMode = ref<'create' | 'edit'>('edit')
 const dialogSaving = ref(false)
-const form = reactive({
-  value: '',
-  label: '',
-  summary: '',
+const detailForm = reactive({
   collects: '',
   typical_symptoms: '',
   duration_hint: '',
   exclusive: false,
-  sort_order: 100,
-  enabled: true,
-  review_state: 'pending_review' as ScenarioReviewState,
 })
-/** 打开弹窗时的快照，用来算差量补丁（全量提交会覆盖别人刚改的审核状态）。 */
-let snapshot: Record<string, unknown> | null = null
+let detailSnapshot: ScenarioUpdatePayload | null = null
 
-function resetForm() {
-  snapshot = null
-  Object.assign(form, {
-    value: '',
-    label: '',
-    summary: '',
-    collects: '',
-    typical_symptoms: '',
-    duration_hint: '',
-    exclusive: false,
-    sort_order: 100,
-    enabled: true,
-    review_state: 'pending_review' as ScenarioReviewState,
-  })
-}
-
-function openCreate() {
-  resetForm()
-  dialogMode.value = 'create'
-  dialogVisible.value = true
-}
-
-function openEdit(row: LogCollectScenario) {
-  Object.assign(form, {
-    value: row.value,
-    label: row.label,
-    summary: row.summary ?? '',
+function openDetail() {
+  const row = current.value
+  if (!row) return
+  Object.assign(detailForm, {
     collects: row.collects ?? '',
     typical_symptoms: row.typical_symptoms ?? '',
     duration_hint: row.duration_hint ?? '',
     exclusive: row.exclusive,
-    sort_order: row.sort_order,
-    enabled: row.enabled,
-    review_state: row.review_state,
   })
-  snapshot = {
-    label: row.label,
-    summary: row.summary ?? '',
+  detailSnapshot = {
     collects: row.collects ?? null,
     typical_symptoms: row.typical_symptoms ?? null,
     duration_hint: row.duration_hint ?? null,
     exclusive: row.exclusive,
-    sort_order: row.sort_order,
-    enabled: row.enabled,
-    review_state: row.review_state,
   }
-  dialogMode.value = 'edit'
   dialogVisible.value = true
 }
 
-/** 空串统一转 null：后端把 null 与 "" 存成两种值会让"有没有填"含糊不清。 */
 function nullable(text: string): string | null {
   const trimmed = text.trim()
   return trimmed ? trimmed : null
 }
 
-async function submitDialog() {
-  const label = form.label.trim()
-  const summary = form.summary.trim()
-  if (!label) {
-    ElMessage.warning('场景短名必填')
+async function submitDetail() {
+  const row = current.value
+  if (!row || !detailSnapshot) return
+  const payload: ScenarioUpdatePayload = {
+    collects: nullable(detailForm.collects),
+    typical_symptoms: nullable(detailForm.typical_symptoms),
+    duration_hint: nullable(detailForm.duration_hint),
+    exclusive: detailForm.exclusive,
+  }
+  const patch = Object.fromEntries(
+    Object.entries(payload).filter(
+      ([key, value]) => (detailSnapshot as Record<string, unknown> | null)?.[key] !== value,
+    ),
+  ) as ScenarioUpdatePayload
+  if (!Object.keys(patch).length) {
+    dialogVisible.value = false
     return
   }
-  if (!summary) {
-    ElMessage.warning('一句话释义必填（勾选框第二行要显示它）')
-    return
-  }
-  if (dialogMode.value === 'create' && !/^[a-z][a-z0-9_]{0,31}$/.test(form.value.trim())) {
-    ElMessage.warning('枚举值需为小写字母开头，仅含小写字母、数字与下划线（对应 acli -m 取值）')
-    return
-  }
-
-  const payload = {
-    label,
-    summary,
-    collects: nullable(form.collects),
-    typical_symptoms: nullable(form.typical_symptoms),
-    duration_hint: nullable(form.duration_hint),
-    exclusive: form.exclusive,
-    sort_order: form.sort_order,
-    enabled: form.enabled,
-    review_state: form.review_state,
-  }
-
-  // 编辑时只提交真正改过的字段：多人同时维护时不会把别人的修改覆盖回去
-  let patch: ScenarioUpdatePayload = payload
-  if (dialogMode.value === 'edit' && snapshot) {
-    patch = Object.fromEntries(
-      Object.entries(payload).filter(([key, value]) => snapshot?.[key] !== value),
-    ) as ScenarioUpdatePayload
-    if (!Object.keys(patch).length) {
-      dialogVisible.value = false
-      ElMessage.info('没有改动')
-      return
-    }
-  }
-
   dialogSaving.value = true
   try {
-    const saved =
-      dialogMode.value === 'create'
-        ? await createScenario({ value: form.value.trim(), ...payload })
-        : await updateScenario(form.value, patch)
-    replaceRow(saved)
+    const updated = await updateScenario(row.value, patch)
+    replaceRow(updated)
     dialogVisible.value = false
-    ElMessage.success(dialogMode.value === 'create' ? `已新增 ${saved.value}` : `已保存 ${saved.value}`)
-    if (dialogMode.value === 'create') await load()
+    ElMessage.success('已保存说明')
   } catch (error: any) {
-    // 409 是 value 已存在（创建）或记录已被删除（更新），两种都需要刷新列表
     ElMessage.error(`保存失败：${error?.message ?? error}`)
   } finally {
     dialogSaving.value = false
   }
-}
-
-function formatTime(value: string | null): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 </script>
 
 <template>
   <div class="scenario-page">
     <el-tabs v-model="activeTab" class="scenario-tabs">
-      <!-- 日志上传放在最左；lazy 保证不切过去时不启动 10s/30s 轮询 -->
       <el-tab-pane label="日志上传" name="upload" lazy>
         <LogUploadPanel />
       </el-tab-pane>
-      <!-- 默认场景立即渲染；自定义场景用 lazy，未切过去时不额外请求 -->
+
       <el-tab-pane label="默认场景" name="default">
-    <el-alert type="info" :closable="false" show-icon class="scenario-intro">
-      <template #title>这里是客户面板「故障场景」勾选项的文字来源</template>
-      <p>
-        勾选项的<b>能力边界</b>由集群 <code>acli log_collect create --help</code> 决定（集群不支持的枚举不会出现在客户端）；
-        本页维护的是<b>文案</b>：短名、一句话释义、采集内容、典型症状与耗时提示。
-      </p>
-      <p>
-        共 {{ rows.length }} 条，启用 {{ enabledCount }} 条，待审核 {{ pendingCount }} 条。
-        采集内容与典型症状没有 acli 原文可依，需支持工程师审核后把「审核状态」改为已审核。
-      </p>
-    </el-alert>
+        <el-tabs
+          :model-value="selectedModule"
+          class="scenario-subtabs"
+          @tab-change="selectModule"
+        >
+          <el-tab-pane
+            v-for="row in rows"
+            :key="row.value"
+            :label="row.label"
+            :name="row.value"
+          />
+        </el-tabs>
 
-    <el-card shadow="never" class="scenario-card">
-      <div class="scenario-toolbar">
-        <el-input
-          v-model="keyword"
-          placeholder="按枚举值 / 短名 / 释义搜索"
-          clearable
-          style="width: 260px"
-        />
-        <el-checkbox v-model="onlyPending">只看待审核</el-checkbox>
-        <el-checkbox v-model="onlyDisabled">只看已停用</el-checkbox>
-        <div class="scenario-toolbar-right">
-          <el-button size="small" @click="load">刷新</el-button>
-          <el-button size="small" type="primary" @click="openCreate">新增场景</el-button>
-        </div>
-      </div>
-
-      <el-table
-        v-loading="loading"
-        :data="visibleRows"
-        row-key="value"
-        size="small"
-        border
-        empty-text="字典为空：客户端会回落到 bridge 的内置短名"
-      >
-        <el-table-column label="枚举值（只读）" width="160">
-          <template #default="{ row }">
-            <el-tooltip content="acli -m 的取值，也是历史任务里存的值，创建后不可修改" placement="top">
-              <code class="scenario-value">{{ row.value }}</code>
-            </el-tooltip>
+        <el-card v-loading="loading" shadow="never" class="scenario-card">
+          <template #header>
+            <div class="card-head">
+              <span>场景概要</span>
+              <div class="card-head-actions">
+                <el-button size="small" text type="primary" @click="openDetail">编辑说明</el-button>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="savingSummary"
+                  :disabled="!summaryDirty"
+                  @click="saveSummary"
+                >
+                  保存概要
+                </el-button>
+              </div>
+            </div>
           </template>
-        </el-table-column>
 
-        <el-table-column label="场景短名" min-width="150">
-          <template #default="{ row }">
-            <el-input
-              v-model="row.label"
-              size="small"
-              maxlength="64"
-              :disabled="saving[row.value]"
-              @change="commitField(row, 'label')"
-            />
-          </template>
-        </el-table-column>
-
-        <el-table-column label="一句话释义（勾选框第二行）" min-width="240">
-          <template #default="{ row }">
-            <el-input
-              v-model="row.summary"
-              size="small"
-              maxlength="200"
-              :disabled="saving[row.value]"
-              placeholder="未填则客户端只显示短名"
-              @change="commitField(row, 'summary')"
-            />
-          </template>
-        </el-table-column>
-
-        <el-table-column label="排序" width="110">
-          <template #default="{ row }">
+          <div class="summary-grid">
+            <div class="summary-field">
+              <label>枚举值</label>
+              <div class="readonly">{{ current?.value }}</div>
+            </div>
+            <div class="summary-field">
+              <label>场景短名</label>
+              <el-input v-model="form.label" maxlength="64" />
+            </div>
+            <div class="summary-field full">
+              <label>一句话释义</label>
+              <el-input v-model="form.summary" maxlength="200" />
+            </div>
+          </div>
+          <div class="summary-inline">
+            <span class="field-label">排序</span>
             <el-input-number
-              v-model="row.sort_order"
-              size="small"
+              v-model="form.sort_order"
               :min="0"
               :max="9999"
               :step="10"
-              controls-position="right"
-              :disabled="saving[row.value]"
-              @change="commitField(row, 'sort_order')"
-            />
-          </template>
-        </el-table-column>
-
-        <el-table-column label="互斥" width="80">
-          <template #default="{ row }">
-            <el-tooltip content="勾选后与其它场景互斥（当前场景均不需要；other 已确认为叠加语义）" placement="top">
-              <el-switch
-                v-model="row.exclusive"
-                size="small"
-                :loading="saving[row.value]"
-                @change="commitSwitch(row, 'exclusive')"
-              />
-            </el-tooltip>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="启用" width="80">
-          <template #default="{ row }">
-            <el-switch
-              v-model="row.enabled"
               size="small"
-              :loading="saving[row.value]"
-              @change="commitSwitch(row, 'enabled')"
+              controls-position="right"
             />
-          </template>
-        </el-table-column>
+            <span class="field-label inline-gap">启用</span>
+            <el-switch v-model="form.enabled" size="small" />
+          </div>
+        </el-card>
 
-        <el-table-column label="审核状态" width="100">
-          <template #default="{ row }">
-            <el-tag :type="row.review_state === 'approved' ? 'success' : 'warning'" size="small">
-              {{ REVIEW_TEXT[row.review_state] ?? row.review_state }}
-            </el-tag>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="最后修改" width="150">
-          <template #default="{ row }">
-            <span class="scenario-meta">{{ formatTime(row.updated_at) }}</span>
-            <div v-if="row.updated_by" class="scenario-meta">{{ row.updated_by }}</div>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="90" fixed="right">
-          <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑说明</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </el-card>
-
-    <el-dialog
-      v-model="dialogVisible"
-      :title="dialogMode === 'create' ? '新增故障场景' : `编辑：${form.value}`"
-      width="640px"
-      destroy-on-close
-    >
-      <el-form label-width="120px" label-position="top">
-        <el-form-item label="枚举值（acli -m 取值，创建后不可改）">
-          <el-input v-model="form.value" :disabled="dialogMode === 'edit'" placeholder="例如 vm_suspend" />
-        </el-form-item>
-        <el-form-item label="场景短名（必填）">
-          <el-input v-model="form.label" maxlength="64" show-word-limit placeholder="例如 虚拟机挂起专项" />
-        </el-form-item>
-        <el-form-item label="一句话释义（必填，勾选框第二行）">
-          <el-input v-model="form.summary" maxlength="200" show-word-limit placeholder="例如 挂起/恢复失败后的 VMS 进程与日志" />
-        </el-form-item>
-        <el-form-item label="采集内容（换行分隔）">
-          <el-input v-model="form.collects" type="textarea" :rows="3" placeholder="收集哪些日志、哪个目录" />
-        </el-form-item>
-        <el-form-item label="典型症状（换行分隔）">
-          <el-input
-            v-model="form.typical_symptoms"
-            type="textarea"
-            :rows="3"
-            placeholder="帮用户判断该不该选这一项"
-          />
-        </el-form-item>
-        <el-form-item label="耗时提示">
-          <el-input v-model="form.duration_hint" maxlength="100" placeholder="例如 单天收集时间约 4 分钟" />
-        </el-form-item>
-        <el-form-item label="排序（数字越小越靠前）">
-          <el-input-number v-model="form.sort_order" :min="0" :max="9999" :step="10" />
-        </el-form-item>
-        <el-form-item label="属性">
-          <el-checkbox v-model="form.exclusive">与其他场景互斥</el-checkbox>
-          <el-checkbox v-model="form.enabled">在客户端展示</el-checkbox>
-        </el-form-item>
-        <el-form-item label="审核状态">
-          <el-radio-group v-model="form.review_state">
-            <el-radio value="pending_review">待审核</el-radio>
-            <el-radio value="approved">已审核（支持工程师确认过文案）</el-radio>
-          </el-radio-group>
-        </el-form-item>
-      </el-form>
-
-      <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="dialogSaving" @click="submitDialog">保存</el-button>
-      </template>
-    </el-dialog>
+        <DefaultScenarioPanel
+          :module="selectedModule"
+          @update:dirty="manifestDirty = $event"
+        />
       </el-tab-pane>
+
       <el-tab-pane label="自定义场景" name="custom" lazy>
         <CustomScenarioPanel />
       </el-tab-pane>
-      <el-tab-pane label="默认场景清单" name="manifest" lazy>
-        <DefaultScenarioPanel />
-      </el-tab-pane>
     </el-tabs>
+
+    <el-dialog v-model="dialogVisible" title="编辑说明" width="640px" destroy-on-close>
+      <el-form label-position="top">
+        <el-form-item label="采集内容（换行分隔）">
+          <el-input v-model="detailForm.collects" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="典型症状（换行分隔）">
+          <el-input v-model="detailForm.typical_symptoms" type="textarea" :rows="3" />
+        </el-form-item>
+        <el-form-item label="耗时提示">
+          <el-input v-model="detailForm.duration_hint" maxlength="100" />
+        </el-form-item>
+        <el-form-item label="属性">
+          <el-checkbox v-model="detailForm.exclusive">与其他场景互斥</el-checkbox>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dialogSaving" @click="submitDetail">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -495,43 +313,76 @@ function formatTime(value: string | null): string {
 .scenario-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
 }
 
-.scenario-intro p {
-  margin: 4px 0 0;
-  font-size: 12px;
-  line-height: 1.6;
+/* 二级页签与一级页签同构，但用更小的字号/高度与浅底区分层级 */
+.scenario-subtabs {
+  margin-bottom: 14px;
+}
+.scenario-subtabs :deep(.el-tabs__header) {
+  margin: 0;
+  padding: 0 8px;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-top: none;
+  border-radius: 0 0 4px 4px;
+}
+.scenario-subtabs :deep(.el-tabs__item) {
+  height: 44px;
+  line-height: 44px;
+  font-size: 13px;
 }
 
 .scenario-card {
   border-radius: 6px;
 }
-
-.scenario-toolbar {
+.card-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
 }
-
-.scenario-toolbar-right {
+.card-head-actions {
   margin-left: auto;
   display: flex;
   gap: 8px;
+  font-weight: 400;
 }
 
-.scenario-value {
-  font-family: 'SFMono-Regular', Consolas, monospace;
-  font-size: 12px;
-  background: #f5f7fa;
-  padding: 1px 6px;
-  border-radius: 3px;
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 18px;
 }
-
-.scenario-meta {
+.summary-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.summary-field.full {
+  grid-column: 1 / -1;
+}
+.summary-field label,
+.field-label {
   font-size: 12px;
   color: #909399;
+}
+.readonly {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 12.5px;
+  color: #606266;
+  background: #f5f7fa;
+  border-radius: 3px;
+  padding: 6px 9px;
+}
+.summary-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+.inline-gap {
+  margin-left: 18px;
 }
 </style>

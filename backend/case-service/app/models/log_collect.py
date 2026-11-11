@@ -158,7 +158,7 @@ class LogCollectCustomScenario(Base, TimestampMixin):
         return f"<LogCollectCustomScenario(code={self.code}, revision={self.revision})>"
 
 
-class LogCollectDefaultScenario(Base, TimestampMixin):
+class LogCollectDefaultScenario(Base):
     """默认场景清单覆写（按 acli 模块）。
 
     平台只存"被改过的模块"：没改过的模块用随镜像发布的清单快照，
@@ -171,11 +171,6 @@ class LogCollectDefaultScenario(Base, TimestampMixin):
     module_code = Column(String(32), primary_key=True)
     revision = Column(Integer, nullable=False, default=1)
     items = Column(JSONB, nullable=False, default=list)
-    item_count = Column(Integer, nullable=False, default=0)
-    config_sha256 = Column(String(64), nullable=False)
-    config_bytes = Column(Integer, nullable=False, default=0)
-    enabled = Column(Boolean, nullable=False, default=True)
-    updated_by = Column(String(64), nullable=True)
     # 唯一调用链：把覆写保存动作与之后的下发/还原事件串成一条可检索链路。
     trace_id = Column(String(64), nullable=True)
 

@@ -4,12 +4,12 @@
 - 客户读只出已启用项（停用场景 = 平台已下线的能力，露出去就是虚假承诺）；
 - 管理端必须能看见停用项，否则运营无从把下线的场景重新打开；
 - ``value`` 是 acli 的枚举值，写入后不可改（历史任务里存的就是它）；
+- 补录必须命中 acli 白名单，否则会造出永远无法采集、又删不掉的幽灵场景；
 - 每次写都要留审计，否则"谁把某场景的说明改成这样"无从追查。
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -43,7 +43,6 @@ def _row(
     exclusive: bool = False,
     sort_order: int = 100,
 ) -> LogCollectScenarioResponse:
-    now = datetime(2026, 10, 29, 10, 0, 0, tzinfo=UTC)
     return LogCollectScenarioResponse(
         value=value,
         label=label,
@@ -54,10 +53,6 @@ def _row(
         exclusive=exclusive,
         sort_order=sort_order,
         enabled=enabled,
-        review_state="pending_review",
-        updated_by=None,
-        created_at=now,
-        updated_at=now,
     )
 
 
@@ -67,20 +62,20 @@ class _StubService:
     def __init__(self, scenarios: list[LogCollectScenarioResponse] | None = None):
         self.scenarios = scenarios or []
         self.list_calls: list[bool] = []
-        self.update_calls: list[tuple[str, LogCollectScenarioUpdate, str | None]] = []
-        self.create_calls: list[tuple[LogCollectScenarioCreate, str | None]] = []
+        self.update_calls: list[tuple[str, LogCollectScenarioUpdate]] = []
+        self.create_calls: list[LogCollectScenarioCreate] = []
         self.missing: set[str] = set()
 
     async def list_scenarios(self, *, include_disabled: bool):
         self.list_calls.append(include_disabled)
         return [item for item in self.scenarios if include_disabled or item.enabled]
 
-    async def create_scenario(self, payload, *, updated_by):
-        self.create_calls.append((payload, updated_by))
+    async def create_scenario(self, payload):
+        self.create_calls.append(payload)
         return _row(payload.value, label=payload.label, enabled=payload.enabled)
 
-    async def update_scenario(self, value, payload, *, updated_by):
-        self.update_calls.append((value, payload, updated_by))
+    async def update_scenario(self, value, payload):
+        self.update_calls.append((value, payload))
         if value in self.missing:
             raise LogCollectScenarioNotFoundError(value)
         base = next((item for item in self.scenarios if item.value == value), None)
@@ -131,6 +126,9 @@ async def test_client_list_only_returns_enabled_items():
     assert values == ["other", "vm_suspend"]
     # 客户读必须显式要求"排除停用"，不能靠前端过滤
     assert stub.list_calls == [False]
+    # 审核态与审计时间列已物理删除，不能泄漏到客户端
+    assert "review_state" not in resp.json()["scenarios"][0]
+    assert "updated_by" not in resp.json()["scenarios"][0]
 
 
 @pytest.mark.asyncio
@@ -198,7 +196,7 @@ async def test_update_ignores_value_in_body(audit_writer):
 
     assert resp.status_code == 200
     assert resp.json()["value"] == "other"
-    value, payload, _ = stub.update_calls[0]
+    value, payload = stub.update_calls[0]
     assert value == "other"
     # 请求体里的 value 被模型直接忽略，不会进 SET 子句
     assert "value" not in payload.model_dump(exclude_unset=True)
@@ -278,6 +276,28 @@ async def test_create_conflict_returns_409(audit_writer):
     audit_writer.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_create_illegal_module_returns_400(audit_writer):
+    """服务层白名单拒绝时返回可读 400，而不是让幽灵枚举进库。"""
+    stub = _StubService([])
+    stub.create_scenario = AsyncMock(side_effect=ValueError("不是 acli 支持的场景枚举：ghost"))
+    client = await _client_with(stub)
+    try:
+        resp = await client.post(
+            "/internal/log-collect/scenarios",
+            headers=_ADMIN_HEADERS,
+            json={"value": "ghost", "label": "幽灵场景"},
+        )
+    finally:
+        await client.aclose()
+        app.dependency_overrides.pop(get_scenario_service, None)
+        app.dependency_overrides.pop(get_client_id, None)
+
+    assert resp.status_code == 400
+    assert "ghost" in resp.json()["detail"]
+    audit_writer.assert_not_awaited()
+
+
 def test_create_rejects_blank_label():
     """短的 label 是勾选框第一行，空白等于给用户一个无名选项。"""
     with pytest.raises(ValueError):
@@ -329,7 +349,6 @@ class _FakeSession:
 
 
 def _mapping_row(value: str, label: str, *, enabled: bool = True, exclusive: bool = False) -> dict:
-    now = datetime(2026, 10, 29, 10, 0, 0, tzinfo=UTC)
     return {
         "value": value,
         "label": label,
@@ -340,10 +359,6 @@ def _mapping_row(value: str, label: str, *, enabled: bool = True, exclusive: boo
         "exclusive": exclusive,
         "sort_order": 10,
         "enabled": enabled,
-        "review_state": "pending_review",
-        "updated_by": None,
-        "created_at": now,
-        "updated_at": now,
     }
 
 
@@ -374,12 +389,22 @@ async def test_service_admin_read_has_no_enabled_filter():
 
 
 @pytest.mark.asyncio
+async def test_service_create_rejects_unknown_module():
+    session = _FakeSession([])
+    service = LogCollectScenarioService(session)
+
+    with pytest.raises(ValueError, match="不是 acli 支持的场景枚举"):
+        await service.create_scenario(LogCollectScenarioCreate(value="ghost", label="幽灵场景"))
+    assert session.statements == []
+
+
+@pytest.mark.asyncio
 async def test_service_update_rejects_empty_patch():
     session = _FakeSession([])
     service = LogCollectScenarioService(session)
 
     with pytest.raises(ValueError, match="没有需要更新的字段"):
-        await service.update_scenario("other", LogCollectScenarioUpdate(), updated_by="ops")
+        await service.update_scenario("other", LogCollectScenarioUpdate())
 
     assert session.statements == []
 
@@ -392,7 +417,6 @@ async def test_service_update_only_sets_given_columns():
     await service.update_scenario(
         "other",
         LogCollectScenarioUpdate(summary="只收基础系统日志"),
-        updated_by="ops",
     )
 
     sql = session.statements[0]
@@ -401,4 +425,4 @@ async def test_service_update_only_sets_given_columns():
     assert "summary = :summary" in set_clause
     assert "collects" not in set_clause
     assert "typical_symptoms" not in set_clause
-    assert session.params[0] == {"summary": "只收基础系统日志", "value": "other", "updated_by": "ops"}
+    assert session.params[0] == {"summary": "只收基础系统日志", "value": "other"}

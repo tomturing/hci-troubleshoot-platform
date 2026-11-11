@@ -1,12 +1,12 @@
 <script setup lang="ts">
 /**
- * 默认场景清单编辑器（按 acli 模块）。
+ * 默认场景清单（按 acli 模块）。
  *
- * 平台只保存被改过的模块；未改过的模块展示随镜像发布的快照。
- * 保存后，默认场景采集会按平台清单逐模块覆写节点同名清单文件，
- * 并在任务终态逐槽位还原。
+ * 模块由父页面的二级页签指定，本组件只负责当前模块的清单编辑；
+ * 未改过的模块展示随镜像发布的快照，恢复默认 = 删除覆写行。
+ * 编辑态通过 update:dirty 上报，供父页面在切换场景时拦截未保存改动。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listDefaultManifests,
@@ -18,26 +18,33 @@ import {
   type DefaultScenarioValidation,
 } from '@/api/logCollectDefaultScenario'
 
+const props = defineProps<{ module: string }>()
+const emit = defineEmits<{ (e: 'update:dirty', value: boolean): void }>()
+
 const manifests = ref<DefaultScenarioManifest[]>([])
-const selected = ref('')
 const items = ref<DefaultScenarioItem[]>([])
 const loading = ref(false)
 const saving = ref(false)
 const validation = ref<DefaultScenarioValidation | null>(null)
 const previewVisible = ref(false)
+let itemsSnapshot = ''
 
 const current = computed(
-  () => manifests.value.find((item) => item.module === selected.value) ?? null,
+  () => manifests.value.find((item) => item.module === props.module) ?? null,
 )
 
+function applyCurrent() {
+  items.value = (current.value?.items ?? []).map((item) => ({ ...item }))
+  itemsSnapshot = JSON.stringify(items.value)
+  validation.value = null
+  emit('update:dirty', false)
+}
+
 async function load() {
+  if (!props.module) return
   loading.value = true
   try {
-    const data = await listDefaultManifests()
-    manifests.value = data.manifests
-    if (!selected.value || !manifests.value.some((item) => item.module === selected.value)) {
-      selected.value = manifests.value[0]?.module ?? ''
-    }
+    manifests.value = (await listDefaultManifests()).manifests
     applyCurrent()
   } catch (error: any) {
     ElMessage.error(error?.message || '加载默认场景清单失败')
@@ -46,11 +53,15 @@ async function load() {
   }
 }
 
-// 深拷贝一份再编辑：直接改列表里的对象会让"取消"无从谈起。
-function applyCurrent() {
-  items.value = (current.value?.items ?? []).map((item) => ({ ...item }))
-  validation.value = null
-}
+onMounted(load)
+watch(() => props.module, load)
+watch(
+  items,
+  () => {
+    emit('update:dirty', JSON.stringify(items.value) !== itemsSnapshot)
+  },
+  { deep: true },
+)
 
 function addItem() {
   items.value.push({ action: 'copy', path: '', category: 'log', note: '' })
@@ -76,11 +87,11 @@ async function validate(): Promise<boolean> {
 }
 
 async function save() {
-  if (!selected.value || !(await validate())) return
+  if (!props.module || !(await validate())) return
   saving.value = true
   try {
-    await saveDefaultManifest(selected.value, items.value)
-    ElMessage.success(`已保存「${current.value?.label ?? selected.value}」的默认清单`)
+    await saveDefaultManifest(props.module, items.value)
+    ElMessage.success('已保存清单')
     await load()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '保存失败')
@@ -90,89 +101,77 @@ async function save() {
 }
 
 async function reset() {
-  if (!selected.value) return
+  if (!props.module) return
   try {
-    await ElMessageBox.confirm(
-      `恢复后「${current.value?.label ?? selected.value}」将重新使用平台镜像快照的默认清单，已有历史任务不受影响。`,
-      '恢复默认清单',
-      { type: 'warning' },
-    )
+    await ElMessageBox.confirm('恢复后该场景将重新使用平台默认清单。', '恢复默认清单', {
+      type: 'warning',
+    })
   } catch {
     return
   }
   try {
-    await resetDefaultManifest(selected.value)
+    await resetDefaultManifest(props.module)
     ElMessage.success('已恢复为默认清单')
     await load()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.detail || error?.message || '恢复失败')
   }
 }
-
-onMounted(load)
 </script>
 
 <template>
   <div v-loading="loading" class="default-scenario-panel">
-    <el-alert
-      type="info"
-      :closable="false"
-      show-icon
-      title="默认场景的默认收集清单可编辑"
-      description="改动会对后续采集生效：平台按模块下发同名清单文件到节点，采集结束后逐槽位还原。未改动的模块继续使用平台默认快照。"
-    />
+    <el-card shadow="never">
+      <template #header>
+        <div class="ds-head">
+          <span>默认收集清单</span>
+          <el-tag v-if="current?.customized" type="warning" size="small">
+            已自定义 · v{{ current.revision }}
+          </el-tag>
+          <el-tag v-else type="info" size="small">平台默认快照</el-tag>
+          <span class="ds-meta">{{ current?.item_count ?? 0 }} 条</span>
+          <div class="ds-actions">
+            <el-button size="small" :disabled="!props.module" @click="validate">校验并预览</el-button>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="saving"
+              :disabled="!props.module"
+              @click="save"
+            >
+              保存清单
+            </el-button>
+            <el-button size="small" :disabled="!current?.customized" @click="reset">
+              恢复默认
+            </el-button>
+          </div>
+        </div>
+      </template>
 
-    <div class="ds-toolbar">
-      <span class="ds-label">默认场景</span>
-      <el-select v-model="selected" style="width: 280px" @change="applyCurrent">
-        <el-option
-          v-for="manifest in manifests"
-          :key="manifest.module"
-          :label="`${manifest.label}（${manifest.module}）`"
-          :value="manifest.module"
-        />
-      </el-select>
-      <el-tag v-if="current?.customized" type="warning">已自定义 · v{{ current.revision }}</el-tag>
-      <el-tag v-else type="info">平台默认快照</el-tag>
-      <span v-if="current" class="ds-meta">
-        {{ current.item_count }} 条 · 摘要 {{ current.sha256.slice(0, 12) }}
-      </span>
-    </div>
+      <div class="ds-table-head">
+        <span>归类</span><span>动作</span><span>路径</span><span>分组备注</span><span />
+      </div>
+      <div v-for="(item, index) in items" :key="index" class="ds-row">
+        <el-select v-model="item.category" size="small">
+          <el-option label="日志" value="log" />
+          <el-option label="配置" value="config" />
+          <el-option label="其他文件" value="file" />
+        </el-select>
+        <el-select v-model="item.action" size="small">
+          <el-option label="复制" value="copy" />
+          <el-option label="命令" value="command" />
+          <el-option label="脚本" value="script" />
+        </el-select>
+        <el-input v-model="item.path" size="small" placeholder="日志或配置文件的绝对路径 / 通配路径" />
+        <el-input v-model="item.note" size="small" placeholder="可选：分组备注" />
+        <el-button size="small" @click="removeItem(index)">移除</el-button>
+      </div>
+      <el-button class="ds-add" @click="addItem">新增收集项</el-button>
 
-    <div class="ds-hint">
-      路径为该模块在节点上的日志或配置文件；动作与过滤条件沿用平台既有场景校验。
-      保存前会展示服务端真实序列化产物，编辑器里看到什么就下发什么。
-    </div>
-
-    <div class="ds-table-head">
-      <span>归类</span><span>动作</span><span>路径</span><span>分组备注</span><span />
-    </div>
-    <div v-for="(item, index) in items" :key="index" class="ds-row">
-      <el-select v-model="item.category" size="small">
-        <el-option label="日志" value="log" />
-        <el-option label="配置" value="config" />
-        <el-option label="其他文件" value="file" />
-      </el-select>
-      <el-select v-model="item.action" size="small">
-        <el-option label="复制" value="copy" />
-        <el-option label="命令" value="command" />
-        <el-option label="脚本" value="script" />
-      </el-select>
-      <el-input v-model="item.path" size="small" placeholder="日志或配置文件的绝对路径 / 通配路径" />
-      <el-input v-model="item.note" size="small" placeholder="可选：分组备注" />
-      <el-button size="small" @click="removeItem(index)">移除</el-button>
-    </div>
-    <el-button class="ds-add" @click="addItem">新增收集项</el-button>
-
-    <div class="ds-actions">
-      <el-button @click="validate">校验并预览</el-button>
-      <el-button type="primary" :loading="saving" :disabled="!selected" @click="save">保存清单</el-button>
-      <el-button :disabled="!current?.customized" @click="reset">恢复默认</el-button>
-    </div>
-
-    <div v-if="validation && !validation.ok" class="ds-validation ds-validation-error">
-      <div v-for="(issue, index) in validation.issues" :key="index">{{ issue }}</div>
-    </div>
+      <div v-if="validation && !validation.ok" class="ds-validation-error">
+        <div v-for="(issue, index) in validation.issues" :key="index">{{ issue }}</div>
+      </div>
+    </el-card>
 
     <el-dialog v-model="previewVisible" title="将下发的清单（只读）" width="720px">
       <pre class="ds-preview">{{ validation?.preview_text }}</pre>
@@ -185,26 +184,25 @@ onMounted(load)
 
 <style scoped>
 .default-scenario-panel {
-  padding: 8px 4px 24px;
+  padding-top: 14px;
 }
-.ds-toolbar,
-.ds-actions {
+.ds-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 16px 0;
-  flex-wrap: wrap;
-}
-.ds-label {
+  gap: 10px;
+  font-size: 14px;
   font-weight: 600;
 }
-.ds-meta,
-.ds-hint {
-  color: #6b7280;
-  font-size: 12px;
+.ds-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  font-weight: 400;
 }
-.ds-hint {
-  line-height: 1.7;
+.ds-meta {
+  color: #909399;
+  font-size: 12px;
+  font-weight: 400;
 }
 .ds-table-head,
 .ds-row {
@@ -217,11 +215,14 @@ onMounted(load)
 .ds-table-head {
   color: #6b7280;
   font-size: 12px;
-  margin-top: 16px;
+}
+.ds-add {
+  margin-top: 6px;
 }
 .ds-validation-error {
   color: #b91c1c;
   font-size: 13px;
+  margin-top: 10px;
 }
 .ds-preview {
   max-height: 420px;

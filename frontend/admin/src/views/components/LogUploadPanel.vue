@@ -221,12 +221,6 @@ const summaryCells = computed(() => {
 
 <template>
   <div class="upload-panel">
-    <el-alert type="info" :closable="false" show-icon class="upload-intro">
-      <template #title>所有工单的日志收集与交付情况（只读，列表 10s 刷新）</template>
-      平台状态与日志服务器状态是两套独立事实：进度列只对「进行中」的任务每 30s 查询一次日志服务器，
-      查不到只显示「暂无记录」，不会据此判定交付失败。
-    </el-alert>
-
     <div class="upload-summary">
       <div v-for="cell in summaryCells" :key="cell.label" class="upload-summary-cell">
         <div class="upload-summary-value">{{ cell.value }}</div>

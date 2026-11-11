@@ -1,10 +1,11 @@
 /**
  * 默认场景清单面板契约测试（模拟管理员人工操作）。
  *
- * 守住三件事：
- * 1. 未改过的模块明确标注「平台默认快照」，不能让管理员误以为当前是自定义清单；
- * 2. 编辑路径后，保存必须先把条目交给服务端试算，再提交服务端保存；
- * 3. 前端绝不自己拼下发文本，预览内容来自服务端。
+ * 守住四件事：
+ * 1. 模块由父页面的二级页签指定，本组件不再提供模块下拉；
+ * 2. 未改过的模块明确标注「平台默认快照」；
+ * 3. 编辑路径后上报 dirty，保存必须先把条目交给服务端试算，再提交服务端保存；
+ * 4. 切换模块后回到服务端权威清单，不残留上一个场景的草稿。
  */
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
@@ -62,16 +63,22 @@ beforeEach(() => {
   api.resetDefaultManifest.mockResolvedValue(undefined)
 })
 
+function mountPanel(module = 'vm_start') {
+  return mount(DefaultScenarioPanel, {
+    props: { module },
+    global: { plugins: [ElementPlus] },
+  })
+}
+
 describe('默认场景清单面板', () => {
-  it('展示每个场景并标注未自定义', async () => {
-    const wrapper = mount(DefaultScenarioPanel, {
-      global: { plugins: [ElementPlus] },
-    })
+  it('按指定模块加载，标注未自定义，且没有模块下拉与说明文案', async () => {
+    const wrapper = mountPanel()
     await flushPromises()
 
     expect(api.listDefaultManifests).toHaveBeenCalled()
-    expect(wrapper.text()).toContain('虚拟机开机失败')
     expect(wrapper.text()).toContain('平台默认快照')
+    expect(wrapper.text()).not.toContain('默认场景：')
+    expect(wrapper.text()).not.toContain('只保存被改过的模块')
     // input 的 value 不是文本节点，必须从 DOM 元素取值。
     expect(
       wrapper
@@ -81,10 +88,8 @@ describe('默认场景清单面板', () => {
     wrapper.unmount()
   })
 
-  it('修改 vm_start 的收集路径后，先试算再保存', async () => {
-    const wrapper = mount(DefaultScenarioPanel, {
-      global: { plugins: [ElementPlus] },
-    })
+  it('修改路径后上报 dirty，保存时先试算再提交', async () => {
+    const wrapper = mountPanel()
     await flushPromises()
 
     const pathInput = wrapper
@@ -93,6 +98,8 @@ describe('默认场景清单面板', () => {
     expect(pathInput).toBeTruthy()
     await pathInput!.setValue('/var/log/vm-start.log')
     await flushPromises()
+
+    expect(wrapper.emitted('update:dirty')?.flat()).toContain(true)
 
     const saveButton = wrapper.findAll('button').find((item) => item.text() === '保存清单')
     expect(saveButton).toBeTruthy()
@@ -107,6 +114,22 @@ describe('默认场景清单面板', () => {
     ])
     // 保存成功后重新拉取列表：界面必须回到服务端权威版本，而不是继续显示本地草稿。
     expect(api.listDefaultManifests).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('切换模块后加载新场景清单，不残留上一场景的草稿', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    await wrapper.setProps({ module: 'network' })
+    await flushPromises()
+
+    const values = wrapper
+      .findAll('input')
+      .map((item) => (item.element as HTMLInputElement).value)
+    expect(values).toContain('/var/log/network.log')
+    expect(values).not.toContain('/var/log/vm.log')
+    expect(wrapper.emitted('update:dirty')?.flat()).toContain(false)
     wrapper.unmount()
   })
 })

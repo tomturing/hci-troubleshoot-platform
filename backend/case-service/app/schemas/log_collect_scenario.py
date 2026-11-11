@@ -8,19 +8,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # 与 terminal_bridge 的 logCollectModules 白名单同一形状：小写字母开头，允许数字与下划线。
 SCENARIO_VALUE_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
 
-ScenarioReviewState = Literal["pending_review", "approved"]
-
 
 class LogCollectScenarioCreate(BaseModel):
-    """新建一条场景（管理端）。"""
+    """补录一条场景（管理端）；枚举合法性由服务层按 acli 白名单校验。"""
 
     value: str = Field(pattern=SCENARIO_VALUE_PATTERN, max_length=32)
     label: str = Field(min_length=1, max_length=64)
@@ -31,7 +26,6 @@ class LogCollectScenarioCreate(BaseModel):
     exclusive: bool = False
     sort_order: int = 100
     enabled: bool = True
-    review_state: ScenarioReviewState = "pending_review"
 
     @field_validator("label")
     @classmethod
@@ -67,7 +61,6 @@ class LogCollectScenarioUpdate(BaseModel):
     exclusive: bool | None = None
     sort_order: int | None = None
     enabled: bool | None = None
-    review_state: ScenarioReviewState | None = None
 
     @field_validator("label")
     @classmethod
@@ -103,10 +96,6 @@ class LogCollectScenarioResponse(BaseModel):
     exclusive: bool = False
     sort_order: int = 100
     enabled: bool = True
-    review_state: ScenarioReviewState = "pending_review"
-    updated_by: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
 
 
 class LogCollectScenarioListResponse(BaseModel):
