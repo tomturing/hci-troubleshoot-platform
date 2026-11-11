@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.36.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.35.0...v2.36.0) (2026-11-11)
+
+
+### ✨ 新功能
+
+* **ops:** 补齐 5888 P1 上传进度端点并修复已交付行进度可见性 ([e743543](https://github.com/tomturing/hci-troubleshoot-platform/commit/e743543855fbb8e8e9c0a87d9fa46e8bd8453239))
+* **日志收集:** spc 场景条目模型与按通道序列化 ([#1472](https://github.com/tomturing/hci-troubleshoot-platform/issues/1472)) ([f1f9734](https://github.com/tomturing/hci-troubleshoot-platform/commit/f1f973403d38da8ac55f1ba32828c79570e7a6eb))
+* **日志收集:** spc 场景逐台写入与生命周期还原 ([#1474](https://github.com/tomturing/hci-troubleshoot-platform/issues/1474)) ([c6507b1](https://github.com/tomturing/hci-troubleshoot-platform/commit/c6507b1a2c0bd39c17a1336c6f7470d622e7ea77))
+* **日志收集:** spc 扇出原语与生命周期设计 ([#1473](https://github.com/tomturing/hci-troubleshoot-platform/issues/1473)) ([aa2480e](https://github.com/tomturing/hci-troubleshoot-platform/commit/aa2480ec4a8787d9f643e08bdff916b01b68ac0e))
+* **日志收集:** spc 清单快照与 -c 可用性标注 ([#1469](https://github.com/tomturing/hci-troubleshoot-platform/issues/1469)) ([87cc10a](https://github.com/tomturing/hci-troubleshoot-platform/commit/87cc10a0e22194cea10c79387bbeb9719b2829df))
+* **日志收集:** 支持额外收集路径（acli -p） ([#1461](https://github.com/tomturing/hci-troubleshoot-platform/issues/1461)) ([2900675](https://github.com/tomturing/hci-troubleshoot-platform/commit/2900675e8a5e8a5803d89b809c70321cef4e4515))
+* **日志收集:** 管理端日志上传页与日志服务器真实进度代理 ([#1478](https://github.com/tomturing/hci-troubleshoot-platform/issues/1478)) ([2aa9fdf](https://github.com/tomturing/hci-troubleshoot-platform/commit/2aa9fdf5234ca23573d95a70d3e1607c75c2a49d))
+* **日志收集:** 管理端自定义场景支持 spc 双通道编辑器 ([#1475](https://github.com/tomturing/hci-troubleshoot-platform/issues/1475)) ([9a327fb](https://github.com/tomturing/hci-troubleshoot-platform/commit/9a327fbd546017327e4befd63c7c7ba95d914283))
+* **日志收集:** 自定义场景全链路下发（acli -c） ([#1466](https://github.com/tomturing/hci-troubleshoot-platform/issues/1466)) ([4b88c41](https://github.com/tomturing/hci-troubleshoot-platform/commit/4b88c411d426aa61661f18c053b8a604279fbf41))
+* **日志收集:** 自定义场景数据模型、接口与管理台（acli -c） ([#1465](https://github.com/tomturing/hci-troubleshoot-platform/issues/1465)) ([e80485e](https://github.com/tomturing/hci-troubleshoot-platform/commit/e80485ebaf7d760cce4fac6d00b501d913477840))
+* **日志收集:** 自定义场景第一屏平铺插件清单并补只读 JSON 视图 ([#1476](https://github.com/tomturing/hci-troubleshoot-platform/issues/1476)) ([67c1335](https://github.com/tomturing/hci-troubleshoot-platform/commit/67c1335a77445d5c42f0298c7cba04d75b78434e))
+* **日志收集:** 默认场景清单可编辑与逐槽位下发，修复 create 任务 ID ([f29ca42](https://github.com/tomturing/hci-troubleshoot-platform/commit/f29ca42748481f6ec35d32d46a1690ee1ce5adb9))
+
+
+### 🐛 Bug 修复
+
+* **log-collect:** 时间范围超 30 天在下发前拦下，并让 422 校验原因可读 ([#1480](https://github.com/tomturing/hci-troubleshoot-platform/issues/1480)) ([f47c23e](https://github.com/tomturing/hci-troubleshoot-platform/commit/f47c23e68adca1a3b4e46398652c1ad67baba512))
+* **日志收集:** create 未接单不再误报采集中断 ([#1470](https://github.com/tomturing/hci-troubleshoot-platform/issues/1470)) ([3b1b3d1](https://github.com/tomturing/hci-troubleshoot-platform/commit/3b1b3d1d065bec0a29a9d6d2ce887df45dce30ed))
+* **日志收集:** DNS 域名不存在不再误报为平台暂时不可用 ([#1463](https://github.com/tomturing/hci-troubleshoot-platform/issues/1463)) ([f50ee05](https://github.com/tomturing/hci-troubleshoot-platform/commit/f50ee051cfd68c3336e83e5224a1c1dd88c0a4cc))
+* **日志收集:** P1 归档核验不再把瞬时观测写成交付失败 ([#1477](https://github.com/tomturing/hci-troubleshoot-platform/issues/1477)) ([6821a86](https://github.com/tomturing/hci-troubleshoot-platform/commit/6821a8695aff3f9ab676e1e58f431bbe99f8e693))
+* **日志收集:** P2 交付不再被状态机 409 打断，结果态不再把"采完"当"已交付" ([#1458](https://github.com/tomturing/hci-troubleshoot-platform/issues/1458)) ([6bcca1f](https://github.com/tomturing/hci-troubleshoot-platform/commit/6bcca1fbb215f373153d791d6602cabf40282bd4))
+* **日志收集:** 代传终态 CAS 反向与存量僵尸收敛 ([#1468](https://github.com/tomturing/hci-troubleshoot-platform/issues/1468)) ([9a10350](https://github.com/tomturing/hci-troubleshoot-platform/commit/9a10350b6ea67c956b17c96b09ea6f49cba89f79))
+* **日志收集:** 吞掉状态机 409 后必须用服务端状态裁决，避免把已取消的包传出去 ([#1460](https://github.com/tomturing/hci-troubleshoot-platform/issues/1460)) ([6ebf70e](https://github.com/tomturing/hci-troubleshoot-platform/commit/6ebf70ea6cafa4bc502a8073810a5ecbea4cfd5f))
+
+
+### 📝 文档
+
+* **archive:** 补归档 v1.3.0 云边端协同架构设计与实施规范 ([#1467](https://github.com/tomturing/hci-troubleshoot-platform/issues/1467)) ([1040dca](https://github.com/tomturing/hci-troubleshoot-platform/commit/1040dca18058b4d0e245a2ba3955c7930616fff1))
+* **日志收集:** 登记交付链路 DNS 失败与状态不一致修复需求 ([#1462](https://github.com/tomturing/hci-troubleshoot-platform/issues/1462)) ([caef482](https://github.com/tomturing/hci-troubleshoot-platform/commit/caef482f3ee6a03248a46f38e4a5e4b5ef24cf41))
+
 ## [2.35.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.34.0...v2.35.0) (2026-11-06)
 
 
