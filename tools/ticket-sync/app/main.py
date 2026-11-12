@@ -1341,11 +1341,18 @@ async def list_cleanup_events(request: Request, limit: int = 100) -> dict[str, A
     capped = max(1, min(limit, 500))
     events = await asyncio.to_thread(registry.store.list_cleanup_events, capped)
     # 时间戳在服务端转成带偏移的本地时间，前端不做时区推断。
+    # 字段名必须统一成 camelCase：store 返回的是 SQLite 行（snake_case），
+    # 直接透出会让前端读不到 ticketId / freeBytes——界面上"工单"和"当时余量"
+    # 两列变成空白，恰好把"谁被删了"这个最关键的信息藏起来。本服务所有对外
+    # 端点（Job.to_payload、/artifacts 等）都是 camelCase，这里必须一致。
     for event in events:
-        occurred = event.get("occurred_at")
+        occurred = event.pop("occurred_at", None)
         if isinstance(occurred, (int, float)):
             event["occurredAt"] = datetime.fromtimestamp(float(occurred), TZ).isoformat()
-        event.pop("occurred_at", None)
+        else:
+            event["occurredAt"] = None
+        event["ticketId"] = event.pop("ticket_id", None)
+        event["freeBytes"] = event.pop("free_bytes", None)
     summary = await asyncio.to_thread(
         registry.store.cleanup_totals, _now().timestamp() - 86400
     )

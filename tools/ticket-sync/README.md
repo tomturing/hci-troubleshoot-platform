@@ -122,7 +122,7 @@ ready ──(保留期到期 / 磁盘水位淘汰)──► cleaned
 | `POST` | `/jobs` | 创建手动同步任务（立即开始，不受并发上限/退避/墓碑限制，仅受同工单串行约束），body `{"ticketId":"Q2026102100147"}`，返回 202 / 400 / 409 |
 | `GET` | `/jobs/{ticketId}` | 查询阶段与进度（字节、文件数、当前归档、错误码） |
 | `GET` | `/artifacts` | 本地工单目录 + 自动/手动任务 + 已清理工单；响应含 `root`（真实产物根目录） |
-| `GET` | `/cleanup-events?limit=100` | 最近清理动作流水（保留期删除 / 水位淘汰 / 幽灵行对账 / 熔断拒绝）+ 近 24h 汇总 + 当前阈值 |
+| `GET` | `/cleanup-events?limit=100` | 最近清理动作流水（保留期删除 / 水位淘汰 / 幽灵行对账 / 熔断拒绝）+ 近 24h 汇总 + 当前阈值。条目字段**统一为 camelCase**（`ticketId` / `freeBytes` / `occurredAt`），与本服务其它端点一致；`store` 返回的 snake_case 行在端点内完成转换 |
 | `DELETE` | `/jobs/{ticketId}` | 取消任务（已下载归档保留，供下次续传） |
 | `POST` | `/jobs/{ticketId}/abandon` | **放弃该工单的自动重试**（置终态）：保留产物与历史，手动同步不受影响 |
 | `DELETE` | `/jobs/{ticketId}/abandon` | 恢复自动重试（清掉终态与退避记录） |
