@@ -48,6 +48,11 @@ spec:
             enabled: false
           tickets:
             enabled: false
+          # dev 入口是 IP，而 K8s Ingress 的 host 必须是 DNS 名称；
+          # 渲染出的 host: "172.28.24.21" 会让 patch 永久失败并触发 SyncError。
+          # dev 的 /dsh/ 由 admin-ui pathRoute 反代到 dsh Service，不需要独立 Ingress。
+          ingress:
+            enabled: false
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values
