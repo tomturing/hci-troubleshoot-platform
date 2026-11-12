@@ -6,6 +6,7 @@ export * from './types'
 export * from './api'
 export * from './utils/crypto'
 export * from './conversation'
+export * from './logCollectDisplay'
 
 // 导出 Environment 相关类型和 API
 export type {
