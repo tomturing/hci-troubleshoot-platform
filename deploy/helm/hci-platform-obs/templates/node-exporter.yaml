@@ -1,0 +1,91 @@
+{{- if .Values.nodeExporter.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-exporter
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/name: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: node-exporter
+  updateStrategy:
+    # 单节点集群：滚动更新等价于中断，用 OnDelete 让采集不因一次 apply 就断档。
+    type: OnDelete
+  template:
+    metadata:
+      labels:
+        {{- include "hci.labels" . | nindent 8 }}
+        app.kubernetes.io/name: node-exporter
+      annotations:
+        # hci-services job 靠这三个注解发现目标（role: pod + prometheus.io/scrape）。
+        # 少写任何一个，DaemonSet 起来了也不会被采集，等于白装。
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.nodeExporter.port | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      # hostNetwork 让抓取地址就是节点 IP（__address__ 取 Pod IP），
+      # 不需要额外的 hostPort 映射，也不会和 Service 端口打结。
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # 全部容忍：采集节点本身就是它的职责，节点有问题时更需要它的数据。
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: node-exporter
+          image: {{ .Values.nodeExporter.image }}
+          args:
+            # 通过 hostPath 读宿主机视角的 /proc、/sys、/。
+            # path.rootfs 是让 node_filesystem 报「宿主机挂载点」而不是容器根文件系统的关键，
+            # 少了它采集到的是容器内那层 overlay，对节点磁盘告警毫无意义。
+            - --path.procfs=/host/proc
+            - --path.sysfs=/host/sys
+            - --path.rootfs=/host/root
+            # 排除容器运行时与虚拟文件系统，避免噪声与时序抖动导致的误报。
+            #
+            # `var/lib/kubelet/.+` 不能省：k3s 的 local-path Provisioner 会给每个
+            # PVC 建一个 bind mount，实测本节点有 19 个，fstype 全是 ext4、size
+            # 全部是那块 2.1T 盘。不排除的话 node_filesystem_* 会为同一个盘产生
+            # 20 条序列，NodeDiskFreeLow 一次 firing 20 条、DiskUsageHigh 同样
+            # 对 20 个 mountpoint 重复判定——告警风暴，且真正的根盘告警被淹没。
+            - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run|snap|var/lib/(docker|containerd|kubelet)/.+)($|/)
+            - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.nodeExporter.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.nodeExporter.resources | nindent 12 }}
+          securityContext:
+            # node-exporter 只需要读权限，不需要 privileged 也不需要访问宿主机设备。
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: root
+              mountPath: /host/root
+              readOnly: true
+              mountPropagation: HostToContainer
+      volumes:
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: root
+          hostPath:
+            path: /
+{{- end }}
