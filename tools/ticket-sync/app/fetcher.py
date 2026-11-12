@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Config
 from .models import ErrorCode, TicketError
+from .waterline import ensure_waterline
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo("Asia/Shanghai")
@@ -396,6 +397,10 @@ async def fetch(
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     target = work_dir / f"{ticket_id}.zip"
+    # 拉取前的水位闸门：rsync 一开跑就会把整个归档写进来（实测最大 27 GiB），
+    # 等服务路径上的检查（原先只有 CLI 有）已经太晚——盘写满之后 rsync 只会
+    # 留下一个半截文件，而 kubelet 可能已经把整栈驱逐了。
+    ensure_waterline(work_dir, cfg.min_free_bytes, stage="fetch", ticket_id=ticket_id, job_id=job_id)
     if remote_path is None:
         remote_path = await resolve_archive_path(cfg, ticket_id)
     remote = _remote_spec(cfg, ticket_id, remote_path)

@@ -37,11 +37,11 @@ from .fetcher import (
     looks_like_non_log_bundle,
 )
 from .maintenance import (
-    cleanup_expired,
-    enforce_capacity,
+    CleanupReport,
     has_usable_logs,
     read_sync_meta,
     reconcile_artifacts,
+    run_cleanup_cycle,
     write_sync_meta,
 )
 from .models import (
@@ -53,8 +53,13 @@ from .models import (
     TicketError,
     validate_ticket_id,
 )
-from .publisher import cleanup_stale_workspaces, prepare_workspace, prune_trash, publish
-from .store import Store
+from .publisher import cleanup_stale_workspaces, prepare_workspace, publish
+from .store import (
+    CLEANUP_EVENT_RETENTION_DAYS,
+    CLEANUP_KIND_WATERLINE,
+    Store,
+)
+from .waterline import ensure_waterline, free_bytes
 
 logger = logging.getLogger("ticket-sync")
 
@@ -102,13 +107,24 @@ DEEP_SCAN_MIN_INTERVAL_SECONDS = 300
 
 # `.tmp` 半成品的保留时长。work_dir 按工单号固定后，失败残留是"续传的本钱"，
 # 重启不该让 65 GiB 的下载从头再来；但也不能无限累积，超龄的由启动自检
-# 与每日维护回收。选 2 小时：覆盖一次正常的慢速下载，又不至于把垃圾留过夜。
+# 与每轮维护回收。选 2 小时：覆盖一次正常的慢速下载，又不至于把垃圾留过夜。
 STALE_WORKSPACE_SECONDS = 2 * 3600
 
+# 体积重算（`reconcile_artifacts`）的最小间隔。这条路径在冷缓存下扫 44 万文件
+# 要数分钟，绝不能挂在 30 秒的维护循环上；而它要解决的问题（历史目录缺 meta）
+# 是一次性的。10 分钟粒度足够，剩下的准确性由每轮跑的"幽灵行对账"兜住。
+FULL_RECONCILE_INTERVAL_SECONDS = 600
+
 # 墓碑的保留时长。墓碑不是永久资产：远端归档本身有保留窗口，过了窗口它既不会
-# 被扫到，留着只会让表无限增长。取 30 天，远大于 7 天保留期，留足"删掉之后
+# 被扫到，留着只会让表无限增长。取 30 天，远大于保留期，留足"删掉之后
 # 不该立刻被拉回来"的余量。
 TOMBSTONE_RETENTION_DAYS = 30
+
+# 「已清理」条目在界面上的回看窗口与条数上限。
+# 3 天保留期下，超过一周的清理记录对"我现在能不能用"已经没有决策价值；
+# 而列表每 2 秒被轮询一次，全量回传会把响应体撑到几百 KB。
+CLEANED_DISPLAY_DAYS = 7
+CLEANED_DISPLAY_LIMIT = 100
 
 # 单轮自动入队的硬上限。2026-11-01 的事故里，扫描窗口一放宽就把 57 个从未同步
 # 过的历史归档一次性入队、吃掉 766 GiB。这个上限保证同类判据错误最多只放大成
@@ -238,6 +254,11 @@ class JobRegistry:
 
     def close(self) -> None:
         self._store.close()
+
+    @property
+    def store(self) -> Store:
+        """暴露只读存储句柄，供维护循环汇总与接口查询使用。"""
+        return self._store
 
     def _load_history(self) -> None:
         """把 SQLite 里的任务历史还原成轻量 Job，供 `/artifacts`、`/jobs` 查询。
@@ -462,10 +483,12 @@ class JobRegistry:
         """
         row = self._store.get_artifact(ticket_id)
         synced_at = row.get("completed_at") if row else None
+        # reason 统一写 cleanup：具体是保留期还是水位淘汰，由 cleanup_events
+        # 的 kind 精确回答。墓碑只需要回答"它曾经同步成功过"这一个问题。
         self._store.add_tombstone(
             ticket_id,
             float(synced_at) if synced_at else _now().timestamp(),
-            "retention",
+            "cleanup",
         )
         self._tombstones.add(ticket_id)
         self._store.delete_artifact(ticket_id)
@@ -473,46 +496,48 @@ class JobRegistry:
         self._retries.pop(ticket_id, None)
         self._history.pop(ticket_id, None)
 
-    def _prune_expired_sync(self, now: datetime) -> int:
-        active = self.active_ticket_ids()
-        # 判据必须先于使用：过期判断读的 completedAt 只有新工单才写，
-        # 历史目录缺这个字段就退化成目录 mtime，而 mtime 会被外部写入刷新
-        # （DSH 往产物里写报告），结果是早已过期的产物永远显示"刚同步完"。
-        # 所以在同一次维护里先对账固化完成时间，再判过期。
-        reconcile_artifacts(self.cfg.root, self._store, active)
-        return cleanup_expired(
-            self.cfg.root,
-            now,
-            self.cfg.retention_days,
-            active,
-            self._forget_ticket,
-        )
+    async def run_cleanup(self, now: datetime) -> CleanupReport:
+        """执行一轮完整清理（保留期 + 容量/水位 + 幽灵行 + 回收站 + .tmp）。
 
-    async def prune_expired(self, now: datetime) -> int:
-        """清理过期产物。
-
-        两个必须遵守的约束：
-        1. 磁盘遍历与 rmtree 都是阻塞 IO（冷缓存下全盘统计可达数分钟），
-           必须放进线程池。直接在协程里跑会把事件循环钉死，实测 2026-10-31
-           00:00:07 到 00:03:35 之间服务完全静默，连 /health 都没有响应。
+        两个必须遵守的约束，理由来自 2026-10-31 的实测故障：
+        1. 磁盘遍历与 rmtree 都是阻塞 IO（冷缓存下全盘统计可达 3.5 分钟），
+           必须放进线程池。直接在协程里跑会把事件循环钉死，那段时间服务完全
+           静默，连 /health 都不响应。
         2. 不在注册表锁内执行。清理期间不应阻塞入队与前端查询；删除目标已经
            排除活跃工单，而发布是原子 rename，最坏情况只是多删一个旧目录。
-        """
-        return await asyncio.to_thread(self._prune_expired_sync, now)
 
-    async def prune_capacity(self, now: datetime) -> tuple[int, int]:
-        """总量超过上限时淘汰，返回 (删除数, 释放字节)。理由同上。"""
+        频率是**每一轮巡检（默认 30 秒）**，不是每天一次。旧的实现把清理绑在
+        `now.date()` 变化上，结果一天只有 00:06 那一次淘汰：白天涌入的几百 GiB
+        无人管，直到把共享盘写满、kubelet 把整栈驱逐。
+        """
         active = self.active_ticket_ids()
         return await asyncio.to_thread(
-            enforce_capacity,
-            self.cfg.root,
-            self.cfg.max_total_bytes,
-            self.cfg.min_keep_days,
-            now,
-            active,
-            self._store,
-            self._forget_ticket,
+            run_cleanup_cycle,
+            root=self.cfg.root,
+            tmp_root=self.cfg.tmp_dir(),
+            trash_dir=self.cfg.trash_dir(),
+            now=now,
+            retention_days=self.cfg.retention_days,
+            min_keep_days=self.cfg.min_keep_days,
+            max_total_bytes=self.cfg.max_total_bytes,
+            evict_free_bytes=self.cfg.evict_free_bytes,
+            min_free_bytes=self.cfg.min_free_bytes,
+            stale_tmp_seconds=STALE_WORKSPACE_SECONDS,
+            active_ticket_ids=active,
+            store=self._store,
+            on_removed=self._forget_ticket,
         )
+
+    async def full_reconcile(self) -> tuple[int, int, int]:
+        """重量对账：补写历史目录的 meta、重算体积。低频执行。"""
+        active = self.active_ticket_ids()
+        return await asyncio.to_thread(
+            reconcile_artifacts, self.cfg.root, self._store, active
+        )
+
+    def prune_cleanup_events(self, before: float) -> int:
+        """回收过期清理流水，返回删除条数。"""
+        return self._store.prune_cleanup_events(before)
 
     def prune_tombstones(self, now: datetime) -> int:
         """回收过期墓碑，返回删除条数。
@@ -528,7 +553,7 @@ class JobRegistry:
         return removed
 
     async def list_artifacts(self) -> list[dict[str, Any]]:
-        """合并本地已发布目录与内存任务，供 DSH 控制台展示。"""
+        """合并本地已发布目录、内存任务与已清理墓碑，供 DSH 控制台展示。"""
         async with self._lock:
             local: dict[str, datetime] = {}
             for entry in self.cfg.root.iterdir():
@@ -551,12 +576,16 @@ class JobRegistry:
                         "directoryReady": ticket_id in local,
                         "directoryUpdatedAt": local[ticket_id].isoformat() if ticket_id in local else None,
                         "job": job.to_payload() if job else None,
+                        "cleanedAt": None,
+                        "cleanupReason": None,
                         # 退避状态对外可见：否则页面显示"失败"但后台不再重试，
                         # 用户无从判断到底还会不会自己好。
                         "retry": (
                             {
                                 "failures": retry.failures,
-                                "nextRetryAt": retry.next_retry_at.isoformat() if retry.next_retry_at else None,
+                                "nextRetryAt": (
+                                    retry.next_retry_at.isoformat() if retry.next_retry_at else None
+                                ),
                                 # exhausted=True 表示已放弃自动重试，页面据此把
                                 # "等待重试"改为"需人工处理"，否则用户会一直等它自愈。
                                 "exhausted": retry.exhausted,
@@ -566,7 +595,47 @@ class JobRegistry:
                         ),
                     }
                 )
+
+            # 已清理的工单必须留在列表里。删除后凭空消失会让用户无法区分
+            # "从没同步过"和"同步过但被保留期/水位清掉了"——而后者只要
+            # 重新点一次就能恢复（原件一直在日志源服务器上）。
+            # 只取最近一段时间的墓碑：3 天保留期下，超过窗口的记录对"我现在
+            # 能不能用"已经没有决策价值，全量回传只会把每 2 秒的轮询撑大。
+            cleaned = self._cleaned_entries(local, ticket_ids)
+            result.extend(cleaned)
+            result.sort(key=lambda item: item["ticketId"], reverse=True)
             return result
+
+    def _cleaned_entries(
+        self,
+        local: dict[str, datetime],
+        known: set[str],
+    ) -> list[dict[str, Any]]:
+        """把墓碑转成「已清理」条目，最多取最近 CLEANED_DISPLAY_LIMIT 条。"""
+        entries: list[dict[str, Any]] = []
+        for ticket_id, row in self._store.tombstone_map().items():
+            if ticket_id in known or ticket_id in local:
+                # 目录还在、或有更新的任务/历史：以真实状态为准，不让墓碑盖住。
+                continue
+            removed_at = row.get("removed_at")
+            if not isinstance(removed_at, (int, float)):
+                continue
+            if removed_at < _now().timestamp() - CLEANED_DISPLAY_DAYS * 86400:
+                continue
+            entries.append(
+                {
+                    "ticketId": ticket_id,
+                    "phase": Phase.CLEANED.value,
+                    "directoryReady": False,
+                    "directoryUpdatedAt": None,
+                    "job": None,
+                    "cleanedAt": datetime.fromtimestamp(float(removed_at), TZ).isoformat(),
+                    "cleanupReason": row.get("reason") or "cleanup",
+                    "retry": None,
+                }
+            )
+        entries.sort(key=lambda item: item["cleanedAt"] or "", reverse=True)
+        return entries[:CLEANED_DISPLAY_LIMIT]
 
     async def _run(self, job: Job) -> None:
         ticket_id = job.ticket_id
@@ -587,6 +656,20 @@ class JobRegistry:
                 job.phase = Phase.FETCHING
                 job.updated_at = _now()
                 self._persist(job)
+
+                # 第一道闸门放在最前面：磁盘已经不安全时，连远端探测（一趟 ssh）
+                # 都不该做。用户点一次按钮就应当立刻得到"等清理跑完再试"的结论，
+                # 而不是等十几秒后拿到一个含糊的失败。
+                # 判据落在 root 而不是 work_dir：work_dir 此刻还不存在，
+                # `disk_usage` 会抛 OSError，而水位检查对探测失败是放行的，
+                # 用 work_dir 等于把这道闸门静默关掉。root 与 .tmp 同盘。
+                ensure_waterline(
+                    self.cfg.root,
+                    self.cfg.min_free_bytes,
+                    stage="start",
+                    ticket_id=ticket_id,
+                    job_id=job.job_id,
+                )
 
                 # 上次失败留下的解压产物必须先清掉，只留归档供 rsync 续传，
                 # 否则新旧产物混在一起，发布会把脏目录推给用户。
@@ -632,8 +715,9 @@ class JobRegistry:
                 # 否则它会跟着 work_dir 一起 rename 进产物目录。
                 self._release_archive(work_dir, archive.name)
 
-                replaced = publish(work_dir, self.cfg.root / ticket_id, self.cfg.trash_dir())
-                prune_trash(self.cfg.trash_dir())
+                # 旧版本直接删除，不进回收站：原件在日志源服务器上可随时重拉，
+                # 留一份"可回退"只会白占几十 GiB 且不计入容量记账。
+                replaced = publish(work_dir, self.cfg.root / ticket_id)
 
                 # 产物已经原子落盘——从这一刻起「本次同步成功」是既成事实。
                 # 后面的元数据、记账都只是辅助事实，任何一步失败都不能把它改判成
@@ -734,6 +818,10 @@ class JobRegistry:
             job.updated_at = _now()
             self._persist(job)
             logger.error("ticket=%s job=%s 失败 %s detail=%s", ticket_id, job.job_id, error, error.detail)
+            # 水位熔断必须进清理流水：它是"磁盘治理是否有效"的直接反证指标，
+            # 只写 journal 的话，事后无法回答"这次失败到底是什么时候、盘还剩多少"。
+            if error.code == ErrorCode.LOW_DISK:
+                self._record_waterline(ticket_id, error.detail)
             self._note_failure(ticket_id, error.code)
             self._append_terminal_hint(job)
         except asyncio.CancelledError:
@@ -780,6 +868,18 @@ class JobRegistry:
                 "该工单包不是日志包（仅含转储文件），已跳过",
                 f"entries={entries[:5]}",
             )
+
+    def _record_waterline(self, ticket_id: str, detail: str) -> None:
+        """把一次水位熔断写进清理流水，并累计指标。"""
+        _MAINTENANCE_STATS["waterline_blocks"] += 1
+        self._store.add_cleanup_event(
+            CLEANUP_KIND_WATERLINE,
+            _now().timestamp(),
+            ticket_id=ticket_id,
+            bytes_=0,
+            free_bytes=free_bytes(self.cfg.root),
+            detail=detail,
+        )
 
     def _note_failure(self, ticket_id: str, code: ErrorCode | None = None) -> None:
         """登记一次失败并按阶梯推迟下一次自动重试。
@@ -1051,42 +1151,91 @@ async def _auto_discover(cfg: Config, registry: JobRegistry, now: datetime) -> i
 
 
 async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
-    """每 30 秒扫描远端归档，并按本地时间每日执行保留期清理。"""
-    last_cleanup_date = None
+    """每 30 秒执行一轮清理，同时扫描远端归档。
+
+    清理频率是这个函数的**核心语义**，不是实现细节。旧实现用
+    `if last_cleanup_date != now.date()` 把清理绑在"跨天"上，结果一天只有
+    00:06 那一次淘汰：白天涌入的几百 GiB 无人管，直到把与 k3s 共享的磁盘
+    写满、kubelet 把整栈（含可观测栈自己）驱逐——2026-11-12 16:18 那次。
+    "半分钟级别的清理"不是更勤快，而是**唯一能让淘汰赶在写满之前发生**的频率。
+    """
     # 首次等待一个周期，避免服务刚启动时与网络/挂载初始化同时争抢资源。
     await asyncio.sleep(max(1, cfg.auto_sync_interval_seconds))
+    last_full_reconcile = 0.0
+    last_housekeeping = 0.0
     while True:
         try:
             now = _now()
-            if last_cleanup_date != now.date():
-                started = time.monotonic()
-                removed = await registry.prune_expired(now)
-                logger.info("本地保留期检查完成 retention_days=%d removed=%d", cfg.retention_days, removed)
-                cap_removed, cap_freed = await registry.prune_capacity(now)
-                # .tmp 残留按年龄回收：失败残留是续传的本钱，不能一失败就删，
-                # 但也不能无限累积。与容量检查同批执行，避免多开一趟遍历。
-                stale = await asyncio.to_thread(
-                    cleanup_stale_workspaces, cfg.tmp_dir(), STALE_WORKSPACE_SECONDS
-                )
-                if stale:
-                    logger.info("清理陈旧临时目录 count=%d", stale)
+            report = await registry.run_cleanup(now)
+
+            # 体积重算是唯一的重活（冷缓存下数分钟），单独降频。
+            # 它的准确性由每轮的幽灵行对账兜住，不需要每 30 秒跑一次。
+            if time.monotonic() - last_full_reconcile >= FULL_RECONCILE_INTERVAL_SECONDS:
+                added, updated, removed_rows = await registry.full_reconcile()
+                last_full_reconcile = time.monotonic()
+                if added or updated or removed_rows:
+                    logger.info(
+                        "产物对账完成 新增=%d 更新=%d 清理=%d", added, updated, removed_rows
+                    )
+
+            # 墓碑与清理流水的回收按小时做，属于记账清理，与磁盘压力无关。
+            if time.monotonic() - last_housekeeping >= 3600:
                 tombstones = await asyncio.to_thread(registry.prune_tombstones, now)
-                if tombstones:
-                    logger.info("回收过期墓碑 count=%d", tombstones)
-                elapsed = time.monotonic() - started
-                logger.info(
-                    "容量检查完成 上限=%.1fGiB 删除=%d 释放=%.1fGiB elapsed_ms=%.0f",
-                    cfg.max_total_bytes / 1024**3,
-                    cap_removed,
-                    cap_freed / 1024**3,
-                    elapsed * 1000,
+                events = await asyncio.to_thread(
+                    registry.prune_cleanup_events,
+                    now.timestamp() - CLEANUP_EVENT_RETENTION_DAYS * 86400,
                 )
-                # 维护耗时必须可观测：它曾经在冷缓存下达到 3.5 分钟并阻塞事件循环。
-                _MAINTENANCE_STATS["last_run_timestamp"] = now.timestamp()
-                _MAINTENANCE_STATS["last_duration_seconds"] = elapsed
-                _MAINTENANCE_STATS["expired_removed"] += removed
-                _MAINTENANCE_STATS["capacity_freed_bytes"] += cap_freed
-                last_cleanup_date = now.date()
+                last_housekeeping = time.monotonic()
+                if tombstones or events:
+                    logger.info("记账回收完成 墓碑=%d 清理流水=%d", tombstones, events)
+
+            # 每轮都留痕（info 级），这样"清理到底有没有在跑"不需要靠猜：
+            # 现场只需要 grep 一个关键词就能回答。
+            logger.info(
+                "清理轮次完成 保留期删除=%d 释放=%.1fGiB 容量删除=%d 释放=%.1fGiB "
+                "幽灵行=%d(%.1fGiB) 陈旧临时=%d 回收站=%d "
+                "余量=%.1fGiB 软阈值=%.1fGiB 硬阈值=%.1fGiB 触发=%s elapsed_ms=%.0f",
+                report.retention_removed,
+                report.retention_freed / 1024**3,
+                report.capacity_removed,
+                report.capacity_freed / 1024**3,
+                report.orphan_rows,
+                report.orphan_bytes / 1024**3,
+                report.stale_tmp_removed,
+                report.trash_purged,
+                report.free_after / 1024**3,
+                cfg.evict_free_bytes / 1024**3,
+                cfg.min_free_bytes / 1024**3,
+                "是" if report.touched else "否",
+                report.elapsed_ms,
+            )
+            if report.below_waterline_after:
+                logger.error(
+                    "磁盘余量已低于硬阈值 free=%.1fGiB 硬阈值=%.1fGiB：新任务将被拒绝，"
+                    "需立即介入（删除非本服务的大文件或扩容）",
+                    report.free_after / 1024**3,
+                    cfg.min_free_bytes / 1024**3,
+                )
+            elif report.below_evict_after:
+                logger.warning(
+                    "磁盘余量低于软阈值 free=%.1fGiB 软阈值=%.1fGiB：已无可淘汰产物",
+                    report.free_after / 1024**3,
+                    cfg.evict_free_bytes / 1024**3,
+                )
+            if report.over_limit_after:
+                logger.error(
+                    "产物总量仍超上限 total=%.1fGiB 上限=%.1fGiB",
+                    registry.store.artifact_total() / 1024**3,
+                    cfg.max_total_bytes / 1024**3,
+                )
+
+            # 维护耗时必须可观测：它曾经在冷缓存下达到 3.5 分钟并阻塞事件循环。
+            _MAINTENANCE_STATS["last_run_timestamp"] = now.timestamp()
+            _MAINTENANCE_STATS["last_duration_seconds"] = report.elapsed_ms / 1000
+            _MAINTENANCE_STATS["last_free_bytes"] = report.free_after
+            _MAINTENANCE_STATS["expired_removed"] += report.retention_removed
+            _MAINTENANCE_STATS["capacity_freed_bytes"] += report.capacity_freed
+            _MAINTENANCE_STATS["orphan_rows_removed"] += report.orphan_rows
 
             if cfg.auto_sync_enabled:
                 await _auto_discover(cfg, registry, now)
@@ -1169,9 +1318,48 @@ async def get_job(ticket_id: str, request: Request):
 
 @app.get("/artifacts")
 async def list_artifacts(request: Request) -> dict[str, Any]:
-    """返回已同步目录和仍在运行/最近结束的任务，目录路径不暴露宿主机绝对路径。"""
+    """返回已同步目录、进行中的任务与已清理的工单。
+
+    `root` 一并回传：界面上的"目录：/xxx/<工单号>"必须与服务端真实根目录一致。
+    前端曾把路径硬编码成 `/data/tickets`，而实际是 `/sf/tickets`——把错误路径
+    摆在界面上会直接引导用户去删错地方。
+    """
     registry: JobRegistry = request.app.state.registry
-    return {"items": await registry.list_artifacts()}
+    cfg: Config = request.app.state.cfg
+    return {"items": await registry.list_artifacts(), "root": str(cfg.root)}
+
+
+@app.get("/cleanup-events")
+async def list_cleanup_events(request: Request, limit: int = 100) -> dict[str, Any]:
+    """返回最近的清理动作流水（保留期删除、水位淘汰、幽灵行对账、熔断拒绝）。
+
+    存在意义：清理是唯一会无声删除用户数据的路径。用户问"我的日志去哪了"时，
+    这里必须能给出"什么时候、被哪条规则、删了多少、当时盘还剩多少"。
+    """
+    registry: JobRegistry = request.app.state.registry
+    cfg: Config = request.app.state.cfg
+    capped = max(1, min(limit, 500))
+    events = await asyncio.to_thread(registry.store.list_cleanup_events, capped)
+    # 时间戳在服务端转成带偏移的本地时间，前端不做时区推断。
+    for event in events:
+        occurred = event.get("occurred_at")
+        if isinstance(occurred, (int, float)):
+            event["occurredAt"] = datetime.fromtimestamp(float(occurred), TZ).isoformat()
+        event.pop("occurred_at", None)
+    summary = await asyncio.to_thread(
+        registry.store.cleanup_totals, _now().timestamp() - 86400
+    )
+    return {
+        "items": events,
+        "last24h": summary,
+        "thresholds": {
+            "evictFreeBytes": cfg.evict_free_bytes,
+            "minFreeBytes": cfg.min_free_bytes,
+            "retentionDays": cfg.retention_days,
+            "minKeepDays": cfg.min_keep_days,
+            "maxTotalBytes": cfg.max_total_bytes,
+        },
+    }
 
 
 @app.delete("/jobs/{ticket_id}", status_code=204)
@@ -1228,11 +1416,15 @@ async def health(request: Request) -> dict[str, Any]:
 
 
 # 维护任务的最近一次结果，供 /metrics 暴露（进程内，重启归零）。
+# 累计型指标在库里另有一份权威流水（cleanup_events），这里只是进程内快照。
 _MAINTENANCE_STATS: dict[str, float] = {
     "last_run_timestamp": 0.0,
     "last_duration_seconds": 0.0,
+    "last_free_bytes": 0.0,
     "expired_removed": 0.0,
     "capacity_freed_bytes": 0.0,
+    "orphan_rows_removed": 0.0,
+    "waterline_blocks": 0.0,
 }
 
 
@@ -1260,10 +1452,42 @@ async def metrics(request: Request) -> Response:
         if job.phase in RUNNING_PHASES:
             running_by_origin[job.origin] = running_by_origin.get(job.origin, 0) + 1
 
+    # 清理流水的按类型汇总（近 24 小时）。取库里的权威值，不看进程内计数器：
+    # 服务一重启，进程内累计就归零，而"昨天到底删了多少"恰恰是复盘要问的。
+    totals = registry.store.cleanup_totals(_now().timestamp() - 86400)
+
     lines = [
         "# HELP ticket_sync_disk_free_bytes 产物根目录所在磁盘剩余字节",
         "# TYPE ticket_sync_disk_free_bytes gauge",
         f"ticket_sync_disk_free_bytes {free}",
+        "# HELP ticket_sync_disk_evict_free_threshold_bytes 软阈值：低于该余量主动淘汰",
+        "# TYPE ticket_sync_disk_evict_free_threshold_bytes gauge",
+        f"ticket_sync_disk_evict_free_threshold_bytes {cfg.evict_free_bytes}",
+        "# HELP ticket_sync_disk_min_free_threshold_bytes 硬阈值：低于该余量拒绝写入",
+        "# TYPE ticket_sync_disk_min_free_threshold_bytes gauge",
+        f"ticket_sync_disk_min_free_threshold_bytes {cfg.min_free_bytes}",
+        "# HELP ticket_sync_waterline_blocks_total 因磁盘水位被拒绝写入的累计次数",
+        "# TYPE ticket_sync_waterline_blocks_total counter",
+        f"ticket_sync_waterline_blocks_total {_MAINTENANCE_STATS['waterline_blocks']:.0f}",
+        "# HELP ticket_sync_orphan_rows_removed_total 累计清理的幽灵记账行数",
+        "# TYPE ticket_sync_orphan_rows_removed_total counter",
+        f"ticket_sync_orphan_rows_removed_total {_MAINTENANCE_STATS['orphan_rows_removed']:.0f}",
+        "# HELP ticket_sync_cleanup_actions_24h 近 24 小时清理动作数（按类型）",
+        "# TYPE ticket_sync_cleanup_actions_24h gauge",
+    ]
+    for kind in sorted(totals):
+        lines.append(f'ticket_sync_cleanup_actions_24h{{kind="{kind}"}} {totals[kind]["count"]}')
+    lines.extend(
+        [
+            "# HELP ticket_sync_cleanup_bytes_24h 近 24 小时清理释放字节（按类型）",
+            "# TYPE ticket_sync_cleanup_bytes_24h gauge",
+        ]
+    )
+    for kind in sorted(totals):
+        lines.append(f'ticket_sync_cleanup_bytes_24h{{kind="{kind}"}} {totals[kind]["bytes"]}')
+
+    lines.extend(
+        [
         "# HELP ticket_sync_active_jobs 正在运行或排队中的任务数",
         "# TYPE ticket_sync_active_jobs gauge",
         f"ticket_sync_active_jobs {registry.active_count()}",
@@ -1271,9 +1495,10 @@ async def metrics(request: Request) -> Response:
         "# TYPE ticket_sync_active_jobs_origin gauge",
         f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_AUTO}"}} {running_by_origin[ORIGIN_AUTO]}',
         f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_MANUAL}"}} {running_by_origin[ORIGIN_MANUAL]}',
-        "# HELP ticket_sync_jobs 内存中的任务数（按阶段）",
-        "# TYPE ticket_sync_jobs gauge",
-    ]
+            "# HELP ticket_sync_jobs 内存中的任务数（按阶段）",
+            "# TYPE ticket_sync_jobs gauge",
+        ]
+    )
     for phase, count in sorted(phases.items()):
         lines.append(f'ticket_sync_jobs{{phase="{phase}"}} {count}')
     lines.extend(

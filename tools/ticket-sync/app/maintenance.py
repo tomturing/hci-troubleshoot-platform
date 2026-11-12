@@ -18,14 +18,23 @@ import re
 import shutil
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .publisher import cleanup_stale_workspaces, make_removable, purge_trash
+from .store import (
+    CLEANUP_KIND_CAPACITY,
+    CLEANUP_KIND_RECONCILE,
+    CLEANUP_KIND_RETENTION,
+    CLEANUP_KIND_STALE_TMP,
+    CLEANUP_KIND_TRASH,
+)
+
 logger = logging.getLogger(__name__)
 
 _TICKET_DIR = re.compile(r"^Q\d{13}$")
-_TRASH_DIR = re.compile(r"^Q\d{13}-\d{8}-\d{6}$")
 
 # 发布时写入的同步元数据。文件名以点开头，DSH 的文件选择器不会展示它。
 SYNC_META_NAME = ".sync-meta.json"
@@ -83,8 +92,21 @@ def enforce_capacity(
     active_ticket_ids: set[str] | frozenset[str] = frozenset(),
     store: Any | None = None,
     on_removed: Callable[[str], None] | None = None,
+    *,
+    evict_free_bytes: int | None = None,
+    on_event: Callable[..., None] | None = None,
+    reconcile: bool = True,
 ) -> tuple[int, int]:
-    """产物总量超过上限时淘汰，返回 (删除数, 释放字节)。
+    """产物总量或磁盘余量越过阈值时淘汰，返回 (删除数, 释放字节)。
+
+    两个触发条件**取或**，任一满足就开始删：
+    - `total > max_total_bytes`：已用量上限（代理指标，第三重保险）；
+    - `free < evict_free_bytes`：磁盘余量低于软阈值（唯一真值，主控）。
+
+    为什么必须有第二个条件：已用量是记账出来的数，记账会漂移（实测 DB 说
+    1467 GiB、磁盘只有 889 GiB，41 行幽灵记账合计 577 GiB），而且 `.tmp` 里
+    在途的归档与解压产物根本不在记账范围内。只有 `disk_usage().free`
+    能回答"这台机器还写不写得下"。
 
     排序规则：先按"有没有日志"（非日志载荷先删），再按同步时间最旧优先。
     只按最旧排序会让一个 65 GiB 的 dump 工单挤掉多个真正可用的日志工单。
@@ -96,9 +118,27 @@ def enforce_capacity(
         return 0, 0
     if store is not None:
         return _enforce_with_store(
-            root, max_total_bytes, min_keep_days, now, active_ticket_ids, store, on_removed
+            root,
+            max_total_bytes,
+            min_keep_days,
+            now,
+            active_ticket_ids,
+            store,
+            on_removed,
+            evict_free_bytes=evict_free_bytes,
+            on_event=on_event,
+            reconcile=reconcile,
         )
-    return _enforce_by_scanning(root, max_total_bytes, min_keep_days, now, active_ticket_ids, on_removed)
+    return _enforce_by_scanning(
+        root,
+        max_total_bytes,
+        min_keep_days,
+        now,
+        active_ticket_ids,
+        on_removed,
+        evict_free_bytes=evict_free_bytes,
+        on_event=on_event,
+    )
 
 
 def _enforce_with_store(
@@ -109,19 +149,39 @@ def _enforce_with_store(
     active_ticket_ids: set[str] | frozenset[str],
     store: Any,
     on_removed: Callable[[str], None] | None,
+    *,
+    evict_free_bytes: int | None = None,
+    on_event: Callable[..., None] | None = None,
+    reconcile: bool = True,
 ) -> tuple[int, int]:
-    """增量路径：先用目录 mtime 对账（只碰变化的工单），再按 SQL 结果淘汰。"""
-    reconcile_artifacts(root, store, active_ticket_ids)
+    """增量路径：先对账（只碰变化的工单），再按 SQL 结果淘汰。
+
+    `reconcile=False` 时跳过重量对账，由调用方负责已做轻量对账（`reconcile_missing`）。
+    半分钟级的维护循环走这条路：体积重算在冷缓存下可达数分钟，不能每 30 秒做一次。
+    """
+    if reconcile:
+        reconcile_artifacts(root, store, active_ticket_ids)
 
     total = store.artifact_total()
-    if total <= max_total_bytes:
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        free = 0
+
+    over_total = total > max_total_bytes
+    over_free = evict_free_bytes is not None and free < evict_free_bytes
+    if not over_total and not over_free:
         return 0, 0
 
     cutoff = now.timestamp() - min_keep_days * 86400
     removed = 0
     freed = 0
     for row in store.eviction_order(cutoff):
-        if total <= max_total_bytes:
+        # 两个条件必须**同时**满足才停：只满足其一说明还差一半。
+        # 用 free + freed 而不是反复 statvfs：本轮释放的字节必然回到同一文件系统。
+        if total <= max_total_bytes and (
+            evict_free_bytes is None or free + freed >= evict_free_bytes
+        ):
             break
         ticket_id = str(row["ticket_id"])
         if ticket_id in active_ticket_ids:
@@ -129,6 +189,8 @@ def _enforce_with_store(
         size = int(row["bytes"])
         entry = root / ticket_id
         try:
+            # 补权限再删：产物里可能存在 000 权限的条目，直接 rmtree 会中途失败。
+            make_removable(entry)
             shutil.rmtree(entry)
         except FileNotFoundError:
             # 目录已不在：记账行是脏的，删掉即可，不算淘汰。
@@ -141,22 +203,39 @@ def _enforce_with_store(
         store.delete_artifact(ticket_id)
         if on_removed is not None:
             on_removed(ticket_id)
+        if on_event is not None:
+            on_event(
+                ticket_id=ticket_id,
+                bytes_=size,
+                free_bytes=free + freed,
+                detail=f"total={total} limit={max_total_bytes} free_trigger={evict_free_bytes}",
+            )
         total -= size
         removed += 1
         freed += size
         logger.warning(
-            "容量淘汰 ticket=%s size=%.1fGiB 剩余总量=%.1fGiB 上限=%.1fGiB",
+            "容量淘汰 ticket=%s size=%.1fGiB 剩余总量=%.1fGiB 上限=%.1fGiB 磁盘余量=%.1fGiB 软阈值=%.1fGiB",
             ticket_id,
             size / 1024**3,
             total / 1024**3,
             max_total_bytes / 1024**3,
+            (free + freed) / 1024**3,
+            (evict_free_bytes or 0) / 1024**3,
         )
 
-    if total > max_total_bytes:
+    if over_total and total > max_total_bytes:
         logger.error(
             "容量淘汰后仍超限 total=%.1fGiB 上限=%.1fGiB 可用工单均未满 %d 天",
             total / 1024**3,
             max_total_bytes / 1024**3,
+            min_keep_days,
+        )
+    if evict_free_bytes is not None and free + freed < evict_free_bytes:
+        logger.error(
+            "容量淘汰后磁盘余量仍低于软阈值 free=%.1fGiB 软阈值=%.1fGiB"
+            "（可用工单均未满 %d 天，或非本服务占用过大）",
+            (free + freed) / 1024**3,
+            evict_free_bytes / 1024**3,
             min_keep_days,
         )
     return removed, freed
@@ -169,6 +248,9 @@ def _enforce_by_scanning(
     now: datetime,
     active_ticket_ids: set[str] | frozenset[str],
     on_removed: Callable[[str], None] | None,
+    *,
+    evict_free_bytes: int | None = None,
+    on_event: Callable[..., None] | None = None,
 ) -> tuple[int, int]:
     candidates: list[tuple[int, float, Path, int]] = []
     # total 统计磁盘上真实占用（含活跃与受保护工单），否则会低估压力、
@@ -191,33 +273,50 @@ def _enforce_by_scanning(
             # 刚同步进来的工单不参与淘汰，宁可超限告警也不误删用户在用的数据。
             continue
         candidates.append((_payload_rank(entry), synced_at, entry, size))
-    if total <= max_total_bytes:
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        free = 0
+    over_total = total > max_total_bytes
+    over_free = evict_free_bytes is not None and free < evict_free_bytes
+    if not over_total and not over_free:
         return 0, 0
 
     removed = 0
     freed = 0
     for _, _, entry, size in sorted(candidates, key=lambda item: (item[0], item[1])):
-        if total <= max_total_bytes:
+        if total <= max_total_bytes and (
+            evict_free_bytes is None or free + freed >= evict_free_bytes
+        ):
             break
         try:
+            make_removable(entry)
             shutil.rmtree(entry)
         except OSError as exc:
             logger.error("容量淘汰删除失败 ticket=%s error=%s", entry.name, exc)
             continue
         if on_removed is not None:
             on_removed(entry.name)
+        if on_event is not None:
+            on_event(
+                ticket_id=entry.name,
+                bytes_=size,
+                free_bytes=free + freed,
+                detail=f"total={total} limit={max_total_bytes} free_trigger={evict_free_bytes}",
+            )
         total -= size
         removed += 1
         freed += size
         logger.warning(
-            "容量淘汰 ticket=%s size=%.1fGiB 剩余总量=%.1fGiB 上限=%.1fGiB",
+            "容量淘汰 ticket=%s size=%.1fGiB 剩余总量=%.1fGiB 上限=%.1fGiB 磁盘余量=%.1fGiB",
             entry.name,
             size / 1024**3,
             total / 1024**3,
             max_total_bytes / 1024**3,
+            (free + freed) / 1024**3,
         )
 
-    if total > max_total_bytes:
+    if over_total and total > max_total_bytes:
         logger.error(
             "容量淘汰后仍超限 total=%.1fGiB 上限=%.1fGiB 可用工单均未满 %d 天",
             total / 1024**3,
@@ -325,6 +424,220 @@ def reconcile_artifacts(
     return added, updated, removed
 
 
+def reconcile_missing(
+    root: Path,
+    store: Any,
+    active_ticket_ids: set[str] | frozenset[str] = frozenset(),
+) -> list[tuple[str, int]]:
+    """删除"记账有行、磁盘无目录"的幽灵行，返回 [(工单号, 记账字节)]。
+
+    每轮维护都跑：只对每个工单号做一次 `is_dir()`，n 是工单数（实测 100 量级），
+    成本可以忽略。为什么必须每轮跑：容量淘汰的判据是 artifacts 汇总，而行会
+    因为**程序外**的删除变成幽灵——2026-11-12 现场为了腾空间人工删了 41 个目录、
+    合计 577 GiB，程序完全不知道，DB 总数虚高到 1467 GiB（磁盘只有 889 GiB）。
+    若不清掉，下一轮淘汰会按虚高的总量**多删**真实产物，把"救磁盘"变成"删数据"。
+
+    与 `reconcile_artifacts` 的分工：这里只判断存在性（cheap，可每轮跑），
+    体积重算与 meta 补写仍由前者负责（expensive，低频跑）。
+    """
+    try:
+        known = store.artifact_map()
+    except Exception as exc:  # noqa: BLE001 - 存储异常不能中断维护
+        logger.warning("读取产物记账失败 error=%s", exc)
+        return []
+
+    missing: list[tuple[str, int]] = []
+    for ticket_id, row in known.items():
+        if ticket_id in active_ticket_ids:
+            continue
+        if (root / ticket_id).is_dir():
+            continue
+        size = int(row.get("bytes") or 0)
+        store.delete_artifact(ticket_id)
+        missing.append((ticket_id, size))
+    if missing:
+        logger.warning(
+            "记账对账：清理 %d 条目录已不存在的幽灵行 合计=%.1fGiB",
+            len(missing),
+            sum(size for _, size in missing) / 1024**3,
+        )
+    return missing
+
+
+@dataclass
+class CleanupReport:
+    """一轮清理的结果快照。全部字段都会进日志与 /metrics，不做无声动作。"""
+
+    retention_removed: int = 0
+    retention_freed: int = 0
+    capacity_removed: int = 0
+    capacity_freed: int = 0
+    orphan_rows: int = 0
+    orphan_bytes: int = 0
+    stale_tmp_removed: int = 0
+    trash_purged: int = 0
+    free_before: int = 0
+    free_after: int = 0
+    elapsed_ms: float = 0.0
+    retention_days: int = 0
+    evict_free_bytes: int = 0
+    min_free_bytes: int = 0
+    # 收尾仍不达标：超限或低于软阈值。必须显式暴露，否则"删了但没用"会被静默。
+    over_limit_after: bool = False
+    below_evict_after: bool = False
+    below_waterline_after: bool = False
+
+    @property
+    def touched(self) -> bool:
+        """本轮是否真的动了磁盘。False 时调用方可以省略日志噪音。"""
+        return bool(
+            self.retention_removed
+            or self.capacity_removed
+            or self.orphan_rows
+            or self.stale_tmp_removed
+            or self.trash_purged
+        )
+
+
+def run_cleanup_cycle(
+    *,
+    root: Path,
+    tmp_root: Path,
+    trash_dir: Path,
+    now: datetime,
+    retention_days: int,
+    min_keep_days: int,
+    max_total_bytes: int,
+    evict_free_bytes: int,
+    min_free_bytes: int,
+    stale_tmp_seconds: float,
+    active_ticket_ids: set[str] | frozenset[str],
+    store: Any,
+    on_removed: Callable[[str], None] | None = None,
+) -> CleanupReport:
+    """执行一轮完整清理，供每 30 秒的维护循环直接调用。
+
+    顺序不是随意的，每一步都在为下一步准备前提：
+    1. 幽灵行对账——先让"记账总量"回到与磁盘一致，否则后面的淘汰会误判；
+    2. 保留期删除——无论磁盘余量如何，超过保留期的产物一律删（判据是同步时刻）；
+    3. 容量/水位淘汰——只在超限或余量低于软阈值时动手，删到两个条件都满足；
+    4. 回收站清空——历史遗留，无保留价值；
+    5. `.tmp` 陈旧回收——失败残留是续传本钱，但超过 2 小时就不值得留。
+
+    全部删除动作都通过 `on_event` 落库（`cleanup_events`），
+    这是唯一会无声删除用户数据的路径，必须可回溯。
+    """
+    report = CleanupReport(
+        retention_days=retention_days,
+        evict_free_bytes=evict_free_bytes,
+        min_free_bytes=min_free_bytes,
+    )
+    started = time.monotonic()
+    try:
+        report.free_before = shutil.disk_usage(root).free
+    except OSError:
+        report.free_before = 0
+
+    def record(kind: str):
+        """构造一个把动作写进 store 的回调；写失败不影响删除本身。"""
+
+        def _cb(*, ticket_id: str | None, bytes_: int, free_bytes: int | None, detail: str) -> None:
+            store.add_cleanup_event(
+                kind,
+                now.timestamp(),
+                ticket_id=ticket_id,
+                bytes_=bytes_,
+                free_bytes=free_bytes,
+                detail=detail,
+            )
+
+        return _cb
+
+    # 1. 幽灵行
+    missing = reconcile_missing(root, store, active_ticket_ids)
+    if missing:
+        report.orphan_rows = len(missing)
+        report.orphan_bytes = sum(size for _, size in missing)
+        record_reconcile = record(CLEANUP_KIND_RECONCILE)
+        for ticket_id, size in missing:
+            record_reconcile(
+                ticket_id=ticket_id,
+                bytes_=size,
+                free_bytes=report.free_before,
+                detail="记账行存在但目录已不存在（程序外删除）",
+            )
+
+    # 2. 回收站（先清，避免它被算进 3、4 步的释放量）
+    if trash_dir.is_dir():
+        report.trash_purged = purge_trash(trash_dir)
+        if report.trash_purged:
+            record(CLEANUP_KIND_TRASH)(
+                ticket_id=None,
+                bytes_=0,
+                free_bytes=report.free_before,
+                detail=f"purged={report.trash_purged}（回收站不再保留旧版本）",
+            )
+
+    # 3. 保留期
+    record_retention = record(CLEANUP_KIND_RETENTION)
+    before = report.free_before
+    report.retention_removed = cleanup_expired(
+        root,
+        now,
+        retention_days,
+        active_ticket_ids,
+        on_removed,
+        on_event=record_retention,
+    )
+    try:
+        report.retention_freed = max(0, shutil.disk_usage(root).free - before)
+    except OSError:
+        report.retention_freed = 0
+
+    # 4. 容量 / 水位淘汰。跳过重量对账：第 1 步已保证记账与磁盘一致，
+    #    而体积重算在冷缓存下可达数分钟，不能挂在 30 秒的循环上。
+    record_capacity = record(CLEANUP_KIND_CAPACITY)
+    report.capacity_removed, report.capacity_freed = enforce_capacity(
+        root,
+        max_total_bytes,
+        min_keep_days,
+        now,
+        active_ticket_ids,
+        store,
+        on_removed,
+        evict_free_bytes=evict_free_bytes,
+        on_event=record_capacity,
+        reconcile=False,
+    )
+
+    # 5. `.tmp` 陈旧残留
+    if tmp_root.is_dir():
+        report.stale_tmp_removed = cleanup_stale_workspaces(tmp_root, stale_tmp_seconds)
+        if report.stale_tmp_removed:
+            record(CLEANUP_KIND_STALE_TMP)(
+                ticket_id=None,
+                bytes_=0,
+                free_bytes=report.free_before,
+                detail=f"count={report.stale_tmp_removed} stale_seconds={stale_tmp_seconds:.0f}",
+            )
+
+    try:
+        report.free_after = shutil.disk_usage(root).free
+    except OSError:
+        report.free_after = 0
+    report.over_limit_after = store.artifact_total() > max_total_bytes
+    report.below_evict_after = report.free_after < evict_free_bytes
+    report.below_waterline_after = report.free_after < min_free_bytes
+    report.elapsed_ms = (time.monotonic() - started) * 1000
+    return report
+
+
+def _known_bytes(ticket_dir: Path) -> int:
+    """只读已固化的产物体积；缺失时返回 0，绝不为此触发全盘扫描。"""
+    value = read_sync_meta(ticket_dir).get("bytes")
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
 def _same_mtime(left: Any, right: float) -> bool:
     return isinstance(left, (int, float)) and abs(float(left) - right) < _MTIME_EPSILON
 
@@ -335,25 +648,40 @@ def cleanup_expired(
     retention_days: int,
     active_ticket_ids: set[str] | frozenset[str] = frozenset(),
     on_removed: Callable[[str], None] | None = None,
+    *,
+    on_event: Callable[..., None] | None = None,
 ) -> int:
     """删除超过保留期的已发布工单目录，返回删除数量。
 
-    只处理符合工单号形态的直接子目录，以及服务生成的 `.trash` 旧版本目录。
-    `.tmp` 和其他宿主机目录不会被触碰。正在同步的工单始终跳过，避免清理任务
-    与发布流程互相踩踏。
+    只处理符合工单号形态的直接子目录。`.tmp` 和其他宿主机目录不会被触碰。
+    正在同步的工单始终跳过，避免清理任务与发布流程互相踩踏。
+
+    判据是 `.sync-meta.json` 里的 `completedAt`（同步完成时刻），**不是**工单号
+    里的日期：客户可能把历史工单隔几天再上传，按工单号日期算会把它判成早已过期。
     """
     cutoff = now.timestamp() - retention_days * 24 * 60 * 60
     removed = 0
     if not root.is_dir():
         return removed
 
-    entries = [(entry, _TICKET_DIR) for entry in root.iterdir()]
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        free = 0
+
+    # 回收站不再保留任何内容：旧版本产物一律删除。这里的清理是给"历史遗留"
+    # 兜底的——升级前 rename 进 `.trash` 的目录既不在 artifacts 记账里，
+    # 也没有任何保留价值（原件在日志源服务器上）。
     trash = root / ".trash"
     if trash.is_dir():
-        entries.extend((entry, _TRASH_DIR) for entry in trash.iterdir())
+        purged = purge_trash(trash)
+        if purged:
+            removed += purged
+            if on_event is not None:
+                on_event(ticket_id=None, bytes_=0, free_bytes=free, detail=f"purged={purged}")
 
-    for entry, pattern in entries:
-        if not entry.is_dir() or entry.is_symlink() or not pattern.fullmatch(entry.name):
+    for entry in root.iterdir():
+        if not entry.is_dir() or entry.is_symlink() or not _TICKET_DIR.fullmatch(entry.name):
             continue
         if entry.name in active_ticket_ids:
             logger.info("保留正在同步的工单目录 ticket=%s", entry.name)
@@ -366,18 +694,32 @@ def cleanup_expired(
         synced_at = _synced_at(entry, mtime)
         if synced_at >= cutoff:
             continue
+        # 只读已固化的体积，不在删除前做全盘扫描：冷缓存下 44 万文件的目录
+        # 统计要数分钟，而这次统计的唯一用途是给流水记一个数字。
+        size = _known_bytes(entry)
         try:
+            make_removable(entry)
             shutil.rmtree(entry)
         except OSError as exc:
             logger.error("清理过期工单目录失败 ticket=%s error=%s", entry.name, exc)
             continue
         if on_removed is not None:
             on_removed(entry.name)
+        if on_event is not None:
+            on_event(
+                ticket_id=entry.name,
+                bytes_=size,
+                free_bytes=free,
+                detail=f"age_days={(now.timestamp() - synced_at) / 86400:.2f}"
+                f" retention_days={retention_days}",
+            )
         removed += 1
+        free += size
         logger.info(
-            "清理过期本地目录 path=%s age_days=%.1f",
+            "清理过期本地目录 path=%s age_days=%.1f size=%.1fGiB",
             entry,
             (now.timestamp() - synced_at) / 86400,
+            size / 1024**3,
         )
     return removed
 

@@ -22,6 +22,9 @@ export type SyncPhase =
   // 服务重启导致任务中途消失。与 failed 区分：重新触发通常就能成功，
   // 不应提示用户去排查日志源。
   | 'interrupted'
+  // 曾同步成功、产物已按保留期或磁盘水位清理掉。
+  // 这是"可以重新拉取"的状态，不是失败——原件仍在日志源服务器上。
+  | 'cleaned'
 
 /** 仍在推进的阶段：轮询与「取消」按钮只在此时有意义。 */
 export const RUNNING_PHASES: readonly SyncPhase[] = ['queued', 'fetching', 'extracting']
@@ -47,6 +50,46 @@ export interface SyncArtifact {
   directoryReady: boolean
   directoryUpdatedAt: string | null
   job: SyncJob | null
+  /** 产物被清理的时刻（仅 phase === 'cleaned' 时有值）。 */
+  cleanedAt?: string | null
+  /** 清理原因标识。具体规则见 GET /cleanup-events 的 kind。 */
+  cleanupReason?: string | null
+}
+
+/** /artifacts 的响应：root 是服务端真实产物根目录。 */
+export interface SyncArtifactList {
+  items: SyncArtifact[]
+  root: string | null
+}
+
+/** 一次自动清理动作的流水记录。 */
+export interface CleanupEvent {
+  id: number
+  kind: string
+  ticketId: string | null
+  bytes: number
+  freeBytes: number | null
+  detail: string | null
+  occurredAt: string
+}
+
+export interface CleanupThresholds {
+  evictFreeBytes: number
+  minFreeBytes: number
+  retentionDays: number
+  minKeepDays: number
+  maxTotalBytes: number
+}
+
+export interface CleanupSummaryItem {
+  count: number
+  bytes: number
+}
+
+export interface CleanupEventList {
+  items: CleanupEvent[]
+  last24h: Record<string, CleanupSummaryItem>
+  thresholds: CleanupThresholds
 }
 
 export const PHASE_TEXT: Record<SyncPhase, string> = {
@@ -59,6 +102,23 @@ export const PHASE_TEXT: Record<SyncPhase, string> = {
   // 服务重启导致任务中途消失。文案刻意与"失败"区分：重新触发通常就能成功，
   // 不该让用户去排查日志源。
   interrupted: '已中断',
+  // 清理不是失败：原件还在日志源服务器上，点一次就能重新同步回来。
+  // 文案必须说清这一点，否则用户会以为数据永久丢了。
+  cleaned: '已清理',
+}
+
+/** 清理动作类型到用户可读文案。未知类型回退为原始值，避免新增类型时页面空白。 */
+export const CLEANUP_KIND_TEXT: Record<string, string> = {
+  retention: '保留期到期',
+  capacity: '磁盘容量淘汰',
+  reconcile: '幽灵记账对账',
+  'stale-tmp': '半成品临时目录回收',
+  trash: '回收站清空',
+  waterline: '磁盘水位熔断',
+}
+
+export function cleanupKindText(kind: string): string {
+  return CLEANUP_KIND_TEXT[kind] ?? kind
 }
 
 /** 阶段文案。未知阶段回退为原始值，避免后端新增阶段时页面出现空白标签。 */
@@ -77,6 +137,9 @@ const ERROR_TEXT: Record<string, string> = {
   'bad-password': '归档密码错误，请联系运维',
   'archive-corrupt': '压缩包已损坏（采集端可能生成了空包）',
   'no-space': '服务器磁盘空间不足',
+  // 与 no-space 区分：这是写入**之前**被水位闸门拦下（预防），
+  // 不是已经写坏了数据。文案要给出"等清理跑完再点一次"的行动指引。
+  'low-disk': '磁盘余量低于安全水位，已暂停写入（自动清理执行中，稍后重试）',
   'quota-exceeded': '超出服务解压上限',
   'depth-exceeded': '超出服务层级上限',
   'ssh-failed': '无法连接日志源服务器',
@@ -127,10 +190,25 @@ export async function fetchSyncJob(ticketId: string): Promise<SyncJob | null> {
   }
 }
 
-/** 查询本地已同步工单目录及自动/手动任务状态。 */
-export async function fetchSyncArtifacts(): Promise<SyncArtifact[]> {
+/** 查询本地已同步工单目录、进行中任务与已清理工单。 */
+export async function fetchSyncArtifacts(): Promise<SyncArtifactList> {
   const res = await client.get('/artifacts')
-  return (res.data?.items ?? []) as SyncArtifact[]
+  return {
+    items: (res.data?.items ?? []) as SyncArtifact[],
+    // root 由服务端回传：界面上的目录路径必须与真实根目录一致，
+    // 硬编码路径会把用户引到错误的位置去清理。
+    root: (res.data?.root ?? null) as string | null,
+  }
+}
+
+/** 查询自动清理动作流水（保留期删除、水位淘汰、幽灵行对账、熔断拒绝）。 */
+export async function fetchCleanupEvents(limit = 100): Promise<CleanupEventList> {
+  const res = await client.get('/cleanup-events', { params: { limit } })
+  return {
+    items: (res.data?.items ?? []) as CleanupEvent[],
+    last24h: (res.data?.last24h ?? {}) as Record<string, CleanupSummaryItem>,
+    thresholds: res.data?.thresholds as CleanupThresholds,
+  }
 }
 
 /** 取消任务。已结束的任务服务端幂等返回 204。 */

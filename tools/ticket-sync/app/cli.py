@@ -25,7 +25,7 @@ from .config import Config
 from .extractor import extract
 from .fetcher import fetch
 from .models import ErrorCode, TicketError, validate_ticket_id
-from .publisher import cleanup_workspace, prune_trash, publish
+from .publisher import cleanup_workspace, publish
 
 logger = logging.getLogger("ticket-sync")
 
@@ -114,8 +114,8 @@ async def _run(args: argparse.Namespace) -> int:
             shutil.copy2(archive, keep_dir / archive.name)
             logger.info("归档已保留 path=%s", keep_dir / archive.name)
 
-        replaced = publish(work_dir, final_dir, cfg.trash_dir())
-        prune_trash(cfg.trash_dir())
+        # 旧版本直接删除，与主流程保持一致：原件在日志源服务器上可随时重拉。
+        replaced = publish(work_dir, final_dir)
 
         elapsed = time.monotonic() - started
         print(

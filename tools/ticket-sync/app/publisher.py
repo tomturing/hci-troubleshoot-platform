@@ -3,6 +3,10 @@
 唯一约束：work_dir 与 final_dir 必须在同一文件系统。
 两者都在 <root> 下（.tmp/<id> 与 <id>），因此 rename 是原子的，
 且不需要额外空间——这是用户永远看不到半成品目录的根本保证。
+
+旧版本不保留回收站：原件始终留在日志源服务器 `/sf/log` 上并有独立备份，
+需要旧版本时重新同步一次即可。留一份"回收站"只会白占几十 GiB，
+而这份占用恰恰不计入容量记账，是 2026-11-12 磁盘写满的隐性来源之一。
 """
 
 from __future__ import annotations
@@ -12,26 +16,27 @@ import os
 import shutil
 import stat
 import time
-from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 
-def publish(work_dir: Path, final_dir: Path, trash_dir: Path) -> Path | None:
-    """把 work_dir 发布为 final_dir。
+def publish(work_dir: Path, final_dir: Path, trash_dir: Path | None = None) -> Path | None:
+    """把 work_dir 发布为 final_dir，返回被替换的旧版本路径（若存在）。
 
-    返回被替换的旧版本路径（若存在），便于调用方记录与清理。
+    `trash_dir` 参数只为兼容既有调用与测试保留，**不再使用**：
+    旧版本直接删除，不进回收站。
     """
     replaced: Path | None = None
 
     if final_dir.exists() or final_dir.is_symlink():
-        trash_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        replaced = trash_dir / f"{final_dir.name}-{stamp}"
-        # 先移走旧版本，保证随后的 rename 目标为空。目录非空时 rename 会失败。
-        final_dir.rename(replaced)
-        logger.info("旧版本已移入回收站 from=%s to=%s", final_dir, replaced)
+        # 必须先删干净：目录非空时 rename 会失败（ENOTEMPTY）。
+        # 补权限再删：产物里可能残留 000 权限的条目，直接 rmtree 会中途失败
+        # 并把异常吞掉，结果是"发布失败 + 旧产物还在"，比不删更糟。
+        make_removable(final_dir)
+        shutil.rmtree(final_dir, ignore_errors=False)
+        replaced = final_dir
+        logger.info("旧版本已删除 path=%s", final_dir)
 
     # 同一文件系统内的 rename：原子替换。
     os.rename(work_dir, final_dir)
@@ -39,25 +44,29 @@ def publish(work_dir: Path, final_dir: Path, trash_dir: Path) -> Path | None:
     return replaced
 
 
-def prune_trash(trash_dir: Path, keep: int = 1) -> int:
-    """只保留最近 keep 个旧版本，返回删除数量。
+def purge_trash(trash_dir: Path) -> int:
+    """清空回收站并返回释放的目录数。
 
-    旧版本保留一份的意义是允许人工回退；超过一份只会白占磁盘。
+    历史版本曾把旧产物 rename 到 `.trash` 并永久保留一份。现在不再写入，
+    但存量必须被主动清掉——否则它们永远占着磁盘且不在 artifacts 记账里。
     """
     if not trash_dir.is_dir():
         return 0
 
-    entries = sorted(
-        (entry for entry in trash_dir.iterdir() if entry.is_dir()),
-        key=lambda entry: entry.stat().st_mtime,
-        reverse=True,
-    )
-
     removed = 0
-    for entry in entries[keep:]:
-        shutil.rmtree(entry, ignore_errors=True)
+    for entry in list(trash_dir.iterdir()):
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                make_removable(entry)
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError as exc:
+            logger.error("清理回收站失败 path=%s error=%s", entry, exc)
+            continue
         removed += 1
-        logger.info("清理回收站 path=%s", entry)
+    if removed:
+        logger.info("回收站已清空 count=%d path=%s", removed, trash_dir)
     return removed
 
 
@@ -73,7 +82,7 @@ def cleanup_workspace(work_dir: Path) -> None:
         return
 
     try:
-        _make_removable(work_dir)
+        make_removable(work_dir)
         shutil.rmtree(work_dir)
     except OSError as exc:
         logger.error("清理临时目录失败 path=%s error=%s 残留需人工或下次启动处理", work_dir, exc)
@@ -101,7 +110,7 @@ def prepare_workspace(work_dir: Path, keep: str) -> int:
             continue
         try:
             if entry.is_dir():
-                _make_removable(entry)
+                make_removable(entry)
                 shutil.rmtree(entry)
             else:
                 entry.unlink()
@@ -134,7 +143,7 @@ def cleanup_stale_workspaces(tmp_root: Path, max_age_seconds: float) -> int:
             continue
         try:
             if entry.is_dir():
-                _make_removable(entry)
+                make_removable(entry)
                 shutil.rmtree(entry)
             else:
                 entry.unlink()
@@ -146,7 +155,7 @@ def cleanup_stale_workspaces(tmp_root: Path, max_age_seconds: float) -> int:
     return removed
 
 
-def _make_removable(root: Path) -> None:
+def make_removable(root: Path) -> None:
     """给目录树补上属主读写执行位，使 rmtree 能够真正删掉。
 
     删除文件依赖父目录的 w+x，删除目录还依赖目录自身的 w+x，
