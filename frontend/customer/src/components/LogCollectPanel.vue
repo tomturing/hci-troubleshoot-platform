@@ -53,6 +53,8 @@ import {
   type UploadProgressView,
   type RelayProgressView,
 } from '@/utils/logCollectDelivery'
+import { logCollectErrorHint } from '@/services/logCollectErrorHints'
+import LogCollectDiagnosis from '@/components/LogCollectDiagnosis.vue'
 import {
   EXTRA_PATH_MAX_COUNT,
   extraPathsLimitHint,
@@ -489,6 +491,27 @@ const relayStatus = ref<RelayStatus>('none')
 const relayProgress = ref<RelayProgressView | null>(null)
 const cleanupTip = ref('')
 const errorMessage = ref('')
+// 失败诊断：只按规范码给「检查/处理」，不用文案猜。
+// 任务刚失败时 patch 会回填 currentTask，所以这里能立刻拿到最新码。
+// 结果态看的是 resultTask：用户隔天回来查看时，走的不是表单流程，
+// 之前只读到 currentTask 会让诊断卡在结果态整块消失。
+const failureTask = computed(() => (viewMode.value === 'result' ? resultTask.value : currentTask.value))
+const failureCode = computed(() => String(failureTask.value?.error_code || '').trim())
+const failureHint = computed(() => logCollectErrorHint(failureCode.value))
+const failureReasonText = computed(() => {
+  const local = viewMode.value === 'result' ? '' : errorMessage.value
+  return local || failureTask.value?.error_message || ''
+})
+/**
+ * 诊断卡的显示条件：本轮跑失败了（stage=failed），或展示的任务本身就是失败/取消终态。
+ * 取消也要给原因：用户点了取消却看到"任务失败"，会以为是自己误操作导致的数据丢失。
+ */
+const showFailureDiagnosis = computed(
+  () =>
+    stage.value === 'failed' ||
+    failureTask.value?.status === 'failed' ||
+    failureTask.value?.status === 'cancelled',
+)
 // 运行令牌：每次启动 / 取消都自增，后台轮询据此退出，避免取消后仍继续写状态
 let runToken = 0
 
@@ -2806,9 +2829,16 @@ async function handleStart() {
           // 事后无法区分是 acli 崩溃、专项配置错误还是会话被踢。
           ...(createOutputEvidence ? { detail: { create_output: createOutputEvidence } } : {}),
         })
+        // 返回值必须回填：诊断卡要按最新的 error_code 给出检查/处理建议，
+        // 不回填就只能等下一次轮询，失败瞬间用户看到的还是上一条任务的码。
+        .then((task) => {
+          if (task) currentTask.value = task
+        })
         .catch(() => undefined)
     }
-    ElMessage.error(errorMessage.value || '日志收集失败')
+    // 兜底文案必须可行动：只显示"日志收集失败"等于没给任何信息，
+    // 现场只能再点一次碰运气（2026-11-12 Q2026110302155）。
+    ElMessage.error(errorMessage.value || '下发失败：平台未返回具体原因，请查看下方诊断或任务详情')
   } finally {
     // 主流程退出（成功/失败/取消）后必须交还写权限，否则自动对账永久停摆，
     // 结果态里「上传到平台」与归档状态就再也不会随节点态刷新。
@@ -4949,6 +4979,12 @@ onBeforeUnmount(() => {
             <span class="lc-error-text">{{ resultFailureText }}</span>
           </el-descriptions-item>
         </el-descriptions>
+        <!-- 结果态同样要有「怎么查、怎么处理」：隔天回来查看的场景主要走这里 -->
+        <LogCollectDiagnosis
+          v-if="showFailureDiagnosis"
+          :code="failureCode"
+          :reason="failureReasonText"
+        />
         <p class="lc-hint">
           当前客户端在本工单下共 {{ historyTotal }} 条收集记录；已完成的任务不会被覆盖，重新收集会新建一条任务。
         </p>
@@ -5023,6 +5059,16 @@ onBeforeUnmount(() => {
           <el-progress :percentage="percent" :status="progressStatus" />
           <div class="lc-status">{{ statusText }}</div>
         </div>
+
+        <!--
+          失败诊断：用户必须一眼看出「哪一步、什么原因、怎么确认、怎么处理」。
+          只给一句"日志收集失败"会把人推回"再点一次"的碰运气循环（2026-11-12 现场）。
+        -->
+        <LogCollectDiagnosis
+          v-if="showFailureDiagnosis"
+          :code="failureCode"
+          :reason="failureReasonText"
+        />
 
         <!--
           接管态说明：下面的表单此时展示的是「平台记录的下发参数」，不是待填草稿。

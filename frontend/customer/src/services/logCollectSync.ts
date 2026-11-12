@@ -646,7 +646,9 @@ function decideNodeSyncUnchecked(input: SyncInput): SyncAction {
         reason: adopted
           ? '节点上已无任务，采集中断'
           : '任务下发后节点未建立采集任务；请核对节点 acli 版本与所选专项，完整节点输出见任务详情',
-        errorCode: 'LC-PLUGIN-008',
+        // 015 专指"下发后未建立"；adopted 是"跑过之后消失"，仍归 008（任务不存在）。
+        // 两者都写 008 会让统计把"从没接单"算成"任务不存在"，处置动作完全不同。
+        errorCode: adopted ? 'LC-PLUGIN-008' : 'LC-PLUGIN-015',
         ownership,
       }
     }
