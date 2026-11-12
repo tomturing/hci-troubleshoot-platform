@@ -105,6 +105,18 @@ const (
 	// 交付并发闸门：同一任务已有交付作业在跑时拒绝重复签发。
 	// 由 case-service 的 POST /tasks/{id}/deliver 产生。
 	ErrPlatDeliveryInFlight = "LC-PLATFORM-009"
+	// 与 bridge 的通道断开、节点操作未送达。区别于 EXEC-005（命令已下发但没取回结果）：
+	// 本码意味着节点侧没有留下任何任务，重连后重试是安全的。
+	ErrPlatChannelLost = "LC-PLATFORM-010"
+	// 失败已确认但 error_message 匹配不到任何已知模式（平台保存边界的兜底码）。
+	// 它不是"未知错误"的同义词：留空会让失败无法聚合统计，兜底码本身是可观测信号。
+	ErrPlatUnattributed = "LC-PLATFORM-011"
+	// 平台内部 5xx（非存储、非数据库专项）。区分于 011：原因已知（是我们自己 500），
+	// 只是没有更细的分层码，因此可自动重试。
+	ErrPlatInternal = "LC-PLATFORM-012"
+	// 采集已终态、交付会话却从未被执行（僵尸会话）。区别于 011：这是确定的
+	// 交付缺失事实，处置动作明确（补交付），不需要人工归因。
+	ErrPlatDeliveryAbandoned = "LC-PLATFORM-013"
 )
 
 // errorMeta 与 JSON 目录字段一一对应（retryable 统一为字符串：true/false/manual）。
@@ -182,6 +194,14 @@ var logCollectErrorMeta = map[string]errorMeta{
 
 	ErrPlatStorageUnwritable: {"PLATFORM", "platform", "manual", "upload"},
 	ErrPlatStorageLow:        {"PLATFORM", "platform", "true", "upload"},
+	// 通道断开可重试：节点侧没有留下任务，重连后重发不会产生重复副作用。
+	ErrPlatChannelLost: {"PLATFORM", "platform", "true", "api"},
+	// 未归因属于平台责任：需要平台侧按 trace_id 回溯补码，不能指望用户重试解决。
+	ErrPlatUnattributed: {"PLATFORM", "platform", "manual", "api"},
+	// 平台 5xx 多为瞬时：退避重试即可，用户侧无需额外操作。
+	ErrPlatInternal: {"PLATFORM", "platform", "true", "api"},
+	// 交付缺失但产物通常仍在：补交付可重试，不需要重新采集。
+	ErrPlatDeliveryAbandoned: {"PLATFORM", "platform", "true", "api"},
 }
 
 // validationErrorCode 把参数校验短名映射为规范错误码（短名仍保留在 error_type 中）。

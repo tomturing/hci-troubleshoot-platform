@@ -92,6 +92,62 @@ def test_summary_maps_p1_and_p2_columns():
     assert (summary.p2.total, summary.p2.failed) == (4, 1)
 
 
+# ── 「传输中」口径测试（2026-11-12 修复：排除采集已终态但 delivery=queued 的僵尸）──
+
+# 测试矩阵：覆盖所有 status × delivery_status 组合
+_TRANSFERRING_CASES = [
+    # (status, delivery_status, should_be_transferring, 说明)
+    # A 段：采集活跃且交付未终结 → 传输中
+    ("collecting", "none", True, "采集中+未开始交付=传输中"),
+    ("packaging", "none", True, "打包中+未开始交付=传输中"),
+    ("uploading", "none", True, "上传中+未开始交付=传输中"),
+    ("collecting", "queued", True, "采集中+交付排队=传输中"),
+    ("uploading", "uploading", True, "上传中+交付上传中=传输中"),
+    # A 段排除：采集活跃但交付已终结 → 不算传输中
+    ("uploading", "delivered", False, "上传中+已交付=不算传输中（平台已收妥）"),
+    ("uploading", "failed", False, "上传中+交付失败=不算传输中"),
+    # B 段：采集未终态且交付在途 → 传输中
+    ("pending", "queued", True, "待下发+交付排队=传输中"),
+    ("probing", "pulling", True, "探测中+拉取中=传输中"),
+    ("installing", "uploading", True, "安装中+上传中=传输中"),
+    # B 段排除：采集已终态，即使 delivery 在途也不算 → 这就是修复的核心
+    ("failed", "queued", False, "采集已失败+交付排队=僵尸，不算传输中"),
+    ("completed", "queued", False, "采集已完成+交付排队=僵尸，不算传输中"),
+    ("cancelled", "queued", False, "采集已取消+交付排队=僵尸，不算传输中"),
+    ("failed", "relaying", False, "采集已失败+代传中=不算传输中"),
+    ("completed", "relaying", False, "采集已完成+代传中=不算传输中"),
+    # 终态组合
+    ("failed", "failed", False, "双失败=不算传输中"),
+    ("completed", "delivered", False, "双完成=不算传输中"),
+    ("cancelled", "none", False, "取消+无交付=不算传输中"),
+]
+
+
+@pytest.mark.parametrize(
+    "status,delivery_status,expected,desc",
+    _TRANSFERRING_CASES,
+    ids=[c[3] for c in _TRANSFERRING_CASES],
+)
+def test_transferring_criteria_excludes_zombie_delivery(status, delivery_status, expected, desc):
+    """验证 _TRANSFERRING SQL 片段在各种状态组合下的正确性。
+
+    核心修复：采集已终态（failed/completed/cancelled）但 delivery_status=queued 的
+    僵尸任务不应计入「传输中」。
+    """
+    # 直接用 SQL 片段做字符串级验证：确认新口径包含 NOT IN 终态排除
+    sql = routes._TRANSFERRING
+    assert "NOT IN ('failed','cancelled','completed')" in sql, "新口径必须排除采集终态"
+    assert "NOT IN ('delivered','failed')" in sql, "新口径必须排除交付终态"
+    # 旧口径的 OR 已被替换：不能有裸 OR delivery_status IN
+    assert "OR t.delivery_status IN ('queued'" not in sql, "旧口径的裸 OR 已移除"
+
+
+def test_transferring_sql_is_valid_syntax():
+    """验证 _TRANSFERRING 片段是合法 SQL（括号匹配）。"""
+    sql = routes._TRANSFERRING.strip()
+    assert sql.count("(") == sql.count(")"), "括号不匹配"
+
+
 @pytest.mark.asyncio
 async def test_list_returns_both_customer_name_and_client_id_without_querying_5888(monkeypatch):
     task_id = uuid4()

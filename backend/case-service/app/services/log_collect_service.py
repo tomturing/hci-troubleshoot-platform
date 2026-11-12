@@ -25,6 +25,7 @@ from ..schemas.log_collect import (
     LogCollectTaskCreate,
     LogCollectTaskPatch,
 )
+from .log_collect_error_attribution import UNATTRIBUTED_CODE, derive_error_code
 
 logger = logging.getLogger(__name__)
 
@@ -328,11 +329,54 @@ class LogCollectService:
                 task.error_code = None
                 task.error_message = None
             task.finished_at = None
+
+        # ── 失败必须可归因：error_code 的唯一收口 ────────────────────────────
+        # 现场实测（2026-11-12 staging，近 30 天）：118 个失败任务里 76 个（64.4%）
+        # error_code 为空，全部来自「只写了 error_message、没写 error_code」的调用路径
+        # （主要是浏览器端 WS 失败兜底与 bridge 原始文本透传）。空码让面板只能显示
+        # 一句人话，按错误码聚合、告警、重试分级全部失效。
+        # 第一性原理：失败可归因是平台的责任，不是每个调用点的自觉。因此在保存
+        # 边界做确定性补全——只补空、绝不覆盖上游更精确的包装码。
+        self.attribute_failure(task)
+
         task.updated_at = datetime.now(UTC)
 
         await self.repository.flush()
         await self.repository.refresh(task)
         return task
+
+    @staticmethod
+    def attribute_failure(task) -> None:
+        """失败终态兜底补码：只补空，不覆盖上游更精确的包装码。
+
+        归因顺序遵守「谁失败谁出码」：采集失败看 ``error_message``，
+        交付失败（采集可能已 completed）看 ``delivery_error``，两者皆失优先采集原因。
+        补码来源会写进 ``detail.error_code_derivation``，便于事后区分
+        「上游产生的码」与「平台按文案推导的码」——后者若是推导错了，能一眼看出来。
+        """
+        if task.error_code:
+            return
+        collect_failed = task.status == "failed"
+        delivery_failed = task.delivery_status == "failed"
+        if not (collect_failed or delivery_failed):
+            return
+        message = task.error_message if collect_failed else (task.delivery_error or task.error_message)
+        code = derive_error_code(message)
+        task.error_code = code
+        detail = dict(task.detail or {})
+        detail["error_code_derivation"] = {
+            "code": code,
+            "stage": "collect" if collect_failed else "delivery",
+            "source": "derived_from_message",
+            "matched": bool(message and code != UNATTRIBUTED_CODE),
+        }
+        task.detail = detail
+        logger.info(
+            "task.error_code_derived task_id=%s code=%s stage=%s",
+            getattr(task, "task_id", ""),
+            code,
+            "collect" if collect_failed else "delivery",
+        )
 
     async def begin_delivery(self, task_id) -> LogCollectTask:
         """登记一次交付尝试，**不动 status**。

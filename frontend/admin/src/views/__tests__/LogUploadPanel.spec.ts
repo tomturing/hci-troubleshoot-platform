@@ -129,6 +129,62 @@ describe('LogUploadPanel', () => {
     }
   })
 
+  it('采集已终态但交付仍 queued 的僵尸不再当作在途，也不进轮询', async () => {
+    // 2026-11-12 口径修复：旧 isActive 用 OR，采集已 failed + delivery=queued 会被
+    // 当成「传输中」每 30s 去打 5888；那是个永远不会推进的会话，纯噪音。
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const zombie = {
+        ...activeTask,
+        task_id: 'task-zombie',
+        case_id: 'Q2026111000245',
+        status: 'failed',
+        progress: 0,
+        delivery_status: 'queued',
+        error_code: 'LC-PLATFORM-013',
+        error_message: '采集已终态（failed），交付会话仍排队中，判定为僵尸会话已清理（061）',
+      }
+      api.listAdminTasks.mockResolvedValue({
+        items: [zombie], total: 1, page: 1, page_size: 20, summary,
+      })
+      const wrapper = await mountPanel()
+      // 首次加载也不查：它既不是已交付（无需补查归档结果），也不是在途。
+      expect(api.getDestinationProgress).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(30_000)
+      await flushPromises()
+      expect(api.getDestinationProgress).not.toHaveBeenCalled()
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('采集仍在上传但交付已收妥的任务也不再计入在途', async () => {
+    // 交付 delivered 意味着平台已收妥（sha256 校验过）；节点侧 status 只是没来得及
+    // 更新到 completed。把它算作「传输中」会让面板数字永远偏高。
+    const deliveredButUploading = {
+      ...activeTask,
+      task_id: 'task-settled',
+      status: 'uploading',
+      delivery_status: 'delivered',
+    }
+    api.listAdminTasks.mockResolvedValue({
+      items: [deliveredButUploading], total: 1, page: 1, page_size: 20, summary,
+    })
+    const wrapper = await mountPanel()
+    api.getDestinationProgress.mockClear()
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      vi.advanceTimersByTime(30_000)
+      await flushPromises()
+      expect(api.getDestinationProgress).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+    wrapper.unmount()
+  })
+
   it('终态行没有观测记录时留白，不显示永远等不到结果的「查询中…」', async () => {
     api.listAdminTasks.mockResolvedValue({
       items: [doneTask], total: 1, page: 1, page_size: 20, summary,
