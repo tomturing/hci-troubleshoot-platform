@@ -31,7 +31,8 @@ jobs:
   db-schema-declarative-test:
     name: Atlas 声明式 Schema 验证
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 新增「存量库升级路径」实跑 db-migrate.sh，多一轮 Atlas apply + 全量迁移
+    timeout-minutes: 30
 
     services:
       postgres:
@@ -312,3 +313,62 @@ jobs:
           uv run --no-project --with asyncpg --with pydantic \
             python scripts/verify/sop_variable_contract_check.py \
             --database-url "$DATABASE_URL" --status published
+
+      # ── Step 6: 存量库升级路径（PreSync 两趟收敛回归门禁）──────────────────
+      # Step 2 只覆盖「空库路径」：函数 → Atlas → 触发器 → 数据迁移 → 种子，
+      # 而 scripts/db-migrate.sh 对存量库是「预迁移 → 函数 → Atlas → 最终迁移 →
+      # 触发器 → 种子」。两者顺序不同：历史上 056~064 依赖 Atlas 新建的
+      # log_collect_* 表，空库路径全绿、存量库 PreSync 却死锁且 CI 无从发现。
+      # 本步构造「核心 Schema 已存在、新表缺失」的存量库，直接执行真实入口脚本，
+      # 用可证伪断言钉住两趟收敛；若有人把入口改回单趟，这一步必然失败。
+      - name: 存量库升级路径验证（db-migrate.sh 两趟收敛）
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -c "CREATE DATABASE legacy_test;"
+          psql "$DATABASE_URL" -c "CREATE DATABASE atlas_dev_legacy;"
+          LEGACY_URL="postgres://hci_test:ci_test_pass@localhost:5432/legacy_test?sslmode=disable"
+          LEGACY_DEV_URL="postgres://hci_test:ci_test_pass@localhost:5432/atlas_dev_legacy?sslmode=disable"
+          for DB_URL in "$LEGACY_URL" "$LEGACY_DEV_URL"; do
+            psql -v ON_ERROR_STOP=1 "$DB_URL" -c "
+              CREATE EXTENSION IF NOT EXISTS vector;
+              CREATE EXTENSION IF NOT EXISTS pgcrypto;
+              CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";
+              CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            "
+          done
+
+          # 先按完整 desired schema 建库，再删掉数据迁移依赖的新表，精确复现
+          # 「存量库核心 Schema 已在、但本次新增表尚未创建」的现场。
+          atlas schema apply \
+            --url "$LEGACY_URL" \
+            --to "file://$PWD/database/desired_schema.sql" \
+            --dev-url "$LEGACY_DEV_URL" \
+            --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+            --auto-approve
+          psql -v ON_ERROR_STOP=1 "$LEGACY_URL" -c "
+            DROP TABLE IF EXISTS log_collect_task CASCADE;
+            DROP TABLE IF EXISTS log_collect_custom_scenario CASCADE;
+            DROP TABLE IF EXISTS log_collect_default_scenario CASCADE;
+          "
+
+          DATABASE_URL="$LEGACY_URL" \
+          DEV_URL="$LEGACY_DEV_URL" \
+          SCHEMA_FILE="$PWD/database/desired_schema.sql" \
+          EXTRAS_FILE="$PWD/database/desired_extras.sql" \
+          MIGRATION_RUNNER="$PWD/scripts/migration-runner.sh" \
+          MIGRATIONS_DIR="$PWD/database/data-migrations" \
+          SEEDS_DIR="$PWD/database/seeds" \
+            sh scripts/db-migrate.sh
+
+          # 可证伪断言：全部版本均已登记，且被删的依赖表由 Atlas 重建。
+          EXPECTED=$(ls database/data-migrations/*.sql | wc -l | tr -d ' ')
+          ACTUAL=$(psql "$LEGACY_URL" -tAc "SELECT count(*) FROM migration_history" | tr -d ' ')
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "❌ 存量库路径存在未登记迁移：expected=${EXPECTED} actual=${ACTUAL}"
+            exit 1
+          fi
+          psql -v ON_ERROR_STOP=1 "$LEGACY_URL" -c "
+            SELECT to_regclass('public.log_collect_task') IS NOT NULL AS task_ready,
+                   to_regclass('public.log_collect_custom_scenario') IS NOT NULL AS scenario_ready;
+          "
+          echo "✅ 存量库路径通过：${ACTUAL} 个迁移全部登记，依赖新表已重建"
