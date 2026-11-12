@@ -163,6 +163,20 @@ DB artifacts: 115 行 / 1467.1 GiB
 | 远端保留期若短于本地保留期 | 本地删后无法重拉 | 当前远端远大于 7 天且有备份，已知安全 |
 | 人工 `rm` 目录 | 下一轮对账清掉幽灵行 | 20 小时内漂移 577 GiB 的情形不会再发生 |
 
+### 5.1 接口字段契约（部署时发现并修复）
+
+`GET /cleanup-events` 首版把 SQLite 行（snake_case）直接透出，只把 `occurred_at`
+转成了 `occurredAt`，于是返回体同时混用两种命名：`ticket_id` / `free_bytes` /
+`occurredAt`。前端按 `ticketId` / `freeBytes` 读取，结果**「工单」与「当时余量」
+两列静默变空白**——恰好把"谁被删了、当时盘还剩多少"这个最关键的信息藏起来。
+
+为什么单测没拦住：前端用 mock 数据（camelCase）渲染，后端没有该端点的字段断言，
+两侧各自"正确"，契约在接缝处断裂。
+
+修复：端点内统一转 camelCase，并补两条后端断言（字段存在 + snake_case 不得残留）。
+验证方式是把修复临时回退，确认测试以 `KeyError: 'ticketId'` 失败——测试能失败才算
+有效测试。教训：**跨端契约必须有服务端的字段名断言，前端 mock 不构成保护**。
+
 ## 6. 关联改动
 
 - `tools/ticket-sync/app/waterline.py`（新增）：统一的水位闸门
@@ -171,4 +185,4 @@ DB artifacts: 115 行 / 1467.1 GiB
 - `tools/ticket-sync/app/publisher.py`：去掉 `.trash`，新增 `purge_trash`
 - `tools/ticket-sync/app/main.py`：每轮清理、`/cleanup-events`、`/artifacts` 的 `cleaned` 与 `root`
 - `frontend/admin/src/api/ticketSync.ts`、`views/DshDiagnosisView.vue`：「已清理」标签、清理记录弹窗、真实目录路径
-- 测试：`tools/ticket-sync/tests/test_cleanup_cycle.py`（16 例）、前端 `DshDiagnosisView.spec.ts` 新增 3 例
+- 测试：`tools/ticket-sync/tests/test_cleanup_cycle.py`（16 例）、`tools/ticket-sync/tests/test_api.py` 新增 2 例（camelCase 契约、`/artifacts` 的 `root` 与 `cleaned`）、前端 `DshDiagnosisView.spec.ts` 新增 3 例

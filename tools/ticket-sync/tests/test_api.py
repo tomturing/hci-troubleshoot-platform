@@ -130,6 +130,61 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         again = await self.client.delete("/jobs/Q2026010100004")
         self.assertEqual(again.status_code, 204)
 
+    async def test_cleanup_events_use_camel_case_contract(self) -> None:
+        """清理流水的字段名必须与前端契约一致（camelCase）。
+
+        store 返回的是 SQLite 行（snake_case）。端点若直接透出，前端读
+        `row.ticketId` / `row.freeBytes` 全是 undefined，「工单」与「当时余量」
+        两列会静默变空白——恰好把"谁被删了、当时盘还剩多少"这个最关键的信息
+        藏起来。这条断言就是为了防止它再退化。
+        """
+        store = app.state.registry.store
+        store.add_cleanup_event(
+            "retention",
+            1_700_000_000.0,
+            ticket_id="Q2026010100009",
+            bytes_=3 * 1024**3,
+            free_bytes=500 * 1024**3,
+            detail="age_days=4.52 retention_days=3",
+        )
+
+        response = await self.client.get("/cleanup-events?limit=5")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["items"])
+        event = body["items"][0]
+        self.assertEqual(event["ticketId"], "Q2026010100009")
+        self.assertEqual(event["freeBytes"], 500 * 1024**3)
+        self.assertIsInstance(event["occurredAt"], str)
+        # 不能同时保留 snake_case，否则契约含糊，前端仍可能读错
+        self.assertNotIn("ticket_id", event)
+        self.assertNotIn("free_bytes", event)
+        self.assertNotIn("occurred_at", event)
+
+        # 阈值同样是 camelCase，界面直接读这几个键
+        thresholds = body["thresholds"]
+        self.assertGreater(thresholds["evictFreeBytes"], thresholds["minFreeBytes"])
+
+    async def test_artifacts_expose_root_and_cleaned_phase(self) -> None:
+        """/artifacts 必须回传真实根目录，并把已清理工单标成 cleaned。
+
+        前端曾硬编码 `/data/tickets`，而实际根目录是 `/sf/tickets`——路径写错
+        会直接把用户引到错误位置去清理。cleaned 阶段则保证"删了"不会被误读成
+        "从没同步过"。
+        """
+        store = app.state.registry.store
+        ticket = "Q2026010100008"
+        # 刻意不建目录：cleaned 表示"同步成功过、产物已被清理"，有目录就该报 ready
+        store.add_tombstone(ticket, 1_700_000_000.0)
+
+        response = await self.client.get("/artifacts")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["root"], self.root)
+        cleaned = [item for item in body["items"] if item["ticketId"] == ticket]
+        self.assertTrue(cleaned, "已清理工单必须出现在列表里")
+        self.assertEqual(cleaned[0]["phase"], "cleaned")
+
 
 if __name__ == "__main__":
     unittest.main()
