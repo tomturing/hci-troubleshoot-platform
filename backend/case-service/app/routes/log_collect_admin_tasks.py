@@ -15,7 +15,12 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import gzip
+import json
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
@@ -28,12 +33,36 @@ from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
 
 from ..config import settings
+from ..domain.log_collect_display import (
+    build_network_view,
+    build_transfer_view,
+    delivery_evidence_ok,
+    derive,
+)
+from ..domain.log_collect_display_generated import (
+    ARTIFACT_QUALITY_LABELS,
+    ARTIFACT_REASON_LABELS,
+    format_size,
+)
 from ..schemas.log_collect_admin import (
     AdminLogCollectSummary,
+    AdminLogCollectTaskDetail,
     AdminLogCollectTaskItem,
     AdminLogCollectTaskListResponse,
     AdminPathSummary,
+    ArtifactManifestItem,
+    ArtifactManifestResponse,
     DestinationProgressResponse,
+    NetworkProbeResponse,
+    ProcessLogContentResponse,
+    ProcessLogItem,
+    ProcessLogListResponse,
+    TransferMetricsResponse,
+)
+from ..schemas.log_collect_display import (
+    LogCollectNetworkInfo,
+    LogCollectTransferInfo,
+    build_display_payload,
 )
 from ..security.auth import require_admin_token
 from ..services.log_collect_relay_service import SangforRelayClient
@@ -125,72 +154,113 @@ _JOIN = """
     LEFT JOIN customer cu ON cu.customer_id = c.customer_id
 """
 
-_SELECT = """
+# 只取判定真正需要的 detail 键：整包 detail 会随探测/审计不断变大，
+# 列表按页取全量 detail 是纯粹的 IO 浪费（且让慢查询随时间恶化）。
+_EVIDENCE_DETAIL = """jsonb_strip_nulls(jsonb_build_object(
+               'artifact_quality', t.detail -> 'artifact_quality',
+               'artifact_reason', t.detail -> 'artifact_reason',
+               'p1_archive_check', t.detail -> 'p1_archive_check',
+               'delivery_evidence', t.detail -> 'delivery_evidence',
+               'integrity_mismatch', t.detail -> 'integrity_mismatch',
+               'bridge_outdated', t.detail -> 'bridge_outdated'
+           ))"""
+
+_SELECT = f"""
     SELECT t.task_id, t.case_id, c.client_id,
            COALESCE(cu.short_name, cu.name) AS customer_name,
            CAST(t.origin_node_ip AS text) AS origin_node_ip,
-           t.upload_mode, t.status, t.progress, t.archive_size,
+           t.upload_mode, t.status, t.progress, t.archive_size, t.object_size,
            t.delivery_status, t.relay_status, t.relay_upload_id,
            t.integrity_state, t.detail -> 'p1_archive_check' AS archive_check,
+           t.archive_path, t.archive_sha256, t.acli_version, t.arch,
+           {_EVIDENCE_DETAIL} AS detail,
            t.error_code, t.error_message, t.trace_id,
            t.created_at, t.finished_at, t.delivery_finished_at
 """
 
-# 「传输中」口径（2026-11-12 修复）：
-# 第一性原理——「传输中」意味着任务确实在传输中，而非采集早已终态、交付却卡在 queued。
-# 旧口径用 OR：status 活跃 OR delivery_status 在途，导致采集已 failed/completed/cancelled
-# 但 delivery_status=queued 的僵尸任务被错误计入「传输中」（实测 53 中 42 个是僵尸）。
-#
-# 新口径分两段：
-#   A) 采集活跃（collecting/packaging/uploading）且交付未终结（非 delivered/failed）
-#   B) 采集未终态（非 failed/cancelled/completed）且交付在途（queued/pulling/uploading/relaying）
-# 两段用 OR 连接，覆盖所有真正的在途场景。
-_TRANSFERRING = """(
-        (t.status IN ('collecting','packaging','uploading')
-         AND t.delivery_status NOT IN ('delivered','failed'))
-        OR (t.status NOT IN ('failed','cancelled','completed')
-         AND t.delivery_status IN ('queued','pulling','uploading','relaying'))
-    )"""
-_FAILED = "(t.status = 'failed' OR t.delivery_status = 'failed')"
-_UNVERIFIED = "(t.detail -> 'p1_archive_check' ->> 'verified') = 'false'"
-
+# 汇总不再用 SQL 条件各算一遍：SQL 里写五处判定，界面里再写一处，出现分歧时
+# 168 vs 146 这种对不上账就必然发生（2026-11-12 事故）。改为取同一批瘦行、
+# 复用派生层 conclusion 分桶，恒等式 total == Σby_conclusion 由模型校验器强制。
 _SUMMARY_SELECT = f"""
-    SELECT count(*) AS total,
-           count(*) FILTER (WHERE {_TRANSFERRING}) AS transferring,
-           count(*) FILTER (WHERE t.delivery_status = 'delivered') AS delivered,
-           count(*) FILTER (WHERE {_UNVERIFIED}) AS unverified,
-           count(*) FILTER (WHERE {_FAILED}) AS failed,
-           count(*) FILTER (WHERE t.upload_mode = 'acli_direct') AS p1_total,
-           count(*) FILTER (WHERE t.upload_mode = 'acli_direct' AND {_TRANSFERRING}) AS p1_transferring,
-           count(*) FILTER (WHERE t.upload_mode = 'acli_direct' AND t.delivery_status = 'delivered') AS p1_delivered,
-           count(*) FILTER (WHERE t.upload_mode = 'acli_direct' AND {_UNVERIFIED}) AS p1_unverified,
-           count(*) FILTER (WHERE t.upload_mode = 'acli_direct' AND {_FAILED}) AS p1_failed,
-           count(*) FILTER (WHERE t.upload_mode = 'bridge_relay') AS p2_total,
-           count(*) FILTER (WHERE t.upload_mode = 'bridge_relay' AND {_TRANSFERRING}) AS p2_transferring,
-           count(*) FILTER (WHERE t.upload_mode = 'bridge_relay' AND t.delivery_status = 'delivered') AS p2_delivered,
-           count(*) FILTER (WHERE t.upload_mode = 'bridge_relay' AND {_UNVERIFIED}) AS p2_unverified,
-           count(*) FILTER (WHERE t.upload_mode = 'bridge_relay' AND {_FAILED}) AS p2_failed
+    SELECT t.upload_mode, t.status, t.progress, t.archive_size, t.object_size,
+           t.delivery_status, t.relay_status, t.archive_path,
+           {_EVIDENCE_DETAIL} AS detail
 """
 
+_CONCLUSION_KEYS = ("pending", "success", "partial", "failed", "cancelled")
 
-def _summary_of(row: dict[str, Any]) -> AdminLogCollectSummary:
-    def path(prefix: str) -> AdminPathSummary:
+
+def _coerce_json(value: Any) -> Any:
+    """JSONB 在不同驱动下可能是 dict 也可能是字符串；统一成对象。
+
+    静默拿到字符串会让派生层把证据当空气，界面又回到「已完成 100%」，
+    所以这里必须显式解析，解析失败宁可当空证据也不猜。
+    """
+    if isinstance(value, str | bytes | bytearray):
+        try:
+            return json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return value
+
+
+def _normalize_row(row: dict[str, Any]) -> dict[str, Any]:
+    detail = _coerce_json(row.get("detail"))
+    row["detail"] = dict(detail) if isinstance(detail, Mapping) else {}
+    check = _coerce_json(row.get("archive_check"))
+    row["archive_check"] = dict(check) if isinstance(check, Mapping) else None
+    return row
+
+
+def _empty_counters() -> dict[str, Any]:
+    return {
+        "total": 0,
+        "delivered": 0,
+        "unverified": 0,
+        "by_conclusion": dict.fromkeys(_CONCLUSION_KEYS, 0),
+    }
+
+
+def _count_row(counters: dict[str, Any], row: Mapping[str, Any]) -> None:
+    payload = derive(row)
+    conclusion = payload["display"]["conclusion"]
+    counters["total"] += 1
+    counters["by_conclusion"][conclusion] = counters["by_conclusion"].get(conclusion, 0) + 1
+    if str(row.get("delivery_status") or "") == "delivered":
+        counters["delivered"] += 1
+        if not delivery_evidence_ok(row):
+            counters["unverified"] += 1
+
+
+def _summary_of(rows: list[dict[str, Any]]) -> AdminLogCollectSummary:
+    total = _empty_counters()
+    groups = {"acli_direct": _empty_counters(), "bridge_relay": _empty_counters()}
+    for row in rows:
+        normalized = _normalize_row(dict(row))
+        for counters in (total, groups.get(str(normalized.get("upload_mode") or ""))):
+            if counters is not None:
+                _count_row(counters, normalized)
+
+    def path(counters: dict[str, Any]) -> AdminPathSummary:
         return AdminPathSummary(
-            total=int(row.get(f"{prefix}total", 0)),
-            transferring=int(row.get(f"{prefix}transferring", 0)),
-            delivered=int(row.get(f"{prefix}delivered", 0)),
-            unverified=int(row.get(f"{prefix}unverified", 0)),
-            failed=int(row.get(f"{prefix}failed", 0)),
+            total=counters["total"],
+            # 「传输中」= 结论仍是 pending（采集或交付在途），二者必须是同一个数。
+            transferring=counters["by_conclusion"]["pending"],
+            delivered=counters["delivered"],
+            unverified=counters["unverified"],
+            failed=counters["by_conclusion"]["failed"],
+            by_conclusion=counters["by_conclusion"],
         )
 
     return AdminLogCollectSummary(
-        total=int(row.get("total", 0)),
-        transferring=int(row.get("transferring", 0)),
-        delivered=int(row.get("delivered", 0)),
-        unverified=int(row.get("unverified", 0)),
-        failed=int(row.get("failed", 0)),
-        p1=path("p1_"),
-        p2=path("p2_"),
+        total=total["total"],
+        transferring=total["by_conclusion"]["pending"],
+        delivered=total["delivered"],
+        unverified=total["unverified"],
+        failed=total["by_conclusion"]["failed"],
+        by_conclusion=total["by_conclusion"],
+        p1=path(groups["acli_direct"]),
+        p2=path(groups["bridge_relay"]),
     )
 
 
@@ -231,10 +301,12 @@ async def list_admin_tasks(
 
     items = []
     for row in rows:
-        data = dict(row)
-        check = data.get("archive_check")
-        data["archive_check"] = check if isinstance(check, dict) else None
-        items.append(AdminLogCollectTaskItem(**data))
+        data = _normalize_row(dict(row))
+        item = AdminLogCollectTaskItem(**data)
+        payload = build_display_payload(data)
+        item.display = payload.display
+        item.artifact = payload.artifact
+        items.append(item)
 
     logger.info(
         event="admin_log_collect_tasks_read",
@@ -250,7 +322,7 @@ async def list_admin_tasks(
         total=int(count_rows[0]["total"]) if count_rows else 0,
         page=page,
         page_size=page_size,
-        summary=_summary_of(summary_rows[0]) if summary_rows else AdminLogCollectSummary(),
+        summary=_summary_of(summary_rows),
     )
 
 
@@ -450,3 +522,249 @@ async def destination_progress(task_id: UUID) -> DestinationProgressResponse:
         trace_id=get_current_trace_id(),
     )
     return payload
+
+
+# ── 证据端点：详情抽屉四个页签的数据来源 ─────────────────────────────────
+# 全部只读、按 task_id 过滤、显式 limit：既避免整包 detail 进内存，
+# 也避免一个人在抽屉里点开就把日志服务器或数据库拖满。
+
+_PROCESS_LOG_CONTENT_MAX_BYTES = 2 * 1024 * 1024
+_MANIFEST_ENTRIES_MAX = 200
+
+
+async def _task_row(task_id: UUID) -> dict[str, Any]:
+    rows = await _fetch(f"{_SELECT} {_JOIN} WHERE t.task_id = :task_id", {"task_id": str(task_id)})
+    if not rows:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return _normalize_row(dict(rows[0]))
+
+
+async def _latest_transfer(task_id: UUID) -> dict[str, Any] | None:
+    rows = await _fetch(
+        """
+        SELECT stage, bytes_done, bytes_total, percent, elapsed_ms, rate_bps, eta_sec,
+               stalled, source, created_at
+        FROM log_collect_transfer_metric
+        WHERE task_id = :task_id
+        ORDER BY seq DESC
+        LIMIT 1
+        """,
+        {"task_id": str(task_id)},
+    )
+    return build_transfer_view(rows[0]) if rows else None
+
+
+async def _latest_probes(task_id: UUID) -> list[dict[str, Any]]:
+    return await _fetch(
+        """
+        SELECT DISTINCT ON (target)
+               target, reachable, grade, rtt_avg_ms, jitter_ms, loss_rate, http_code,
+               up_bps, down_bps, advice, created_at
+        FROM log_collect_network_probe
+        WHERE task_id = :task_id
+        ORDER BY target, created_at DESC
+        """,
+        {"task_id": str(task_id)},
+    )
+
+
+@admin_router.get("/{task_id}", response_model=AdminLogCollectTaskDetail)
+async def admin_task_detail(task_id: UUID) -> AdminLogCollectTaskDetail:
+    """单任务详情：列表字段 + 最新传输样本 + 网络探测结论。"""
+    row = await _task_row(task_id)
+    metrics = await _latest_transfer(task_id)
+    probes = await _latest_probes(task_id)
+    payload = build_display_payload(row, metrics=metrics, probes=probes)
+
+    item = AdminLogCollectTaskDetail(**row)
+    item.display = payload.display
+    item.artifact = payload.artifact
+    item.transfer = payload.transfer
+    item.network = payload.network
+    return item
+
+
+@admin_router.get("/{task_id}/transfer-metrics", response_model=TransferMetricsResponse)
+async def transfer_metrics(
+    task_id: UUID,
+    limit: int = Query(120, ge=1, le=1000, description="最多返回的样本数（最新在前）"),
+) -> TransferMetricsResponse:
+    """传输时间序列。样本来自 bridge 周期上报，缺失即「暂无数据」，不补零。"""
+    await _task_row(task_id)
+    rows = await _fetch(
+        """
+        SELECT stage, bytes_done, bytes_total, percent, elapsed_ms, rate_bps, eta_sec,
+               stalled, source, created_at
+        FROM log_collect_transfer_metric
+        WHERE task_id = :task_id
+        ORDER BY seq DESC
+        LIMIT :limit
+        """,
+        {"task_id": str(task_id), "limit": limit},
+    )
+    items = [
+        LogCollectTransferInfo.model_validate(view)
+        for view in (build_transfer_view(row) for row in rows)
+        if view is not None
+    ]
+    return TransferMetricsResponse(task_id=task_id, items=items, latest=items[0] if items else None)
+
+
+@admin_router.get("/{task_id}/network-probe", response_model=NetworkProbeResponse)
+async def network_probe(task_id: UUID) -> NetworkProbeResponse:
+    """下发前网络探测：每目标最新一条，按当前交付路径定级。"""
+    row = await _task_row(task_id)
+    probes = await _latest_probes(task_id)
+    view = build_network_view(probes, row.get("upload_mode"))
+    return NetworkProbeResponse(
+        task_id=task_id,
+        network=LogCollectNetworkInfo.model_validate(view) if view is not None else None,
+    )
+
+
+@admin_router.get("/{task_id}/process-logs", response_model=ProcessLogListResponse)
+async def process_logs(task_id: UUID) -> ProcessLogListResponse:
+    """节点侧采集进程日志清单（不含正文，正文单独取）。"""
+    await _task_row(task_id)
+    rows = await _fetch(
+        """
+        SELECT log_id, host, path, size, sha256, truncated, status, error, collected_at
+        FROM log_collect_process_log
+        WHERE task_id = :task_id
+        ORDER BY collected_at DESC NULLS LAST
+        """,
+        {"task_id": str(task_id)},
+    )
+    items = [
+        ProcessLogItem(
+            log_id=row["log_id"],
+            host=row["host"],
+            path=row["path"],
+            size_bytes=row["size"],
+            size_text=format_size(row["size"]),
+            sha256=row["sha256"],
+            truncated=bool(row["truncated"]),
+            status=row["status"],
+            error=row["error"],
+            collected_at=row["collected_at"],
+        )
+        for row in rows
+    ]
+    return ProcessLogListResponse(task_id=task_id, items=items)
+
+
+@admin_router.get("/{task_id}/process-logs/{log_id}/content", response_model=ProcessLogContentResponse)
+async def process_log_content(task_id: UUID, log_id: UUID) -> ProcessLogContentResponse:
+    """进程日志正文。
+
+    安全边界：内容只可能来自 bridge 上报时落库的 gzip 字节，不接受任何路径参数；
+    仍然复核 path 是绝对路径，防止把库里被污染的相对路径当成可展示对象。
+    """
+    rows = await _fetch(
+        """
+        SELECT log_id, host, path, size, content_gz, truncated, status, collected_at
+        FROM log_collect_process_log
+        WHERE task_id = :task_id AND log_id = :log_id
+        """,
+        {"task_id": str(task_id), "log_id": str(log_id)},
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="进程日志不存在")
+    row = dict(rows[0])
+
+    path = str(row.get("path") or "")
+    if not path.startswith("/") or ".." in path:
+        raise HTTPException(status_code=409, detail="进程日志路径异常，拒绝展示")
+
+    raw = row.get("content_gz")
+    truncated = bool(row.get("truncated"))
+    if raw is None:
+        content = ""
+    else:
+        payload = raw
+        if isinstance(raw, str):
+            # 兼容早期把 base64 文本直接落库的形态。
+            try:
+                payload = base64.b64decode(raw, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise HTTPException(status_code=500, detail="进程日志内容损坏") from exc
+        if isinstance(payload, memoryview):
+            payload = bytes(payload)
+        if not isinstance(payload, bytes | bytearray):
+            raise HTTPException(status_code=500, detail="进程日志内容格式异常")
+        try:
+            decoded = gzip.decompress(bytes(payload))
+        except (OSError, EOFError, binascii.Error) as exc:
+            logger.warning(
+                event="admin_log_collect_process_log_decode_failed",
+                message="进程日志解压失败",
+                task_id=str(task_id),
+                log_id=str(log_id),
+                error=str(exc),
+                trace_id=get_current_trace_id(),
+            )
+            raise HTTPException(status_code=500, detail="进程日志内容损坏") from exc
+        if len(decoded) > _PROCESS_LOG_CONTENT_MAX_BYTES:
+            decoded = decoded[:_PROCESS_LOG_CONTENT_MAX_BYTES]
+            truncated = True
+        content = decoded.decode("utf-8", errors="replace")
+
+    logger.info(
+        event="admin_log_collect_process_log_read",
+        message="管理端读取节点进程日志",
+        task_id=str(task_id),
+        log_id=str(log_id),
+        bytes=len(content.encode("utf-8")),
+        truncated=truncated,
+        trace_id=get_current_trace_id(),
+    )
+    return ProcessLogContentResponse(
+        log_id=row["log_id"],
+        host=row["host"],
+        path=path,
+        content=content,
+        truncated=truncated,
+        size_bytes=row["size"],
+        collected_at=row["collected_at"],
+    )
+
+
+@admin_router.get("/{task_id}/artifact-manifest", response_model=ArtifactManifestResponse)
+async def artifact_manifest(task_id: UUID) -> ArtifactManifestResponse:
+    """包内容探测清单：识别空壳包的唯一强证据（体积只能判「过小」）。"""
+    await _task_row(task_id)
+    rows = await _fetch(
+        """
+        SELECT source, archive_size, archive_sha256, entry_count, entry_total_bytes,
+               has_encrypted, quality, reason, entries, inspected_at
+        FROM log_collect_artifact_manifest
+        WHERE task_id = :task_id
+        ORDER BY inspected_at DESC
+        """,
+        {"task_id": str(task_id)},
+    )
+    items: list[ArtifactManifestItem] = []
+    for row in rows:
+        entries = row.get("entries") if isinstance(row.get("entries"), list) else []
+        quality = str(row.get("quality") or "unknown")
+        reason = row.get("reason")
+        items.append(
+            ArtifactManifestItem(
+                source=row["source"],
+                archive_size=row.get("archive_size"),
+                archive_size_text=format_size(row.get("archive_size")),
+                archive_sha256=row.get("archive_sha256"),
+                entry_count=row.get("entry_count"),
+                entry_total_bytes=row.get("entry_total_bytes"),
+                entry_total_text=format_size(row.get("entry_total_bytes")),
+                has_encrypted=row.get("has_encrypted"),
+                quality=quality,
+                quality_label=ARTIFACT_QUALITY_LABELS.get(quality, ARTIFACT_QUALITY_LABELS["unknown"]),
+                reason=reason,
+                reason_text=ARTIFACT_REASON_LABELS.get(str(reason or ""), None),
+                entries=entries[:_MANIFEST_ENTRIES_MAX] or None,
+                entries_truncated=len(entries) > _MANIFEST_ENTRIES_MAX,
+                inspected_at=row.get("inspected_at"),
+            )
+        )
+    return ArtifactManifestResponse(task_id=task_id, items=items)

@@ -183,6 +183,10 @@ def delivery_evidence_ok(task: Any) -> bool:
 def derive_phase(task: Any) -> str:
     """当前环节。交付阶段优先：采集结束后交付仍在跑时，用户要看的是「代传中」。"""
     delivery = str(_get(task, "delivery_status") or "")
+    # 交付已终结是比采集状态更强的事实：节点可能永远不把 status 推到 completed，
+    # 但平台已经收妥字节，就不能继续把任务算作「传输中」。
+    if delivery == "delivered":
+        return "settled"
     if delivery == "pulling":
         return "fetching"
     if delivery == "uploading":
@@ -396,6 +400,18 @@ def _network_payload(
     }
 
 
+def build_transfer_view(sample: Mapping[str, Any] | None, *, now: datetime | None = None) -> dict[str, Any] | None:
+    """单条传输样本 → 展示结构（管理端时间序列复用同一口径）。"""
+    if not isinstance(sample, Mapping):
+        return None
+    return _transfer_payload(None, sample, now=now or datetime.now(UTC))
+
+
+def build_network_view(probes: Iterable[Mapping[str, Any]] | None, upload_mode: Any = None) -> dict[str, Any] | None:
+    """探测行集合 → 展示结构（每目标取最新，按交付路径定级）。"""
+    return _network_payload(probes, str(upload_mode or "") or None)
+
+
 def _conclusion(
     *,
     status: str,
@@ -483,7 +499,12 @@ def derive(
     artifact = _artifact_payload(task, manifest, allow_size_inference=phase == "settled")
     quality = artifact["quality"]
     transfer = _transfer_payload(task, metrics, now=now)
-    network = _network_payload(probes, _get(task, "upload_mode"))
+    # 客户面板轮询只拿任务行；证据写侧会把「每目标最新探测」落进 detail，
+    # 这里读快照即可，避免每次轮询多查两张窄表。管理端显式传 probes 时优先用真表。
+    effective_probes = probes
+    if effective_probes is None and isinstance(detail.get("network_probes"), list):
+        effective_probes = detail["network_probes"]
+    network = _network_payload(effective_probes, _get(task, "upload_mode"))
     conclusion = _conclusion(
         status=status,
         delivery_status=delivery_status,

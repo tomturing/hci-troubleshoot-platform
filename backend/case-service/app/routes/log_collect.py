@@ -47,6 +47,7 @@ from ..services.log_collect_custom_scenario_service import (
     serialize_spc,
 )
 from ..services.log_collect_default_scenario_service import LogCollectDefaultScenarioService
+from ..services.log_collect_evidence_service import LogCollectEvidenceTicket
 from ..services.log_collect_node_path import expected_node_archive_path
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
 from ..services.log_collect_service import (
@@ -470,6 +471,9 @@ async def create_task(
         response.path_count = config_plan[2]
     _attach_display(response, task)
     _attach_p1_ticket(response, tickets)
+    # 证据票据只在创建时签发：bridge 用它上报探测/速率/包内容/进程日志，
+    # 票据绑定 task_id，不能跨任务复用，也不随后续轮询响应反复下发。
+    response.evidence_ticket = LogCollectEvidenceTicket().issue(str(task.task_id))
     return response
 
 

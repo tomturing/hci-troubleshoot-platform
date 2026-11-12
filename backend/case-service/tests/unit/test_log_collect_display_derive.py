@@ -99,6 +99,22 @@ class TestConclusion:
         assert derive(make_task(status="failed"), now=NOW)["display"]["conclusion"] == "failed"
         assert derive(make_task(status="cancelled"), now=NOW)["display"]["conclusion"] == "cancelled"
 
+    def test_delivered_is_settled_even_if_node_never_finished(self):
+        """节点卡在 uploading 但平台已收妥：不能永远算「传输中」。"""
+        payload = derive(
+            make_task(
+                status="uploading",
+                progress=80,
+                delivery_status="delivered",
+                relay_status="success",
+                archive_size=2 * 1024**3,
+            ),
+            now=NOW,
+        )
+
+        assert payload["display"]["phase"] == "settled"
+        assert payload["display"]["conclusion"] != "pending"
+
     @pytest.mark.parametrize(
         ("delivery_status", "expected_phase"),
         [
@@ -163,7 +179,7 @@ class TestArtifactEvidence:
 class TestTransferAndNetwork:
     def test_composite_progress_uses_bands(self):
         metric = {
-            "stage": "upload",
+            "stage": "uploading",
             "bytes_done": 512 * 1024 * 1024,
             "bytes_total": 1024 * 1024 * 1024,
             "rate_bps": 8 * 1024 * 1024,
@@ -207,7 +223,7 @@ class TestTransferAndNetwork:
         assert "network_degraded" in key_list(p1)
 
     def test_stalled_transfer_surfaces_condition(self):
-        metric = {"stage": "relay", "stalled": True, "created_at": NOW - timedelta(seconds=180)}
+        metric = {"stage": "relaying", "stalled": True, "created_at": NOW - timedelta(seconds=180)}
         payload = derive(make_task(delivery_status="relaying", archive_size=1024**3), metrics=metric, now=NOW)
 
         assert "stalled" in key_list(payload)

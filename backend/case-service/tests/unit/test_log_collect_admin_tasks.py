@@ -68,28 +68,44 @@ def test_filters_reject_unknown_enums(field, value):
     assert exc.value.status_code == 400
 
 
-def test_summary_maps_p1_and_p2_columns():
-    row = {
-        "total": 10,
-        "transferring": 3,
-        "delivered": 5,
-        "unverified": 1,
-        "failed": 1,
-        "p1_total": 6,
-        "p1_transferring": 2,
-        "p1_delivered": 3,
-        "p1_unverified": 1,
-        "p1_failed": 0,
-        "p2_total": 4,
-        "p2_transferring": 1,
-        "p2_delivered": 2,
-        "p2_unverified": 0,
-        "p2_failed": 1,
+def _summary_row(
+    mode: str, status: str, delivery: str, *, detail: dict | None = None
+) -> dict:
+    return {
+        "upload_mode": mode,
+        "status": status,
+        "progress": 40 if status == "collecting" else 100,
+        "archive_size": 2 * 1024**3,
+        "object_size": None,
+        "delivery_status": delivery,
+        "relay_status": "success" if mode == "bridge_relay" and delivery == "delivered" else "none",
+        "archive_path": "/sf/log/Q2026111000243.zip",
+        "detail": detail or {},
+        "archive_check": None,
     }
-    summary = routes._summary_of(row)
+
+
+def test_summary_maps_p1_and_p2_columns():
+    """汇总不再吃 SQL 预聚合列：由同一批任务行推导，且 P1/P2 分组必然可加。"""
+    rows = (
+        [_summary_row("acli_direct", "completed", "delivered",
+                      detail={"p1_archive_check": {"verified": True}}) for _ in range(3)]
+        + [_summary_row("acli_direct", "collecting", "none") for _ in range(2)]
+        + [_summary_row("acli_direct", "failed", "none")]
+        + [_summary_row("bridge_relay", "completed", "delivered") for _ in range(2)]
+        + [_summary_row("bridge_relay", "collecting", "none")]
+        + [_summary_row("bridge_relay", "failed", "none")]
+    )
+
+    summary = routes._summary_of(rows)
+
     assert (summary.total, summary.delivered) == (10, 5)
     assert (summary.p1.total, summary.p1.delivered) == (6, 3)
     assert (summary.p2.total, summary.p2.failed) == (4, 1)
+    assert sum(summary.by_conclusion.values()) == summary.total == 10
+    assert summary.transferring == summary.by_conclusion["pending"] == 3
+    assert sum(summary.p1.by_conclusion.values()) == 6
+    assert sum(summary.p2.by_conclusion.values()) == 4
 
 
 # ── 「传输中」口径测试（2026-11-12 修复：排除采集已终态但 delivery=queued 的僵尸）──
@@ -115,7 +131,9 @@ _TRANSFERRING_CASES = [
     ("completed", "queued", False, "采集已完成+交付排队=僵尸，不算传输中"),
     ("cancelled", "queued", False, "采集已取消+交付排队=僵尸，不算传输中"),
     ("failed", "relaying", False, "采集已失败+代传中=不算传输中"),
-    ("completed", "relaying", False, "采集已完成+代传中=不算传输中"),
+    # 与旧 SQL 口径的差异：采集 completed 不代表流程结束，代传真的在跑就是传输中。
+    # 真正要排除的僵尸是 completed + queued（交付根本没开始），下面那条仍然排除。
+    ("completed", "relaying", True, "采集已完成+代传真的在跑=传输中"),
     # 终态组合
     ("failed", "failed", False, "双失败=不算传输中"),
     ("completed", "delivered", False, "双完成=不算传输中"),
@@ -129,23 +147,24 @@ _TRANSFERRING_CASES = [
     ids=[c[3] for c in _TRANSFERRING_CASES],
 )
 def test_transferring_criteria_excludes_zombie_delivery(status, delivery_status, expected, desc):
-    """验证 _TRANSFERRING SQL 片段在各种状态组合下的正确性。
+    """行为级验证：传输中 == conclusion 仍是 pending，不再检查 SQL 片段字符串。
 
-    核心修复：采集已终态（failed/completed/cancelled）但 delivery_status=queued 的
-    僵尸任务不应计入「传输中」。
+    核心修复保留：采集终态（failed/completed/cancelled）+ delivery=queued 的
+    僵尸任务不计入「传输中」；采集 completed 但代传真的在跑则计入。
     """
-    # 直接用 SQL 片段做字符串级验证：确认新口径包含 NOT IN 终态排除
-    sql = routes._TRANSFERRING
-    assert "NOT IN ('failed','cancelled','completed')" in sql, "新口径必须排除采集终态"
-    assert "NOT IN ('delivered','failed')" in sql, "新口径必须排除交付终态"
-    # 旧口径的 OR 已被替换：不能有裸 OR delivery_status IN
-    assert "OR t.delivery_status IN ('queued'" not in sql, "旧口径的裸 OR 已移除"
+    summary = routes._summary_of(
+        [_summary_row("bridge_relay", status, delivery_status)]
+    )
+
+    assert (summary.by_conclusion["pending"] == 1) is expected, desc
+    assert sum(summary.by_conclusion.values()) == summary.total == 1
 
 
-def test_transferring_sql_is_valid_syntax():
-    """验证 _TRANSFERRING 片段是合法 SQL（括号匹配）。"""
-    sql = routes._TRANSFERRING.strip()
-    assert sql.count("(") == sql.count(")"), "括号不匹配"
+def test_summary_select_does_not_duplicate_status_rules():
+    """汇总 SQL 只取原始事实，判定不能在 SQL 里再写一份。"""
+    assert "count(*) FILTER" not in routes._SUMMARY_SELECT
+    assert "jsonb_build_object" in routes._SUMMARY_SELECT
+    assert routes._SUMMARY_SELECT.count("(") == routes._SUMMARY_SELECT.count(")")
 
 
 @pytest.mark.asyncio
@@ -180,26 +199,9 @@ async def test_list_returns_both_customer_name_and_client_id_without_querying_58
                     "delivery_finished_at": _now(),
                 }
             ]
-        if "count(*) FILTER" in sql:
-            return [
-                {
-                    "total": 1,
-                    "transferring": 0,
-                    "delivered": 1,
-                    "unverified": 0,
-                    "failed": 0,
-                    "p1_total": 1,
-                    "p1_transferring": 0,
-                    "p1_delivered": 1,
-                    "p1_unverified": 0,
-                    "p1_failed": 0,
-                    "p2_total": 0,
-                    "p2_transferring": 0,
-                    "p2_delivered": 0,
-                    "p2_unverified": 0,
-                    "p2_failed": 0,
-                }
-            ]
+        if "SELECT t.upload_mode" in sql:
+            return [_summary_row("acli_direct", "completed", "delivered",
+                                 detail={"p1_archive_check": {"verified": True}})]
         return [{"total": 1}]
 
     def must_not_be_called(*_args, **_kwargs):

@@ -13,7 +13,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from app.domain.log_collect_display_generated import (
     ARTIFACT_QUALITY_LABELS,
     CONCLUSION_LABELS,

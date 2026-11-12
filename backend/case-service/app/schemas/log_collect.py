@@ -421,6 +421,9 @@ class LogCollectTaskResponse(BaseModel):
         default=None, description="传输速率/ETA/停滞；旧桥接端不上报时为 null"
     )
     network: LogCollectNetworkInfo | None = Field(default=None, description="下发前网络探测结论；未探测时为 null")
+    # 只在 create 响应里出现：bridge 用票据上报证据（绑定 task_id，24h）。
+    # 其余读接口一律返回 null，避免票据随轮询响应到处扩散。
+    evidence_ticket: str | None = Field(default=None, description="证据上报短期票据（仅创建响应）")
 
 
 class LogCollectTaskListResponse(BaseModel):

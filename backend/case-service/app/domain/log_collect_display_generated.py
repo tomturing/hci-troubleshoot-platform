@@ -52,6 +52,7 @@ ARTIFACT_QUALITY_LABELS = {
 }
 
 ARTIFACT_REASON_LABELS = {
+    "content_too_small": "包内日志内容偏少",
     "empty_archive": "压缩包内没有条目",
     "entry_count_low": "条目数量明显低于预期",
     "metadata_only": "仅含配置元数据，没有日志内容",
@@ -70,10 +71,9 @@ NETWORK_GRADE_LABELS = {
 }
 
 TRANSFER_STAGE_LABELS = {
-    "collect": "采集",
-    "fetch": "拉取",
-    "relay": "代传",
-    "upload": "上传"
+    "fetching": "拉取",
+    "relaying": "代传",
+    "uploading": "上传"
 }
 
 UPLOAD_MODE_LABELS = {

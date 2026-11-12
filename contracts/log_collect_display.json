@@ -45,6 +45,7 @@
     "too_small": "压缩包体积异常偏小",
     "empty_archive": "压缩包内没有条目",
     "metadata_only": "仅含配置元数据，没有日志内容",
+    "content_too_small": "包内日志内容偏少",
     "entry_count_low": "条目数量明显低于预期",
     "unreadable": "包内容无法读取",
     "not_inspected": "尚未探测包内容",
@@ -57,10 +58,9 @@
     "unknown": "未知"
   },
   "transfer_stage": {
-    "collect": "采集",
-    "fetch": "拉取",
-    "upload": "上传",
-    "relay": "代传"
+    "fetching": "拉取",
+    "uploading": "上传",
+    "relaying": "代传"
   },
   "upload_mode": {
     "acli_direct": "P1 直传日志服务器",
