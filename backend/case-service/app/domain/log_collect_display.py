@@ -546,7 +546,7 @@ def derive(
 def snapshot_artifact_evidence(task: Any) -> dict[str, Any] | None:
     """保存边界补写包证据快照；无变更返回 None。
 
-    对应迁移 064 的实时版本：终态任务若还没有 ``detail.artifact_quality``，
+    对应迁移 065 的实时版本：终态任务若还没有 ``detail.artifact_quality``，
     按体积可判定的「无包 / 过小」补上，避免新产生的行继续以「已完成」
     混过界面。已由内容探测写入的结论优先级更高，绝不覆盖。
     """

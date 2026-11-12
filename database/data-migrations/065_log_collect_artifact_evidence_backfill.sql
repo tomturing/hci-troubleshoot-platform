@@ -1,4 +1,4 @@
--- 064：日志包内容证据回填（历史「假完成 / 空壳包」一次性标注）
+-- 065：日志包内容证据回填（历史「假完成 / 空壳包」一次性标注）
 --
 -- 背景（2026-11-12 staging）：
 --   Q2026111201130 的 519c8644：status=completed、progress=100，但 archive_size 与
@@ -51,7 +51,7 @@ SET detail = COALESCE(t.detail, '{}'::jsonb) || jsonb_build_object(
         'artifact_quality', judged.quality,
         'artifact_reason', judged.reason,
         'display_audit', jsonb_build_object(
-            'source', 'migration-064',
+            'source', 'migration-065',
             'trace', 'log-collect-artifact-backfill-20261112',
             'at', to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
             'before', jsonb_build_object(
@@ -82,7 +82,7 @@ BEGIN
       AND COALESCE(detail ->> 'artifact_quality', '') <> 'invalid';
 
     IF missed > 0 THEN
-        RAISE EXCEPTION '064 校验失败：% 个已完成但零产物的任务未被标注为 invalid', missed;
+        RAISE EXCEPTION '065 校验失败：% 个已完成但零产物的任务未被标注为 invalid', missed;
     END IF;
 END $$;
 
@@ -97,7 +97,7 @@ BEGIN
       AND COALESCE(NULLIF(object_size, 0), NULLIF(archive_size, 0)) >= 1048576;
 
     IF inconsistent > 0 THEN
-        RAISE EXCEPTION '064 校验失败：% 个被标为过小的任务体积不小于阈值', inconsistent;
+        RAISE EXCEPTION '065 校验失败：% 个被标为过小的任务体积不小于阈值', inconsistent;
     END IF;
 END $$;
 
@@ -116,7 +116,7 @@ BEGIN
     FROM log_collect_task
     WHERE detail ->> 'artifact_reason' = 'too_small';
 
-    RAISE NOTICE '064 完成：completed 任务 % 个；标注无产物 % 个、产物过小 % 个',
+    RAISE NOTICE '065 完成：completed 任务 % 个；标注无产物 % 个、产物过小 % 个',
         total_completed, marked_missing, marked_small;
 END $$;
 

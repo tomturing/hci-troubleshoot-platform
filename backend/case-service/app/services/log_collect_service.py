@@ -407,7 +407,7 @@ class LogCollectService:
         self.attribute_failure(task)
 
         # ── 产物证据快照：终态必须回答「有没有可用日志」────────────────────
-        # 与迁移 064 同一口径（无包/过小判 invalid），但作用在新产生的行上；
+        # 与迁移 065 同一口径（无包/过小判 invalid），但作用在新产生的行上；
         # 已由内容探测写入的结论优先级更高，snapshot 内部不会覆盖。
         snapshot = snapshot_artifact_evidence(task)
         if snapshot is not None:
