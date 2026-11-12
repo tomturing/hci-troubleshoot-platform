@@ -482,3 +482,50 @@ describe('canResumeDeliveryAfterReject', () => {
     expect(canResumeDeliveryAfterReject('  ')).toBe(false)
   })
 })
+
+describe('平台派生结论优先', () => {
+  it('status=completed + delivered 也不能盖过「未取到有效日志」的失败结论', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: true,
+      when: '2026-11-12 10:00',
+      display: {
+        conclusion: 'failed',
+        conclusion_label: '未取到有效日志',
+        conclusion_tone: 'error',
+        phase_label: '已结束',
+        conditions: [
+          { label: '未取到有效日志' },
+          { label: '采集完成但未交付' },
+        ],
+      },
+      artifact: { quality_label: '未取到有效日志', reason_text: '未发现压缩包' },
+    })
+    expect(headline.type).toBe('error')
+    expect(headline.title).toContain('未取到有效日志')
+    expect(headline.description).toContain('采集完成但未交付')
+    expect(headline.description).toContain('产物质量')
+    expect(headline.title).not.toContain('已交付')
+  })
+
+  it('已交付但产物可疑时用 warning，不是绿色成功', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: true,
+      display: {
+        conclusion: 'partial',
+        conclusion_label: '已交付 · 有疑点',
+        conclusion_tone: 'warning',
+        conditions: [{ label: '未取到有效日志' }],
+      },
+    })
+    expect(headline.type).toBe('warning')
+    expect(headline.title).toContain('已交付 · 有疑点')
+  })
+
+  it('没有 display 时保持旧后端降级文案，不误伤老平台', () => {
+    const headline = buildResultHeadline({ status: 'completed', delivered: true })
+    expect(headline.type).toBe('success')
+    expect(headline.title).toContain('已交付')
+  })
+})

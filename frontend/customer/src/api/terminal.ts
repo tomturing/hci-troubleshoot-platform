@@ -624,6 +624,8 @@ export interface LogCollectMessageOptions {
    * 在事件里无法区分（2026-10-28 现场：progress 事件 task_id 全为空）。
    */
   execId?: string
+  /** 平台签发的证据上报票据（绑定 task_id、24h），仅 create 消息透传给 bridge。 */
+  evidenceTicket?: string
   modules?: string[]
   dateFrom?: string
   dateTo?: string
@@ -689,6 +691,7 @@ export function buildLogCollectMessage(
     trace_id: options.traceId || undefined,
     ticket_no: options.ticketNo || undefined,
     exec_id: options.execId || undefined,
+    evidence_ticket: options.evidenceTicket || undefined,
     modules: options.modules?.length ? options.modules : undefined,
     date_from: options.dateFrom || undefined,
     date_to: options.dateTo || undefined,

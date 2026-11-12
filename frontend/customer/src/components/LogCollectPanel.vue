@@ -28,6 +28,7 @@ import {
   type LogCollectModule,
   type LogCollectScenarioItem,
   type LogCollectTask,
+  type LogCollectTaskPatch,
   type ProbeHistoryItem,
   type RelaySnapshot,
   type RelayStatus,
@@ -979,8 +980,26 @@ const resultHeadline = computed<{ type: 'success' | 'warning' | 'error' | 'info'
       // 否则用户只能理解成"平台说我没传"（Q2026111000243 的现场反应）。
       archiveCheck: p1ArchiveCheckOf(resultTask.value),
       canUpload: canUploadFromNode.value,
+      // 平台派生结论优先：有证据时不让本地 status/delivery 再拼一个「已完成」出来。
+      display: resultTask.value?.display ?? null,
+      artifact: resultTask.value?.artifact ?? null,
     }),
 )
+
+/** 桥接端没升级时不上报速率/探测：明确说「没有数据」，不拿 0 或 100 顶替。 */
+const BRIDGE_OUTDATED_HINT = '桥接端版本较旧，暂无该数据'
+/** capabilities 探测结论：旧桥不认识 log_collect_evidence 时显式提示，不静默降级。 */
+const bridgeEvidenceCapable = ref(true)
+const platformTransfer = computed(() => currentTask.value?.transfer ?? resultTask.value?.transfer ?? null)
+const platformNetwork = computed(() => currentTask.value?.network ?? resultTask.value?.network ?? null)
+const platformDisplay = computed(() => currentTask.value?.display ?? resultTask.value?.display ?? null)
+
+function formatEtaText(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—'
+  if (seconds < 60) return `${Math.round(seconds)} 秒`
+  const minutes = Math.floor(seconds / 60)
+  return minutes < 60 ? `${minutes} 分 ${Math.round(seconds % 60)} 秒` : `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`
+}
 
 const RESULT_STATUS_TEXT: Record<string, string> = {
   completed: '完成',
@@ -1118,7 +1137,11 @@ const probeIssues = computed(() => {
 const resultSizeText = computed(() => {
   const task = resultTask.value
   const size = task?.archive_size
+  // 平台已给出统一口径的体积文案时优先用它（1024 进制、与后端逐字一致）。
+  if (task?.artifact?.size_text && task.artifact.size_text !== '—') return task.artifact.size_text
   if (!size) {
+    // 零产物的失败结论比「未记录」诚实：1130 事故里后者让用户以为只是没记上。
+    if (task?.display?.conclusion === 'failed') return '未取到有效日志'
     // 失败任务从未走到上传：P1 的「直传后已删除」叙事对它是谎言，必须按终态说。
     if (task?.status === 'failed') return '本次采集失败，未产出压缩包'
     return resultMode.value === 'acli_direct' ? '未记录（直传后压缩包已删除）' : '未记录'
@@ -2660,8 +2683,10 @@ async function handleStart() {
     stage.value = 'creating'
     // 旧桥不认识 spc_files 会直接忽略并继续按节点原清单收集，这是最危险的
     // 「看起来成功了」：必须先探测能力，不支持就明确报错，绝不静默降级。
-    if (issuedSpcFiles?.length) {
-      let capabilities: any = null
+    let capabilities: any = null
+    // 有证据票据就顺便做一次能力协商：旧桥不上报速率/网络/包内容/进程日志时，
+    // 界面必须说「桥接端版本较旧」，而不是把缺失数据显示成 0 或绿色成功。
+    if (issuedSpcFiles?.length || task.evidence_ticket) {
       try {
         capabilities = await sendAndWait(
           ws,
@@ -2672,9 +2697,12 @@ async function handleStart() {
       } catch {
         capabilities = null
       }
-      if (!capabilities || capabilities.status !== 'ok' || !capabilities.log_data?.multi_slot_spc) {
-        throw new Error('当前终端桥不支持按场景清单收集，请先升级桌面桥再重试（不会按原清单静默收集）')
-      }
+      bridgeEvidenceCapable.value = capabilities?.status === 'ok'
+        && capabilities.log_data?.log_collect_evidence === true
+    }
+    if (issuedSpcFiles?.length
+      && (!capabilities || capabilities.status !== 'ok' || !capabilities.log_data?.multi_slot_spc)) {
+      throw new Error('当前终端桥不支持按场景清单收集，请先升级桌面桥再重试（不会按原清单静默收集）')
     }
 
     const created = await sendAndWait(
@@ -2687,6 +2715,9 @@ async function handleStart() {
         // spc 覆写按任务隔离备份（core.json.platform.<task_id>.bak）：
         // 缺 exec_id 会被桥以 LC-PLUGIN-014 拒绝，且终态无法还原清单。
         execId: task.task_id,
+        // 证据票据只在创建响应里出现一次：bridge 用它上报探测/速率/包内容/进程日志。
+        // 前端纯透传，不落本地存储、不写进界面。
+        evidenceTicket: task.evidence_ticket || undefined,
         traceId,
         modules,
         dateFrom: form.dateRange[0],
@@ -3431,26 +3462,30 @@ async function syncNodeState(
             stage.value = 'done'
             if (viewMode.value === 'result') showResult(currentTask.value)
           } else {
-            const patch: Partial<LogCollectTask> =
+            const patch: LogCollectTaskPatch =
               action.action === 'patch_completed'
                 ? {
-                    status: 'completed' as const,
-                    progress: 100,
+                    // 事实与结论分离：节点只观测到「采集结束、包有多大、包在哪」，
+                    // 平台按证据推导结论；前端不再提交 status/progress 当终态。
+                    node_observed: {
+                      status: 'completed',
+                      progress: 100,
+                      archive_path: snapshot.archive_path || currentTask.value.archive_path || undefined,
+                      // 节点侧只在包还在时量得到；已有值优先保留，避免 P2 的记录被 0 覆盖。
+                      // 兜底顺序里必须有 observedArchiveSize：判"完成"的那份快照必然量不到
+                      // （P1 上传成功即删包），只用它的话大小永远写不进去。
+                      archive_size:
+                        snapshot.archive_size ||
+                        observedArchiveSize.value ||
+                        currentTask.value.archive_size ||
+                        undefined,
+                    },
                     // 交付路径只有两种，P1 创建时必带 remote_url；补进产物记录，
-                    // 避免"已完成但 upload_mode 为空"在结果页显示成"未记录"
-                    upload_mode:
-                      currentTask.value.upload_mode ?? (currentTask.value.remote_url ? 'acli_direct' : undefined),
+                    // 避免"已完成但 upload_mode 为空"在结果页显示成"未记录"。
                     // 交付状态不在这里写：有交付证据时判定层给的是 patch_delivered，
                     // 由服务端入口落库；再写一次只会被忽略并刷审计日志。
-                    archive_path: snapshot.archive_path || currentTask.value.archive_path || undefined,
-                    // 节点侧只在包还在时量得到；已有值优先保留，避免 P2 的记录被 0 覆盖。
-                    // 兜底顺序里必须有 observedArchiveSize：判"完成"的那份快照必然量不到
-                    // （P1 上传成功即删包），只用它的话大小永远写不进去。
-                    archive_size:
-                      snapshot.archive_size ||
-                      observedArchiveSize.value ||
-                      currentTask.value.archive_size ||
-                      undefined,
+                    upload_mode:
+                      currentTask.value.upload_mode ?? (currentTask.value.remote_url ? 'acli_direct' : undefined),
                   }
                 : {
                     status: 'failed' as const,
@@ -4936,6 +4971,17 @@ onBeforeUnmount(() => {
           :title="resultHeadline.title"
           :description="resultHeadline.description"
         />
+        <!-- 观察事实单独成行：多值并存，不能被折叠进一条横幅描述里。 -->
+        <div v-if="resultTask.display?.conditions?.length" class="lc-evidence">
+          观察事实：
+          <el-tag
+            v-for="item in resultTask.display.conditions"
+            :key="item.key"
+            size="small"
+            type="warning"
+            effect="plain"
+          >{{ item.label }}</el-tag>
+        </div>
         <el-descriptions :column="descColumns" border size="small">
           <el-descriptions-item label="发起节点">{{ resultTask.origin_node_ip }}</el-descriptions-item>
           <el-descriptions-item label="交付路径">{{ resultDeliveryText }}</el-descriptions-item>
@@ -5058,6 +5104,32 @@ onBeforeUnmount(() => {
           </el-steps>
           <el-progress :percentage="percent" :status="progressStatus" />
           <div class="lc-status">{{ statusText }}</div>
+          <div v-if="platformDisplay" class="lc-evidence">
+            <div v-if="!bridgeEvidenceCapable" class="lc-hint">
+              桥接端版本较旧：速率、网络、包内容与进程日志探测不可用；升级桌面桥后重新收集即可补齐。
+            </div>
+            <div>
+              平台结论：{{ platformDisplay.conclusion_label }} · {{ platformDisplay.phase_label }} ·
+              合成进度 {{ platformDisplay.progress_percent ?? '—' }}<span v-if="platformDisplay.progress_percent !== null">%</span>
+            </div>
+            <div v-if="platformTransfer" class="lc-hint">
+              {{ platformTransfer.stage_label ?? '—' }} · 速率 {{ platformTransfer.rate_text ?? '—' }} ·
+              预计完成 {{ formatEtaText(platformTransfer.eta_sec) }}
+              <span v-if="platformTransfer.stalled"> · 传输已停滞 {{ platformTransfer.stalled_seconds ?? 0 }} 秒</span>
+            </div>
+            <div v-else class="lc-hint">{{ BRIDGE_OUTDATED_HINT }}（无传输速率样本）</div>
+            <div v-if="platformNetwork" class="lc-hint">
+              网络质量：{{ platformNetwork.grade_label }} · 相关目标 {{ platformNetwork.relevant_target ?? '未定' }}
+              <span v-for="item in platformNetwork.targets" :key="item.target">
+                ｜{{ item.target }} {{ item.grade_label }}；上行 {{ item.up_text ?? '—' }}；下行 {{ item.down_text ?? '—' }}
+                <span v-if="item.advice">（{{ item.advice }}）</span>
+              </span>
+            </div>
+            <div v-else class="lc-hint">{{ BRIDGE_OUTDATED_HINT }}（无网络探测数据）</div>
+            <div v-if="platformDisplay.conditions.length" class="lc-hint">
+              观察事实：{{ platformDisplay.conditions.map(item => item.label).join('、') }}
+            </div>
+          </div>
         </div>
 
         <!--
@@ -5700,6 +5772,15 @@ onBeforeUnmount(() => {
   font-family: var(--el-font-family-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 13px;
   color: var(--el-text-color-primary);
+}
+/* 平台派生证据块：与进度条同区，但明确区分「事实」与「结论」 */
+.lc-evidence {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.7;
 }
 .lc-node-fact-empty {
   font-size: 13px;

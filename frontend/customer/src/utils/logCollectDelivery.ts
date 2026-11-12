@@ -404,9 +404,43 @@ export function buildResultHeadline(args: {
   archiveCheck?: ArchiveCheckView | null
   /** 结果态此刻是否真的提供「上传到平台」入口：按钮不存在就不能写"可点" */
   canUpload?: boolean
+  /** 平台派生的三维结论；存在时优先于本地 status/delivery 拼接的文案 */
+  display?: {
+    conclusion: string
+    conclusion_label: string
+    conclusion_tone: string
+    phase_label?: string
+    conditions?: Array<{ label: string }>
+  } | null
+  /** 平台派生的产物证据 */
+  artifact?: { quality_label?: string; reason_text?: string; size_text?: string } | null
 }): ResultHeadline {
-  const { status, delivered = false, when = '', archiveCheck = null, canUpload = false } = args
+  const {
+    status, delivered = false, when = '', archiveCheck = null, canUpload = false,
+    display = null, artifact = null,
+  } = args
   if (!status) return { type: 'info', title: '', description: '' }
+  if (display) {
+    // 第一性原理：界面不该有第二套判定。平台已按「交付事实 + 产物证据」给出结论，
+    // 这里的旧文案只能作为旧后端降级路径，不能覆盖三维结论。
+    const toneMap: Record<string, ResultHeadline['type']> = {
+      success: 'success', warning: 'warning', error: 'error', info: 'info',
+    }
+    const facts = (display.conditions ?? []).map((item) => item.label).filter(Boolean)
+    const evidence = artifact?.quality_label
+      ? `产物质量：${artifact.quality_label}（${artifact.reason_text ?? '—'}）`
+      : ''
+    const segments = [
+      display.phase_label ? `当前环节：${display.phase_label}` : '',
+      evidence,
+      facts.length ? `观察事实：${facts.join('、')}` : '',
+    ].filter(Boolean)
+    return {
+      type: toneMap[display.conclusion_tone] ?? 'info',
+      title: `${display.conclusion_label}（${when}）`,
+      description: segments.length ? segments.join('；') : '以下是平台记录的最近一次采集结果。',
+    }
+  }
   if (status === 'failed') {
     return {
       type: 'error',
