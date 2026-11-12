@@ -7,9 +7,14 @@
 # 设计原则：
 #   - dev 环境独享 hci-dsh namespace，与云端隔离
 #   - prune: false — 禁止自动删除资源
-#   - 客户日志挂载在 dev 下刻意关闭：/sf/log 是客户侧日志回收到宿主机的目录，
-#     属于 staging/prod 特有的 hostPath，本地 WSL 并不存在该路径，
+#   - 客户日志/工单目录挂载在 dev 下刻意关闭：/sf/log、/sf/tickets 是客户侧
+#     目录，属于 staging/prod 特有的 hostPath，本地 WSL 并不存在该路径，
 #     开启会让 Pod 因 hostPath 找不到目录而一直 Pending。
+#   - ⚠️ 开关必须放在顶层 customerLogs/tickets（chart 读取的是 .Values.customerLogs
+#     与 .Values.tickets）。环境仓 dev values 里的 dsh.customerLogs 是层级写错的
+#     历史死键，不产生任何效果；Helm 实渲染已证实 /sf/* 仍会出现。
+#     因此这里用 inline values 显式覆盖顶层开关，ArgoCD 会把 inline values
+#     追加到 valueFiles 之后，优先级最高，无需改动环境仓即可根治。
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -31,6 +36,13 @@ spec:
         releaseName: hci-platform-dsh
         valueFiles:
           - $values/environments/dev/values.yaml
+        # dev 单机拓扑覆盖：关闭仅存在于云端宿主机的 hostPath，
+        # 否则 DSH Pod 会卡在 Pending（hostPath type=Directory 不存在）。
+        values: |
+          customerLogs:
+            enabled: false
+          tickets:
+            enabled: false
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values

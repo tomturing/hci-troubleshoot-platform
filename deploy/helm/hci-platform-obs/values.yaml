@@ -153,6 +153,11 @@ nodeExporter:
   # 9100 是 node-exporter 约定端口；hostNetwork 下直接绑在节点上，
   # 单节点集群不存在端口冲突（实测 9100 未被占用）。
   port: 9100
+  # root 卷的挂载传播：云端 shared mount 节点保留 HostToContainer 可看到新增挂载；
+  # WSL 单机 k3s 的 / 不是 shared/slave mount，启用会让容器创建直接失败
+  # （path "/" is mounted on "/" but it is not a shared or slave mount）。
+  # dev 由 ArgoCD inline values 置空关闭，staging/prod 沿用默认值。
+  mountPropagation: HostToContainer
   resources:
     requests:
       cpu: "20m"

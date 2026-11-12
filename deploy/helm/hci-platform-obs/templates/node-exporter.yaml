@@ -80,7 +80,9 @@ spec:
             - name: root
               mountPath: /host/root
               readOnly: true
-              mountPropagation: HostToContainer
+{{- if .Values.nodeExporter.mountPropagation }}
+              mountPropagation: {{ .Values.nodeExporter.mountPropagation }}
+{{- end }}
       volumes:
         - name: proc
           hostPath:
