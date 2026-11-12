@@ -36,6 +36,7 @@ from ..schemas.log_collect import (
     UploadPartResponse,
     UploadStatusResponse,
 )
+from ..schemas.log_collect_display import build_display_payload
 from ..schemas.log_collect_errors import build_problem
 from ..security.auth import get_client_id, verify_case_exists
 from ..services.log_collect_custom_scenario_service import (
@@ -420,7 +421,9 @@ async def create_task(
         except Exception as exc:
             manifest_degraded = True
             logging.getLogger(__name__).warning(
-                "log_collect.manifest_lookup_degraded case_id=%s err=%s", payload.case_id, exc,
+                "log_collect.manifest_lookup_degraded case_id=%s err=%s",
+                payload.case_id,
+                exc,
             )
             spc_files = []
 
@@ -450,7 +453,10 @@ async def create_task(
         response.spc_slots = slots
         logging.getLogger(__name__).info(
             "log_collect.manifest_selected case_id=%s task_id=%s trace_id=%s slots=%s",
-            payload.case_id, task.task_id, task.trace_id, ",".join(slots),
+            payload.case_id,
+            task.task_id,
+            task.trace_id,
+            ",".join(slots),
         )
     if config_plan:
         # 只在创建响应里出现：bridge 需要原文写节点，平台不留副本。
@@ -462,7 +468,29 @@ async def create_task(
             response.config_json = config_plan[0]
             response.config_sha256 = config_plan[1]
         response.path_count = config_plan[2]
+    _attach_display(response, task)
     _attach_p1_ticket(response, tickets)
+    return response
+
+
+def _attach_display(response: LogCollectTaskResponse, task) -> None:
+    """给任务响应附加派生展示四件套（只读字段）。
+
+    为什么放在路由而不是序列化器：列表/详情/PATCH/取消都要同一份结论，
+    但来源行形态不同（ORM 行 / 字典行）。统一走 ``build_display_payload``，
+    保证任何入口算出来的 phase/conclusion 完全一致。
+    """
+    payload = build_display_payload(task)
+    response.display = payload.display
+    response.artifact = payload.artifact
+    response.transfer = payload.transfer
+    response.network = payload.network
+
+
+def _to_response(task) -> LogCollectTaskResponse:
+    """任务行 → 响应（含派生展示字段）。"""
+    response = LogCollectTaskResponse.model_validate(task)
+    _attach_display(response, task)
     return response
 
 
@@ -656,7 +684,7 @@ async def attest_p1_delivered(
         )
     if task.delivery_status == "delivered":
         # 幂等：重复自报不刷新 delivery_finished_at，时间戳必须与首次结论同源。
-        return LogCollectTaskResponse.model_validate(task)
+        return _to_response(task)
 
     phase = _classify_upload_state(payload.upload_state)
     if phase != "delivered":
@@ -687,7 +715,7 @@ async def attest_p1_delivered(
         getattr(updated, "trace_id", ""),
         payload.upload_state,
     )
-    return LogCollectTaskResponse.model_validate(updated)
+    return _to_response(updated)
 
 
 @router.post("/{task_id}/verify-archive", response_model=P1ArchiveVerifyResponse)
@@ -905,7 +933,7 @@ async def list_tasks(
     """按工单查询任务列表（倒序），只返回当前身份创建的任务。"""
     await verify_case_exists(case_id, service.repository.session)
     items, total = await service.list_tasks(case_id, created_by=client_id, limit=limit, offset=offset)
-    responses = [LogCollectTaskResponse.model_validate(item) for item in items]
+    responses = [_to_response(item) for item in items]
     await _attach_node_archive_path(responses, service.repository.session, case_id)
     return {"total": total, "items": responses}
 
@@ -918,7 +946,7 @@ async def get_task(
 ):
     """查询单个任务（仅任务创建者可见）。"""
     task = await _owned_task(task_id, client_id, service)
-    response = LogCollectTaskResponse.model_validate(task)
+    response = _to_response(task)
     await _attach_node_archive_path([response], service.repository.session, task.case_id)
     return response
 
@@ -933,9 +961,10 @@ async def update_task(
     """回写状态/进度/制品元数据（由前端从 bridge 轮询结果上报）。"""
     await _owned_task(task_id, client_id, service)
     try:
-        return await service.update_task(task_id, patch)
+        task = await service.update_task(task_id, patch)
     except (InvalidTransitionError, TaskConflictError) as exc:
         raise _problem(exc.code, str(exc)) from exc
+    return _to_response(task)
 
 
 @router.post("/{task_id}/cancel", response_model=LogCollectTaskResponse)
@@ -952,9 +981,10 @@ async def cancel_task(
     """
     await _owned_task(task_id, client_id, service)
     try:
-        return await service.cancel_task(task_id, reason)
+        task = await service.cancel_task(task_id, reason)
     except TaskConflictError as exc:
         raise _problem(exc.code, str(exc)) from exc
+    return _to_response(task)
 
 
 # ── P2 段②：分块上传（控制面，经 API Gateway）────────────────────────────────

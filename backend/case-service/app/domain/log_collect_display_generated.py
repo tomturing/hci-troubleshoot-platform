@@ -9,7 +9,7 @@ from __future__ import annotations
 CONCLUSION_LABELS = {
     "cancelled": "已取消",
     "failed": "失败",
-    "partial": "已交付 · 产物可疑",
+    "partial": "已交付 · 有疑点",
     "pending": "进行中",
     "success": "已交付"
 }
@@ -34,6 +34,7 @@ PHASE_LABELS = {
 CONDITION_LABELS = {
     "artifact_missing": "未取到有效日志",
     "artifact_suspect": "产物可疑",
+    "artifact_uninspected": "包内容未探测",
     "artifact_verified": "产物已校验",
     "bridge_outdated": "桥接端版本较旧",
     "delivered_unverified": "已交付未核验",
@@ -48,6 +49,31 @@ ARTIFACT_QUALITY_LABELS = {
     "ok": "有效",
     "suspect": "可疑",
     "unknown": "未知"
+}
+
+ARTIFACT_REASON_LABELS = {
+    "empty_archive": "压缩包内没有条目",
+    "entry_count_low": "条目数量明显低于预期",
+    "metadata_only": "仅含配置元数据，没有日志内容",
+    "missing": "未取到压缩包",
+    "not_inspected": "尚未探测包内容",
+    "ok": "内容校验通过",
+    "too_small": "压缩包体积异常偏小",
+    "unreadable": "包内容无法读取"
+}
+
+NETWORK_GRADE_LABELS = {
+    "fair": "一般",
+    "good": "良好",
+    "poor": "较差",
+    "unknown": "未知"
+}
+
+TRANSFER_STAGE_LABELS = {
+    "collect": "采集",
+    "fetch": "拉取",
+    "relay": "代传",
+    "upload": "上传"
 }
 
 UPLOAD_MODE_LABELS = {

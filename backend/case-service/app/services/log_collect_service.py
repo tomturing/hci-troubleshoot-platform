@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from ..domain.log_collect_display import snapshot_artifact_evidence
 from ..models.log_collect import LogCollectTask
 from ..repositories.log_collect_repo import LogCollectTaskRepository
 from ..schemas.log_collect import (
@@ -32,6 +33,31 @@ logger = logging.getLogger(__name__)
 # probe 快照入库上限：探测失败原因里会夹 acli 原始日志行，不设上限会让 detail 无界增长。
 _PROBE_SNAPSHOT_MAX_BYTES = 8192
 _PROBE_NOTE_MAX_CHARS = 1024
+
+# 公共 PATCH（浏览器可伪造）绝不能写这些字段：交付是否成立只能由服务端取证。
+_PUBLIC_PATCH_RESERVED_FIELDS = (
+    "delivery_status",
+    "delivery_error",
+    "delivery_finished_at",
+    "relay_status",
+)
+
+# detail 是证据容器：这些键只能由探测/核验/订正等服务端动作写入。
+# 放开它们等于允许前端 bug 伪造「产物已校验」「交付已核验」。
+_PUBLIC_DETAIL_RESERVED_KEYS = frozenset(
+    {
+        "artifact_quality",
+        "artifact_reason",
+        "artifact_evidence",
+        "display_audit",
+        "delivery_evidence",
+        "delivery_evidence_note",
+        "p1_archive_check",
+        "error_code_derivation",
+        "baseline_report_hash",
+        "write_audit",
+    }
+)
 
 
 def _build_task_detail(payload: LogCollectTaskCreate) -> dict[str, Any]:
@@ -64,6 +90,7 @@ def _build_task_detail(payload: LogCollectTaskCreate) -> dict[str, Any]:
                 "http_code": probe.get("http_code"),
             }
     return detail
+
 
 _ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"probing", "installing", "collecting", "failed", "cancelled"}),
@@ -217,22 +244,49 @@ class LogCollectService:
         task = await self.get_task(task_id)
         data = patch.model_dump(exclude_none=True)
 
+        # ── 事实与结论分离：node_observed 是推荐入口 ────────────────────────
+        # 客户端只提交观测事实；status/progress 为老前端保留，但要留审计，
+        # 事后能区分「节点事实推进的」与「旧入参推进的」。
+        observed = data.pop("node_observed", None)
+        write_audit: dict[str, Any] = {}
+        if observed:
+            observed = {key: value for key, value in observed.items() if value is not None}
+            legacy = {key: data.pop(key) for key in ("status", "progress") if key in data}
+            if legacy:
+                write_audit["legacy_fields"] = sorted(legacy)
+            data.update(observed)
+            write_audit["node_observed_keys"] = sorted(observed)
+        else:
+            legacy = {key: data[key] for key in ("status", "progress") if key in data}
+        if legacy:
+            # 兼容入参的痕迹必须落库：否则无法解释「这次状态是谁推进的」。
+            write_audit["legacy"] = legacy
+
         # ── 单一权威终态（single-writer）────────────────────────────────────
         # 第一性原理：产物是否到达只能由服务端拿到的持久化事实证明；浏览器一次
         # WS/HTTP 请求失败只说明「结果未知」，不能据此写任务终态。历史事故
         # Q2026110601054：relay 已 success/delivered、包已落 5888，前端却因通道
         # 断开写了 status=failed，三份状态互相打脸且无人回写。
         # 采用"静默忽略 + 结构化审计"而非 422：老前端不会被新契约打断。
+        ignored: list[str] = []
         if not server_authoritative:
-            guarded = (
-                "delivery_status",
-                "delivery_error",
-                "delivery_finished_at",
-                "relay_status",
-            )
-            ignored = [key for key in guarded if key in data]
+            ignored = [key for key in _PUBLIC_PATCH_RESERVED_FIELDS if key in data]
             for key in ignored:
                 data.pop(key, None)
+            # detail 是证据容器：包质量、交付证据、审计记录都只能由服务端写。
+            # 客户端若带这些键，静默丢弃并留痕，避免「前端 bug 就能伪造交付证据」。
+            detail_patch = data.get("detail")
+            if isinstance(detail_patch, dict):
+                reserved = sorted(key for key in detail_patch if key in _PUBLIC_DETAIL_RESERVED_KEYS)
+                if reserved:
+                    cleaned = {
+                        key: value for key, value in detail_patch.items() if key not in _PUBLIC_DETAIL_RESERVED_KEYS
+                    }
+                    if cleaned:
+                        data["detail"] = cleaned
+                    else:
+                        data.pop("detail", None)
+                    ignored.extend(f"detail.{key}" for key in reserved)
             if task.delivery_status == "delivered" and data.get("status") == "failed":
                 # 已交付事实不可逆：误判失败只能由服务端专用终态函数纠正。
                 for key in ("status", "error_code", "error_message"):
@@ -241,8 +295,12 @@ class LogCollectService:
             if ignored:
                 logger.info(
                     "task.terminal_write_ignored task_id=%s trace_id=%s keys=%s",
-                    task_id, getattr(task, "trace_id", ""), ",".join(ignored),
+                    task_id,
+                    getattr(task, "trace_id", ""),
+                    ",".join(ignored),
                 )
+                # 被拒写入同样要留痕：否则前端会以为"写成功了"，排查时两头对不上。
+                write_audit["ignored"] = ignored
 
         target_status = data.get("status")
 
@@ -256,6 +314,15 @@ class LogCollectService:
         # 必须先把旧状态存下来：下面的 setattr 会把 task.status 直接改成目标值，
         # 之后再用 task.status 判断"是不是从终态复活"永远为假，接管/纠正分支会变成死代码。
         previous_status = task.status
+
+        # 兼容/事实入参的审计与 detail 合并一起落库：
+        # 事后必须能回答「这次是谁推进的状态、有没有被服务端拒写」。
+        if write_audit:
+            write_audit["at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            write_audit["trace_id"] = getattr(task, "trace_id", None)
+            with_audit = dict(data.get("detail") or {})
+            with_audit["write_audit"] = write_audit
+            data["detail"] = with_audit
 
         # detail 是审计容器：基线指纹、交付路径降级记录等由不同动作分别写入。
         # PATCH 若整块覆盖，写"降级原因"就会把 baseline_report_hash 冲掉，
@@ -338,6 +405,13 @@ class LogCollectService:
         # 第一性原理：失败可归因是平台的责任，不是每个调用点的自觉。因此在保存
         # 边界做确定性补全——只补空、绝不覆盖上游更精确的包装码。
         self.attribute_failure(task)
+
+        # ── 产物证据快照：终态必须回答「有没有可用日志」────────────────────
+        # 与迁移 064 同一口径（无包/过小判 invalid），但作用在新产生的行上；
+        # 已由内容探测写入的结论优先级更高，snapshot 内部不会覆盖。
+        snapshot = snapshot_artifact_evidence(task)
+        if snapshot is not None:
+            task.detail = snapshot
 
         task.updated_at = datetime.now(UTC)
 
