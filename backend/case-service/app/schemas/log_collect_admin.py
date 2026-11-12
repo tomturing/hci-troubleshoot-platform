@@ -78,6 +78,8 @@ class AdminLogCollectTaskItem(BaseModel):
     # 派生字段：列表直接用 platform 自己的结论，界面不再用 status/包大小拼。
     display: LogCollectDisplay | None = None
     artifact: LogCollectArtifactInfo | None = None
+    transfer: LogCollectTransferInfo | None = None
+    network: LogCollectNetworkInfo | None = None
 
 
 class AdminLogCollectTaskListResponse(BaseModel):

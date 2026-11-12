@@ -264,6 +264,52 @@ def _summary_of(rows: list[dict[str, Any]]) -> AdminLogCollectSummary:
     )
 
 
+def _in_clause(ids: list[str], prefix: str = "id") -> tuple[str, dict[str, Any]]:
+    """生成 IN 占位符：值仍走 bind params，只有占位符个数来自列表长度。"""
+    params = {f"{prefix}_{index}": value for index, value in enumerate(ids)}
+    return ", ".join(f":{key}" for key in params), params
+
+
+async def _page_transfer(task_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """一页任务的最新传输样本：一次查询，避免 N+1。"""
+    if not task_ids:
+        return {}
+    placeholders, params = _in_clause(task_ids)
+    rows = await _fetch(
+        f"""
+        SELECT DISTINCT ON (task_id) task_id, stage, bytes_done, bytes_total, percent,
+               elapsed_ms, rate_bps, eta_sec, stalled, source, created_at
+        FROM log_collect_transfer_metric
+        WHERE task_id IN ({placeholders})
+        ORDER BY task_id, seq DESC
+        """,
+        params,
+    )
+    return {str(row["task_id"]): dict(row) for row in rows}
+
+
+async def _page_probes(task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """一页任务的每目标最新探测：一次查询，避免 N+1。"""
+    if not task_ids:
+        return {}
+    placeholders, params = _in_clause(task_ids)
+    rows = await _fetch(
+        f"""
+        SELECT DISTINCT ON (task_id, target) task_id, target, reachable, grade,
+               rtt_avg_ms, jitter_ms, loss_rate, http_code, up_bps, down_bps,
+               advice, created_at
+        FROM log_collect_network_probe
+        WHERE task_id IN ({placeholders})
+        ORDER BY task_id, target, created_at DESC
+        """,
+        params,
+    )
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(str(row["task_id"]), []).append(dict(row))
+    return grouped
+
+
 @admin_router.get("", response_model=AdminLogCollectTaskListResponse)
 async def list_admin_tasks(
     page: int = Query(1, ge=1),
@@ -298,14 +344,24 @@ async def list_admin_tasks(
     )
     count_rows = await _fetch(f"SELECT count(*) AS total {_JOIN} WHERE {where}", params)
     summary_rows = await _fetch(f"{_SUMMARY_SELECT} {_JOIN} WHERE {where}", params)
+    task_ids = [str(row["task_id"]) for row in rows]
+    page_transfer = await _page_transfer(task_ids)
+    page_probes = await _page_probes(task_ids)
 
     items = []
     for row in rows:
         data = _normalize_row(dict(row))
+        task_id = str(data["task_id"])
         item = AdminLogCollectTaskItem(**data)
-        payload = build_display_payload(data)
+        payload = build_display_payload(
+            data,
+            metrics=page_transfer.get(task_id),
+            probes=page_probes.get(task_id),
+        )
         item.display = payload.display
         item.artifact = payload.artifact
+        item.transfer = payload.transfer
+        item.network = payload.network
         items.append(item)
 
     logger.info(

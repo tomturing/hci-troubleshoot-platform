@@ -68,9 +68,7 @@ def test_filters_reject_unknown_enums(field, value):
     assert exc.value.status_code == 400
 
 
-def _summary_row(
-    mode: str, status: str, delivery: str, *, detail: dict | None = None
-) -> dict:
+def _summary_row(mode: str, status: str, delivery: str, *, detail: dict | None = None) -> dict:
     return {
         "upload_mode": mode,
         "status": status,
@@ -88,8 +86,10 @@ def _summary_row(
 def test_summary_maps_p1_and_p2_columns():
     """汇总不再吃 SQL 预聚合列：由同一批任务行推导，且 P1/P2 分组必然可加。"""
     rows = (
-        [_summary_row("acli_direct", "completed", "delivered",
-                      detail={"p1_archive_check": {"verified": True}}) for _ in range(3)]
+        [
+            _summary_row("acli_direct", "completed", "delivered", detail={"p1_archive_check": {"verified": True}})
+            for _ in range(3)
+        ]
         + [_summary_row("acli_direct", "collecting", "none") for _ in range(2)]
         + [_summary_row("acli_direct", "failed", "none")]
         + [_summary_row("bridge_relay", "completed", "delivered") for _ in range(2)]
@@ -152,9 +152,7 @@ def test_transferring_criteria_excludes_zombie_delivery(status, delivery_status,
     核心修复保留：采集终态（failed/completed/cancelled）+ delivery=queued 的
     僵尸任务不计入「传输中」；采集 completed 但代传真的在跑则计入。
     """
-    summary = routes._summary_of(
-        [_summary_row("bridge_relay", status, delivery_status)]
-    )
+    summary = routes._summary_of([_summary_row("bridge_relay", status, delivery_status)])
 
     assert (summary.by_conclusion["pending"] == 1) is expected, desc
     assert sum(summary.by_conclusion.values()) == summary.total == 1
@@ -200,8 +198,11 @@ async def test_list_returns_both_customer_name_and_client_id_without_querying_58
                 }
             ]
         if "SELECT t.upload_mode" in sql:
-            return [_summary_row("acli_direct", "completed", "delivered",
-                                 detail={"p1_archive_check": {"verified": True}})]
+            return [
+                _summary_row("acli_direct", "completed", "delivered", detail={"p1_archive_check": {"verified": True}})
+            ]
+        if "log_collect_transfer_metric" in sql or "log_collect_network_probe" in sql:
+            return []  # 该页没有证据样本：界面必须显示「—」而不是 0
         return [{"total": 1}]
 
     def must_not_be_called(*_args, **_kwargs):
@@ -220,11 +221,98 @@ async def test_list_returns_both_customer_name_and_client_id_without_querying_58
         status=None,
         delivery_status=None,
     )
-    assert len(fetched) == 3
+    # 5 次查询：列表 / 总数 / 汇总瘦行 / 本页速率批量 / 本页探测批量。
+    # 速率与探测各一次批量查询，不是按行 N+1。
+    assert len(fetched) == 5
+    assert sum("log_collect_transfer_metric" in sql for sql in fetched) == 1
+    assert sum("log_collect_network_probe" in sql for sql in fetched) == 1
     assert response.total == 1
     assert response.items[0].customer_name == "示例客户"
     assert response.items[0].client_id == "client-abc"
     assert response.summary.p1.delivered == 1
+
+
+@pytest.mark.asyncio
+async def test_list_attaches_batched_transfer_and_network_evidence(monkeypatch):
+    """列表里的速率/ETA/网络告警与详情同源，且只做批量查询。"""
+    task_id = uuid4()
+
+    async def fake_fetch(sql, params):
+        if "ORDER BY t.created_at DESC" in sql:
+            return [
+                {
+                    **_summary_row("bridge_relay", "completed", "relaying"),
+                    "task_id": task_id,
+                    "case_id": "Q2026111200624",
+                    "client_id": None,
+                    "customer_name": None,
+                    "origin_node_ip": None,
+                    "relay_upload_id": None,
+                    "integrity_state": "unverified",
+                    "error_code": None,
+                    "error_message": None,
+                    "trace_id": "tr-page",
+                    "created_at": _now(),
+                    "finished_at": None,
+                    "delivery_finished_at": None,
+                    "archive_check": None,
+                }
+            ]
+        if "SELECT t.upload_mode" in sql:
+            return [_summary_row("bridge_relay", "completed", "relaying")]
+        if "log_collect_transfer_metric" in sql:
+            return [
+                {
+                    "task_id": task_id,
+                    "stage": "relaying",
+                    "bytes_done": 1024,
+                    "bytes_total": 2048,
+                    "percent": 50,
+                    "elapsed_ms": 1000,
+                    "rate_bps": 1024,
+                    "eta_sec": 1,
+                    "stalled": True,
+                    "source": "bridge",
+                    "created_at": _now() - timedelta(minutes=3),
+                }
+            ]
+        if "log_collect_network_probe" in sql:
+            return [
+                {
+                    "task_id": task_id,
+                    "target": "platform_data",
+                    "reachable": True,
+                    "grade": "poor",
+                    "rtt_avg_ms": 320,
+                    "jitter_ms": 90,
+                    "loss_rate": 0.03,
+                    "http_code": 200,
+                    "up_bps": 1024,
+                    "down_bps": 2048,
+                    "advice": "弱网建议改时段",
+                    "created_at": _now(),
+                }
+            ]
+        return [{"total": 1}]
+
+    monkeypatch.setattr(routes, "_fetch", fake_fetch)
+    response = await routes.list_admin_tasks(
+        page=1,
+        page_size=20,
+        days=7,
+        case_id=None,
+        node_ip=None,
+        upload_mode=None,
+        status=None,
+        delivery_status=None,
+    )
+    item = response.items[0]
+
+    assert item.transfer is not None and item.transfer.rate_text == "1.00 KiB/s"
+    assert item.network is not None and item.network.grade == "poor"
+    conditions = [entry.key for entry in item.display.conditions]
+    assert "stalled" in conditions and "network_degraded" in conditions
+    assert item.display.conclusion == "pending"
 
 
 def _task_row(mode: str = "acli_direct") -> dict:
