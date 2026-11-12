@@ -11,8 +11,8 @@ HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态
   实测 53 个里 42 个是僵尸。新口径改为「采集活跃且交付未终结」或「采集未终态且交付在途」，
   前后端共用同一常量表；面板数字由 53 回到 11。
 - **僵尸会话一次性订正**：迁移 061 把 42 条采集终态仍 `queued` 的交付会话置为 `failed`，
-  写 `delivery_error` 与 `detail.data_correction` 审计，备份表
-  `log_collect_task_correction_20261112_stats`；面板与告警不再永久虚高。
+  写 `delivery_error`，并在 `detail.data_correction` 留存行内备份（原值全量，可据此回滚）；
+  面板与告警不再永久虚高。
 - **失败必有码**：64.4% 的失败任务原本 `error_code` 为空，根因不是某处漏写，
   而是归因没有唯一收口。现在在保存边界 `LogCollectService.attribute_failure()` 统一补码
   （有序规则表、只补空不覆盖），并新增 `LC-PLATFORM-010~013`；迁移 062 回填历史，staging 空码 76 → 0。

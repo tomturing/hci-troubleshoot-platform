@@ -94,6 +94,14 @@ class TestDeriveErrorCode:
         assert needles.index("客户机磁盘空间不足") < needles.index("磁盘空间不足")
         assert needles.index("上传会话大小不一致") < needles.index("校验和不一致")
 
+        # 泛化症状词「超时」必须排在所有具体规则之后。
+        # 现场反例：「超时；归档核验未通过」被抢成 LC-EXEC-002（命令执行超时），
+        # 用户会去查命令，而真正该查的是归档核验——错误提示把人引向错误的机器。
+        for specific in ("归档核验未通过", "安装包上传到 HCI 失败", "校验和不一致", "落盘校验失败"):
+            assert needles.index(specific) < needles.index("超时"), (
+                f"泛化规则「超时」排在了「{specific}」之前，会抢走具体命中"
+            )
+
 
 class TestAttributeFailure:
     """保存边界补码：只补空、不覆盖、非失败不写。"""

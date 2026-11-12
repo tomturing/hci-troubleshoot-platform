@@ -16,7 +16,9 @@
 --   （未归因兜底码），而不是留空——留空等于永久放弃归因。
 --
 -- 安全措施：
---   1. 先备份旧值到 log_collect_task_correction_20261112_errorcode（幂等）；
+--   1. 备份走**行内快照**（旧码与判定所用文案写进 detail.error_code_derivation.before）；
+--      不新建备份表：项目用 Atlas 声明式 schema 做门禁与部署，额外的表会让 diff 门禁失败，
+--      且 db-migrate.sh 的 atlas schema apply 会把它 DROP 掉——备份反而最先被销毁；
 --   2. 只补空（error_code IS NULL），绝不覆盖上游已有的精确包装码；
 --   3. detail 里写回填审计，事后可区分「上游产生的码」与「按文案推导的码」。
 --
@@ -24,30 +26,7 @@
 
 BEGIN;
 
--- Step 1: 备份（幂等）
-DO $backup$
-BEGIN
-    IF to_regclass('public.log_collect_task_correction_20261112_errorcode') IS NULL THEN
-        EXECUTE $$
-            CREATE TABLE log_collect_task_correction_20261112_errorcode AS
-            SELECT task_id, case_id, status, delivery_status,
-                   error_code AS error_code_before,
-                   error_message, delivery_error,
-                   detail AS detail_snapshot,
-                   NOW() AS correction_at
-            FROM log_collect_task
-            WHERE error_code IS NULL
-              AND (status = 'failed' OR delivery_status = 'failed')
-        $$;
-        RAISE NOTICE '备份完成：% 条待回填', (
-            SELECT count(*) FROM log_collect_task_correction_20261112_errorcode
-        );
-    ELSE
-        RAISE NOTICE '备份表已存在，跳过创建';
-    END IF;
-END $backup$;
-
--- Step 2: 落地规则表（临时表：Step 2/3 共用，避免复制两份规则造成漂移）
+-- Step 1: 落地规则表（临时表：Step 2/3 共用，避免复制两份规则造成漂移）
 -- 顺序即优先级：具体规则必须排在泛化规则之前（DISTINCT ON + ord 取最小命中）。
 CREATE TEMP TABLE lc_error_rules (ord int PRIMARY KEY, needle text NOT NULL, code text NOT NULL)
 ON COMMIT DROP;
@@ -86,41 +65,41 @@ INSERT INTO lc_error_rules (ord, needle, code) VALUES
         (31, 'plugin: no such file', 'LC-EXEC-003'),
         (32, '命令返回非零', 'LC-EXEC-003'),
         (33, '命令执行超时', 'LC-EXEC-002'),
-        (34, '超时', 'LC-EXEC-002'),
-        (35, 'SSH 等待结果失败', 'LC-EXEC-005'),
-        (36, '下载安装包失败', 'LC-INSTALL-002'),
-        (37, '安装包上传到 HCI 失败', 'LC-INSTALL-004'),
-        (38, 'acli 安装命令失败', 'LC-INSTALL-005'),
-        (39, '安装后版本验证失败', 'LC-INSTALL-006'),
-        (40, '落盘校验失败', 'LC-INSTALL-007'),
-        (41, '已有进行中的任务', 'LC-PLUGIN-007'),
-        (42, '正在执行', 'LC-PLUGIN-007'),
-        (43, '已有采集在跑', 'LC-PLUGIN-007'),
-        (44, '节点上已无任务', 'LC-PLUGIN-008'),
-        (45, '任务不存在', 'LC-PLUGIN-008'),
-        (46, '未找到对应的日志收集任务', 'LC-PLUGIN-008'),
-        (47, '采集未完成', 'LC-PLUGIN-010'),
-        (48, '日志采集执行失败', 'LC-PLUGIN-010'),
-        (49, '取消采集失败', 'LC-PLUGIN-011'),
-        (50, '部分主机采集失败', 'LC-PLUGIN-012'),
-        (51, '源包已变化', 'LC-TRANSFER-010'),
-        (52, '源包仍在写入', 'LC-TRANSFER-010'),
-        (53, '仍未写完', 'LC-TRANSFER-010'),
-        (54, '会话已被新代替代', 'LC-TRANSFER-010'),
-        (55, '上传会话大小不一致', 'LC-TRANSFER-010'),
-        (56, '按新基线重建', 'LC-TRANSFER-010'),
-        (57, '压缩包不存在', 'LC-TRANSFER-001'),
-        (58, '源包可能已被清理', 'LC-TRANSFER-001'),
-        (59, '本地副本不存在', 'LC-TRANSFER-001'),
-        (60, '未找到采集产物', 'LC-TRANSFER-001'),
-        (61, '校验和不一致', 'LC-TRANSFER-002'),
-        (62, '上传中断', 'LC-TRANSFER-003'),
-        (63, '分块上传失败', 'LC-TRANSFER-003'),
-        (64, '片）', 'LC-TRANSFER-003'),
-        (65, '无法确认日志包', 'LC-TRANSFER-006'),
-        (66, '归档核验未通过', 'LC-TRANSFER-007'),
-        (67, '直传归档核验', 'LC-TRANSFER-007'),
-        (68, '归档到日志服务器失败', 'LC-TRANSFER-003');
+        (34, 'SSH 等待结果失败', 'LC-EXEC-005'),
+        (35, '下载安装包失败', 'LC-INSTALL-002'),
+        (36, '安装包上传到 HCI 失败', 'LC-INSTALL-004'),
+        (37, 'acli 安装命令失败', 'LC-INSTALL-005'),
+        (38, '安装后版本验证失败', 'LC-INSTALL-006'),
+        (39, '落盘校验失败', 'LC-INSTALL-007'),
+        (40, '已有进行中的任务', 'LC-PLUGIN-007'),
+        (41, '正在执行', 'LC-PLUGIN-007'),
+        (42, '已有采集在跑', 'LC-PLUGIN-007'),
+        (43, '节点上已无任务', 'LC-PLUGIN-008'),
+        (44, '任务不存在', 'LC-PLUGIN-008'),
+        (45, '未找到对应的日志收集任务', 'LC-PLUGIN-008'),
+        (46, '采集未完成', 'LC-PLUGIN-010'),
+        (47, '日志采集执行失败', 'LC-PLUGIN-010'),
+        (48, '取消采集失败', 'LC-PLUGIN-011'),
+        (49, '部分主机采集失败', 'LC-PLUGIN-012'),
+        (50, '源包已变化', 'LC-TRANSFER-010'),
+        (51, '源包仍在写入', 'LC-TRANSFER-010'),
+        (52, '仍未写完', 'LC-TRANSFER-010'),
+        (53, '会话已被新代替代', 'LC-TRANSFER-010'),
+        (54, '上传会话大小不一致', 'LC-TRANSFER-010'),
+        (55, '按新基线重建', 'LC-TRANSFER-010'),
+        (56, '压缩包不存在', 'LC-TRANSFER-001'),
+        (57, '源包可能已被清理', 'LC-TRANSFER-001'),
+        (58, '本地副本不存在', 'LC-TRANSFER-001'),
+        (59, '未找到采集产物', 'LC-TRANSFER-001'),
+        (60, '校验和不一致', 'LC-TRANSFER-002'),
+        (61, '上传中断', 'LC-TRANSFER-003'),
+        (62, '分块上传失败', 'LC-TRANSFER-003'),
+        (63, '片）', 'LC-TRANSFER-003'),
+        (64, '无法确认日志包', 'LC-TRANSFER-006'),
+        (65, '归档核验未通过', 'LC-TRANSFER-007'),
+        (66, '直传归档核验', 'LC-TRANSFER-007'),
+        (67, '归档到日志服务器失败', 'LC-TRANSFER-003'),
+        (68, '超时', 'LC-EXEC-002');
 
 WITH targets AS (
     SELECT
@@ -145,7 +124,7 @@ WITH targets AS (
 ),
 matched AS (
     -- DISTINCT ON 取 ord 最小者 = 规则表里最靠前（最具体）的命中
-    SELECT DISTINCT ON (g.task_id) g.task_id, r.code
+    SELECT DISTINCT ON (g.task_id) g.task_id, r.code, r.needle, g.msg
     FROM targets g
     JOIN lc_error_rules r ON strpos(g.msg, r.needle) > 0
     ORDER BY g.task_id, r.ord
@@ -159,7 +138,13 @@ SET error_code = m.code,
             'code', m.code,
             'source', 'backfill_062',
             'trace', 'log-collect-errorcode-backfill-20261112',
-            'corrected_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+            'corrected_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+            -- 行内备份：旧码 + 判定所依据的文案 + 命中的规则，可据此复盘或回滚
+            'before', jsonb_build_object(
+                'error_code', t.error_code,
+                'message', m.msg
+            ),
+            'matched', m.needle
         )
     ),
     updated_at = NOW()
@@ -176,7 +161,11 @@ SET error_code = 'LC-PLATFORM-011',
             'code', 'LC-PLATFORM-011',
             'source', 'backfill_062_unattributed',
             'trace', 'log-collect-errorcode-backfill-20261112',
-            'corrected_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+            'corrected_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+            'before', jsonb_build_object(
+                'error_code', t.error_code,
+                'message', COALESCE(NULLIF(CASE WHEN t.status = 'failed' THEN t.error_message ELSE COALESCE(t.delivery_error, t.error_message) END, ''), '')
+            )
         )
     ),
     updated_at = NOW()

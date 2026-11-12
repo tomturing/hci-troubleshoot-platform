@@ -13,67 +13,59 @@
 --   交付从未真正启动，也是 failed。
 --   因此，采集终态 + delivery=queued = 交付失败（僵尸会话）。
 --
+-- 备份策略（为什么不建备份表）：
+--   历史做法是 CREATE TABLE 快照，但项目用 Atlas 声明式 schema 做门禁与部署，
+--   多出来的表会让 diff 门禁失败；更危险的是 db-migrate.sh 的 atlas schema apply
+--   会把这类"非期望 schema"的表 DROP 掉——备份反而最先被销毁。
+--   因此改为**行内快照**：被改行的原值完整写进 detail.data_correction.before，
+--   回滚时可直接从 detail 反推 UPDATE，取证信息与数据同生共死，也不污染 schema。
+--
 -- 安全措施：
---   1. 先备份到 log_collect_task_correction_20261112_stats（含完整 jsonb）
---   2. 只改 delivery_status、delivery_error、delivery_finished_at 和 detail 审计
---   3. 不动 status / progress / finished_at / archive_* 等采集侧字段
---   4. 幂等：只处理 delivery_status='queued' 且 status 已终态的行
+--   1. 只改 delivery_status、delivery_error、delivery_finished_at 和 detail 审计；
+--   2. 不动 status / progress / finished_at / archive_* 等采集侧字段；
+--   3. 幂等：只处理 delivery_status='queued' 且 status 已终态的行，重跑影响 0 行。
 --
 -- 唯一调用链标记：log-collect-zombie-cleanup-20261112
 
 BEGIN;
 
--- Step 1: 备份（只在表不存在时创建，幂等）
-DO $backup$
-BEGIN
-    IF to_regclass('public.log_collect_task_correction_20261112_stats') IS NULL THEN
-        EXECUTE $$
-            CREATE TABLE log_collect_task_correction_20261112_stats AS
-            SELECT task_id, case_id, status, delivery_status, delivery_error,
-                   delivery_finished_at, delivery_attempts,
-                   detail AS detail_snapshot,
-                   created_at, finished_at,
-                   'zombie_delivery_queued' AS correction_type,
-                   NOW() AS correction_at
-            FROM log_collect_task
-            WHERE delivery_status = 'queued'
-              AND status IN ('failed', 'cancelled', 'completed')
-        $$;
-        RAISE NOTICE '备份完成：%', (SELECT count(*) FROM log_collect_task_correction_20261112_stats);
-    ELSE
-        RAISE NOTICE '备份表已存在，跳过创建';
-    END IF;
-END $backup$;
-
--- Step 2: 清理僵尸 delivery_status=queued
--- 采集已 failed/cancelled → 交付也 failed（会话从未被执行）
--- 采集已 completed 但 delivery 还在 queued → 交付 failed（已完成但交付从未启动）
-UPDATE log_collect_task
+UPDATE log_collect_task AS t
 SET delivery_status = 'failed',
-    delivery_error = COALESCE(delivery_error, '')
-        || CASE WHEN delivery_error IS NULL OR delivery_error = '' THEN '' ELSE '；' END
-        || '采集已终态（' || status || '），交付会话仍排队中，判定为僵尸会话已清理（061）',
-    delivery_finished_at = COALESCE(delivery_finished_at, NOW()),
+    delivery_error = COALESCE(NULLIF(t.delivery_error, ''), '')
+        || CASE WHEN COALESCE(t.delivery_error, '') = '' THEN '' ELSE '；' END
+        || '采集已终态（' || t.status || '），交付会话仍排队中，判定为僵尸会话已清理（061）',
+    delivery_finished_at = COALESCE(t.delivery_finished_at, NOW()),
     detail = jsonb_set(
-        detail,
+        COALESCE(t.detail, '{}'::jsonb),
         '{data_correction}',
         jsonb_build_object(
             'type', 'zombie_delivery_cleanup',
             'migration', '061',
             'trace', 'log-collect-zombie-cleanup-20261112',
             'corrected_at', to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-            'before', jsonb_build_object('delivery_status', 'queued'),
-            'after', jsonb_build_object('delivery_status', 'failed'),
+            -- 行内备份：原值全量留存，可用 detail 反推回滚
+            'before', jsonb_build_object(
+                'status', t.status,
+                'delivery_status', t.delivery_status,
+                'delivery_error', t.delivery_error,
+                'delivery_finished_at', t.delivery_finished_at,
+                'delivery_attempts', t.delivery_attempts
+            ),
+            'after', jsonb_build_object(
+                'delivery_status', 'failed',
+                'delivery_finished_at', to_char(COALESCE(t.delivery_finished_at, NOW()) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+            ),
             'reason', '采集已终态但交付仍排队，僵尸会话清理'
         )
-    )
-WHERE delivery_status = 'queued'
-  AND status IN ('failed', 'cancelled', 'completed');
+    ),
+    updated_at = NOW()
+WHERE t.delivery_status = 'queued'
+  AND t.status IN ('failed', 'cancelled', 'completed');
 
--- 验证：确认没有遗留的僵尸
+-- 验证不变量：采集终态 + 交付 queued = 0
 DO $verify$
-    DECLARE
-        remaining int;
+DECLARE
+    remaining int;
 BEGIN
     SELECT count(*) INTO remaining
     FROM log_collect_task
@@ -81,10 +73,9 @@ BEGIN
       AND status IN ('failed', 'cancelled', 'completed');
 
     IF remaining > 0 THEN
-        RAISE WARNING '仍有 % 个僵尸未清理', remaining;
-    ELSE
-        RAISE NOTICE '僵尸清理完成：0 个遗留';
+        RAISE EXCEPTION '僵尸清理失败：仍有 % 个采集终态但交付仍排队的任务', remaining;
     END IF;
+    RAISE NOTICE '僵尸清理完成：采集终态 + delivery=queued 遗留 0 条';
 END $verify$;
 
 COMMIT;
