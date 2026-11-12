@@ -70,3 +70,88 @@ tests:
       - eval_time: 12m
         alertname: GatewayRouterServerErrorFirstSeen
         exp_alerts: []
+  # ══════════════════════════════════════════════════════════════════════════
+  # ticket-sync 与节点磁盘余量（2026-11-12 全栈中断后新增）
+  #
+  # 为什么这几条必须有单测：它们的判据是「余量绝对值」，而真实环境里把 2.1T
+  # 盘写到 500 GiB 以下是破坏性操作，不可重复构造。更要紧的是——11-12 那次
+  # 事故的教训就是「规则写了但没数据源、也没人验证它能响」，所以这里用
+  # promtool 把「该响时响」和「不该响时不响」都钉住。
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ── 正例：余量 450 GiB（低于 500 GiB 阈值），越过 5 分钟 for → 必须 firing ──
+  - interval: 1m
+    input_series:
+      - series: 'ticket_sync_disk_free_bytes{instance="ticket-sync-host",job="ticket-sync"}'
+        values: '483183820800x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: TicketSyncDiskLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: platform
+              instance: ticket-sync-host
+              job: ticket-sync
+            exp_annotations:
+              summary: "ticket-sync 所在磁盘余量低于 500 GiB"
+              description: "当前余量 450GiB。低于 400 GiB 会触发主动淘汰，低于 250 GiB 会熔断拒绝新任务。"
+
+  # ── 反例一：余量 600 GiB 高于阈值 → 不得 firing ──
+  # 防止阈值被改小或比较方向写反（< 写成 >）之后仍然绿着。
+  - interval: 1m
+    input_series:
+      - series: 'ticket_sync_disk_free_bytes{instance="ticket-sync-host",job="ticket-sync"}'
+        values: '644245094400x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: TicketSyncDiskLow
+        exp_alerts: []
+
+  # ── 反例二：余量刚好在 500 GiB 边界上（不小于阈值）→ 不得 firing ──
+  # 边界值最容易被后续改动碰坏，单独钉一次。
+  - interval: 1m
+    input_series:
+      - series: 'ticket_sync_disk_free_bytes{instance="ticket-sync-host",job="ticket-sync"}'
+        values: '536870912000x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: TicketSyncDiskLow
+        exp_alerts: []
+
+  # ── 熔断正例：水位拒绝次数在增长 → immediately firing ──
+  - interval: 1m
+    input_series:
+      - series: 'ticket_sync_waterline_blocks_total{instance="ticket-sync-host",job="ticket-sync"}'
+        values: '0+1x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TicketSyncWaterlineBlocking
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: platform
+              instance: ticket-sync-host
+              job: ticket-sync
+            exp_annotations:
+              summary: "ticket-sync 因磁盘水位拒绝新任务"
+              description: "最近 10 分钟出现因余量低于硬阈值而被拒绝的写入。说明清理跑不过写入速度，需人工介入。"
+
+  # ── 采集自检：target down 超过 2 分钟 → firing ──
+  - interval: 1m
+    input_series:
+      - series: 'up{instance="ticket-sync-host",job="ticket-sync"}'
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: TicketSyncDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: platform
+              instance: ticket-sync-host
+              job: ticket-sync
+            exp_annotations:
+              summary: "ticket-sync 指标采集失败"
+              description: "无法抓取 192.168.0.4:18080/metrics 超过 2 分钟。可能原因：宿主机服务已停止（崩溃循环 5 次后 systemd 不再重启）、节点 IP 变更、或 18080 端口被占用。该服务长期不可用会导致新工单日志无法落盘。"
+

@@ -138,6 +138,31 @@ alloy:
       cpu: "1"
       memory: "512Mi"
 
+# node-exporter：节点级磁盘/内存指标的唯一来源。
+#
+# 为什么必须有它：DiskUsageHigh / MemoryUsageHigh 依赖 node_filesystem_* 与
+# node_memory_*，而集群里只有 kube-state-metrics（Pod 元数据），从来没有
+# node-exporter。实测这两条规则从上线起就没有任何序列，永远是死的——
+# 2026-11-12 磁盘被工单包写满、imagefs 冲到 96%、kubelet 把整栈驱逐，
+# 一条告警都没有，根因就在这里：不是规则写错，是没有数据源。
+#
+# 用 DaemonSet + hostPath 只读挂载读宿主机 /proc、/sys、/，容器内不落任何数据。
+nodeExporter:
+  enabled: true
+  image: prom/node-exporter:v1.8.2
+  # 9100 是 node-exporter 约定端口；hostNetwork 下直接绑在节点上，
+  # 单节点集群不存在端口冲突（实测 9100 未被占用）。
+  port: 9100
+  resources:
+    requests:
+      cpu: "20m"
+      memory: "32Mi"
+    # node-exporter 常驻内存约 20MiB；64Mi 上限足以覆盖文件系统采集峰值，
+    # 同时避免它自己变成节点内存压力源。
+    limits:
+      cpu: "200m"
+      memory: "64Mi"
+
 grafana:
   image: grafana/grafana:11.5.2
   resources:
