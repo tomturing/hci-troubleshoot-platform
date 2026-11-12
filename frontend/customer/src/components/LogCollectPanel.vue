@@ -979,6 +979,10 @@ const resultHeadline = computed<{ type: 'success' | 'warning' | 'error' | 'info'
       // 否则用户只能理解成"平台说我没传"（Q2026111000243 的现场反应）。
       archiveCheck: p1ArchiveCheckOf(resultTask.value),
       canUpload: canUploadFromNode.value,
+      // 横幅不能只说"失败"：把这次的规范码与结论直接摆到第一屏，
+      // 让用户第一眼就知道该查哪一层，而不是把"重新收集"当诊断手段。
+      errorCode: resultTask.value?.error_code,
+      hintTitle: logCollectErrorHint(resultTask.value?.error_code)?.title ?? null,
     }),
 )
 

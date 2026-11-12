@@ -404,22 +404,42 @@ export function buildResultHeadline(args: {
   archiveCheck?: ArchiveCheckView | null
   /** 结果态此刻是否真的提供「上传到平台」入口：按钮不存在就不能写"可点" */
   canUpload?: boolean
+  /** 规范错误码：横幅必须带出"这一次是哪一类失败"，而不是笼统地说失败 */
+  errorCode?: string | null
+  /** 与 errorCode 对应的结论（来自诊断映射表），缺省时横幅只报码不编造结论 */
+  hintTitle?: string | null
 }): ResultHeadline {
-  const { status, delivered = false, when = '', archiveCheck = null, canUpload = false } = args
+  const {
+    status,
+    delivered = false,
+    when = '',
+    archiveCheck = null,
+    canUpload = false,
+    errorCode = null,
+    hintTitle = null,
+  } = args
   if (!status) return { type: 'info', title: '', description: '' }
   if (status === 'failed') {
+    const code = String(errorCode || '').trim()
+    const conclusion = String(hintTitle || '').trim()
+    // 旧文案"可点重新收集再试一次"把客户推向碰运气：Q2026110302155 在 100 秒内连点 5 次，
+    // 三次失败其实踩在不同阶段。横幅改成"先定位 → 再处理 → 确认后才重收"，
+    // 且把错误码与结论直接摆到第一屏。
+    const diagnosis = code
+      ? `错误码 ${code}${conclusion ? `（${conclusion}）` : ''}：先按下方「如何检查」确认，再按「如何处理」修复`
+      : '平台未给出可识别的错误码：请先看下方诊断与任务详情里的 error_message / create_output'
     return {
       type: 'error',
       title: `该工单上次采集失败（${when}）`,
-      description:
-        '以下是平台记录的最近一次采集结果；失败原因见下方错误信息，可点右下角「重新收集」再试一次。',
+      description: `${diagnosis}；确认原因消除后再点右下角「重新收集」。`,
     }
   }
   if (status === 'cancelled') {
     return {
       type: 'info',
       title: `该工单上次采集已取消（${when}）`,
-      description: '以下是平台记录的最近一次采集结果；如需采集请点右下角「重新收集」。',
+      description:
+        '以下是平台记录的最近一次采集结果；若非本人取消，请先按下方「如何检查」确认原因，再决定是否重新收集。',
     }
   }
   if (!delivered) {
