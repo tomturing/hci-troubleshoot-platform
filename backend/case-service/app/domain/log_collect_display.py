@@ -204,14 +204,18 @@ def derive_phase(task: Any) -> str:
     return "settled"
 
 
-def _progress_percent(phase: str, task: Any, transfer: Mapping[str, Any] | None) -> int | None:
+def _progress_percent(
+    phase: str, task: Any, transfer: Mapping[str, Any] | None, *, delivered: bool
+) -> int | None:
     """合成进度（0-100）。None 表示未知，界面必须显示 —，不许显示 0。
 
     分段权重来自契约 ``bands``：采集 0-60、交付 60-90、终结 100。这样
     「采集完成但未交付」不会显示成 100%，从根上消除历史那种矛盾组合。
+    终结态只有「平台已收妥」才给 100：零产物/从未交付的终态若给 100%，
+    管理端会再次出现「合成进度 100% + 交付事实 未开始」的认知冲突。
     """
     if phase == "settled":
-        return 100
+        return 100 if delivered else None
     if phase == "queued":
         return 0
     if phase == "collecting":
@@ -532,7 +536,7 @@ def derive(
                 transfer=transfer,
                 network=network,
             ),
-            "progress_percent": _progress_percent(phase, task, transfer),
+            "progress_percent": _progress_percent(phase, task, transfer, delivered=delivered),
             "upload_mode_label": UPLOAD_MODE_LABELS.get(
                 str(_get(task, "upload_mode") or ""), UPLOAD_MODE_LABELS["unknown"]
             ),

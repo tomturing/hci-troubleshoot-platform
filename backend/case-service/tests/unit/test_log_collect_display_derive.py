@@ -51,6 +51,8 @@ class TestConclusion:
 
         assert payload["display"]["conclusion"] == "failed"
         assert payload["display"]["phase"] == "settled"
+        # 终态未交付不能再合成 100%，否则管理端又是「已完成 100% + 交付未开始」同屏。
+        assert payload["display"]["progress_percent"] is None
         assert key_list(payload) == ["artifact_missing", "handoff_pending"]
         assert payload["artifact"]["quality"] == "invalid"
         assert payload["artifact"]["reason"] == "missing"
@@ -65,6 +67,8 @@ class TestConclusion:
 
         assert payload["display"]["conclusion"] == "partial"
         assert payload["display"]["conclusion_tone"] != "success"
+        # 已交付终态仍按分段给 100：进度表示链路走完，不代表产物合格。
+        assert payload["display"]["progress_percent"] == 100
         assert key_list(payload) == ["artifact_missing"]
         assert payload["artifact"]["size_text"] == "608 B"
         assert payload["artifact"]["reason"] == "too_small"
