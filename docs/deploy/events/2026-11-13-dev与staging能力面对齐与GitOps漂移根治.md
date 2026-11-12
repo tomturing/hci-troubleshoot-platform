@@ -44,6 +44,7 @@ owner: team
 | P10 | `argocd` 命名空间无 `hci.env.role` 标签 | 环境标识的数据来源缺失 | `kubectl get ns argocd -o json` |
 | P11 | 无可用性门禁 | 只看 Deployment `1/1` 会漏掉 P4 这类「Ready 但不可达」 | 本次实测 |
 | P12 | `node-exporter` DaemonSet 反复 `CreateContainerError` | main 的 #1494 新引入该 DaemonSet，模板把 `mountPropagation: HostToContainer` 硬编码在 `hostPath: /` 上；dev 单机 WSL 的 `/` 不是 shared/slave mount，containerd 拒绝生成容器 spec（实测重试 678 次）。staging 云端 `/` 是 shared mount 故无此问题，属于环境拓扑差异而非孤儿资源 | Pod waiting message、`kubectl describe`、新旧 main 的模板对比 |
+| P13 | DSH Pod 长期 `1/2`，主容器永不 Ready | dev 缺 `global.publicUrl`，`dsh.publicUrl` helper 把空值与 `/dsh` 拼成相对路径 `/dsh/`；DSH 上游强制要求 `--public-url` 为绝对 URL，启动时直接报错退出，`/run/dsh/token` 永远写不出来 | DSH 容器日志 `error: --public-url must be an absolute http or https URL`、`helm template` 渲染结果 |
 
 ---
 
@@ -68,6 +69,7 @@ owner: team
 | R5 | 集群侧重新 apply `deploy/gitops/bootstrap/argocd-root.yaml` | 让 GitOps 收回控制权，自动创建 P2 缺失的 DSH Application |
 | R6 | 集群侧清理 90 天前的失败 hook Job | 先摘除 finalizer 再删除，消除 P9 |
 | R7 | `deploy/helm/hci-platform-obs` 把 `nodeExporter.mountPropagation` 参数化，`hci-platform-obs-dev` 用 inline values 置空 | 默认保留 staging/prod 行为；dev 关闭传播后仍保留 `/proc`、`/sys`、`/` 的静态只读视图，消除 P12 且不丢采集能力 |
+| R8 | `hci-platform-dsh-dev` inline values 补 `global.publicUrl` | 与环境仓 dev 的 `agentService.allowedOrigins` 同源，渲染为 `http://172.28.24.21:30080/dsh/`，让 DSH 主容器通过参数校验并写出 `/run/dsh/token`，消除 P13 |
 
 ---
 
@@ -83,6 +85,7 @@ owner: team
 | 只看 `1/1` | 漏掉 P4 | 冒烟门禁强制经 ClusterIP 访问并检查 EndpointSlice |
 | 依赖 selfHeal 自动修好 node-exporter | DaemonSet 采用 `updateStrategy: OnDelete`，模板更新不会触发 Pod 重建，失败 Pod 会一直留着 | 部署后显式删除旧 Pod，并用冒烟门禁的异常 Pod 判据兜底 |
 | 基于过期 main 基线做定性 | 排查期间 main 合入 #1494 新增 node-exporter 模板，一度把新回归误判为「Git 中已无声明的孤儿资源」；合并 main 后结论被推翻 | 合并最新 main 后再定稿，并把该次推翻记入本文 |
+| 只补 Application 与依赖就宣布 DSH 可用 | DSH 对 `--public-url` 有绝对 URL 硬校验，相对路径会让主容器启动即退出，Pod 停在 `1/2` 且 readiness 永不通过 | 以 DSH 主容器日志与 `/__internal/healthz` 为判据，补齐绝对 publicUrl 后重新验收 |
 
 ---
 
@@ -130,6 +133,7 @@ bash scripts/ops/smoke-dev-services.sh
 - dev 与 staging 的 hci-sim digest 不同，属于 CI 晋级链的设计差异，不手工拉齐；后续由 promotion 流程推进。
 - dev 单机拓扑下 `/sf/log`、域名/TLS、副本数等差异刻意保留，不追求 values 字节一致。
 - dev 未配置 DSH 专用 LLM 凭证时，`scripts/ops/bootstrap-dev-parity-credentials.sh` 使用平台通用 key 作为启动占位；DSH 进程与 UI 可用，真实诊断分析需 `--dsh-api-key-file` 注入专用凭证。
+- dev 的 `global.publicUrl` 绑定 traefik LoadBalancer 入口 `172.28.24.21:30080`；WSL 网络重建导致入口 IP 变化时须同步更新该 inline 值，否则 DSH 的 Origin 校验会拒绝带 Origin 的请求。
 
 ---
 
