@@ -11,6 +11,7 @@
 """
 
 from typing import Any
+from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -199,13 +200,95 @@ TASKS_UPSTREAM_PREFIX = "/internal/log-collect/admin/tasks"
 async def list_admin_tasks(request: Request) -> Response:
     """跨工单分页列表 + 汇总条；筛选参数原样透传给 case-service 解析。"""
     return await _request_upstream(
-        "GET", "", request, prefix=TASKS_UPSTREAM_PREFIX, query=request.url.query,
+        "GET",
+        "",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
+        query=request.url.query,
     )
+
+
+def _safe_id(value: str) -> str:
+    """路径段只接受规范化 UUID，避免用户输入拼进上游 URL 造成路径穿越。"""
+    try:
+        return str(UUID(value))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="非法 ID") from exc
 
 
 @tasks_router.get("/{task_id}/destination-progress")
 async def get_destination_progress(task_id: str, request: Request) -> Response:
     """日志服务器真实进度（P1 按产物名 / P2 按 relay_upload_id），只读。"""
     return await _request_upstream(
-        "GET", f"/{task_id}/destination-progress", request, prefix=TASKS_UPSTREAM_PREFIX,
+        "GET",
+        f"/{_safe_id(task_id)}/destination-progress",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
+    )
+
+
+# ── 证据端点（详情抽屉四页签）─────────────────────────────────────────────
+# 只做鉴权 + URL 转发：结论、体积、速率、分桶全部由 case-service 计算，
+# 网关不得再拼一份口径（168/146 对不上账的根因就是多处各自计算）。
+
+
+@tasks_router.get("/{task_id}/transfer-metrics")
+async def get_transfer_metrics(task_id: str, request: Request) -> Response:
+    return await _request_upstream(
+        "GET",
+        f"/{_safe_id(task_id)}/transfer-metrics",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
+        query=request.url.query,
+    )
+
+
+@tasks_router.get("/{task_id}/network-probe")
+async def get_network_probe(task_id: str, request: Request) -> Response:
+    return await _request_upstream(
+        "GET",
+        f"/{_safe_id(task_id)}/network-probe",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
+    )
+
+
+@tasks_router.get("/{task_id}/artifact-manifest")
+async def get_artifact_manifest(task_id: str, request: Request) -> Response:
+    return await _request_upstream(
+        "GET",
+        f"/{_safe_id(task_id)}/artifact-manifest",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
+    )
+
+
+@tasks_router.get("/{task_id}/process-logs")
+async def get_process_logs(task_id: str, request: Request) -> Response:
+    return await _request_upstream(
+        "GET",
+        f"/{_safe_id(task_id)}/process-logs",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
+    )
+
+
+@tasks_router.get("/{task_id}/process-logs/{log_id}/content")
+async def get_process_log_content(task_id: str, log_id: str, request: Request) -> Response:
+    return await _request_upstream(
+        "GET",
+        f"/{_safe_id(task_id)}/process-logs/{_safe_id(log_id)}/content",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
+    )
+
+
+@tasks_router.get("/{task_id}")
+async def get_admin_task(task_id: str, request: Request) -> Response:
+    """单任务详情；放在最后注册，避免吃掉上面更具体的子路径。"""
+    return await _request_upstream(
+        "GET",
+        f"/{_safe_id(task_id)}",
+        request,
+        prefix=TASKS_UPSTREAM_PREFIX,
     )

@@ -1585,8 +1585,14 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		"log_action": action, "task_id": msg.ExecID, "ticket_no": msg.TicketNo,
 		"modules": msg.Modules, "date_from": msg.DateFrom, "date_to": msg.DateTo,
 		"ips": msg.IPs, "extra_paths_count": len(msg.ExtraPaths),
-		"remote_url_set": strings.TrimSpace(msg.RemoteURL) != "",
+		"remote_url_set":   strings.TrimSpace(msg.RemoteURL) != "",
+		"evidence_enabled": strings.TrimSpace(msg.EvidenceTicket) != "",
 	})
+
+	// 证据链路只在 create 时初始化：探测异步跑，绝不拖延 acli 下发。
+	if action == "create" {
+		configureEvidence(msg, cui)
+	}
 
 	switch action {
 	case "probe":
@@ -1894,6 +1900,19 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		// probeLogCollectArchive 返回三态指针：探测失败时保持 nil，前端据此显示
 		// 「无法确认」而不是把未知当成"已删除"。
 		progress.ArchiveExists = archiveProbeResult.Exists
+		// 采集终态只补采一次证据：节点侧 zip 中央目录 + 采集进程日志。
+		// 异步 + 独立超时：证据链路的任何失败都不允许拖慢/改变进度回包。
+		if progress.NodeState == "completed" {
+			if evidenceCfg, ok := evidenceFor(msg.ExecID); ok {
+				session, evidencePath, evidenceSize := s, probePath, progress.ArchiveSize
+				go func() {
+					evidenceCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+					defer cancel()
+					inspectNodeArchive(evidenceCtx, session, evidenceCfg, evidencePath, evidenceSize)
+					collectNodeProcessLogs(evidenceCtx, session, evidenceCfg)
+				}()
+			}
+		}
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
@@ -2070,13 +2089,15 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: "ok", LogData: map[string]any{
-				"multi_slot_spc": true,
-				"spc_max_slots":  len(logCollectModules),
+				"multi_slot_spc":       true,
+				"spc_max_slots":        len(logCollectModules),
+				"log_collect_evidence": true,
 			},
 			TraceID: traceID, CustomUI: cui,
 		})
 		blog("INFO", "log_collect.capabilities", "日志收集能力探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"multi_slot_spc": true, "spc_max_slots": len(logCollectModules),
+			"log_collect_evidence": true,
 		})
 
 	default:

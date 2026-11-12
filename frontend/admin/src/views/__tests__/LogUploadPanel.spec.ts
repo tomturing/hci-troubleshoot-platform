@@ -17,6 +17,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const api = vi.hoisted(() => ({
   listAdminTasks: vi.fn(),
   getDestinationProgress: vi.fn(),
+  getAdminTask: vi.fn(),
+  getTransferMetrics: vi.fn(),
+  getNetworkProbe: vi.fn(),
+  getArtifactManifest: vi.fn(),
+  getProcessLogs: vi.fn(),
+  getProcessLogContent: vi.fn(),
 }))
 
 vi.mock('@/api/logCollectAdminTasks', async (importOriginal) => {
@@ -69,8 +75,13 @@ const summary = {
 }
 
 beforeEach(() => {
-  api.listAdminTasks.mockReset()
-  api.getDestinationProgress.mockReset()
+  for (const mock of Object.values(api)) mock.mockReset()
+  api.getAdminTask.mockResolvedValue({ ...doneTask, transfer: null, network: null })
+  api.getTransferMetrics.mockResolvedValue({ task_id: 'task-done', items: [], latest: null })
+  api.getNetworkProbe.mockResolvedValue({ task_id: 'task-done', network: null })
+  api.getArtifactManifest.mockResolvedValue({ task_id: 'task-done', items: [] })
+  api.getProcessLogs.mockResolvedValue({ task_id: 'task-done', items: [] })
+  api.getProcessLogContent.mockResolvedValue({ content: '', truncated: false })
   api.listAdminTasks.mockResolvedValue({
     items: [activeTask, doneTask], total: 2, page: 1, page_size: 20, summary,
   })
@@ -227,5 +238,102 @@ describe('LogUploadPanel', () => {
     wrapper.unmount()
     expect(clearSpy).toHaveBeenCalledTimes(2)
     clearSpy.mockRestore()
+  })
+
+  const bucketSummary = {
+    total: 2, transferring: 1, delivered: 1, unverified: 0, failed: 0,
+    by_conclusion: { pending: 1, success: 0, partial: 1, failed: 0, cancelled: 0 },
+    p1: { total: 1, transferring: 0, delivered: 1, unverified: 0, failed: 0 },
+    p2: { total: 1, transferring: 1, delivered: 0, unverified: 0, failed: 0 },
+  }
+
+  it('统计条按结论五桶展示，并给出可对账数字', async () => {
+    api.listAdminTasks.mockResolvedValue({
+      items: [activeTask, doneTask], total: 2, page: 1, page_size: 20, summary: bucketSummary,
+    })
+    const wrapper = await mountPanel()
+    const text = wrapper.text()
+    expect(text).toContain('已交付 · 有疑点')
+    expect(text).toContain('统计口径可对账')
+    expect(text).toContain('= 2 = 总数 2')
+    expect(text).not.toContain('统计恒等式异常')
+    wrapper.unmount()
+  })
+
+  it('五桶与总数不一致时显式告警，不静默展示错误数字', async () => {
+    api.listAdminTasks.mockResolvedValue({
+      items: [activeTask], total: 3, page: 1, page_size: 20,
+      summary: { ...bucketSummary, total: 3 },
+    })
+    const wrapper = await mountPanel()
+    expect(wrapper.text()).toContain('统计恒等式异常')
+    wrapper.unmount()
+  })
+
+  const failedDisplay = {
+    phase: 'settled', phase_label: '已结束',
+    conclusion: 'failed', conclusion_label: '失败', conclusion_tone: 'error',
+    conditions: [
+      { key: 'artifact_missing', label: '未取到有效日志' },
+      { key: 'handoff_pending', label: '采集完成但未交付' },
+    ],
+    progress_percent: 100,
+  }
+  const partialDisplay = {
+    ...failedDisplay,
+    conclusion: 'partial', conclusion_label: '已交付 · 有疑点', conclusion_tone: 'warning',
+    conditions: [{ key: 'artifact_missing', label: '未取到有效日志' }],
+  }
+
+  it('1130 零产物未交付：显示失败与未取到有效日志，不再出现已完成 100%', async () => {
+    api.listAdminTasks.mockResolvedValue({
+      items: [
+        { ...doneTask, delivery_status: 'none', archive_size: null, display: failedDisplay },
+      ], total: 1, page: 1, page_size: 20, summary: bucketSummary,
+    })
+    const wrapper = await mountPanel()
+    const text = wrapper.text()
+    expect(text).toContain('未取到有效日志')
+    expect(text).toContain('采集完成但未交付')
+    expect(text).not.toContain('已完成 100%')
+    wrapper.unmount()
+  })
+
+  it('0624 空壳包已交付：显示有疑点且标注未取到有效日志，不是绿色成功', async () => {
+    api.listAdminTasks.mockResolvedValue({
+      items: [{ ...doneTask, archive_size: 608, display: partialDisplay }],
+      total: 1, page: 1, page_size: 20, summary: bucketSummary,
+    })
+    const wrapper = await mountPanel()
+    const text = wrapper.text()
+    expect(text).toContain('已交付 · 有疑点')
+    expect(text).toContain('未取到有效日志')
+    wrapper.unmount()
+  })
+
+  it('旧桥接端无传输样本：明示版本较旧，不拿 0/100 顶替', async () => {
+    const wrapper = await mountPanel()
+    const text = wrapper.text()
+    expect(text).toContain('桥接端版本较旧，暂无该数据')
+    expect(text).toContain('合成进度 —')
+    wrapper.unmount()
+  })
+
+  it('打开详情按页签懒加载证据，四页签齐全且全只读', async () => {
+    const wrapper = await mountPanel()
+    const button = wrapper.findAll('button').find((item) => item.text() === '详情')
+    expect(button).toBeDefined()
+    await button!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(api.getAdminTask).toHaveBeenCalledWith('task-active')
+    expect(api.getTransferMetrics).toHaveBeenCalledWith('task-active')
+    expect(text).toContain('传输时间线')
+    expect(text).toContain('产物证据')
+    expect(text).toContain('网络探测')
+    expect(text).toContain('进程日志')
+    expect(text).not.toContain('rm -')
+    wrapper.unmount()
   })
 })

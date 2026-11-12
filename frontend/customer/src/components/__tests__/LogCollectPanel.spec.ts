@@ -18,6 +18,26 @@ import LogCollectPanel from '@/components/LogCollectPanel.vue'
 import { logCollectApi, type LogCollectTask } from '@/api/logCollect'
 import { checkBridgeBeforeOpen } from '@/api/terminal'
 
+/** 兼容新旧 PATCH 体：完成态现在把节点事实放进 node_observed，不再写顶层结论。 */
+function patchStatus(body: any): string | undefined {
+  return body?.node_observed?.status ?? body?.status
+}
+
+/** mock 后端行为：node_observed 会被平台展开成对任务行的写入。 */
+function applyPatch<T>(task: T, body: any): T {
+  const { node_observed, ...rest } = body ?? {}
+  return { ...(task as any), ...rest, ...(node_observed ?? {}) } as T
+}
+
+/** 让面板直接进入结果态：平台返回一条已终结的任务。 */
+async function mountResultTask(task: LogCollectTask) {
+  vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [task] } as any)
+  const wrapper = mountPanel()
+  await flushPromises()
+  await flushPromises()
+  return wrapper
+}
+
 const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
   const sent: string[] = []
   const socket: any = {
@@ -101,6 +121,10 @@ vi.mock('@/api/terminal', async () => {
         // 任务归属与调用链：漏了 exec_id 会被新桥以 invalid_task_id 拒发，
         // 这类契约缺口必须在桩里可见，不能测成绿灯。
         ...(options.execId ? { exec_id: options.execId } : {}),
+        // 证据票据漏映射会把"bridge 收不到票据"测成绿灯。
+        ...(options.evidenceTicket ? { evidence_ticket: options.evidenceTicket } : {}),
+        ...(options.platformUrl ? { platform_url: options.platformUrl } : {}),
+        ...(options.evidenceTLSInsecure ? { tls_insecure: true } : {}),
         ...(options.traceId ? { trace_id: options.traceId } : {}),
         // 逐槽位清单：桩里漏映射，等于把"平台清单根本没下发"测成绿灯。
         ...(options.spcFiles?.length ? { spc_files: options.spcFiles } : {}),
@@ -2322,7 +2346,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
 
     const completedPatches = vi
       .mocked(logCollectApi.patchTask)
-      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+      .mock.calls.filter(([, body]: any) => patchStatus(body) === 'completed')
     expect(completedPatches).toHaveLength(0)
     // 必须给出"为什么还在等"的可见理由，而不是静默卡住
     expect(wrapper.text()).toContain('上一次任务')
@@ -2388,7 +2412,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
 
     const completed = vi
       .mocked(logCollectApi.patchTask)
-      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+      .mock.calls.filter(([, body]: any) => patchStatus(body) === 'completed')
     expect(completed).toHaveLength(1)
     // 完成即切结果视图：必须与「刷新页面重新进入」完全一致，
     // 而不是继续停在收集表单上、按钮还写着「开始收集」
@@ -2424,7 +2448,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
       await new Promise((resolve) => setTimeout(resolve, 20))
       return done
     })
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(done, body))
     vi.mocked(logCollectApi.verifyP1Archive).mockResolvedValue({
       verified: false,
       reason: 'archive_missing',
@@ -2487,7 +2511,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
       await new Promise((resolve) => setTimeout(resolve, 20))
       return verified ? { ...done, delivery_status: 'delivered' as const } : done
     })
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(done, body))
     vi.mocked(logCollectApi.verifyP1Archive).mockImplementation(async () => {
       verified = true
       return { verified: true, reason: 'size_matched' } as any
@@ -2553,7 +2577,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
       detail: {},
     })
     vi.mocked(logCollectApi.createTask).mockResolvedValue(created)
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...created, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(created, body))
     vi.mocked(logCollectApi.verifyP1Archive).mockResolvedValue({
       verified: false,
       reason: 'archive_missing',
@@ -2624,13 +2648,13 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
 
     await vi.waitFor(() =>
       expect(
-        vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => body?.status === 'completed'),
+        vi.mocked(logCollectApi.patchTask).mock.calls.some(([, body]: any) => patchStatus(body) === 'completed'),
       ).toBe(true),
     )
     const completed = vi
       .mocked(logCollectApi.patchTask)
       .mock.calls.map(([, body]: any) => body)
-      .filter((body: any) => body?.status === 'completed')
+      .filter((body: any) => patchStatus(body) === 'completed')
       .pop()
     // 采集结论照常写；交付结论既不能是 delivered（假成功）也不能是 failed（假失败）
     expect(completed.delivery_status).toBeUndefined()
@@ -2757,7 +2781,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     })
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
     vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(done, body))
     vi.mocked(logCollectApi.deliverTask).mockResolvedValue({
       already_delivered: false,
       delivery_status: 'queued',
@@ -2865,7 +2889,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     // 前端再写一次会被服务端静默忽略（single-writer），断言它反而会锁死错误契约。
     const completed = vi
       .mocked(logCollectApi.patchTask)
-      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+      .mock.calls.filter(([, body]: any) => patchStatus(body) === 'completed')
     expect(completed).toHaveLength(1)
     expect(completed[0][1]).toMatchObject({
       upload_mode: 'bridge_relay',
@@ -2903,7 +2927,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     })
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
     vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(done, body))
     vi.mocked(logCollectApi.deliverTask).mockResolvedValue({
       already_delivered: false,
       delivery_status: 'queued',
@@ -3038,7 +3062,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     })
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [done] })
     vi.mocked(logCollectApi.getTask).mockResolvedValue(done)
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(done, body))
     vi.mocked(logCollectApi.deliverTask).mockResolvedValue({
       already_delivered: false,
       delivery_status: 'queued',
@@ -3183,7 +3207,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     vi.mocked(logCollectApi.getTask).mockImplementation(async () =>
       attested ? { ...done, delivery_status: 'delivered' as const } : done,
     )
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(done, body))
 
     const wrapper = mountPanel()
     await flushPromises()
@@ -3257,7 +3281,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     vi.mocked(logCollectApi.getTask).mockImplementation(async () =>
       attested ? { ...done, delivery_status: 'delivered' as const } : done,
     )
-    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => ({ ...done, ...body }))
+    vi.mocked(logCollectApi.patchTask).mockImplementation(async (_id, body: any) => applyPatch(done, body))
 
     const wrapper = mountPanel()
     await flushPromises()
@@ -3481,10 +3505,75 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
 
     const completed = vi
       .mocked(logCollectApi.patchTask)
-      .mock.calls.filter(([, body]: any) => body?.status === 'completed')
+      .mock.calls.filter(([, body]: any) => patchStatus(body) === 'completed')
     expect(completed).toHaveLength(1)
-    // 关键：带上过程中量到的 300MB，而不是完成瞬间的空值
-    expect(completed[0][1].archive_size).toBe(314572800)
+    // 关键：带上过程中量到的 300MB，而不是完成瞬间的空值；
+    // 且这些只能作为节点事实放进 node_observed，顶层不再写结论字段。
+    expect((completed[0][1] as any).node_observed.archive_size).toBe(314572800)
+    expect((completed[0][1] as any).status).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('平台结论优先：1130 零产物显示未取到有效日志，不再宣称已完成', async () => {
+    const task = taskFixture({
+      task_id: 'task-1130',
+      status: 'completed',
+      progress: 100,
+      upload_mode: 'bridge_relay',
+      archive_size: null,
+      delivery_status: 'none',
+      display: {
+        phase: 'settled', phase_label: '已结束',
+        conclusion: 'failed', conclusion_label: '未取到有效日志', conclusion_tone: 'error',
+        conditions: [{ key: 'artifact_missing', label: '未取到有效日志' }, { key: 'handoff_pending', label: '采集完成但未交付' }],
+        progress_percent: 100,
+      },
+      artifact: {
+        quality: 'invalid', quality_label: '未取到有效日志', reason: 'missing', reason_text: '未发现压缩包',
+        size: null, size_text: '—', entry_count: null, entry_total_bytes: null,
+        entry_total_text: null, source: 'size_inference',
+      },
+    } as any)
+    const wrapper = await mountResultTask(task)
+    const text = wrapper.text()
+    expect(text).toContain('未取到有效日志')
+    expect(text).toContain('采集完成但未交付')
+    expect(text).not.toContain('该工单已完成日志收集并已交付')
+    wrapper.unmount()
+  })
+
+  it('0624 空壳包已交付显示「已交付 · 有疑点」，不是绿色成功', async () => {
+    const task = taskFixture({
+      task_id: 'task-0624', status: 'completed', delivery_status: 'delivered', archive_size: 608,
+      upload_mode: 'bridge_relay',
+      display: {
+        phase: 'settled', phase_label: '已结束',
+        conclusion: 'partial', conclusion_label: '已交付 · 有疑点', conclusion_tone: 'warning',
+        conditions: [{ key: 'artifact_missing', label: '未取到有效日志' }], progress_percent: 100,
+      },
+    } as any)
+    const wrapper = await mountResultTask(task)
+    expect(wrapper.text()).toContain('已交付 · 有疑点')
+    expect(wrapper.text()).toContain('观察事实')
+    expect(wrapper.text()).toContain('未取到有效日志')
+    wrapper.unmount()
+  })
+
+  it('create 消息透传证据票据，界面不展示票据本身', async () => {
+    // 用真实实现验证序列化字段，避免"只测到桩"的假绿灯。
+    const actual = await vi.importActual<typeof import('@/api/terminal')>('@/api/terminal')
+    const message = actual.buildLogCollectMessage('Q2026111200624', 'create', {
+      execId: 'task-1',
+      evidenceTicket: '1763000000.abcdef',
+      platformUrl: 'https://hci.example',
+      evidenceTLSInsecure: true,
+    })
+    expect(JSON.parse(message)).toMatchObject({
+      log_action: 'create', exec_id: 'task-1', evidence_ticket: '1763000000.abcdef',
+      platform_url: 'https://hci.example', tls_insecure: true,
+    })
+    const wrapper = await mountPanel()
+    expect(wrapper.text()).not.toContain('evidence_ticket')
     wrapper.unmount()
   })
 })

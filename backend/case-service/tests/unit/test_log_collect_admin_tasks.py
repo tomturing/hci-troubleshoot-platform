@@ -68,28 +68,44 @@ def test_filters_reject_unknown_enums(field, value):
     assert exc.value.status_code == 400
 
 
-def test_summary_maps_p1_and_p2_columns():
-    row = {
-        "total": 10,
-        "transferring": 3,
-        "delivered": 5,
-        "unverified": 1,
-        "failed": 1,
-        "p1_total": 6,
-        "p1_transferring": 2,
-        "p1_delivered": 3,
-        "p1_unverified": 1,
-        "p1_failed": 0,
-        "p2_total": 4,
-        "p2_transferring": 1,
-        "p2_delivered": 2,
-        "p2_unverified": 0,
-        "p2_failed": 1,
+def _summary_row(mode: str, status: str, delivery: str, *, detail: dict | None = None) -> dict:
+    return {
+        "upload_mode": mode,
+        "status": status,
+        "progress": 40 if status == "collecting" else 100,
+        "archive_size": 2 * 1024**3,
+        "object_size": None,
+        "delivery_status": delivery,
+        "relay_status": "success" if mode == "bridge_relay" and delivery == "delivered" else "none",
+        "archive_path": "/sf/log/Q2026111000243.zip",
+        "detail": detail or {},
+        "archive_check": None,
     }
-    summary = routes._summary_of(row)
+
+
+def test_summary_maps_p1_and_p2_columns():
+    """汇总不再吃 SQL 预聚合列：由同一批任务行推导，且 P1/P2 分组必然可加。"""
+    rows = (
+        [
+            _summary_row("acli_direct", "completed", "delivered", detail={"p1_archive_check": {"verified": True}})
+            for _ in range(3)
+        ]
+        + [_summary_row("acli_direct", "collecting", "none") for _ in range(2)]
+        + [_summary_row("acli_direct", "failed", "none")]
+        + [_summary_row("bridge_relay", "completed", "delivered") for _ in range(2)]
+        + [_summary_row("bridge_relay", "collecting", "none")]
+        + [_summary_row("bridge_relay", "failed", "none")]
+    )
+
+    summary = routes._summary_of(rows)
+
     assert (summary.total, summary.delivered) == (10, 5)
     assert (summary.p1.total, summary.p1.delivered) == (6, 3)
     assert (summary.p2.total, summary.p2.failed) == (4, 1)
+    assert sum(summary.by_conclusion.values()) == summary.total == 10
+    assert summary.transferring == summary.by_conclusion["pending"] == 3
+    assert sum(summary.p1.by_conclusion.values()) == 6
+    assert sum(summary.p2.by_conclusion.values()) == 4
 
 
 # ── 「传输中」口径测试（2026-11-12 修复：排除采集已终态但 delivery=queued 的僵尸）──
@@ -115,7 +131,9 @@ _TRANSFERRING_CASES = [
     ("completed", "queued", False, "采集已完成+交付排队=僵尸，不算传输中"),
     ("cancelled", "queued", False, "采集已取消+交付排队=僵尸，不算传输中"),
     ("failed", "relaying", False, "采集已失败+代传中=不算传输中"),
-    ("completed", "relaying", False, "采集已完成+代传中=不算传输中"),
+    # 与旧 SQL 口径的差异：采集 completed 不代表流程结束，代传真的在跑就是传输中。
+    # 真正要排除的僵尸是 completed + queued（交付根本没开始），下面那条仍然排除。
+    ("completed", "relaying", True, "采集已完成+代传真的在跑=传输中"),
     # 终态组合
     ("failed", "failed", False, "双失败=不算传输中"),
     ("completed", "delivered", False, "双完成=不算传输中"),
@@ -129,23 +147,22 @@ _TRANSFERRING_CASES = [
     ids=[c[3] for c in _TRANSFERRING_CASES],
 )
 def test_transferring_criteria_excludes_zombie_delivery(status, delivery_status, expected, desc):
-    """验证 _TRANSFERRING SQL 片段在各种状态组合下的正确性。
+    """行为级验证：传输中 == conclusion 仍是 pending，不再检查 SQL 片段字符串。
 
-    核心修复：采集已终态（failed/completed/cancelled）但 delivery_status=queued 的
-    僵尸任务不应计入「传输中」。
+    核心修复保留：采集终态（failed/completed/cancelled）+ delivery=queued 的
+    僵尸任务不计入「传输中」；采集 completed 但代传真的在跑则计入。
     """
-    # 直接用 SQL 片段做字符串级验证：确认新口径包含 NOT IN 终态排除
-    sql = routes._TRANSFERRING
-    assert "NOT IN ('failed','cancelled','completed')" in sql, "新口径必须排除采集终态"
-    assert "NOT IN ('delivered','failed')" in sql, "新口径必须排除交付终态"
-    # 旧口径的 OR 已被替换：不能有裸 OR delivery_status IN
-    assert "OR t.delivery_status IN ('queued'" not in sql, "旧口径的裸 OR 已移除"
+    summary = routes._summary_of([_summary_row("bridge_relay", status, delivery_status)])
+
+    assert (summary.by_conclusion["pending"] == 1) is expected, desc
+    assert sum(summary.by_conclusion.values()) == summary.total == 1
 
 
-def test_transferring_sql_is_valid_syntax():
-    """验证 _TRANSFERRING 片段是合法 SQL（括号匹配）。"""
-    sql = routes._TRANSFERRING.strip()
-    assert sql.count("(") == sql.count(")"), "括号不匹配"
+def test_summary_select_does_not_duplicate_status_rules():
+    """汇总 SQL 只取原始事实，判定不能在 SQL 里再写一份。"""
+    assert "count(*) FILTER" not in routes._SUMMARY_SELECT
+    assert "jsonb_build_object" in routes._SUMMARY_SELECT
+    assert routes._SUMMARY_SELECT.count("(") == routes._SUMMARY_SELECT.count(")")
 
 
 @pytest.mark.asyncio
@@ -180,26 +197,12 @@ async def test_list_returns_both_customer_name_and_client_id_without_querying_58
                     "delivery_finished_at": _now(),
                 }
             ]
-        if "count(*) FILTER" in sql:
+        if "SELECT t.upload_mode" in sql:
             return [
-                {
-                    "total": 1,
-                    "transferring": 0,
-                    "delivered": 1,
-                    "unverified": 0,
-                    "failed": 0,
-                    "p1_total": 1,
-                    "p1_transferring": 0,
-                    "p1_delivered": 1,
-                    "p1_unverified": 0,
-                    "p1_failed": 0,
-                    "p2_total": 0,
-                    "p2_transferring": 0,
-                    "p2_delivered": 0,
-                    "p2_unverified": 0,
-                    "p2_failed": 0,
-                }
+                _summary_row("acli_direct", "completed", "delivered", detail={"p1_archive_check": {"verified": True}})
             ]
+        if "log_collect_transfer_metric" in sql or "log_collect_network_probe" in sql:
+            return []  # 该页没有证据样本：界面必须显示「—」而不是 0
         return [{"total": 1}]
 
     def must_not_be_called(*_args, **_kwargs):
@@ -218,11 +221,98 @@ async def test_list_returns_both_customer_name_and_client_id_without_querying_58
         status=None,
         delivery_status=None,
     )
-    assert len(fetched) == 3
+    # 5 次查询：列表 / 总数 / 汇总瘦行 / 本页速率批量 / 本页探测批量。
+    # 速率与探测各一次批量查询，不是按行 N+1。
+    assert len(fetched) == 5
+    assert sum("log_collect_transfer_metric" in sql for sql in fetched) == 1
+    assert sum("log_collect_network_probe" in sql for sql in fetched) == 1
     assert response.total == 1
     assert response.items[0].customer_name == "示例客户"
     assert response.items[0].client_id == "client-abc"
     assert response.summary.p1.delivered == 1
+
+
+@pytest.mark.asyncio
+async def test_list_attaches_batched_transfer_and_network_evidence(monkeypatch):
+    """列表里的速率/ETA/网络告警与详情同源，且只做批量查询。"""
+    task_id = uuid4()
+
+    async def fake_fetch(sql, params):
+        if "ORDER BY t.created_at DESC" in sql:
+            return [
+                {
+                    **_summary_row("bridge_relay", "completed", "relaying"),
+                    "task_id": task_id,
+                    "case_id": "Q2026111200624",
+                    "client_id": None,
+                    "customer_name": None,
+                    "origin_node_ip": None,
+                    "relay_upload_id": None,
+                    "integrity_state": "unverified",
+                    "error_code": None,
+                    "error_message": None,
+                    "trace_id": "tr-page",
+                    "created_at": _now(),
+                    "finished_at": None,
+                    "delivery_finished_at": None,
+                    "archive_check": None,
+                }
+            ]
+        if "SELECT t.upload_mode" in sql:
+            return [_summary_row("bridge_relay", "completed", "relaying")]
+        if "log_collect_transfer_metric" in sql:
+            return [
+                {
+                    "task_id": task_id,
+                    "stage": "relaying",
+                    "bytes_done": 1024,
+                    "bytes_total": 2048,
+                    "percent": 50,
+                    "elapsed_ms": 1000,
+                    "rate_bps": 1024,
+                    "eta_sec": 1,
+                    "stalled": True,
+                    "source": "bridge",
+                    "created_at": _now() - timedelta(minutes=3),
+                }
+            ]
+        if "log_collect_network_probe" in sql:
+            return [
+                {
+                    "task_id": task_id,
+                    "target": "platform_data",
+                    "reachable": True,
+                    "grade": "poor",
+                    "rtt_avg_ms": 320,
+                    "jitter_ms": 90,
+                    "loss_rate": 0.03,
+                    "http_code": 200,
+                    "up_bps": 1024,
+                    "down_bps": 2048,
+                    "advice": "弱网建议改时段",
+                    "created_at": _now(),
+                }
+            ]
+        return [{"total": 1}]
+
+    monkeypatch.setattr(routes, "_fetch", fake_fetch)
+    response = await routes.list_admin_tasks(
+        page=1,
+        page_size=20,
+        days=7,
+        case_id=None,
+        node_ip=None,
+        upload_mode=None,
+        status=None,
+        delivery_status=None,
+    )
+    item = response.items[0]
+
+    assert item.transfer is not None and item.transfer.rate_text == "1.00 KiB/s"
+    assert item.network is not None and item.network.grade == "poor"
+    conditions = [entry.key for entry in item.display.conditions]
+    assert "stalled" in conditions and "network_degraded" in conditions
+    assert item.display.conclusion == "pending"
 
 
 def _task_row(mode: str = "acli_direct") -> dict:

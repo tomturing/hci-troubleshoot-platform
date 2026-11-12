@@ -13,6 +13,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .log_collect_display import (
+    LogCollectArtifactInfo,
+    LogCollectDisplay,
+    LogCollectNetworkInfo,
+    LogCollectTransferInfo,
+)
+
 LogCollectStatus = Literal[
     "pending",
     "probing",
@@ -217,6 +224,38 @@ class LogCollectTaskCreate(BaseModel):
         return value
 
 
+class NodeObservedFacts(BaseModel):
+    """节点侧观测事实（``node_observed``）。
+
+    第一性原理：浏览器/桥接端只能观测事实，不能给「结论」。把 facts 与
+    conclusion 拆开后，``status/completed`` 不再等于「已拿到可用日志」，
+    结论由平台按证据推导（见 ``app/domain/log_collect_display.py``）。
+
+    允许字段严格白名单：产物是否可信、交付是否成立这类判断字段
+    （``detail.artifact_quality`` / ``delivery_*`` / ``relay_*``）不在其中，
+    客户端写不进来。
+    """
+
+    status: LogCollectStatus | None = None
+    progress: int | None = Field(default=None, ge=0, le=100)
+    arch: str | None = Field(default=None, max_length=16)
+    acli_version: str | None = Field(default=None, max_length=32)
+    archive_path: str | None = None
+    archive_size: int | None = Field(default=None, ge=0)
+    archive_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    error_code: str | None = Field(default=None, max_length=64)
+    error_message: str | None = None
+    detail: dict | None = None
+    # 自定义场景/spc 回执：由 bridge 据节点实际写入结果补报。
+    config_path: str | None = Field(default=None, max_length=512)
+    preflight_missing: list[str] | None = None
+    spc_slot: str | None = Field(default=None, max_length=32)
+    spc_sha256: str | None = Field(default=None, max_length=64)
+    spc_hosts: list[dict] | None = Field(default=None, max_length=512)
+    spc_slots: list[str] | None = Field(default=None, max_length=16)
+    restore_status: Literal["none", "pending", "success", "failed"] | None = None
+
+
 class LogCollectTaskPatch(BaseModel):
     """更新任务状态与制品元数据。
 
@@ -263,6 +302,9 @@ class LogCollectTaskPatch(BaseModel):
     # 取值域定死：还原态是判定依据，不是自由文本。客户端写入它虽无法被平台验证
     # （桥在客户侧），但至少不能出现第二个"看似成功"的拼写。
     restore_status: Literal["none", "pending", "success", "failed"] | None = None
+    # 推荐入口：节点事实。字段与上面并列字段同义（客户端可任选其一），
+    # 但只有走这里才会被贴上「fact」审计，语义上不再冒充结论。
+    node_observed: NodeObservedFacts | None = None
 
     @model_validator(mode="after")
     def _require_any_field(self) -> LogCollectTaskPatch:
@@ -368,6 +410,20 @@ class LogCollectTaskResponse(BaseModel):
     config_sha256: str | None = None
     path_count: int | None = None
     preflight_missing: list[str] | None = None
+    # ── 派生展示字段（只读，平台按证据推导，不接受客户端写入）──────────────
+    # 存在的意义：让「有没有拿到可用日志」这件事只有一个答案来源，
+    # 界面不再各自用 status/progress/包大小拼结论（Q2026111201130）。
+    display: LogCollectDisplay | None = Field(default=None, description="三维状态：phase / conclusion / conditions")
+    artifact: LogCollectArtifactInfo | None = Field(
+        default=None, description="产物证据：质量、原因、条目数、统一体积口径"
+    )
+    transfer: LogCollectTransferInfo | None = Field(
+        default=None, description="传输速率/ETA/停滞；旧桥接端不上报时为 null"
+    )
+    network: LogCollectNetworkInfo | None = Field(default=None, description="下发前网络探测结论；未探测时为 null")
+    # 只在 create 响应里出现：bridge 用票据上报证据（绑定 task_id，24h）。
+    # 其余读接口一律返回 null，避免票据随轮询响应到处扩散。
+    evidence_ticket: str | None = Field(default=None, description="证据上报短期票据（仅创建响应）")
 
 
 class LogCollectTaskListResponse(BaseModel):

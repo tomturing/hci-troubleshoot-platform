@@ -430,6 +430,9 @@ type InMessage struct {
 	// 为空表示不带凭据：此时应走 P2——不要用空票据去发 P1，那只会换来一次 401
 	// 和一条"直传失败"的假故障。
 	UploadTicket string `json:"upload_ticket,omitempty"`
+	// EvidenceTicket 是平台签发的证据上报票据（绑定 task_id、24h），只在 create 下发。
+	// 不落盘、不回显给任何 WS 回包：泄露也只影响单个任务，且随进程重启自然失效。
+	EvidenceTicket string `json:"evidence_ticket,omitempty"`
 
 	// ── bridge_log_token（日志直传凭据）专用字段 ──
 	// 前端向平台换取的短期令牌，只允许写绑定工单的日志；

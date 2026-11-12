@@ -26,6 +26,7 @@ from app.routes import (
     log_collect_admin_tasks,
     log_collect_custom_scenarios,
     log_collect_default_scenarios,
+    log_collect_evidence,
     log_collect_scenarios,
 )
 
@@ -94,6 +95,8 @@ app.include_router(environments.router)
 app.include_router(log_collect.router)
 # 数据面直连：/api/direct/log-collect-uploads 必须绕过 API Gateway（1 MiB 限制）。
 app.include_router(log_collect.upload_router)
+# 证据数据面：/api/direct/log-collect/tasks/... 与测速端点，同样绕过网关。
+app.include_router(log_collect_evidence.router)
 # 故障场景字典：客户读（/api/log-collect/scenarios）+ 管理端读写（/internal/log-collect/scenarios）
 app.include_router(log_collect_scenarios.router)
 app.include_router(log_collect_scenarios.admin_router)

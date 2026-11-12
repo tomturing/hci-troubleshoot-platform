@@ -161,6 +161,91 @@ export interface P1ArchiveVerifyResult {
   detail?: Record<string, unknown>
 }
 
+/** 平台派生的三维状态：界面只读，不得自行用 status/progress 拼结论。 */
+export interface LogCollectDisplayView {
+  phase: string
+  phase_label: string
+  conclusion: string
+  conclusion_label: string
+  conclusion_tone: string
+  conditions: Array<{ key: string; label: string }>
+  progress_percent: number | null
+  upload_mode_label?: string | null
+}
+
+export interface ArtifactEvidence {
+  quality: string
+  quality_label: string
+  reason: string
+  reason_text: string
+  size: number | null
+  size_text: string
+  entry_count: number | null
+  entry_total_bytes: number | null
+  entry_total_text: string | null
+  source: string
+}
+
+export interface TransferEvidence {
+  stage: string | null
+  stage_label: string | null
+  bytes_done: number | null
+  bytes_total: number | null
+  percent: number | null
+  elapsed_ms: number | null
+  rate_bps: number | null
+  rate_text: string | null
+  eta_sec: number | null
+  stalled: boolean
+  stalled_seconds: number | null
+  stall_threshold_seconds: number
+  updated_at: string | null
+  source: string | null
+}
+
+export interface NetworkEvidence {
+  grade: string
+  grade_label: string
+  relevant_target: string | null
+  targets: Array<{
+    target: string
+    grade: string
+    grade_label: string
+    reachable: boolean | null
+    rtt_avg_ms: number | null
+    jitter_ms: number | null
+    loss_rate: number | null
+    up_text: string | null
+    down_text: string | null
+    advice: string | null
+    checked_at: string | null
+  }>
+  checked_at: string | null
+}
+
+/** 节点观测事实（与结论分离）：平台按证据推导 status/结论。 */
+export interface NodeObservedFacts {
+  status?: LogCollectStatus
+  progress?: number
+  arch?: string
+  acli_version?: string
+  archive_path?: string
+  archive_size?: number
+  archive_sha256?: string
+  error_code?: string
+  error_message?: string
+  detail?: Record<string, unknown>
+  config_path?: string
+  preflight_missing?: string[]
+  spc_slot?: string
+  spc_sha256?: string
+  spc_hosts?: Array<{ ip: string; backup?: string; error?: string }>
+  spc_slots?: string[]
+  restore_status?: string
+}
+
+export type LogCollectTaskPatch = Partial<LogCollectTask> & { node_observed?: NodeObservedFacts }
+
 export interface LogCollectTask {
   task_id: string
   case_id: string
@@ -242,6 +327,13 @@ export interface LogCollectTask {
   updated_at?: string | null
   /** 终态落库时间：完成态展示"什么时候收完的"必须用它，不能用本地内存时间 */
   finished_at?: string | null
+  /** 以下四项均由平台派生，界面不得自行用 status/progress/archive_size 重算。 */
+  display?: LogCollectDisplayView | null
+  artifact?: ArtifactEvidence | null
+  transfer?: TransferEvidence | null
+  network?: NetworkEvidence | null
+  /** 只在创建响应出现：透传给 bridge 用于上报证据，绑定 task_id、24h。 */
+  evidence_ticket?: string | null
 }
 
 export interface UploadInitResult {
@@ -424,7 +516,7 @@ export const logCollectApi = {
     return data
   },
 
-  async patchTask(taskId: string, patch: Partial<LogCollectTask>): Promise<LogCollectTask> {
+  async patchTask(taskId: string, patch: LogCollectTaskPatch): Promise<LogCollectTask> {
     const { data } = await client.patch(`/log-collect/tasks/${taskId}`, patch)
     return data
   },

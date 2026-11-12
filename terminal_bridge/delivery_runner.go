@@ -418,6 +418,9 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	var stalled atomic.Bool
 	watchDone := make(chan struct{})
 	go r.watchStall(ctx, cancel, job, watchDone, func() { stalled.Store(true) })
+	// 证据数据面：每 2 秒上报一次阶段速率/ETA。无票据（旧前端）时直接空转退出，
+	// 不产生任何 HTTP 请求，也不影响交付状态机。
+	go r.streamEvidenceMetrics(ctx, job)
 	defer func() {
 		close(watchDone)
 		cancel()
@@ -643,6 +646,13 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	// 会把一次成功的交付写成 failed——比不删副本严重得多。
 	if !r.ownerIntact(job) {
 		return errDeliverySuperseded
+	}
+	// 删除本地副本之前读一次 zip 中央目录：包还在盘上时才有内容级证据，
+	// 删完就只剩体积推断，608 字节空壳包会被误判成功（Q2026111200624）。
+	if cfg, ok := evidenceFor(job.TaskID); ok {
+		evidenceCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		reportLocalArchive(evidenceCtx, cfg, job.LocalPath)
+		cancel()
 	}
 	r.discardDeliveredCopy(job)
 
