@@ -573,4 +573,25 @@ data:
             target_label: app
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             target_label: service_name
+
+      # ── 宿主机服务：ticket-sync ─────────────────────────────────────────
+      # 它不是 k8s 工作负载（systemd 用户服务，监听 192.168.0.4:18080），
+      # kubernetes_sd_configs 永远发现不了，只能静态登记。
+      #
+      # 为什么必须采集：2026-11-12 那次全栈中断，就是它在 16 小时里把与 k3s
+      # imagefs 共享的 2.1T 盘从 87% 写到 96%。当时集群侧完全看不见它的磁盘
+      # 余量——它的 /metrics 里明明有 ticket_sync_disk_free_bytes，但没有任何
+      # 组件在抓，于是 DiskUsageHigh 成了唯一防线，而那条规则同样没有数据源。
+      # 两重盲区叠加，结果是一条告警都没出。
+      #
+      # IP 是当前单节点集群的固定地址；节点 IP 变更时必须同步改这里，
+      # 否则 target 会变 down，表现为 TicketSyncDown 误报而不是静默失效。
+      - job_name: 'ticket-sync'
+        metrics_path: '/metrics'
+        scrape_interval: 30s
+        static_configs:
+          - targets: ['192.168.0.4:18080']
+            labels:
+              service_name: 'ticket-sync'
+              instance: 'ticket-sync-host'
 {{- end }}

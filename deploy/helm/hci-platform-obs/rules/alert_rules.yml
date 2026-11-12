@@ -215,6 +215,75 @@ groups:
           summary: "节点 {{ $labels.instance }} 内存使用率超过 85%"
           description: "节点内存使用率 {{ $value | humanizePercentage }}，AI claw Pod 可能面临 OOM 风险。"
 
+  # ────────────────────── 宿主机服务与节点磁盘余量 ──────────────────────
+  # 这一组存在的理由：2026-11-12 全栈中断 36 分钟，一条告警都没出。
+  # 两个盲区叠加——(1) ticket-sync 是宿主机 systemd 服务，指标从未被采集；
+  # (2) DiskUsageHigh 依赖 node_filesystem_*，而集群里从来没有 node-exporter，
+  # 该规则从上线起就没有任何序列。
+  #
+  # 判据刻意用「余量绝对值」而不是「使用率百分比」：2.1T 盘的 80% 意味着只剩
+  # 420 GiB，那时已低于 ticket-sync 的 400 GiB 软阈值——报警即事故。
+  - name: ticket_sync
+    rules:
+      # 采集自检。没有这条，"指标不再更新"和"一切正常"在告警层面长得一模一样：
+      # 服务崩溃循环 5 次后 systemd 不再重启，但所有历史序列仍停在最后一个值。
+      - alert: TicketSyncDown
+        expr: up{job="ticket-sync"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "ticket-sync 指标采集失败"
+          description: "无法抓取 192.168.0.4:18080/metrics 超过 2 分钟。可能原因：宿主机服务已停止（崩溃循环 5 次后 systemd 不再重启）、节点 IP 变更、或 18080 端口被占用。该服务长期不可用会导致新工单日志无法落盘。"
+
+      # 早于软阈值 400 GiB 预警 100 GiB，留出一轮清理的时间窗。
+      - alert: TicketSyncDiskLow
+        expr: ticket_sync_disk_free_bytes < 500 * 1024^3
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "ticket-sync 所在磁盘余量低于 500 GiB"
+          description: "当前余量 {{ $value | humanize1024 }}B。低于 400 GiB 会触发主动淘汰，低于 250 GiB 会熔断拒绝新任务。"
+
+      - alert: TicketSyncDiskCritical
+        expr: ticket_sync_disk_free_bytes < 300 * 1024^3
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "ticket-sync 所在磁盘余量低于 300 GiB，即将熔断"
+          description: "当前余量 {{ $value | humanize1024 }}B。已处于主动淘汰区，低于 250 GiB 后拒绝所有新同步任务，需立即清理或扩容。"
+
+      # 熔断已发生：不是"余量偏低"，而是任务正在被拒。
+      - alert: TicketSyncWaterlineBlocking
+        expr: increase(ticket_sync_waterline_blocks_total[10m]) > 0
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "ticket-sync 因磁盘水位拒绝新任务"
+          description: "最近 10 分钟出现因余量低于硬阈值而被拒绝的写入。说明清理跑不过写入速度，需人工介入。"
+
+      # 节点级兜底：覆盖非 ticket-sync 的增长（镜像缓存、日志、数据库）。
+      # 只对大容量盘判绝对值，否则 /boot 这类小盘会天天误报。
+      - alert: NodeDiskFreeLow
+        expr: |
+          node_filesystem_avail_bytes{fstype=~"ext4|xfs"}
+          < 500 * 1024^3
+          and on (instance, mountpoint)
+          node_filesystem_size_bytes{fstype=~"ext4|xfs"} > 200 * 1024^3
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "节点 {{ $labels.instance }} 挂载点 {{ $labels.mountpoint }} 余量低于 500 GiB"
+          description: "剩余 {{ $value | humanize1024 }}B。该节点与 k3s imagefs 共享磁盘，余量不足会触发 kubelet 驱逐。"
+
   # ────────────────────────── 发布可用性（网关层）──────────────────────────
   # 发布期间「Pod 换了」与「用户拿到 502」是两件事：KSM 只能看到前者。
   # 网关 5xx 才是用户侧真实不可用的直接证据，也是衡量「发布窗口是否归零」的
