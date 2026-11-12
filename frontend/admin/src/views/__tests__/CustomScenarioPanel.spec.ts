@@ -45,11 +45,6 @@ const spcRow = {
   source: 'spc' as const,
   enabled: true,
   sort_order: 10,
-  review_state: 'approved' as const,
-  created_by: 'ops',
-  updated_by: 'ops',
-  created_at: '2026-11-09T10:00:00Z',
-  updated_at: '2026-11-09T10:00:00Z',
 }
 
 const configRow = { ...spcRow, scenario_id: 'sc-2', code: 'cs_paths', label: '路径清单', source: 'visual' as const }
@@ -131,6 +126,21 @@ describe('CustomScenarioPanel', () => {
       preview_kind: 'spc',
       preview_text: '[{"action":"copy","path":"/sf/log/cluster/"}]',
     })
+  })
+
+  it('列表与抽屉不再出现最后修改、审核态及内部主键', async () => {
+    const wrapper = await mountPanel()
+    expect(wrapper.text()).not.toContain('最后修改')
+    expect(wrapper.text()).not.toContain('待审核')
+    expect(wrapper.text()).not.toContain('已审核')
+    expect(wrapper.text()).not.toContain('00000000-0000-0000-0000-000000000001')
+    expect(wrapper.text()).toContain('存储链路完整取证')
+
+    await buttonByText(wrapper, '新增自定义场景').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('待审核')
+    expect(wrapper.text()).not.toContain('已审核')
+    wrapper.unmount()
   })
 
   it('列表按通道区分展示，不只显示路径数', async () => {

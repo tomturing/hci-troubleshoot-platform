@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -34,7 +33,6 @@ CODE_PATTERN = r"^[a-z][a-z0-9_]{1,31}$"
 
 ScenarioSource = Literal["visual", "json", "spc"]
 ScenarioAction = Literal["copy", "command", "script"]
-ScenarioReviewState = Literal["pending_review", "approved"]
 ScenarioCategory = Literal["log", "config", "file"]
 
 
@@ -116,7 +114,6 @@ class LogCollectCustomScenarioCreate(BaseModel):
     source: ScenarioSource = "visual"
     enabled: bool = True
     sort_order: int = 100
-    review_state: ScenarioReviewState = "pending_review"
 
     @field_validator("label")
     @classmethod
@@ -155,7 +152,6 @@ class LogCollectCustomScenarioUpdate(BaseModel):
     source: ScenarioSource | None = None
     enabled: bool | None = None
     sort_order: int | None = None
-    review_state: ScenarioReviewState | None = None
 
     @field_validator("label")
     @classmethod
@@ -193,11 +189,6 @@ class LogCollectCustomScenarioResponse(BaseModel):
     source: ScenarioSource = "visual"
     enabled: bool = True
     sort_order: int = 100
-    review_state: ScenarioReviewState = "pending_review"
-    created_by: str | None = None
-    updated_by: str | None = None
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
 
 
 class LogCollectCustomScenarioListResponse(BaseModel):

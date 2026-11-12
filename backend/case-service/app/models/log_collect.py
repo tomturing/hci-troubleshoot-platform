@@ -123,7 +123,7 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
         return f"<LogCollectTask(task_id={self.task_id}, case_id={self.case_id}, status={self.status})>"
 
 
-class LogCollectCustomScenario(Base, TimestampMixin):
+class LogCollectCustomScenario(Base):
     """日志收集自定义场景（acli ``-c``）。
 
     第一性原理：``-c`` 的物理形态是"节点上的一个 JSON 文件"，平台唯一能写节点文件
@@ -150,9 +150,6 @@ class LogCollectCustomScenario(Base, TimestampMixin):
     source = Column(String(16), nullable=False, default="visual", server_default="'visual'")
     enabled = Column(Boolean, nullable=False, default=True, server_default="true")
     sort_order = Column(Integer, nullable=False, default=100, server_default="100")
-    review_state = Column(String(16), nullable=False, default="pending_review", server_default="'pending_review'")
-    created_by = Column(String(64), nullable=True)
-    updated_by = Column(String(64), nullable=True)
 
     def __repr__(self) -> str:
         return f"<LogCollectCustomScenario(code={self.code}, revision={self.revision})>"

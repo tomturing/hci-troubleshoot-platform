@@ -33,7 +33,6 @@ import {
   type CustomScenarioCategory,
   type CustomScenarioCreatePayload,
   type CustomScenarioItem,
-  type CustomScenarioReviewState,
   type CustomScenarioSource,
   type SpcCatalog,
   type SpcCatalogItem,
@@ -53,7 +52,6 @@ const form = reactive({
   source: 'visual' as CustomScenarioSource,
   sort_order: 100,
   enabled: true,
-  review_state: 'pending_review' as CustomScenarioReviewState,
 })
 
 const items = ref<CustomScenarioItem[]>([])
@@ -100,7 +98,6 @@ function buildPayload(): CustomScenarioCreatePayload {
     source: form.source,
     enabled: form.enabled,
     sort_order: form.sort_order,
-    review_state: form.review_state,
   }
 }
 
@@ -377,7 +374,6 @@ function resetForm() {
     source: 'spc' as CustomScenarioSource,
     sort_order: 100,
     enabled: true,
-    review_state: 'pending_review' as CustomScenarioReviewState,
   })
   items.value = []
   bulkText.value = ''
@@ -405,7 +401,6 @@ function openEdit(row: CustomScenario) {
     source: row.source,
     sort_order: row.sort_order,
     enabled: row.enabled,
-    review_state: row.review_state,
   })
   items.value = row.items.map((item) => ({ ...item }))
   bulkText.value = ''
@@ -543,13 +538,6 @@ async function remove(row: CustomScenario) {
   }
 }
 
-function formatTime(value: string | null): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
 </script>
 
 <template>
@@ -682,12 +670,6 @@ function formatTime(value: string | null): string {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最后修改" width="150">
-          <template #default="{ row }">
-            <div class="cs-sub">{{ formatTime(row.updated_at) }}</div>
-            <div class="cs-sub">{{ row.updated_by || '—' }}</div>
-          </template>
-        </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
@@ -730,14 +712,10 @@ function formatTime(value: string | null): string {
             <el-form-item label="适用说明（选填）">
               <el-input v-model="form.applies_to" maxlength="200" placeholder="例如：仅适用 aSV 6.8 及以上" />
             </el-form-item>
-            <el-form-item label="排序 / 状态 / 审核">
+            <el-form-item label="排序 / 状态">
               <div class="cs-row">
                 <el-input-number v-model="form.sort_order" :min="0" :max="9999" :step="10" controls-position="right" />
                 <el-switch v-model="form.enabled" active-text="启用" />
-                <el-radio-group v-model="form.review_state">
-                  <el-radio value="pending_review">待审核</el-radio>
-                  <el-radio value="approved">已审核</el-radio>
-                </el-radio-group>
               </div>
             </el-form-item>
           </el-form>

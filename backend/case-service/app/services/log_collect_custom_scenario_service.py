@@ -29,10 +29,10 @@ from ..schemas.log_collect_custom_scenario import (
 
 logger = logging.getLogger(__name__)
 
+# 只声明真正落库的 13 列；迁移 060 删除了审核态与重复审计列。
 _COLUMNS = (
     "scenario_id, revision, code, label, summary, applies_to, items, item_count, "
-    "config_sha256, config_bytes, source, enabled, sort_order, review_state, "
-    "created_by, updated_by, created_at, updated_at"
+    "config_sha256, config_bytes, source, enabled, sort_order"
 )
 
 
@@ -196,12 +196,10 @@ class LogCollectCustomScenarioService:
                 f"""
                 INSERT INTO log_collect_custom_scenario
                     (code, revision, label, summary, applies_to, items, item_count,
-                     config_sha256, config_bytes, source, enabled, sort_order,
-                     review_state, created_by, updated_by)
+                     config_sha256, config_bytes, source, enabled, sort_order)
                 VALUES
                     (:code, 1, :label, :summary, :applies_to, CAST(:items AS jsonb), :item_count,
-                     :sha256, :size, :source, :enabled, :sort_order,
-                     :review_state, :actor, :actor)
+                     :sha256, :size, :source, :enabled, :sort_order)
                 RETURNING {_COLUMNS}
                 """
             ),
@@ -217,16 +215,16 @@ class LogCollectCustomScenarioService:
                 "source": payload.source,
                 "enabled": payload.enabled,
                 "sort_order": payload.sort_order,
-                "review_state": payload.review_state,
-                "actor": actor,
             },
         )
+        # 操作者只进日志与 operation_audit，不再落业务表、也不摆到界面上。
         logger.info(
-            "custom_scenario_created code=%s items=%d bytes=%d sha256=%s",
+            "custom_scenario_created code=%s items=%d bytes=%d sha256=%s actor=%s",
             payload.code,
             len(items),
             size,
             sha256,
+            actor or "-",
         )
         return _row_to_response(result.mappings().one())
 
@@ -261,11 +259,11 @@ class LogCollectCustomScenarioService:
                 INSERT INTO log_collect_custom_scenario
                     (scenario_id, revision, code, label, summary, applies_to, items,
                      item_count, config_sha256, config_bytes, source, enabled,
-                     sort_order, review_state, created_by, updated_by)
+                     sort_order)
                 VALUES
                     (:scenario_id, :revision, :code, :label, :summary, :applies_to,
                      CAST(:items AS jsonb), :item_count, :sha256, :size, :source,
-                     :enabled, :sort_order, :review_state, :created_by, :actor)
+                     :enabled, :sort_order)
                 RETURNING {_COLUMNS}
                 """
             ),
@@ -283,16 +281,14 @@ class LogCollectCustomScenarioService:
                 "source": source,
                 "enabled": changes.get("enabled", current.enabled),
                 "sort_order": changes.get("sort_order", current.sort_order),
-                "review_state": changes.get("review_state", current.review_state),
-                "created_by": current.created_by,
-                "actor": actor,
             },
         )
         logger.info(
-            "custom_scenario_revised code=%s revision=%d items=%d",
+            "custom_scenario_revised code=%s revision=%d items=%d actor=%s",
             code,
             next_revision,
             len(item_dicts),
+            actor or "-",
         )
         return _row_to_response(result.mappings().one())
 

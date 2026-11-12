@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -40,7 +39,6 @@ _ADMIN_HEADERS = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
 
 
 def _response(code: str = "cs_demo", *, items: list[str] | None = None) -> LogCollectCustomScenarioResponse:
-    now = datetime(2026, 11, 9, 10, 0, 0, tzinfo=UTC)
     paths = items or ["/sf/log/cluster/", "/sf/etc/cluster.conf"]
     return LogCollectCustomScenarioResponse(
         scenario_id=uuid4(),
@@ -55,11 +53,6 @@ def _response(code: str = "cs_demo", *, items: list[str] | None = None) -> LogCo
         source="visual",
         enabled=True,
         sort_order=10,
-        review_state="approved",
-        created_by="admin",
-        updated_by="admin",
-        created_at=now,
-        updated_at=now,
     )
 
 
@@ -372,7 +365,6 @@ def test_expand_paths_rejects_oversized_result():
 
 
 def _current_row(*, source: str = "visual") -> dict:
-    now = datetime(2026, 11, 10, 9, 0, 0, tzinfo=UTC)
     return {
         "scenario_id": uuid4(),
         "revision": 1,
@@ -387,11 +379,6 @@ def _current_row(*, source: str = "visual") -> dict:
         "source": source,
         "enabled": True,
         "sort_order": 100,
-        "review_state": "pending_review",
-        "created_by": "ops",
-        "updated_by": "ops",
-        "created_at": now,
-        "updated_at": now,
     }
 
 
@@ -470,3 +457,33 @@ async def test_update_keeps_current_channel_when_source_absent():
     assert session.insert_params is not None
     assert session.insert_params["source"] == "spc"
     assert session.insert_params["sha256"] == _serialize(current["items"], "spc")[1]
+
+
+# ── 迁移 060：删列后的契约守护 ──────────────────────────────────────────
+
+
+def test_response_excludes_removed_columns():
+    """响应模型不得再暴露审核态与重复审计字段，否则前端会重新把它们摆到界面上。"""
+    payload = _response().model_dump()
+    for field in ("review_state", "created_by", "updated_by", "created_at", "updated_at"):
+        assert field not in payload
+
+
+def test_create_and_update_payloads_reject_review_state():
+    """请求模型不接受已删字段，避免把幽灵审核态写回 API 契约。"""
+    assert "review_state" not in LogCollectCustomScenarioCreate.model_fields
+    assert "review_state" not in LogCollectCustomScenarioUpdate.model_fields
+
+
+@pytest.mark.asyncio
+async def test_update_insert_has_no_removed_columns():
+    """生成新 revision 时不得再绑定已删列，否则线上 SQL 会报未定义列。"""
+    current = _current_row()
+    session = _CapturingSession(current)
+    service = LogCollectCustomScenarioService(session)  # type: ignore[arg-type]
+
+    await service.update("cs_demo", LogCollectCustomScenarioUpdate(label="改名"), actor="ops")
+
+    assert session.insert_params is not None
+    for key in ("review_state", "created_by", "updated_by", "actor"):
+        assert key not in session.insert_params

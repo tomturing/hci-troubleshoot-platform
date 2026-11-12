@@ -21,7 +21,6 @@ import { getAccessToken } from '@/utils/auth'
 export type CustomScenarioCategory = 'log' | 'config' | 'file'
 export type CustomScenarioSource = 'visual' | 'json' | 'spc'
 export type CustomScenarioAction = 'copy' | 'command' | 'script'
-export type CustomScenarioReviewState = 'pending_review' | 'approved'
 
 export interface CustomScenarioItem {
   /** 只在 spc 通道生效；-c 通道后端会强制要求 copy。 */
@@ -50,11 +49,6 @@ export interface CustomScenario {
   source: CustomScenarioSource
   enabled: boolean
   sort_order: number
-  review_state: CustomScenarioReviewState
-  created_by: string | null
-  updated_by: string | null
-  created_at: string | null
-  updated_at: string | null
 }
 
 export interface CustomScenarioCreatePayload {
@@ -66,7 +60,6 @@ export interface CustomScenarioCreatePayload {
   source?: CustomScenarioSource
   enabled?: boolean
   sort_order?: number
-  review_state?: CustomScenarioReviewState
 }
 
 export type CustomScenarioUpdatePayload = Partial<Omit<CustomScenarioCreatePayload, 'code'>>

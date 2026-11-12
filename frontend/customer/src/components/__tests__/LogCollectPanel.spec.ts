@@ -742,9 +742,6 @@ describe('LogCollectPanel', () => {
       exclusive: true,
       sort_order: 10,
       enabled: true,
-      review_state: 'approved' as const,
-      updated_by: null,
-      updated_at: null,
     },
     {
       value: 'vm_suspend',
@@ -756,9 +753,6 @@ describe('LogCollectPanel', () => {
       exclusive: false,
       sort_order: 20,
       enabled: true,
-      review_state: 'approved' as const,
-      updated_by: null,
-      updated_at: null,
     },
   ]
 
