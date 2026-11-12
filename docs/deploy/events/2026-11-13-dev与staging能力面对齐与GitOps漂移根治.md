@@ -43,7 +43,7 @@ owner: team
 | P9 | 90 天前的 `Error` Pod/Job 残留 | 2026-08-06 的 PreSync hook 带 `argocd.argoproj.io/hook-finalizer`，operation 中断后清理未执行，TTL 控制器也无法删除 | Job annotations 与 `ownerReferences` |
 | P10 | `argocd` 命名空间无 `hci.env.role` 标签 | 环境标识的数据来源缺失 | `kubectl get ns argocd -o json` |
 | P11 | 无可用性门禁 | 只看 Deployment `1/1` 会漏掉 P4 这类「Ready 但不可达」 | 本次实测 |
-| P12 | `node-exporter` DaemonSet 反复 `CreateContainerError` | 当前 chart 只声明 `alloy` DaemonSet，Prometheus 的 node-exporter job 也是注释状态；这是带 tracking-id 的历史孤儿资源。obs app `prune: false` 让它留在集群，且其 `hostPath: /` 带 `HostToContainer` 传播，在 WSL 单机 `/` 非 shared mount 时必然失败 | `kubectl get ds -A`、`describe pod`、`grep -rn node-exporter deploy/` |
+| P12 | `node-exporter` DaemonSet 反复 `CreateContainerError` | main 的 #1494 新引入该 DaemonSet，模板把 `mountPropagation: HostToContainer` 硬编码在 `hostPath: /` 上；dev 单机 WSL 的 `/` 不是 shared/slave mount，containerd 拒绝生成容器 spec（实测重试 678 次）。staging 云端 `/` 是 shared mount 故无此问题，属于环境拓扑差异而非孤儿资源 | Pod waiting message、`kubectl describe`、新旧 main 的模板对比 |
 
 ---
 
@@ -67,7 +67,7 @@ owner: team
 | R4 | 新增 `scripts/ops/smoke-dev-services.sh` | 把 P11 变成 L1~L5 分层可证伪门禁 |
 | R5 | 集群侧重新 apply `deploy/gitops/bootstrap/argocd-root.yaml` | 让 GitOps 收回控制权，自动创建 P2 缺失的 DSH Application |
 | R6 | 集群侧清理 90 天前的失败 hook Job | 先摘除 finalizer 再删除，消除 P9 |
-| R7 | 集群侧删除孤儿 `node-exporter` DaemonSet | Git 中已无该声明，保留只会持续产生失败 Pod；按 GitOps 单一事实源删除而非为漂移资源改配置，消除 P12 |
+| R7 | `deploy/helm/hci-platform-obs` 把 `nodeExporter.mountPropagation` 参数化，`hci-platform-obs-dev` 用 inline values 置空 | 默认保留 staging/prod 行为；dev 关闭传播后仍保留 `/proc`、`/sys`、`/` 的静态只读视图，消除 P12 且不丢采集能力 |
 
 ---
 
@@ -81,6 +81,8 @@ owner: team
 | 直接 `kubectl delete job` | 被 `hook-finalizer` 卡在 Terminating | 先 merge patch 清空 finalizers |
 | 宣称「所有功能等价」 | dev 的 DSH baseURL 是内部 oneapi，与通用 `llm.baseUrl` 不同源，无专用 key 时分析调用会失败 | 脚本支持 `--dsh-api-key-file`；文档显式区分「进程/UI 可用」与「分析调用可用」 |
 | 只看 `1/1` | 漏掉 P4 | 冒烟门禁强制经 ClusterIP 访问并检查 EndpointSlice |
+| 依赖 selfHeal 自动修好 node-exporter | DaemonSet 采用 `updateStrategy: OnDelete`，模板更新不会触发 Pod 重建，失败 Pod 会一直留着 | 部署后显式删除旧 Pod，并用冒烟门禁的异常 Pod 判据兜底 |
+| 基于过期 main 基线做定性 | 排查期间 main 合入 #1494 新增 node-exporter 模板，一度把新回归误判为「Git 中已无声明的孤儿资源」；合并 main 后结论被推翻 | 合并最新 main 后再定稿，并把该次推翻记入本文 |
 
 ---
 
@@ -101,8 +103,9 @@ kubectl -n hci-dev patch job hci-sim-db-migrate-20260806-1304-6 \
   --type merge -p '{"metadata":{"finalizers":[]}}'
 kubectl -n hci-dev delete job hci-sim-db-migrate-20260806-1304-6
 
-# 5. 删除 Git 中已无声明的孤儿 DaemonSet（obs app prune=false 不会自动清理）
-kubectl -n hci-observability delete daemonset node-exporter --ignore-not-found
+# 5. node-exporter 使用 updateStrategy: OnDelete，模板更新不会触发 Pod 重建；
+#    必须显式删除旧 Pod，让 DaemonSet 按关闭传播后的新模板重建
+kubectl -n hci-observability delete pod -l app.kubernetes.io/name=node-exporter --ignore-not-found
 
 # 6. 执行完整验收
 bash scripts/ops/smoke-dev-services.sh
