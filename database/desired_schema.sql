@@ -4056,6 +4056,195 @@ COMMENT ON COLUMN log_collect_task.restore_status IS 'none/pending/success/faile
 
 
 -- ------------------------------------------------------------
+-- 表: log_collect_artifact_manifest  [模块: case-service]
+-- 说明: 日志包内容级证据。sha256/大小只能证明"同一份字节搬到了两端"，
+--       不能证明这份字节里有日志：Q2026111200624 的 608 字节空壳包在全链路
+--       sha256 一致的情况下被判成功，就是因为缺少内容证据。
+--       本表把「包里有什么」变成可审计事实：条目数、条目清单、总字节、是否加密。
+-- 约束: 同一任务同一来源同一摘要只记一条（幂等）；只读中央目录，不解压内容；
+--       加密包不得因 unzip -t 失败被判损坏（密码错 != 文件坏）。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_artifact_manifest (
+    manifest_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    task_id uuid NOT NULL,
+    case_id varchar(20) NOT NULL,
+    trace_id varchar(64),
+    source varchar(16) NOT NULL,
+    archive_path text,
+    archive_size bigint,
+    archive_sha256 char(64),
+    entry_count integer NOT NULL DEFAULT 0,
+    entry_total_bytes bigint NOT NULL DEFAULT 0,
+    entries jsonb NOT NULL DEFAULT '[]'::jsonb,
+    has_encrypted boolean NOT NULL DEFAULT false,
+    quality varchar(16) NOT NULL DEFAULT 'unknown',
+    reason text,
+    evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+    inspected_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT log_collect_artifact_manifest_pkey PRIMARY KEY (manifest_id),
+    CONSTRAINT fk_lcam_task FOREIGN KEY (task_id) REFERENCES log_collect_task (task_id) ON DELETE CASCADE,
+    CONSTRAINT ck_lcam_source CHECK ((source)::text = ANY ((ARRAY['node_zip'::character varying, 'platform_object'::character varying])::text[])),
+    CONSTRAINT ck_lcam_quality CHECK ((quality)::text = ANY ((ARRAY['ok'::character varying, 'suspect'::character varying, 'invalid'::character varying, 'unknown'::character varying])::text[])),
+    CONSTRAINT ck_lcam_entry_count CHECK (entry_count >= 0),
+    CONSTRAINT ck_lcam_entry_bytes CHECK (entry_total_bytes >= 0)
+);
+
+COMMENT ON TABLE log_collect_artifact_manifest IS '日志包内容级证据：条目清单/总字节/加密标记，用于识别空壳包';
+COMMENT ON COLUMN log_collect_artifact_manifest.source IS 'node_zip=节点侧原包；platform_object=平台合并后的成品';
+COMMENT ON COLUMN log_collect_artifact_manifest.entries IS '条目快照（文件名为准，含大小与加密标记；条数超限时截断）';
+COMMENT ON COLUMN log_collect_artifact_manifest.quality IS 'ok=有有效日志；suspect=条目/字节明显偏低；invalid=无包/过小/仅元数据；unknown=未探测';
+COMMENT ON COLUMN log_collect_artifact_manifest.reason IS '判定原因码（missing/too_small/no_entries/metadata_only/truncated_zip/ok）';
+COMMENT ON COLUMN log_collect_artifact_manifest.evidence IS '判定依据快照：阈值、白名单命中、原始命令输出摘要';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_lcam_task_source_digest
+    ON log_collect_artifact_manifest (task_id, source, COALESCE(archive_sha256, ''::bpchar));
+
+CREATE INDEX IF NOT EXISTS idx_lcam_task
+    ON log_collect_artifact_manifest (task_id, inspected_at DESC);
+
+
+-- ------------------------------------------------------------
+-- 表: log_collect_network_probe  [模块: case-service]
+-- 说明: 下发前网络质量探测（稳定性 + 带宽）。分目标记录：节点→日志服务器(5888)、
+--       节点→平台数据面(4443)。必须分目标，否则「5888 不可达但 P2 走 4443 正常」
+--       会被误报成网络故障（Q2026111200624 正是这种形态）。
+-- 约束: task_id 可空——探测发生在 create 之前；case_id 不建外键，探测数据不该因
+--       工单缺失而整条丢失；up_bps/down_bps 为 NULL 表示未测（不可用 0 冒充）。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_network_probe (
+    probe_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    case_id varchar(20),
+    task_id uuid,
+    trace_id varchar(64),
+    upload_mode varchar(16),
+    target varchar(16) NOT NULL,
+    reachable boolean NOT NULL DEFAULT false,
+    sample_count integer NOT NULL DEFAULT 0,
+    loss_rate numeric(5, 4),
+    rtt_min_ms integer,
+    rtt_avg_ms integer,
+    rtt_max_ms integer,
+    jitter_ms integer,
+    dns_ms integer,
+    connect_ms integer,
+    http_code integer,
+    up_bps bigint,
+    down_bps bigint,
+    grade varchar(16) NOT NULL DEFAULT 'unknown',
+    advice text,
+    samples jsonb NOT NULL DEFAULT '[]'::jsonb,
+    bridge_version varchar(32),
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT log_collect_network_probe_pkey PRIMARY KEY (probe_id),
+    CONSTRAINT fk_lcnp_task FOREIGN KEY (task_id) REFERENCES log_collect_task (task_id) ON DELETE CASCADE,
+    CONSTRAINT ck_lcnp_target CHECK ((target)::text = ANY ((ARRAY['log_server'::character varying, 'platform_data'::character varying])::text[])),
+    CONSTRAINT ck_lcnp_grade CHECK ((grade)::text = ANY ((ARRAY['good'::character varying, 'fair'::character varying, 'poor'::character varying, 'unknown'::character varying])::text[])),
+    CONSTRAINT ck_lcnp_sample_count CHECK (sample_count >= 0),
+    CONSTRAINT ck_lcnp_loss_rate CHECK ((loss_rate IS NULL) OR (loss_rate >= 0 AND loss_rate <= 1))
+);
+
+COMMENT ON TABLE log_collect_network_probe IS '下发前网络质量探测：分目标记录稳定性/带宽/分级，供客户提示与管理端排查';
+COMMENT ON COLUMN log_collect_network_probe.target IS 'log_server=节点到日志服务器 5888；platform_data=节点到平台数据面 4443';
+COMMENT ON COLUMN log_collect_network_probe.loss_rate IS '失败采样占比（0-1）；NULL 表示未采样';
+COMMENT ON COLUMN log_collect_network_probe.jitter_ms IS 'RTT 抖动（相邻样本差绝对均值），毫秒';
+COMMENT ON COLUMN log_collect_network_probe.up_bps IS '上行带宽（bit/s）；NULL 表示未测或目标不可达，禁止用 0 冒充';
+COMMENT ON COLUMN log_collect_network_probe.down_bps IS '下行带宽（bit/s）；NULL 语义同上';
+COMMENT ON COLUMN log_collect_network_probe.grade IS 'good/fair/poor/unknown：仅按与当前 upload_mode 相关的目标判定';
+COMMENT ON COLUMN log_collect_network_probe.advice IS '面向客户的建议文案（切模式/换网络/缩时间范围），不阻断流程';
+
+CREATE INDEX IF NOT EXISTS idx_lcnp_case
+    ON log_collect_network_probe (case_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lcnp_task
+    ON log_collect_network_probe (task_id, created_at DESC);
+
+
+-- ------------------------------------------------------------
+-- 表: log_collect_transfer_metric  [模块: case-service]
+-- 说明: 逐跳传输采样（拉取/上传/代传）。只存窄列，速率与 ETA 在桥侧算好再上报：
+--       多副本 case-service 用「相邻两条 DB 记录」算速率会因乱序/重复/多端而失真。
+-- 约束: (task_id, seq) 唯一，seq 由桥侧单调递增，天然幂等；终态后按保留策略降采样。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_transfer_metric (
+    id uuid NOT NULL DEFAULT gen_random_uuid(),
+    task_id uuid NOT NULL,
+    trace_id varchar(64),
+    seq bigint NOT NULL,
+    stage varchar(16) NOT NULL,
+    bytes_done bigint NOT NULL DEFAULT 0,
+    bytes_total bigint,
+    percent numeric(5, 2),
+    elapsed_ms bigint,
+    rate_bps bigint,
+    eta_sec integer,
+    stalled boolean NOT NULL DEFAULT false,
+    source varchar(16) NOT NULL DEFAULT 'bridge',
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT log_collect_transfer_metric_pkey PRIMARY KEY (id),
+    CONSTRAINT fk_lctm_task FOREIGN KEY (task_id) REFERENCES log_collect_task (task_id) ON DELETE CASCADE,
+    CONSTRAINT ck_lctm_stage CHECK ((stage)::text = ANY ((ARRAY['fetching'::character varying, 'uploading'::character varying, 'relaying'::character varying])::text[])),
+    CONSTRAINT ck_lctm_source CHECK ((source)::text = ANY ((ARRAY['bridge'::character varying, 'platform'::character varying])::text[])),
+    CONSTRAINT ck_lctm_bytes CHECK (bytes_done >= 0),
+    CONSTRAINT ck_lctm_percent CHECK ((percent IS NULL) OR (percent >= 0 AND percent <= 100))
+);
+
+COMMENT ON TABLE log_collect_transfer_metric IS '逐跳传输采样：阶段/字节/百分比/耗时/速率/ETA，供实时展示与云端留存';
+COMMENT ON COLUMN log_collect_transfer_metric.seq IS '桥侧单调递增序号，幂等键；重传同一 seq 视为同一采样';
+COMMENT ON COLUMN log_collect_transfer_metric.rate_bps IS 'EMA 平滑后的瞬时速率（bit/s），由桥侧计算，服务端不重算';
+COMMENT ON COLUMN log_collect_transfer_metric.eta_sec IS '预计剩余秒数；NULL 表示不可估算（速率<=0 或总量未知）';
+COMMENT ON COLUMN log_collect_transfer_metric.stalled IS '超过停滞阈值无字节增量；为 true 时界面冻结 ETA 并显示已停滞时长';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_lctm_task_seq
+    ON log_collect_transfer_metric (task_id, seq);
+
+CREATE INDEX IF NOT EXISTS idx_lctm_task_created
+    ON log_collect_transfer_metric (task_id, created_at DESC);
+
+
+-- ------------------------------------------------------------
+-- 表: log_collect_process_log  [模块: case-service]
+-- 说明: 采集进程日志回传（各采集主机 /sf/log/today/acli/plugins/log_collect/ 下的文件）。
+--       成功与失败都要有：失败时目录可能根本没有文件，此时落一条 status=empty，
+--       以区分「没日志」与「没回传」——否则云端无法判断证据是缺失还是未采集。
+-- 约束: content_gz 为 gzip 压缩后的原始字节（base64 传输后落库），单文件与单任务
+--       均有上限，超限截断并置 truncated；唯一键保证重试幂等。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_process_log (
+    log_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    task_id uuid NOT NULL,
+    case_id varchar(20) NOT NULL,
+    trace_id varchar(64),
+    host varchar(64) NOT NULL,
+    path text NOT NULL,
+    size bigint NOT NULL DEFAULT 0,
+    sha256 char(64),
+    content_gz bytea,
+    truncated boolean NOT NULL DEFAULT false,
+    status varchar(16) NOT NULL DEFAULT 'ok',
+    error text,
+    collected_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT log_collect_process_log_pkey PRIMARY KEY (log_id),
+    CONSTRAINT fk_lcpl_task FOREIGN KEY (task_id) REFERENCES log_collect_task (task_id) ON DELETE CASCADE,
+    CONSTRAINT ck_lcpl_status CHECK ((status)::text = ANY ((ARRAY['ok'::character varying, 'empty'::character varying, 'error'::character varying])::text[])),
+    CONSTRAINT ck_lcpl_size CHECK (size >= 0)
+);
+
+COMMENT ON TABLE log_collect_process_log IS '采集进程日志回传：各主机 acli log_collect 目录文件，用于云端直接分析';
+COMMENT ON COLUMN log_collect_process_log.host IS '采集主机 IP；empty 记录用于标记「目录为空」';
+COMMENT ON COLUMN log_collect_process_log.content_gz IS 'gzip 压缩内容；empty 记录为 NULL';
+COMMENT ON COLUMN log_collect_process_log.truncated IS '是否因单文件/单任务上限被截断';
+COMMENT ON COLUMN log_collect_process_log.status IS 'ok=有内容；empty=目录或文件为空；error=读取失败（error 列给原因）';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_lcpl_task_host_path_digest
+    ON log_collect_process_log (task_id, host, path, COALESCE(sha256, ''::bpchar));
+
+CREATE INDEX IF NOT EXISTS idx_lcpl_task
+    ON log_collect_process_log (task_id, created_at DESC);
+
+
+-- ------------------------------------------------------------
 -- 表: dsh_diagnosis_session  [模块: case-service]
 -- 说明: DSH（DeepSeek Harness）诊断会话的只读归档，把「AI 到底怎么诊断的」变成工单证据。
 --       DSH 是 Agent 运行时而非诊断服务：会话唯一真源是容器内
