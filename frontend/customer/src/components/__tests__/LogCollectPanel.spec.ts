@@ -123,6 +123,8 @@ vi.mock('@/api/terminal', async () => {
         ...(options.execId ? { exec_id: options.execId } : {}),
         // 证据票据漏映射会把"bridge 收不到票据"测成绿灯。
         ...(options.evidenceTicket ? { evidence_ticket: options.evidenceTicket } : {}),
+        ...(options.platformUrl ? { platform_url: options.platformUrl } : {}),
+        ...(options.evidenceTLSInsecure ? { tls_insecure: true } : {}),
         ...(options.traceId ? { trace_id: options.traceId } : {}),
         // 逐槽位清单：桩里漏映射，等于把"平台清单根本没下发"测成绿灯。
         ...(options.spcFiles?.length ? { spc_files: options.spcFiles } : {}),
@@ -3557,9 +3559,12 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     const message = actual.buildLogCollectMessage('Q2026111200624', 'create', {
       execId: 'task-1',
       evidenceTicket: '1763000000.abcdef',
+      platformUrl: 'https://hci.example',
+      evidenceTLSInsecure: true,
     })
     expect(JSON.parse(message)).toMatchObject({
       log_action: 'create', exec_id: 'task-1', evidence_ticket: '1763000000.abcdef',
+      platform_url: 'https://hci.example', tls_insecure: true,
     })
     const wrapper = await mountPanel()
     expect(wrapper.text()).not.toContain('evidence_ticket')

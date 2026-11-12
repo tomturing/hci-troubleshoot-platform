@@ -2718,6 +2718,9 @@ async function handleStart() {
         // 证据票据只在创建响应里出现一次：bridge 用它上报探测/速率/包内容/进程日志。
         // 前端纯透传，不落本地存储、不写进界面。
         evidenceTicket: task.evidence_ticket || undefined,
+        // 证据数据面与页面同源：bridge 不猜地址，也避免把证据上报到错误环境。
+        platformUrl: window.location.origin,
+        evidenceTLSInsecure: platformCertTrusted(window.location.origin),
         traceId,
         modules,
         dateFrom: form.dateRange[0],
