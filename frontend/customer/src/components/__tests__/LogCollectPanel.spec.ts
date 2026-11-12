@@ -1363,6 +1363,66 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
   })
 
   /**
+   * 回归（2026-11-12 Q2026110302155）：失败态原先只有一句「日志收集失败」，
+   * 客户既不知道是哪台节点、哪一步，也不知道该查网络还是查专项配置。
+   * 契约：有规范码时，诊断卡必须同时给出「码 + 结论 + 如何检查 + 如何处理」。
+   */
+  it('失败态按 error_code 展示结论、检查与处理建议', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          status: 'failed',
+          error_code: 'LC-SPC-006',
+          error_message: '场景清单写入未通过（目标 3 台，成功 1 台）：172.28.24.2 — 节点 SSH 连接失败',
+        } as Partial<LogCollectTask>),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const diagnosis = wrapper.find('.lc-diagnosis')
+    expect(diagnosis.exists()).toBe(true)
+    const text = diagnosis.text()
+    expect(text).toContain('目标节点 SSH 连接失败')
+    expect(text).toContain('LC-SPC-006')
+    expect(text).toContain('172.28.24.2')
+    expect(text).toContain('如何检查')
+    expect(text).toContain('如何处理')
+    // 不能把"节点不可达"又当成唯一解释糊弄过去
+    expect(text).not.toBe('日志收集失败')
+    wrapper.unmount()
+  })
+
+  /**
+   * 未知码不能编造原因，必须明确指向任务详情并劝阻反复重试。
+   */
+  it('失败态没有可识别错误码时指向任务详情，不臆造原因', async () => {
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [
+        taskFixture({
+          status: 'failed',
+          error_code: 'LC-UNKNOWN-999',
+          error_message: '',
+        } as Partial<LogCollectTask>),
+      ],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.find('.lc-diagnosis').text()
+    expect(text).toContain('LC-UNKNOWN-999')
+    expect(text).toContain('任务详情')
+    expect(text).toContain('不要反复重试')
+    wrapper.unmount()
+  })
+
+  /**
    * 回归（2026-11-06 Q2026110600940）：P2 完成后 `archive_path` 是平台对象 key，
    * 旧结果态曾把它拼进删除命令，用户不懂后台字段，照着执行可能误删文件。
    * 用户要求：只给准确路径、不给任何删除命令，由用户自行确认处理。

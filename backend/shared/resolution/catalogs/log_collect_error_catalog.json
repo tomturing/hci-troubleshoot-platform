@@ -12,6 +12,7 @@
     "INSTALL": "acli 安装：下载、上传、安装、安装后验证",
     "EXEC": "命令执行：PTY 申请、超时、非零退出、会话等待",
     "PLUGIN": "acli log_collect 插件语义：参数、任务冲突、采集/取消失败、进度解析",
+    "SPC": "场景清单分发：create 之前把平台场景清单逐台写入节点、回读校验与回滚",
     "TRANSFER": "制品交付：包缺失、校验和不一致、分块上传与断点续传",
     "PLATFORM": "平台服务：鉴权、归属、状态机、并发、数据库"
   },
@@ -411,6 +412,138 @@
       "http_status": 400,
       "user_hint": "日志收集任务 ID 缺失，无法确定场景清单备份归属。",
       "ops_hint": "create 消息必须携带平台任务 ID（exec_id），需匹配正则 ^[A-Za-z0-9._-]{1,64}$；核对前端 create 载荷与建任务响应。"
+    },
+    {
+      "code": "LC-PLUGIN-015",
+      "layer": "PLUGIN",
+      "stage": "progress",
+      "title_zh": "下发后节点未建立采集任务",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 200,
+      "user_hint": "acli create 退出码为 0，但节点上始终查不到任务。通常是节点 acli 版本与所选专项不匹配。",
+      "ops_hint": "核对节点 acli 版本与所选专项（完整节点输出见任务详情 create_output）；用内置专项做 A/B 对照后重试。不要按任务 ID 不存在处理。"
+    },
+    {
+      "code": "LC-PLUGIN-016",
+      "layer": "PLUGIN",
+      "stage": "create",
+      "title_zh": "节点上没有所选专项",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 422,
+      "user_hint": "acli 明确拒绝：收集专项在节点上不存在。平台下发的专项名与节点 acli 内置清单不一致。",
+      "ops_hint": "在节点执行 acli log_collect help 核对内置专项名；修正场景/专项配置后重试。直接重试不会恢复。"
+    },
+    {
+      "code": "LC-SPC-001",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "场景清单目录缺失",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "目标节点上找不到平台场景清单目录。节点可能未安装对应平台版本，或目录被移动/清理。",
+      "ops_hint": "在报错 IP 上确认平台场景清单目录存在且只有一份；error_detail 带实际探测输出。确认节点版本与平台匹配后重试。"
+    },
+    {
+      "code": "LC-SPC-002",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "场景清单目录不唯一",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "目标节点上存在多份平台场景清单目录，无法判断应该写入哪一份。",
+      "ops_hint": "在报错 IP 上合并或清理多余目录，只保留一份后重试；error_detail 会给出候选目录。"
+    },
+    {
+      "code": "LC-SPC-003",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "场景清单备份失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "写入前无法备份原有场景清单，通常是目录不可写、磁盘空间不足或权限不足。",
+      "ops_hint": "在报错 IP 上检查目标目录可写与磁盘余量；error_detail 带备份命令输出。修复后重试。"
+    },
+    {
+      "code": "LC-SPC-004",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "场景清单写入或校验失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "场景清单写入后回读校验不一致，可能是磁盘只读、空间不足或并发改写。",
+      "ops_hint": "检查节点磁盘与文件系统状态，确认没有其它进程同时修改场景清单；error_detail 带校验命令输出。"
+    },
+    {
+      "code": "LC-SPC-005",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "场景清单回滚失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "写入未通过后回滚也失败，节点上可能残留平台清单，重试前必须先人工核对。",
+      "ops_hint": "按 detail.spc_hosts 的 IP 与备份信息核对残留；确认清理/还原后再重试，避免带残留清单采集。"
+    },
+    {
+      "code": "LC-SPC-006",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "目标节点 SSH 连接失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 502,
+      "user_hint": "从发起节点 SSH 到目标节点失败：连接被拒、路由不可达或主机密钥变化。",
+      "ops_hint": "在发起节点用同一账号执行 ssh <目标IP> 复现；检查防火墙、节点状态与 known_hosts。error_detail 带原始错误。"
+    },
+    {
+      "code": "LC-SPC-007",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "目标节点 SSH 认证失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 502,
+      "user_hint": "SSH 认证失败：免密未配置、密钥变更或账号不一致。",
+      "ops_hint": "确认发起节点到目标节点同账号免密登录可用（ssh -o BatchMode=yes <IP> true）；修复后重试。"
+    },
+    {
+      "code": "LC-SPC-008",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "目标节点命令执行超时",
+      "owner": "customer",
+      "retryable": "true",
+      "http_status": 504,
+      "user_hint": "目标节点命令超过超时时间未返回，通常是节点负载高或磁盘 IO 卡住。",
+      "ops_hint": "检查目标节点负载与磁盘 IO，恢复后重试；持续超时需按节点异常处理。"
+    },
+    {
+      "code": "LC-SPC-009",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "场景清单文件缺失",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "场景清单目录存在，但所选槽位的清单文件缺失或命名异常。",
+      "ops_hint": "在目标节点确认对应槽位清单文件存在；核对平台场景配置与节点版本是否匹配。"
+    },
+    {
+      "code": "LC-SPC-010",
+      "layer": "SPC",
+      "stage": "create",
+      "title_zh": "多台节点场景清单写入失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "多台节点写入失败且原因不同，不能只按一个原因排查。",
+      "ops_hint": "按 detail.spc_hosts[].error_code 与 error_detail 逐台处置；先修 SSH/认证类，再处理目录与写入类。"
     },
     {
       "code": "LC-TRANSFER-001",

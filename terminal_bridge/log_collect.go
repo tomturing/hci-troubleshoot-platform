@@ -167,6 +167,9 @@ var (
 	// logCollectAnsiRe 匹配终端颜色/样式转义。acli 失败时会输出 `\x1b[31mFATA\x1b[0m...`，
 	// 不清洗会让状态行前缀带转义、解析失配，前端也会把乱码直接展示给用户。
 	logCollectAnsiRe = regexp.MustCompile("\u001b\\[[0-9;]*m")
+	// 只用于剥掉 acli 日志行前面的时间戳，避免把日志头当成失败原因。
+	// 兼容 `2026/11/12 10:00:00`、`2026-11-12T10:00:00.123Z`、`2026-11-12 10:00:00+08:00`。
+	logCollectTimestampRe = regexp.MustCompile(`^\d{4}[/-]\d{2}[/-]\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
 	// 节点行只锚定「行首 IP + 中间状态列 + 行尾百分比/占位横线」三段的形态，
 	// 中间列不写死文案：中文「收集完成」与英文「Collection successful」都是两个词的
 	// 组合，任何按词枚举的写法都会在下一次文案变化时失效，交给
@@ -1420,28 +1423,73 @@ func errString(err error) string {
 // errString(err) 永远是空串（2026-10-27 实测 19 条失败 create 全部 error=""），
 // 导致桥侧日志、平台任务与前端提示都拿不到原因。
 //
-// 取法：先去终端颜色码，再优先选含失败关键词的行，最后退化为首个非空行。
-// 只取一行并截断，避免把多行 acli 输出整段灌进任务表。
+// 取法（2026-11-12 修正）：FATA 只是 acli 的包装行，不是原因本身。
+// 旧实现一遇到 FATA 就返回，导致「收集专项core不存在！」被丢掉，
+// 前端 normalize 再把唯一一行 FATA 过滤成空串，用户只看到"日志收集失败"。
+// 新优先级：业务关键词行（中/英）> 首个非噪音行 > FATA 包装行。
 func logCollectFailureLine(output string) string {
 	cleaned := stripAnsi(output)
-	var fallback string
+	var firstLine, fatalLine string
 	for _, raw := range strings.Split(cleaned, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" {
 			continue
 		}
-		if strings.Contains(line, "错误") || strings.Contains(line, "失败") ||
-			strings.HasPrefix(line, "FATA") || strings.HasPrefix(line, "Error") {
+		// 时间戳只是日志前缀，剥掉后内容仍要参与判定：
+		// 直接整行跳过会把「2026/11/12 10:00:00 收集专项core不存在！」一起丢掉。
+		line = strings.TrimSpace(logCollectTimestampRe.ReplaceAllString(line, ""))
+		line = strings.TrimSpace(strings.TrimLeft(line, "-|[] "))
+		if line == "" {
+			continue
+		}
+		// JSON / logfmt 结构化日志是 acli 的噪声行，不含用户可读的原因。
+		if strings.HasPrefix(line, "{") {
+			continue
+		}
+		if strings.HasPrefix(line, "FATA") || strings.Contains(line, "level=fatal") ||
+			strings.Contains(line, "level=error") {
+			if fatalLine == "" {
+				fatalLine = line
+			}
+			continue
+		}
+		if firstLine == "" {
+			firstLine = line
+		}
+		if logCollectIsReasonLine(line) {
 			return truncateString(line, 200)
 		}
-		if fallback == "" {
-			fallback = line
+	}
+	if firstLine != "" {
+		return truncateString(firstLine, 200)
+	}
+	return truncateString(fatalLine, 200)
+}
+
+// logCollectIsReasonLine 判断一行是不是"业务原因"。
+// 中英双语都要覆盖：客户现场 acli 可能跑在英文 locale 下，
+// 只认中文关键词会让英文环境的失败原因退化成"首个非空行"（往往是进度条/表头）。
+func logCollectIsReasonLine(line string) bool {
+	for _, kw := range []string{"错误", "失败", "不存在", "不支持", "未找到", "非法", "权限", "超时"} {
+		if strings.Contains(line, kw) {
+			return true
 		}
 	}
-	if fallback == "" {
-		return ""
+	lower := strings.ToLower(line)
+	for _, kw := range []string{"error", "failed", "failure", "not found", "not supported",
+		"permission denied", "timeout", "timed out", "no such file", "read-only"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
 	}
-	return truncateString(fallback, 200)
+	return false
+}
+
+// logCollectModuleMissing 识别 acli 的「收集专项 X 不存在」。
+// 这不是普通的命令非零退出：处置动作是核对专项名/acli 版本，重试不会变好。
+func logCollectModuleMissing(output string) bool {
+	cleaned := stripAnsi(output)
+	return strings.Contains(cleaned, "收集专项") && strings.Contains(cleaned, "不存在")
 }
 
 func firstNonEmpty(values ...string) string {
@@ -1570,15 +1618,21 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 
 	case "create":
 		// ── 自定义场景（acli -c）：先证明配置写对了，再下发采集 ──────────────
-		rejectConfig := func(errType, reason string) {
+		rejectConfigWithCode := func(errType, code, reason string) {
+			if code == "" {
+				code = validationErrorCode(errType)
+			}
 			sendMsg(ws, OutMessage{
 				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-				Status: "error", ErrorType: errType, ErrorCode: validationErrorCode(errType),
+				Status: "error", ErrorType: errType, ErrorCode: code,
 				Message: reason, TraceID: traceID, CustomUI: cui,
 			})
 			blog("ERROR", "log_collect.config_rejected", "自定义场景配置校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"error_type": errType, "reason": reason, "ticket_no": msg.TicketNo,
+				"error_type": errType, "error_code": code, "reason": reason, "ticket_no": msg.TicketNo,
 			})
+		}
+		rejectConfig := func(errType, reason string) {
+			rejectConfigWithCode(errType, validationErrorCode(errType), reason)
 		}
 
 		var configPath string
@@ -1602,7 +1656,8 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			}
 			state, rejection := b.prepareSpcScenario(ctx, s, msg, traceID, cui)
 			if rejection != nil {
-				rejectConfig(rejection.ErrType, rejection.Message)
+				// 带规范码回包：前端按码给出检查/修复建议，不再只显示"日志收集失败"。
+				rejectConfigWithCode(rejection.ErrType, rejection.Code, rejection.Message)
 				return
 			}
 			spcState = state
@@ -1684,6 +1739,11 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			status = "error"
 			code = execErrorCode(err, exitCode)
 			failure = firstNonEmpty(failure, logCollectFailureLine(output))
+			// acli 明确回了「收集专项 X 不存在」：换成专属码，
+			// 让用户看到的是"专项/版本不匹配"而不是泛化的"命令返回非零"。
+			if logCollectModuleMissing(output) {
+				code = ErrPlugModuleMissing
+			}
 		} else {
 			// 第一性原理：退出码不是"任务已建立"的证据。必须正向确认一次。
 			ack := confirmLogCollectCreate(ctx, logCollectCreateAckInterval, func(ackCtx context.Context) (string, int, error) {
@@ -1699,8 +1759,10 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 				outcome = "ok"
 			case logCollectAckNotEstablished:
 				status = "error"
-				code = ErrPlugTaskNotFound
-				failure = "任务下发后节点未建立采集任务（acli 退出码为 0，但 progress 持续报告任务不存在）；请核对节点 acli 版本与所选专项"
+				// 用 015 而不是 008：008 是"查询了一个不存在的任务"，本场景是
+				// "下发之后节点根本没建立"，处置动作不同（核对 acli 版本/专项 vs 核对任务 ID）。
+				code = ErrPlugCreateNotEstablished
+				failure = "任务下发后节点未建立采集任务（acli 退出码为 0，但 progress 持续报告任务不存在）；请核对节点 acli 版本与所选专项，完整节点输出见任务详情"
 			default:
 				// 结果未知：不替节点下失败结论，保持 ok 并留痕，由前端有界等待兜底。
 				outcome = "ok"

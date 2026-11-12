@@ -286,8 +286,10 @@ func (r *spcTaskRegistry) reset() {
 }
 
 // spcRejection 是可以直接回给前端的拒绝结论。
+// Code 是规范 LC-* 码（LC-SPC-001..010），ErrType 保留内部短名供聚合。
 type spcRejection struct {
 	ErrType string
+	Code    string
 	Message string
 }
 
@@ -527,15 +529,23 @@ func spcRestoreDue(nodeState string, everRunning bool, idlePolls int) (bool, str
 	return false, ""
 }
 
-// runSpcOnHost 在目标主机上执行一段脚本：本机直连当前会话，其余节点走一次 ssh。
-func (s *SSHSession) runSpcOnHost(ctx context.Context, ip string, local bool, script string) (string, int, error) {
+// runSpcOnHostStreams 在目标主机上执行一段脚本：本机直连当前会话，其余节点走一次 ssh。
+//
+// 为什么 stdout 与 stderr 必须分开返回：
+//  1. stderr 是「真实原因」的唯一来源（read-only file system、permission denied、
+//     cp: cannot stat）。旧实现走 runQuickCommand，它只在 stdout 为空时才拿 stderr
+//     兜底——脚本先打赢了 marker 再失败时，原因就被静默丢弃，界面只剩一句
+//     「场景清单写入失败」（2026-11-12 Q2026110302155 现场）。
+//  2. stderr 不能直接拼进 stdout：目录探测把任何以 "/" 开头的行当候选目录，
+//     "/bin/sh: line 1: ..." 这类行会被算成第二个目录，凭空报「目录不唯一」。
+func (s *SSHSession) runSpcOnHostStreams(ctx context.Context, ip string, local bool, script string) (stdout, stderr string, exitCode int, err error) {
 	command := script
 	if !local {
 		command = buildSpcSSHCommand(ip, script)
 	}
 	hostCtx, cancel := context.WithTimeout(ctx, spcHostCommandTimeout)
 	defer cancel()
-	return s.runQuickCommand(hostCtx, command)
+	return s.runQuickCommandStreams(hostCtx, command)
 }
 
 // spcNodeList 取集群节点清单（与 probe 同源命令），用于把 all 解析成具体主机集合。
@@ -572,28 +582,28 @@ func parseSpcFiles(msg InMessage) ([]spcSlotFile, *spcRejection) {
 		return nil, nil
 	}
 	if strings.TrimSpace(msg.SpcJSON) != "" {
-		return nil, &spcRejection{"spc_config_conflict", "spc_files 与 spc_json 不能同时下发"}
+		return nil, &spcRejection{ErrType: "spc_config_conflict", Message: "spc_files 与 spc_json 不能同时下发"}
 	}
 	seen := map[string]bool{}
 	files := make([]spcSlotFile, 0, len(msg.SpcFiles))
 	for _, raw := range msg.SpcFiles {
 		slot := strings.TrimSpace(raw.Slot)
 		if !spcSlotRe.MatchString(slot) || !logCollectModules[slot] {
-			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("不支持的清单槽位：%s", slot)}
+			return nil, &spcRejection{ErrType: "invalid_spc", Message: fmt.Sprintf("不支持的清单槽位：%s", slot)}
 		}
 		if seen[slot] {
-			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("清单槽位重复：%s", slot)}
+			return nil, &spcRejection{ErrType: "invalid_spc", Message: fmt.Sprintf("清单槽位重复：%s", slot)}
 		}
 		seen[slot] = true
 		if len(raw.Content) == 0 || len(raw.Content) > logCollectSpcMaxBytes {
-			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("槽位 %s 的清单为空或超过 %d 字节", slot, logCollectSpcMaxBytes)}
+			return nil, &spcRejection{ErrType: "invalid_spc", Message: fmt.Sprintf("槽位 %s 的清单为空或超过 %d 字节", slot, logCollectSpcMaxBytes)}
 		}
 		if err := validateSpcContent(raw.Content); err != nil {
-			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("槽位 %s 的清单非法：%v", slot, err)}
+			return nil, &spcRejection{ErrType: "invalid_spc", Message: fmt.Sprintf("槽位 %s 的清单非法：%v", slot, err)}
 		}
 		digest := spcSHA256(raw.Content)
 		if declared := strings.ToLower(strings.TrimSpace(raw.SHA256)); declared != "" && declared != digest {
-			return nil, &spcRejection{"spc_digest_mismatch", fmt.Sprintf("槽位 %s 的清单摘要与内容不一致（传输可能被截断或改写）", slot)}
+			return nil, &spcRejection{ErrType: "spc_digest_mismatch", Message: fmt.Sprintf("槽位 %s 的清单摘要与内容不一致（传输可能被截断或改写）", slot)}
 		}
 		files = append(files, spcSlotFile{Slot: slot, Content: raw.Content, SHA256: digest})
 	}
@@ -619,7 +629,7 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 		// 多槽位时 SpcSlot 只是兼容字段，不能覆盖平台签发的槽位集合。
 		slot = files[0].Slot
 	} else if slot != logCollectSpcSlot {
-		return nil, &spcRejection{"spc_slot_unsupported", fmt.Sprintf("不支持的 spc 槽位：%s（bridge 仅支持 %s）", slot, logCollectSpcSlot)}
+		return nil, &spcRejection{ErrType: "spc_slot_unsupported", Message: fmt.Sprintf("不支持的 spc 槽位：%s（bridge 仅支持 %s）", slot, logCollectSpcSlot)}
 	}
 
 	spec := spcApplySpec{Slot: slot}
@@ -636,11 +646,11 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 		digest = spcSHA256(strings.Join(digests, "|"))
 	} else {
 		if err := validateSpcContent(msg.SpcJSON); err != nil {
-			return nil, &spcRejection{"invalid_spc", fmt.Sprintf("场景内容非法：%v", err)}
+			return nil, &spcRejection{ErrType: "invalid_spc", Message: fmt.Sprintf("场景内容非法：%v", err)}
 		}
 		digest = spcSHA256(msg.SpcJSON)
 		if declared := strings.ToLower(strings.TrimSpace(msg.SpcSHA256)); declared != "" && declared != digest {
-			return nil, &spcRejection{"spc_digest_mismatch", "场景摘要与内容不一致（传输可能被截断或改写）"}
+			return nil, &spcRejection{ErrType: "spc_digest_mismatch", Message: "场景摘要与内容不一致（传输可能被截断或改写）"}
 		}
 		spec.Content = msg.SpcJSON
 		spcBytes = len(msg.SpcJSON)
@@ -648,7 +658,7 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 
 	taskID := strings.TrimSpace(msg.ExecID)
 	if !spcTaskIDRe.MatchString(taskID) {
-		return nil, &spcRejection{"invalid_task_id", "缺少合法的任务 ID，无法确定备份归属"}
+		return nil, &spcRejection{ErrType: "invalid_task_id", Message: "缺少合法的任务 ID，无法确定备份归属"}
 	}
 	spec.TaskID = taskID
 
@@ -658,7 +668,7 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 	}
 	targets, all, err := spcTargetSet(msg.IPs, hosts)
 	if err != nil {
-		return nil, &spcRejection{"spc_hosts_unknown", err.Error()}
+		return nil, &spcRejection{ErrType: "spc_hosts_unknown", Message: err.Error()}
 	}
 
 	state := &spcTaskState{
@@ -678,17 +688,44 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 	results := b.applySpcAll(ctx, s, state, spec)
 	state.setHosts(results)
 
-	written, broken, unreachable := spcClassifyHosts(results)
-	// 环境坏（目录缺失/多份/备份失败/写入失败）必须停手；
-	// 不可达只在"用户点名了这几台"时算失败，all 模式下视为本轮不参与。
-	if len(broken) > 0 || (!all && len(unreachable) > 0) || written == 0 {
-		rejection := &spcRejection{"spc_write_failed", spcRejectionMessage(written, broken, unreachable)}
+	written, failed := spcClassifyHosts(results)
+	// all 模式下不可达视为本轮不参与（保持既有语义）；
+	// 点名模式下任何一台失败都必须拒绝。
+	blocking := failed
+	if all {
+		blocking = make([]spcHostState, 0, len(failed))
+		for _, host := range failed {
+			if host.ErrorCode != spcErrUnreachable {
+				blocking = append(blocking, host)
+			}
+		}
+	}
+	if len(blocking) > 0 || written == 0 {
+		// all 模式下不可达不阻断，但一台上都没写成时必须把它报出来：
+		// 否则 Message 只剩「目标 N 台，成功 0 台」，用户拿不到任何线索。
+		report := blocking
+		if len(report) == 0 {
+			report = failed
+		}
+		errType, code := spcRejectionCode(report)
+		rejection := &spcRejection{
+			ErrType: errType,
+			Code:    code,
+			Message: spcRejectionMessage(written, report),
+		}
 		restored, restoreFailed := b.rollbackSpcAll(s, state, "写入未通过，已回滚")
+		if restoreFailed > 0 {
+			// 主因码保持不变：回滚失败是叠加风险，覆盖主因会让用户按错误的码排查。
+			rejection.Message = truncateString(rejection.Message+
+				fmt.Sprintf("；回滚失败 %d 台，这些节点可能残留平台清单（重试前须人工核对）", restoreFailed), 560)
+		}
 		blog("ERROR", "log_collect.spc_fanout_failed", "场景写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 			"task_id": taskID, "slot": slot, "written": written,
-			"broken_hosts": broken, "unreachable_hosts": unreachable,
-			"restored_hosts": restored, "restore_failed_hosts": restoreFailed,
-			"reason": rejection.Message,
+			"error_code": code, "error_type": errType,
+			"failed_hosts":   spcHostAuditTrail(blocking),
+			"restored_hosts": restored,
+			"restore_failed": restoreFailed,
+			"reason":         rejection.Message,
 		})
 		return nil, rejection
 	}
@@ -696,50 +733,67 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 	spcTaskStore.put(state)
 	blog("INFO", "log_collect.spc_fanout", "场景已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "spc_sha256": digest,
-		"written": written, "excluded_hosts": unreachable,
+		"written": written, "failed_hosts": spcHostAuditTrail(failed),
 		"hosts": spcHostAuditTrail(results),
 	})
 	return state, nil
 }
 
-// spcClassifyHosts 把逐台结果拆成「已写入 / 环境坏 / 不可达」。
-func spcClassifyHosts(results []spcHostState) (int, []string, []string) {
+// spcClassifyHosts 返回写入成功台数与失败明细（按 IP 排序）。
+// 关键变化：不再把「环境坏」和「不可达」压成两串字符串——
+// 字符串会丢掉每台的具体根因码，Message 里就只剩"节点不可达"这类泛化描述。
+func spcClassifyHosts(results []spcHostState) (int, []spcHostState) {
 	written := 0
-	broken := make([]string, 0, 2)
-	unreachable := make([]string, 0, 2)
+	failed := make([]spcHostState, 0, len(results))
 	for _, host := range results {
 		if host.Written {
 			written++
 			continue
 		}
-		if host.ErrorCode == spcErrUnreachable {
-			unreachable = append(unreachable, host.IP)
-			continue
-		}
-		broken = append(broken, fmt.Sprintf("%s(%s)", host.IP, firstNonEmpty(host.ErrorCode, spcErrWrite)))
+		failed = append(failed, host)
 	}
-	sort.Strings(broken)
-	sort.Strings(unreachable)
-	return written, broken, unreachable
+	sort.Slice(failed, func(i, j int) bool { return failed[i].IP < failed[j].IP })
+	return written, failed
 }
 
-// spcRejectionMessage 拼面向现场的一句话原因，必须带上具体主机与根因码，
-// 否则用户只能看到"写入失败"而不知道该去查哪台。
-func spcRejectionMessage(written int, broken, unreachable []string) string {
-	if written == 0 && len(broken) == 0 && len(unreachable) == 0 {
+// spcRejectionCode 选规范码：全部节点同一原因时给精确码；
+// 原因不一致时给聚合码 LC-SPC-010，逐台原因仍在 Message 与 detail.spc_hosts 里。
+// 不能用某一台的码代表全部：用户会按这个码去排查，而实际有别的故障混在里面。
+func spcRejectionCode(failed []spcHostState) (string, string) {
+	first := ""
+	same := true
+	for _, host := range failed {
+		code := firstNonEmpty(host.ErrorCode, spcErrWrite)
+		if first == "" {
+			first = code
+			continue
+		}
+		if code != first {
+			same = false
+		}
+	}
+	if first == "" || !same {
+		return "spc_write_failed", ErrSpcAggregate
+	}
+	return first, firstNonEmpty(validationErrorCode(first), ErrSpcAggregate)
+}
+
+// spcRejectionMessage 逐台给出「IP — 具体原因」，不再把不同根因揉成"节点不可达"。
+// 用户看到这句话就知道该查哪台、查什么；完整 stderr 在 detail.spc_hosts[].error_detail。
+func spcRejectionMessage(written int, failed []spcHostState) string {
+	total := written + len(failed)
+	if total == 0 {
 		return "没有任何节点写入成功"
 	}
-	parts := make([]string, 0, 3)
-	if len(broken) > 0 {
-		parts = append(parts, "节点环境异常："+strings.Join(broken, "、"))
+	head := fmt.Sprintf("场景清单写入未通过（目标 %d 台，成功 %d 台）", total, written)
+	if len(failed) == 0 {
+		return head
 	}
-	if len(unreachable) > 0 {
-		parts = append(parts, "节点不可达："+strings.Join(unreachable, "、"))
+	details := make([]string, 0, len(failed))
+	for _, host := range failed {
+		details = append(details, fmt.Sprintf("%s — %s", host.IP, spcErrorTitle(firstNonEmpty(host.ErrorCode, spcErrWrite))))
 	}
-	if written == 0 {
-		parts = append(parts, "可用节点为 0")
-	}
-	return truncateString("场景未能写入全部目标节点（"+strings.Join(parts, "；")+"）", 400)
+	return truncateString(head+"："+strings.Join(details, "；"), 500)
 }
 
 // spcHostAuditTrail 把逐台结果压成可入库的短结构：路径与备份名是排查恢复问题的唯一线索。
@@ -775,6 +829,10 @@ func spcHostTrailItem(host spcHostState, errorKey string) map[string]any {
 	}
 	if host.ErrorCode != "" {
 		item[errorKey] = host.ErrorCode
+	}
+	// stderr 摘要必须落库：只有 error_code 时，同一码下的免密/路径/权限差异无法区分。
+	if host.ErrorDetail != "" {
+		item["error_detail"] = truncateString(host.ErrorDetail, 500)
 	}
 	// 多槽位逐条证据：检索时要能回答"哪个模块文件没写成/没还原"。
 	if len(host.Slots) > 0 {
@@ -828,10 +886,9 @@ func (b *Bridge) applySpcAll(ctx context.Context, s *SSHSession, state *spcTaskS
 func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcApplySpec, ip string, local bool) spcHostState {
 	state := spcHostState{IP: ip, RestoreState: "pending"}
 
-	output, _, err := s.runSpcOnHost(ctx, ip, local, buildSpcDirCommand(""))
+	output, errOut, _, err := s.runSpcOnHostStreams(ctx, ip, local, buildSpcDirCommand(""))
 	if err != nil {
-		state.ErrorCode = spcErrUnreachable
-		state.ErrorDetail = errString(err)
+		state.ErrorCode, state.ErrorDetail = classifySpcCommandError(err, spcJoinDiag(output, errOut), spcStepDir)
 		return state
 	}
 	dir, dirCode := spcResolveDir(output)
@@ -881,26 +938,26 @@ func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip strin
 	}
 	state.Path, state.Backup = target, backup
 
-	prepareOut, _, prepareErr := s.runSpcOnHost(ctx, ip, local, buildSpcPrepareCommand(target, backup))
+	prepareOut, prepareErrOut, _, prepareErr := s.runSpcOnHostStreams(ctx, ip, local, buildSpcPrepareCommand(target, backup))
 	if prepareErr != nil {
-		state.ErrorCode = spcErrUnreachable
-		state.ErrorDetail = errString(prepareErr)
+		state.ErrorCode, state.ErrorDetail = classifySpcCommandError(prepareErr, spcJoinDiag(prepareOut, prepareErrOut), spcStepBackup)
 		return state
 	}
 	if !spcMarkerHas(prepareOut, "SPC_PREPARE_OK") {
 		state.ErrorCode = firstNonEmpty(spcMarkerField(prepareOut, "reason"), spcErrBackup)
+		state.ErrorDetail = spcOutputTail(prepareOut, 2, 200)
 		return state
 	}
 	state.OriginalSHA = spcMarkerField(prepareOut, "orig")
 
-	writeOut, _, writeErr := s.runSpcOnHost(ctx, ip, local, buildSpcWriteVerifyCommand(target, backup, file.Content))
+	writeOut, writeErrOut, _, writeErr := s.runSpcOnHostStreams(ctx, ip, local, buildSpcWriteVerifyCommand(target, backup, file.Content))
 	if writeErr != nil {
-		state.ErrorCode = spcErrUnreachable
-		state.ErrorDetail = errString(writeErr)
+		state.ErrorCode, state.ErrorDetail = classifySpcCommandError(writeErr, spcJoinDiag(writeOut, writeErrOut), spcStepWrite)
 		return state
 	}
 	if !spcMarkerHas(writeOut, "SPC_WRITE_OK") {
 		state.ErrorCode = firstNonEmpty(spcMarkerField(writeOut, "reason"), spcErrWrite)
+		state.ErrorDetail = spcOutputTail(writeOut, 2, 200)
 		return state
 	}
 	state.Written = true
@@ -948,10 +1005,10 @@ func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *SSHSession, plan spcRe
 	local := plan.LocalIPs[ip]
 	dir := plan.Dirs[ip]
 	if dir == "" {
-		output, _, err := s.runSpcOnHost(ctx, ip, local, buildSpcDirCommand(""))
+		output, errOut, _, err := s.runSpcOnHostStreams(ctx, ip, local, buildSpcDirCommand(""))
 		if err != nil {
 			state.RestoreState = "failed"
-			state.RestoreError = spcErrUnreachable
+			state.RestoreError, state.ErrorDetail = classifySpcCommandError(err, spcJoinDiag(output, errOut), spcStepRestore)
 			return state
 		}
 		resolved, code := spcResolveDir(output)
@@ -987,6 +1044,7 @@ func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *SSHSession, plan spcRe
 			failed++
 			if firstErr == "" {
 				firstErr = firstNonEmpty(slotState.RestoreError, spcErrWrite)
+				state.ErrorDetail = slotState.ErrorDetail
 			}
 		}
 	}
@@ -1020,10 +1078,10 @@ func (b *Bridge) restoreSpcSlotOnHost(ctx context.Context, s *SSHSession, ip str
 	}
 	state.Path, state.Backup = target, backup
 
-	output, _, err := s.runSpcOnHost(ctx, ip, local, buildSpcRestoreScript(target, backup))
+	output, errOut, _, err := s.runSpcOnHostStreams(ctx, ip, local, buildSpcRestoreScript(target, backup))
 	if err != nil {
 		state.RestoreState = "failed"
-		state.RestoreError = spcErrUnreachable
+		state.RestoreError, state.ErrorDetail = classifySpcCommandError(err, spcJoinDiag(output, errOut), spcStepRestore)
 		return state
 	}
 	switch {
@@ -1034,6 +1092,7 @@ func (b *Bridge) restoreSpcSlotOnHost(ctx context.Context, s *SSHSession, ip str
 	default:
 		state.RestoreState = "failed"
 		state.RestoreError = firstNonEmpty(spcMarkerField(output, "reason"), spcErrWrite)
+		state.ErrorDetail = spcOutputTail(output, 2, 200)
 	}
 	return state
 }

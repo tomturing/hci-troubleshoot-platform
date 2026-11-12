@@ -193,7 +193,7 @@ func TestSpcRestoreDue(t *testing.T) {
 	}
 }
 
-// TestSpcClassifyHosts 环境坏与不可达必须分开：前者要停手，后者本轮可以不参与。
+// TestSpcClassifyHosts 失败明细必须保留每台自己的原因码，不能再压成字符串。
 func TestSpcClassifyHosts(t *testing.T) {
 	results := []spcHostState{
 		{IP: "10.0.0.1", Written: true},
@@ -202,16 +202,101 @@ func TestSpcClassifyHosts(t *testing.T) {
 		{IP: "10.0.0.4", ErrorCode: spcErrDirMissing},
 		{IP: "10.0.0.5"},
 	}
-	written, broken, unreachable := spcClassifyHosts(results)
+	written, failed := spcClassifyHosts(results)
 	if written != 2 {
 		t.Fatalf("written = %d", written)
 	}
-	if want := []string{"10.0.0.3"}; !sameStrings(unreachable, want) {
-		t.Fatalf("unreachable = %v", unreachable)
+	if len(failed) != 3 {
+		t.Fatalf("failed = %+v", failed)
 	}
-	// 没有错误码的失败项按写失败归类，绝不能算成"已写入"。
-	if want := []string{"10.0.0.4(spc_dir_missing)", "10.0.0.5(write_failed)"}; !sameStrings(broken, want) {
-		t.Fatalf("broken = %v", broken)
+	// 按 IP 排序，且没有错误码的失败项保留空码（由 spcRejectionCode 兜底 write_failed）。
+	for index, want := range []string{"10.0.0.3:host_unreachable", "10.0.0.4:spc_dir_missing", "10.0.0.5:"} {
+		got := failed[index].IP + ":" + failed[index].ErrorCode
+		if got != want {
+			t.Fatalf("failed[%d] = %q，期望 %q", index, got, want)
+		}
+	}
+}
+
+// TestSpcRejectionCode 单一原因给精确码，多原因必须给聚合码。
+// 用某一台的码代表全部，会让用户按错误的码排查。
+func TestSpcRejectionCode(t *testing.T) {
+	single := []spcHostState{{IP: "10.0.0.1", ErrorCode: "host_auth_failed"}, {IP: "10.0.0.2", ErrorCode: "host_auth_failed"}}
+	errType, code := spcRejectionCode(single)
+	if errType != "host_auth_failed" || code != ErrSpcSSHAuthFailed {
+		t.Fatalf("单一原因得到 %s/%s", errType, code)
+	}
+
+	mixed := []spcHostState{{IP: "10.0.0.1", ErrorCode: "host_auth_failed"}, {IP: "10.0.0.2", ErrorCode: "spc_dir_missing"}}
+	errType, code = spcRejectionCode(mixed)
+	if errType != "spc_write_failed" || code != ErrSpcAggregate {
+		t.Fatalf("混合原因应给聚合码，得到 %s/%s", errType, code)
+	}
+}
+
+// TestSpcRejectionMessage 文案必须逐台给出「IP — 具体原因」，禁止再出现"节点不可达"这种泛化描述。
+func TestSpcRejectionMessage(t *testing.T) {
+	got := spcRejectionMessage(1, []spcHostState{
+		{IP: "172.28.24.2", ErrorCode: "host_auth_failed"},
+		{IP: "172.28.24.3", ErrorCode: "spc_dir_missing"},
+	})
+	// 1 台成功 + 2 台失败 = 目标 3 台；口径必须写成「目标 N 台，成功 M 台」，
+	// 不能再写成「可用节点为 0」这种与集群可用节点数混淆的说法。
+	for _, must := range []string{"目标 3 台", "成功 1 台", "172.28.24.2 — 节点 SSH 认证失败", "172.28.24.3 — 场景清单目录缺失"} {
+		if !strings.Contains(got, must) {
+			t.Fatalf("文案缺少 %q：%s", must, got)
+		}
+	}
+	if strings.Contains(got, "节点不可达") {
+		t.Fatalf("不应再出现泛化文案：%s", got)
+	}
+}
+
+// TestClassifySpcCommandError 认证/超时/拒绝/文件缺失/读写失败必须分成不同的码。
+//
+// 重点防守：只读文件系统、权限不足这类「这一步没成功」的错误，绝不能
+// 被归成「节点不可达」——那会把用户引去查网络，而真正要改的是文件系统与权限。
+func TestClassifySpcCommandError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		diag string
+		step string
+		want string
+	}{
+		{"认证失败", nil, "root@172.28.24.2: Permission denied (publickey).", spcStepDir, "host_auth_failed"},
+		{"连接超时", nil, "ssh: connect to host 172.28.24.2 port 22: Connection timed out", spcStepDir, "host_timeout"},
+		{"连接被拒", nil, "ssh: connect to host 172.28.24.2 port 22: Connection refused", spcStepDir, "host_unreachable"},
+		{"文件缺失", nil, "cat: /sf/x/spc/core.json: No such file or directory", spcStepWrite, "spc_file_missing"},
+		{"只读文件系统", nil, "cp: cannot create regular file: Read-only file system", spcStepWrite, "write_rejected"},
+		{"空间不足", nil, "cp: error writing: No space left on device", spcStepBackup, "backup_failed"},
+		{"权限不足", nil, "cp: cannot stat '/sf/x/spc/core.json': Permission denied", spcStepBackup, "backup_failed"},
+		{"回滚失败", nil, "mv: cannot move: Operation not permitted", spcStepRestore, "spc_restore_failed"},
+		{"无特征错误按步骤归因", nil, "exit status 1", spcStepWrite, "write_rejected"},
+		{"ssh 客户端兜底", nil, "ssh: handshake failed: Connection closed by remote host", spcStepDir, "host_unreachable"},
+	}
+	for _, tc := range cases {
+		got, detail := classifySpcCommandError(tc.err, tc.diag, tc.step)
+		if got != tc.want {
+			t.Fatalf("%s：得到 %s，期望 %s", tc.name, got, tc.want)
+		}
+		if detail == "" {
+			t.Fatalf("%s：detail 不能为空，否则现场无法核对", tc.name)
+		}
+	}
+}
+
+// TestSpcJoinDiagKeepsStderr stderr 与 stdout 必须合并进诊断文本，
+// 但目录解析只能用 stdout（"/bin/sh: ..." 会被误当成候选目录）。
+func TestSpcJoinDiagKeepsStderr(t *testing.T) {
+	if got := spcJoinDiag("SPC_WRITE_FAIL", "/bin/sh: cp: Read-only file system"); !strings.Contains(got, "Read-only") {
+		t.Fatalf("stderr 必须进入诊断文本：%q", got)
+	}
+	if got := spcJoinDiag("", "only-stderr"); got != "only-stderr" {
+		t.Fatalf("空 stdout 时应返回 stderr：%q", got)
+	}
+	if got := spcJoinDiag("only-stdout", ""); got != "only-stdout" {
+		t.Fatalf("空 stderr 时应返回 stdout：%q", got)
 	}
 }
 

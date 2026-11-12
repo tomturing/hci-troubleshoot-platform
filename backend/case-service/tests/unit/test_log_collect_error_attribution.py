@@ -192,3 +192,45 @@ class TestBackfillMigrationConsistency:
         text = self._MIGRATION.read_text(encoding="utf-8")
         assert UNATTRIBUTED_CODE in text
         assert "RAISE EXCEPTION" in text, "验证不变量必须硬失败，不能只 WARNING"
+
+
+class TestSpcFixMigrationConsistency:
+    """064 的 SPC/专项规则子集必须与 Python 侧同源规则逐条一致。
+
+    064 是 062 之后的订正迁移（062 已在 staging 执行过，改它不会重跑）。
+    子集一旦与 Python 漂移，同一条历史文案会被订正成 A、新数据归因成 B，
+    面板按码聚合时凭空多一个桶——所以这里同样做逐条强校验。
+    """
+
+    _MIGRATION = (
+        Path(__file__).resolve().parents[4]
+        / "database"
+        / "data-migrations"
+        / "064_log_collect_error_code_spc_fix.sql"
+    )
+    _ROW = re.compile(r"^\s*\(\d+,\s*'([^']*)',\s*'([^']+)'\)", re.MULTILINE)
+
+    @staticmethod
+    def _python_subset() -> list[tuple[str, str]]:
+        return [
+            (needle, code)
+            for needle, code in _RULES
+            if code.startswith("LC-SPC-") or code in ("LC-PLUGIN-015", "LC-PLUGIN-016")
+        ]
+
+    def test_migration_file_exists(self):
+        assert self._MIGRATION.is_file(), f"缺少订正迁移: {self._MIGRATION}"
+
+    def test_rules_match_python_subset(self):
+        assert self._ROW.findall(self._MIGRATION.read_text(encoding="utf-8")) == self._python_subset()
+
+    def test_migration_does_not_touch_upstream_codes(self):
+        text = self._MIGRATION.read_text(encoding="utf-8")
+        # 只订正「011 未归因占位码」与「旧语义的 008」，不能顺手覆盖节点回报的码。
+        assert "error_code = 'LC-PLATFORM-011'" in text
+        assert "error_code = 'LC-PLUGIN-008'" in text
+        # 每条 UPDATE 都必须带 WHERE；缺 WHERE 会全表改码
+        updates = [stmt for stmt in text.split(";") if "UPDATE log_collect_task" in stmt]
+        assert len(updates) == 2
+        for stmt in updates:
+            assert "WHERE" in stmt, "订正迁移里的 UPDATE 缺少 WHERE"

@@ -189,7 +189,8 @@ describe('decideNodeSync 节点态直映射', () => {
       taskAgeMs: CREATE_ACK_GRACE_MS + 1,
     })
     expect(action.action).toBe('patch_failed')
-    expect(action.errorCode).toBe('LC-PLUGIN-008')
+    // 未接单必须是 015：008 是"任务不存在"，两者处置动作不同。
+    expect(action.errorCode).toBe('LC-PLUGIN-015')
     expect(action.reason).toContain('未建立采集任务')
   })
 
@@ -219,7 +220,7 @@ describe('decideNodeSync 节点态直映射', () => {
   it('采集中 + 节点已无任务且无包 → 判失败并补齐错误码', () => {
     const action = decideNodeSync({ platformStatus: 'collecting', nodeState: 'none' })
     expect(action.action).toBe('patch_failed')
-    expect(action.errorCode).toBe('LC-PLUGIN-008')
+    expect(action.errorCode).toBe('LC-PLUGIN-015')
   })
 
   it('平台失败但节点仍在跑 → 接管', () => {
