@@ -37,6 +37,9 @@ spec:
       containers:
         - name: node-exporter
           image: {{ .Values.nodeExporter.image }}
+          # 必须显式声明且不能是 Always：CI 的不变量要求，且本项目集群无外网，
+          # Always 会强制回源做 digest 校验，Pod 重建时直接拉取失败。
+          imagePullPolicy: IfNotPresent
           args:
             # 通过 hostPath 读宿主机视角的 /proc、/sys、/。
             # path.rootfs 是让 node_filesystem 报「宿主机挂载点」而不是容器根文件系统的关键，
