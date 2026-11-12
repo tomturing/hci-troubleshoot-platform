@@ -349,9 +349,6 @@ export interface LogCollectScenarioItem {
   exclusive: boolean
   sort_order: number
   enabled: boolean
-  review_state?: 'pending_review' | 'approved'
-  updated_by?: string | null
-  updated_at?: string | null
 }
 
 export const logCollectApi = {

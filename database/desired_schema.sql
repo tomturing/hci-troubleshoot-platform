@@ -3984,17 +3984,11 @@ CREATE TABLE IF NOT EXISTS log_collect_custom_scenario (
     source varchar(16) NOT NULL DEFAULT 'visual',
     enabled boolean NOT NULL DEFAULT true,
     sort_order integer NOT NULL DEFAULT 100,
-    review_state varchar(16) NOT NULL DEFAULT 'pending_review',
-    created_by varchar(64),
-    updated_by varchar(64),
-    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT log_collect_custom_scenario_pkey PRIMARY KEY (scenario_id, revision),
     CONSTRAINT uq_log_collect_custom_scenario_code_revision UNIQUE (code, revision),
     CONSTRAINT ck_log_collect_custom_scenario_revision CHECK (revision >= 1),
     CONSTRAINT ck_log_collect_custom_scenario_item_count CHECK (item_count >= 0),
-    CONSTRAINT ck_log_collect_custom_scenario_source CHECK ((source)::text = ANY ((ARRAY['visual'::character varying, 'json'::character varying, 'spc'::character varying])::text[])),
-    CONSTRAINT ck_log_collect_custom_scenario_review_state CHECK ((review_state)::text = ANY ((ARRAY['pending_review'::character varying, 'approved'::character varying])::text[]))
+    CONSTRAINT ck_log_collect_custom_scenario_source CHECK ((source)::text = ANY ((ARRAY['visual'::character varying, 'json'::character varying, 'spc'::character varying])::text[]))
 );
 
 COMMENT ON TABLE log_collect_custom_scenario IS '日志收集自定义场景（acli -c）：一组字面路径，按 revision 版本化保存';
@@ -4006,7 +4000,6 @@ COMMENT ON COLUMN log_collect_custom_scenario.item_count IS '路径条数（冗�
 COMMENT ON COLUMN log_collect_custom_scenario.config_sha256 IS '下发内容（{"paths": "..."}）的 SHA-256，任务侧据此证明用了哪份配置';
 COMMENT ON COLUMN log_collect_custom_scenario.config_bytes IS '下发内容字节数，用于限制配置文件大小';
 COMMENT ON COLUMN log_collect_custom_scenario.source IS '创建方式：visual=勾选列表；json=JSON 导入；spc=spc 收集定义';
-COMMENT ON COLUMN log_collect_custom_scenario.review_state IS '文案审核状态；自定义场景直接面向客户，未审核项不得启用';
 
 CREATE INDEX IF NOT EXISTS idx_log_collect_custom_scenario_latest
     ON log_collect_custom_scenario (code, revision DESC);
