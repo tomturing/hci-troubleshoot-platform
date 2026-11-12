@@ -43,6 +43,7 @@ owner: team
 | P9 | 90 天前的 `Error` Pod/Job 残留 | 2026-08-06 的 PreSync hook 带 `argocd.argoproj.io/hook-finalizer`，operation 中断后清理未执行，TTL 控制器也无法删除 | Job annotations 与 `ownerReferences` |
 | P10 | `argocd` 命名空间无 `hci.env.role` 标签 | 环境标识的数据来源缺失 | `kubectl get ns argocd -o json` |
 | P11 | 无可用性门禁 | 只看 Deployment `1/1` 会漏掉 P4 这类「Ready 但不可达」 | 本次实测 |
+| P12 | `node-exporter` DaemonSet 反复 `CreateContainerError` | 当前 chart 只声明 `alloy` DaemonSet，Prometheus 的 node-exporter job 也是注释状态；这是带 tracking-id 的历史孤儿资源。obs app `prune: false` 让它留在集群，且其 `hostPath: /` 带 `HostToContainer` 传播，在 WSL 单机 `/` 非 shared mount 时必然失败 | `kubectl get ds -A`、`describe pod`、`grep -rn node-exporter deploy/` |
 
 ---
 
@@ -66,6 +67,7 @@ owner: team
 | R4 | 新增 `scripts/ops/smoke-dev-services.sh` | 把 P11 变成 L1~L5 分层可证伪门禁 |
 | R5 | 集群侧重新 apply `deploy/gitops/bootstrap/argocd-root.yaml` | 让 GitOps 收回控制权，自动创建 P2 缺失的 DSH Application |
 | R6 | 集群侧清理 90 天前的失败 hook Job | 先摘除 finalizer 再删除，消除 P9 |
+| R7 | 集群侧删除孤儿 `node-exporter` DaemonSet | Git 中已无该声明，保留只会持续产生失败 Pod；按 GitOps 单一事实源删除而非为漂移资源改配置，消除 P12 |
 
 ---
 
@@ -99,7 +101,10 @@ kubectl -n hci-dev patch job hci-sim-db-migrate-20260806-1304-6 \
   --type merge -p '{"metadata":{"finalizers":[]}}'
 kubectl -n hci-dev delete job hci-sim-db-migrate-20260806-1304-6
 
-# 5. 执行完整验收
+# 5. 删除 Git 中已无声明的孤儿 DaemonSet（obs app prune=false 不会自动清理）
+kubectl -n hci-observability delete daemonset node-exporter --ignore-not-found
+
+# 6. 执行完整验收
 bash scripts/ops/smoke-dev-services.sh
 ```
 

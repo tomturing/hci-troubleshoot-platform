@@ -122,8 +122,8 @@ except Exception:
     print("ERR"); sys.exit(0)
 n = 0
 for s in data.get("items", []):
-    for e in s.get("endpoints", []):
-        n += len(e.get("addresses", []))
+    for e in (s.get("endpoints") or []):
+        n += len(e.get("addresses") or [])
 print(n)
 ' || true)"
   expect "endpoints/${ns}/${svc}" "nonempty" "$([ "${count:-0}" -gt 0 ] 2>/dev/null && echo nonempty || echo "${count:-ERR}")"
