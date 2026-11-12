@@ -175,6 +175,59 @@ DELETE FROM kb_category WHERE code = 'E2E-semroute20260910-2';
 DELETE FROM kb_category WHERE code = 'E2E-semroute20260910-3';
 DELETE FROM kb_category WHERE code = 'E2E-semroute20260910-4';
 
+-- ── 5.5) 通用兜底：映射表未覆盖的非合规 code 自动重编号 ─────────────────
+-- 唯一调用链：category_leaf_governance_v1。
+-- 硬编码映射只覆盖 staging dry-run 见过的脏 code。任何长期手工维护的环境都可能
+-- 产生映射表之外的新分组编码；旧实现让 9) 直接 RAISE EXCEPTION，迫使运维手工改库，
+-- 集群重建后必然复现（2026-11-12 dev 的 4 个平台分组即此形态）。
+-- 这里按「域内共享序号空间」文法 {域}-{3 位序号} 为剩余脏 code 确定性分配新序号，
+-- 并同步 remap 全部下游引用。置于 4)/5) 之后，保证被显式扁平化、删除的垃圾节点
+-- 不会被误重编号；置于 6) 之前，保证重命名与引用改写共用同一张映射表。
+DO $fallback$
+DECLARE
+    n_remapped int;
+BEGIN
+    WITH codes AS (
+        SELECT code FROM kb_category WHERE code IS NOT NULL
+        UNION ALL
+        SELECT new_code FROM _code_remap
+    ), domain_seq AS (
+        SELECT split_part(code, '-', 1) AS domain,
+               COALESCE(MAX(CASE WHEN code ~ '^[^-]+-[0-9]+$'
+                                 THEN split_part(code, '-', 2)::bigint
+                                 ELSE 0 END), 0) AS seq
+        FROM codes
+        GROUP BY split_part(code, '-', 1)
+    ), pending AS (
+        SELECT k.code AS old_code, split_part(k.code, '-', 1) AS domain
+        FROM kb_category k
+        WHERE k.code IS NOT NULL
+          AND NOT (k.code ~ '^[^-]+-L1$' OR k.code ~ '^[^-]+-[0-9]+$')
+          AND NOT EXISTS (SELECT 1 FROM _code_remap r WHERE r.old_code = k.code)
+    ), assigned AS (
+        SELECT p.old_code,
+               p.domain || '-' || lpad(
+                   (COALESCE(d.seq, 0) + ROW_NUMBER() OVER (PARTITION BY p.domain ORDER BY p.old_code))::text,
+                   3, '0') AS new_code
+        FROM pending p
+        LEFT JOIN domain_seq d ON d.domain = p.domain
+    )
+    INSERT INTO _code_remap (old_code, new_code)
+    SELECT old_code, new_code FROM assigned
+    ON CONFLICT (old_code) DO NOTHING;
+
+    GET DIAGNOSTICS n_remapped = ROW_COUNT;
+
+    -- 兜底映射是 3) 之后追加的，必须再 remap 一次引用表，否则 8) 恢复外键时
+    -- 会留下悬空引用。3) 已处理过的行不再命中 old_code，重复执行为空操作。
+    UPDATE kbd_entry k     SET category_id   = r.new_code FROM _code_remap r WHERE k.category_id   = r.old_code;
+    UPDATE kbd_entry k     SET ai_category_id = r.new_code FROM _code_remap r WHERE k.ai_category_id = r.old_code;
+    UPDATE sop_document s  SET category_id   = r.new_code FROM _code_remap r WHERE s.category_id   = r.old_code;
+    UPDATE conversation c  SET category_id   = r.new_code FROM _code_remap r WHERE c.category_id   = r.old_code;
+
+    RAISE NOTICE 'category_leaf_governance_v1 通用兜底：自动重编号 % 个映射表未覆盖的非合规 code', n_remapped;
+END $fallback$;
+
 -- ── 6) 节点 code 重命名（映射稳定保留，置于引用改写之后）───────────────
 UPDATE kb_category c SET code = r.new_code FROM _code_remap r WHERE c.code = r.old_code;
 
