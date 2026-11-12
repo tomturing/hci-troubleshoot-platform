@@ -100,7 +100,7 @@ jobs:
             --url "$DATABASE_URL" \
             --to "file://database/desired_schema.sql" \
             --dev-url "$DEV_URL" \
-            --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+            --exclude "schema_migrations,alembic_version,atlas_schema_revisions,log_collect_task_correction_*" \
             --auto-approve
 
           echo ">>> Step 2c: 应用触发器"
@@ -260,7 +260,7 @@ jobs:
             --from "$DATABASE_URL" \
             --to "file://database/desired_schema.sql" \
             --dev-url "$DEV_URL" \
-            --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+            --exclude "schema_migrations,alembic_version,atlas_schema_revisions,log_collect_task_correction_*" \
             2>&1 || true)
 
           if [ -z "$DIFF" ] || echo "$DIFF" | grep -q "Schemas are synced"; then

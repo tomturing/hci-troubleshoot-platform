@@ -69,7 +69,7 @@ if [ "$CORE_SCHEMA_READY" != "true" ]; then
     --url "$DATABASE_URL" \
     --to "file:///desired_schema.sql" \
     --dev-url "$DEV_URL" \
-    --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+    --exclude "schema_migrations,alembic_version,atlas_schema_revisions,log_collect_task_correction_*" \
     --auto-approve
   echo "✅ Step 0 完成（数据迁移依赖表已就绪）"
 else
@@ -97,7 +97,7 @@ atlas schema apply \
   --url "$DATABASE_URL" \
   --to "file:///desired_schema.sql" \
   --dev-url "$DEV_URL" \
-  --exclude "schema_migrations,alembic_version,atlas_schema_revisions" \
+  --exclude "schema_migrations,alembic_version,atlas_schema_revisions,log_collect_task_correction_*" \
   --auto-approve
 echo "✅ Step 3 完成"
 
