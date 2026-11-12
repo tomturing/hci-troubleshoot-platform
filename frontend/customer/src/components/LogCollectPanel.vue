@@ -983,6 +983,10 @@ const resultHeadline = computed<{ type: 'success' | 'warning' | 'error' | 'info'
       // 平台派生结论优先：有证据时不让本地 status/delivery 再拼一个「已完成」出来。
       display: resultTask.value?.display ?? null,
       artifact: resultTask.value?.artifact ?? null,
+      // 结论不能吞掉诊断信息：错误码与结论仍需同时上第一屏，
+      // 让用户第一眼就知道该查哪一层，而不是把"重新收集"当诊断手段。
+      errorCode: resultTask.value?.error_code,
+      hintTitle: logCollectErrorHint(resultTask.value?.error_code)?.title ?? null,
     }),
 )
 

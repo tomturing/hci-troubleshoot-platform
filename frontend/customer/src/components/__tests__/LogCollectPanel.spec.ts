@@ -1417,6 +1417,12 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     expect(text).toContain('如何处理')
     // 不能把"节点不可达"又当成唯一解释糊弄过去
     expect(text).not.toBe('日志收集失败')
+    // 顶部横幅同样要精确：带码、带结论、给顺序，不能劝用户"再试一次"
+    const headline = wrapper.find('.lc-result').text()
+    expect(headline).toContain('LC-SPC-006')
+    expect(headline).toContain('目标节点 SSH 连接失败')
+    expect(headline).toContain('如何检查')
+    expect(headline).not.toContain('再试一次')
     wrapper.unmount()
   })
 

@@ -414,18 +414,40 @@ export function buildResultHeadline(args: {
   } | null
   /** 平台派生的产物证据 */
   artifact?: { quality_label?: string; reason_text?: string; size_text?: string } | null
+  /** 规范错误码：横幅必须带出"这一次是哪一类失败"，而不是笼统地说失败 */
+  errorCode?: string | null
+  /** 与 errorCode 对应的结论（来自诊断映射表），缺省时横幅只报码不编造结论 */
+  hintTitle?: string | null
 }): ResultHeadline {
   const {
-    status, delivered = false, when = '', archiveCheck = null, canUpload = false,
-    display = null, artifact = null,
+    status,
+    delivered = false,
+    when = '',
+    archiveCheck = null,
+    canUpload = false,
+    display = null,
+    artifact = null,
+    errorCode = null,
+    hintTitle = null,
   } = args
   if (!status) return { type: 'info', title: '', description: '' }
   if (display) {
     // 第一性原理：界面不该有第二套判定。平台已按「交付事实 + 产物证据」给出结论，
     // 这里的旧文案只能作为旧后端降级路径，不能覆盖三维结论。
+    // 但结论不能吞掉诊断信息：错误码与「先检查再处理」必须随结论一起上第一屏，
+    // 否则新后端下失败工单会退回「只说失败、不知查哪一层」。
     const toneMap: Record<string, ResultHeadline['type']> = {
       success: 'success', warning: 'warning', error: 'error', info: 'info',
     }
+    const tone = toneMap[display.conclusion_tone] ?? 'info'
+    const code = String(errorCode || '').trim()
+    const hint = String(hintTitle || '').trim()
+    const needDiagnosis = tone === 'error' || tone === 'warning'
+    const diagnosis = needDiagnosis
+      ? code
+        ? `错误码 ${code}${hint ? `（${hint}）` : ''}：先按下方「如何检查」确认，再按「如何处理」修复`
+        : '平台未给出可识别的错误码：请先看下方诊断与任务详情里的 error_message / create_output'
+      : ''
     const facts = (display.conditions ?? []).map((item) => item.label).filter(Boolean)
     const evidence = artifact?.quality_label
       ? `产物质量：${artifact.quality_label}（${artifact.reason_text ?? '—'}）`
@@ -434,26 +456,36 @@ export function buildResultHeadline(args: {
       display.phase_label ? `当前环节：${display.phase_label}` : '',
       evidence,
       facts.length ? `观察事实：${facts.join('、')}` : '',
+      diagnosis,
     ].filter(Boolean)
+    const retry = tone === 'error' && diagnosis ? '；确认原因消除后再点右下角「重新收集」' : ''
     return {
-      type: toneMap[display.conclusion_tone] ?? 'info',
+      type: tone,
       title: `${display.conclusion_label}（${when}）`,
-      description: segments.length ? segments.join('；') : '以下是平台记录的最近一次采集结果。',
+      description: segments.length ? `${segments.join('；')}${retry}。` : '以下是平台记录的最近一次采集结果。',
     }
   }
   if (status === 'failed') {
+    const code = String(errorCode || '').trim()
+    const conclusion = String(hintTitle || '').trim()
+    // 旧文案"可点重新收集再试一次"把客户推向碰运气：Q2026110302155 在 100 秒内连点 5 次，
+    // 三次失败其实踩在不同阶段。横幅改成"先定位 → 再处理 → 确认后才重收"，
+    // 且把错误码与结论直接摆到第一屏。
+    const diagnosis = code
+      ? `错误码 ${code}${conclusion ? `（${conclusion}）` : ''}：先按下方「如何检查」确认，再按「如何处理」修复`
+      : '平台未给出可识别的错误码：请先看下方诊断与任务详情里的 error_message / create_output'
     return {
       type: 'error',
       title: `该工单上次采集失败（${when}）`,
-      description:
-        '以下是平台记录的最近一次采集结果；失败原因见下方错误信息，可点右下角「重新收集」再试一次。',
+      description: `${diagnosis}；确认原因消除后再点右下角「重新收集」。`,
     }
   }
   if (status === 'cancelled') {
     return {
       type: 'info',
       title: `该工单上次采集已取消（${when}）`,
-      description: '以下是平台记录的最近一次采集结果；如需采集请点右下角「重新收集」。',
+      description:
+        '以下是平台记录的最近一次采集结果；若非本人取消，请先按下方「如何检查」确认原因，再决定是否重新收集。',
     }
   }
   if (!delivered) {

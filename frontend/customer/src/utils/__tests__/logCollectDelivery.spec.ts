@@ -432,6 +432,50 @@ describe('buildResultHeadline', () => {
     expect(buildResultHeadline({ status: 'cancelled', delivered: false, when: WHEN }).type).toBe('info')
     expect(buildResultHeadline({ status: null }).title).toBe('')
   })
+
+  /**
+   * 回归（2026-11-12 Q2026110302155）：横幅原本写"可点重新收集再试一次"，
+   * 客户 100 秒内连点 5 次，三次失败其实踩在三个不同阶段。
+   */
+  it('失败横幅带错误码与结论，且不再劝用户盲目重试', () => {
+    const headline = buildResultHeadline({
+      status: 'failed',
+      delivered: false,
+      when: WHEN,
+      errorCode: 'LC-SPC-010',
+      hintTitle: '多台节点场景清单写入失败',
+    })
+    expect(headline.description).toContain('LC-SPC-010')
+    expect(headline.description).toContain('多台节点场景清单写入失败')
+    expect(headline.description).toContain('如何检查')
+    expect(headline.description).toContain('如何处理')
+    expect(headline.description).toContain('确认原因消除后再点')
+    expect(headline.description).not.toContain('再试一次')
+  })
+
+  it('没有可识别错误码时横幅指向任务详情，不编造结论', () => {
+    const headline = buildResultHeadline({ status: 'failed', when: WHEN })
+    expect(headline.description).toContain('平台未给出可识别的错误码')
+    expect(headline.description).toContain('error_message')
+    expect(headline.description).not.toContain('LC-')
+  })
+
+  it('有码但映射表没有结论时只报码，不补猜的原因', () => {
+    const headline = buildResultHeadline({
+      status: 'failed',
+      when: WHEN,
+      errorCode: 'LC-UNKNOWN-999',
+    })
+    expect(headline.description).toContain('LC-UNKNOWN-999')
+    expect(headline.description).not.toContain('（')
+  })
+
+  it('取消态先让人确认原因，而不是直接催重新收集', () => {
+    const headline = buildResultHeadline({ status: 'cancelled', when: WHEN })
+    expect(headline.description).toContain('若非本人取消')
+    expect(headline.description).toContain('如何检查')
+    expect(headline.description).not.toContain('再试一次')
+  })
 })
 
 describe('P1 归档核验快照', () => {
@@ -521,6 +565,28 @@ describe('平台派生结论优先', () => {
     })
     expect(headline.type).toBe('warning')
     expect(headline.title).toContain('已交付 · 有疑点')
+  })
+
+  it('平台结论与错误码同时存在时，第一屏两者都可见', () => {
+    const headline = buildResultHeadline({
+      status: 'failed',
+      delivered: false,
+      when: '2026-11-12 10:00',
+      errorCode: 'LC-SPC-006',
+      hintTitle: '目标节点 SSH 连接失败',
+      display: {
+        conclusion: 'failed',
+        conclusion_label: '未取到有效日志',
+        conclusion_tone: 'error',
+        conditions: [{ label: '采集完成但未交付' }],
+      },
+    })
+    expect(headline.type).toBe('error')
+    expect(headline.title).toContain('未取到有效日志')
+    expect(headline.description).toContain('LC-SPC-006')
+    expect(headline.description).toContain('目标节点 SSH 连接失败')
+    expect(headline.description).toContain('如何检查')
+    expect(headline.description).not.toContain('再试一次')
   })
 
   it('没有 display 时保持旧后端降级文案，不误伤老平台', () => {
