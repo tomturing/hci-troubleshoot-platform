@@ -73,8 +73,11 @@ for file in $(ls -1 "${MIGRATIONS_DIR}"/*.sql 2>/dev/null | sort); do
     filename=$(basename "$file" .sql)
     
     # 解析版本号和描述（格式：{version}_{description}.sql）
-    version=$(log "$filename" | cut -d_ -f1)
-    description=$(log "$filename" | cut -d_ -f2- | tr '_' ' ')
+    # 版本号/描述解析必须拿到纯文件名：log() 会打印 [trace_id=...] 前缀，
+    # 若在此处调用，cut -d_ -f1 会在 trace_id 的下划线处截断，把全部迁移
+    # 折成同一个 version（CI 存量库门禁实测：61 个迁移只登记 1 条）。
+    version=$(echo "$filename" | cut -d_ -f1)
+    description=$(echo "$filename" | cut -d_ -f2- | tr '_' ' ')
     
     # 计算文件校验和
     checksum=$(sha256sum "$file" | cut -d' ' -f1)
@@ -100,10 +103,11 @@ for file in $(ls -1 "${MIGRATIONS_DIR}"/*.sql 2>/dev/null | sort); do
         end_time=$(date +%s%3N 2>/dev/null || date +%s000)
         execution_time=$((end_time - start_time))
         
-        # 记录执行历史
+        # 记录执行历史（只吞 stdout、保留 stderr：写入失败必须让 set -e 立刻暴露，
+        # 不能出现「runner 自报成功但 migration_history 无记录」的静默偏差）
         psql "$DATABASE_URL" -c \
             "INSERT INTO migration_history (version, checksum, description, execution_time_ms)
-             VALUES ('$version', '$checksum', '$description', $execution_time);" > /dev/null 2>&1
+             VALUES ('$version', '$checksum', '$description', $execution_time);" > /dev/null
         
         log "✅ Migration ${version} completed in ${execution_time}ms"
         EXECUTED=$((EXECUTED + 1))
