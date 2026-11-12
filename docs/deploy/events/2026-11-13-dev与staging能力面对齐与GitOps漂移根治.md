@@ -45,6 +45,7 @@ owner: team
 | P11 | 无可用性门禁 | 只看 Deployment `1/1` 会漏掉 P4 这类「Ready 但不可达」 | 本次实测 |
 | P12 | `node-exporter` DaemonSet 反复 `CreateContainerError` | main 的 #1494 新引入该 DaemonSet，模板把 `mountPropagation: HostToContainer` 硬编码在 `hostPath: /` 上；dev 单机 WSL 的 `/` 不是 shared/slave mount，containerd 拒绝生成容器 spec（实测重试 678 次）。staging 云端 `/` 是 shared mount 故无此问题，属于环境拓扑差异而非孤儿资源 | Pod waiting message、`kubectl describe`、新旧 main 的模板对比 |
 | P13 | DSH Pod 长期 `1/2`，主容器永不 Ready | dev 缺 `global.publicUrl`，`dsh.publicUrl` helper 把空值与 `/dsh` 拼成相对路径 `/dsh/`；DSH 上游强制要求 `--public-url` 为绝对 URL，启动时直接报错退出，`/run/dsh/token` 永远写不出来 | DSH 容器日志 `error: --public-url must be an absolute http or https URL`、`helm template` 渲染结果 |
+| P14 | DSH 全部服务可用但 Application 仍 `OutOfSync` | 绝对 publicUrl 是 IP，`dsh.publicHost` 把它填进 Ingress `spec.rules[0].host`，K8s 要求 host 必须是 DNS 名称，patch 失败并重试 5 次形成 SyncError | `status.conditions` 的 `must be a DNS name, not an IP address`、Ingress 模板 |
 
 ---
 
@@ -70,6 +71,7 @@ owner: team
 | R6 | 集群侧清理 90 天前的失败 hook Job | 先摘除 finalizer 再删除，消除 P9 |
 | R7 | `deploy/helm/hci-platform-obs` 把 `nodeExporter.mountPropagation` 参数化，`hci-platform-obs-dev` 用 inline values 置空 | 默认保留 staging/prod 行为；dev 关闭传播后仍保留 `/proc`、`/sys`、`/` 的静态只读视图，消除 P12 且不丢采集能力 |
 | R8 | `hci-platform-dsh-dev` inline values 补 `global.publicUrl` | 与环境仓 dev 的 `agentService.allowedOrigins` 同源，渲染为 `http://172.28.24.21:30080/dsh/`，让 DSH 主容器通过参数校验并写出 `/run/dsh/token`，消除 P13 |
+| R9 | `hci-platform-dsh-dev` inline values 关闭 `ingress.enabled`；集群侧删除残留 `dsh-ingress` | dev 的 `/dsh/` 由 admin-ui pathRoute 反代到 dsh Service，独立 Ingress 本就无效；关闭后不再渲染非法 IP host，消除 P14 且保持现有可达链路不变 |
 
 ---
 
@@ -110,7 +112,10 @@ kubectl -n hci-dev delete job hci-sim-db-migrate-20260806-1304-6
 #    必须显式删除旧 Pod，让 DaemonSet 按关闭传播后的新模板重建
 kubectl -n hci-observability delete pod -l app.kubernetes.io/name=node-exporter --ignore-not-found
 
-# 6. 执行完整验收
+# 6. 删除已不在 Git 声明中的残留 dsh-ingress（prune=false 不会自动清理）
+kubectl -n hci-dsh delete ingress dsh-ingress --ignore-not-found
+
+# 7. 执行完整验收
 bash scripts/ops/smoke-dev-services.sh
 ```
 
