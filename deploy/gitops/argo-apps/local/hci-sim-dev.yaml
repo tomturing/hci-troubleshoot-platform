@@ -17,6 +17,13 @@ spec:
     targetRevision: main
     path: deploy/helm/hci-sim
     helm:
+      # ArgoCD 单源 Application 默认以 Application 名作为 Helm releaseName。
+      # 现存 Deployment 由 release "hci-sim" 创建，其 selector 含不可变字段
+      # app.kubernetes.io/instance=hci-sim；沿用默认 hci-sim-dev 会让
+      # spec.selector patch 因 immutable 永久失败（2026-11-12 SyncError），
+      # 且 Service selector 会被改成新值导致 EndpointSlice 为空、服务不可达。
+      # 因此必须把 releaseName 钉死为存量资源实际的 release 名。
+      releaseName: hci-sim
       values: |
         image:
           repository: ghcr.io/tomturing/hci-troubleshoot-platform/hci-sim

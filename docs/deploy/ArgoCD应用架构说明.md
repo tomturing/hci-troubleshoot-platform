@@ -2,7 +2,7 @@
 status: active
 category: deploy
 audience: operator
-last_updated: 2026-10-20
+last_updated: 2026-11-13
 owner: team
 ---
 
@@ -21,7 +21,9 @@ deploy/gitops/
 │   ├── hci-platform-dev.yaml
 │   ├── hci-platform-obs-dev.yaml
 │   ├── hci-platform-infra-dev.yaml
-│   └── hci-platform-data-dev.yaml
+│   ├── hci-platform-data-dev.yaml
+│   ├── hci-platform-dsh-dev.yaml   # DSH 独立命名空间 hci-dsh
+│   └── hci-sim-dev.yaml
 │
 ├── argocd-ops/                 # 运维资源（被 argocd-ops App 管理）
 │   ├── argocd-repo-server-copyutil-watchdog.yaml
@@ -71,6 +73,23 @@ kubectl get application -n argocd -w
 # 其他 Apps    Synced/Healthy
 ```
 
+**存量集群重新对齐（必做）**：Root Application 不被自己管理。若集群中的
+`argocd-root` 对象是早期手工版本（缺 `spec.syncPolicy`），则 Git 里新增的
+子 Application 永远不会被创建，且 `selfHeal` 不会生效。判据：
+
+```bash
+kubectl get application argocd-root -n argocd \
+  -o jsonpath='{.spec.syncPolicy.automated}'
+# 输出为空即表示控制权已失效，必须重新 apply 一次 bootstrap 文件
+```
+
+合入涉及子 Application 的变更后，重新执行
+`kubectl apply -f deploy/gitops/bootstrap/argocd-root.yaml`，再用
+`kubectl get applications -n argocd -w` 确认全部 `Synced/Healthy`。
+子 Application 的 Helm releaseName 必须显式声明：单源 Application 缺省以
+Application 名作为 releaseName，会改变 `spec.selector` 这个不可变字段并导致
+同步永久失败。
+
 **首次同步 PreSync Hook 可能失败的情况**：
 
 如果集群首次 bootstrap 时 RBAC 还未就绪：
@@ -87,9 +106,14 @@ kubectl patch application argocd-ops -n argocd --type merge -p '{"operation":{"s
 1. **Root Application 在独立目录**：避免循环引用
 2. **sync-wave 控制顺序**：确保依赖关系正确
 3. **PreSync Hook 需要 RBAC**：通过 sync-wave 确保权限先就绪
+4. **Root 的 syncPolicy 属于运行时状态**：bootstrap 对象不被 Git 自动更新，
+   升级 Root 定义必须重新 apply；子 Application 必须显式钉死 Helm releaseName
 
 ## 变更历史
 
-- 2026-04-22 v2.0 架构重构：argocd-root 只管理 argo-apps/local/
-- 2026-04-22 v1.1 argocd-ops 改为子 Application，使用 sync-wave
-- 2026-04-22 v1.0 argocd-rbac 从 argocd-ops 拆分
+| 日期 | 版本 | 变更内容 | 关联事件文档 |
+|------|------|---------|------------|
+| 2026-04-22 | v2.0 | 架构重构：argocd-root 只管理 argo-apps/local/ | — |
+| 2026-04-22 | v1.1 | argocd-ops 改为子 Application，使用 sync-wave | — |
+| 2026-04-22 | v1.0 | argocd-rbac 从 argocd-ops 拆分 | — |
+| 2026-11-13 | v2.1 | 补齐 DSH/hci-sim 子应用；明确存量集群重新 bootstrap 契约与 Helm releaseName 不可变约束 | [dev 与 staging 能力面对齐](events/2026-11-13-dev与staging能力面对齐与GitOps漂移根治.md) |
