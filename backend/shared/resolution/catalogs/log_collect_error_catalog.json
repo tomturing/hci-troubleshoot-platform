@@ -620,6 +620,50 @@
       "http_status": 409,
       "user_hint": "节点报告已直传成功，但日志服务器上没有找到一致的归档件；请重新采集一次，或改用「上传到平台」走中转。",
       "ops_hint": "比对 5888 GET /archive_status 的 found/size/mtime 与节点报告的 archive_size；P1 成功后插件会自动删包，核验不通过时节点已无源包，无法补交付。"
+    },
+    {
+      "code": "LC-PLATFORM-010",
+      "layer": "PLATFORM",
+      "stage": "api",
+      "title_zh": "与 bridge 的通道断开",
+      "owner": "platform",
+      "retryable": true,
+      "http_status": 503,
+      "user_hint": "与终端 bridge 的连接已断开，节点操作未送达；请刷新页面确认节点在线后重试。",
+      "ops_hint": "查 terminal_bridge 是否重启/OOM、WSS 心跳是否超时；未送达意味着节点侧没有留下任何任务，重试是安全的。"
+    },
+    {
+      "code": "LC-PLATFORM-011",
+      "layer": "PLATFORM",
+      "stage": "api",
+      "title_zh": "失败原因未归因",
+      "owner": "platform",
+      "retryable": "manual",
+      "http_status": 500,
+      "user_hint": "任务已失败，但未记录可归因的原因；请查看任务详情或联系平台侧定位。",
+      "ops_hint": "失败落库时 error_message 无法匹配任何已知模式，平台按兜底码落库。该码数量上涨说明某个上游在失败时没带原因，需按 trace_id 回溯补码。"
+    },
+    {
+      "code": "LC-PLATFORM-012",
+      "layer": "PLATFORM",
+      "stage": "api",
+      "title_zh": "平台内部错误",
+      "owner": "platform",
+      "retryable": true,
+      "http_status": 500,
+      "user_hint": "平台处理本次请求时内部出错；请稍后重试，反复失败请联系平台侧。",
+      "ops_hint": "平台返回 5xx 且非存储/数据库专项码。查 case-service 日志中同一 trace_id 的堆栈；若集中在收尾接口，优先看并发与超时预算。"
+    },
+    {
+      "code": "LC-PLATFORM-013",
+      "layer": "PLATFORM",
+      "stage": "api",
+      "title_zh": "交付会话未被执行",
+      "owner": "platform",
+      "retryable": true,
+      "http_status": 409,
+      "user_hint": "采集已结束但交付会话未被 bridge 执行（僵尸会话）；请点「补交付」重新上传。",
+      "ops_hint": "采集终态后 delivery_status 长期停留在 queued，bridge 侧无对应作业。多为通道断开或节点侧任务已结束未回报；历史欠账由 061 清理脚本订正。"
     }
   ]
 }

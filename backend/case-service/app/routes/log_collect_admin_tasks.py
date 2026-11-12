@@ -136,9 +136,20 @@ _SELECT = """
            t.created_at, t.finished_at, t.delivery_finished_at
 """
 
+# 「传输中」口径（2026-11-12 修复）：
+# 第一性原理——「传输中」意味着任务确实在传输中，而非采集早已终态、交付却卡在 queued。
+# 旧口径用 OR：status 活跃 OR delivery_status 在途，导致采集已 failed/completed/cancelled
+# 但 delivery_status=queued 的僵尸任务被错误计入「传输中」（实测 53 中 42 个是僵尸）。
+#
+# 新口径分两段：
+#   A) 采集活跃（collecting/packaging/uploading）且交付未终结（非 delivered/failed）
+#   B) 采集未终态（非 failed/cancelled/completed）且交付在途（queued/pulling/uploading/relaying）
+# 两段用 OR 连接，覆盖所有真正的在途场景。
 _TRANSFERRING = """(
-        t.status IN ('collecting','packaging','uploading')
-        OR t.delivery_status IN ('queued','pulling','uploading','relaying')
+        (t.status IN ('collecting','packaging','uploading')
+         AND t.delivery_status NOT IN ('delivered','failed'))
+        OR (t.status NOT IN ('failed','cancelled','completed')
+         AND t.delivery_status IN ('queued','pulling','uploading','relaying'))
     )"""
 _FAILED = "(t.status = 'failed' OR t.delivery_status = 'failed')"
 _UNVERIFIED = "(t.detail -> 'p1_archive_check' ->> 'verified') = 'false'"

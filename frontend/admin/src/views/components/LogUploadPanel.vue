@@ -65,10 +65,25 @@ const MODE_TEXT: Record<string, string> = {
   acli_direct: 'P1 直传', bridge_relay: 'P2 中转', none: '未定',
 }
 
-/** 只有还在途的任务才值得查 5888：终态任务再查只会制造无效请求。 */
+/** 只有还在途的任务才值得查 5888：终态任务再查只会制造无效请求。
+ * 口径与后端 _TRANSFERRING 一致（2026-11-12 修复）：
+ * 采集活跃且交付未终结，或采集未终态且交付在途。
+ * 旧口径用 OR 导致采集已 failed/completed/cancelled 但 delivery=queued 的僵尸被算入传输中。 */
+const ACTIVE_STATUSES = ['collecting', 'packaging', 'uploading']
+const TERMINAL_STATUSES = ['failed', 'cancelled', 'completed']
+const IN_TRANSIT_DELIVERY = ['queued', 'pulling', 'uploading', 'relaying']
+const TERMINAL_DELIVERY = ['delivered', 'failed']
+
 function isActive(task: AdminLogCollectTask): boolean {
-  return ['collecting', 'packaging', 'uploading'].includes(task.status)
-    || ['queued', 'pulling', 'uploading', 'relaying'].includes(task.delivery_status)
+  // A: 采集活跃且交付未终结
+  if (ACTIVE_STATUSES.includes(task.status) && !TERMINAL_DELIVERY.includes(task.delivery_status)) {
+    return true
+  }
+  // B: 采集未终态且交付在途
+  if (!TERMINAL_STATUSES.includes(task.status) && IN_TRANSIT_DELIVERY.includes(task.delivery_status)) {
+    return true
+  }
+  return false
 }
 
 function buildQuery(): AdminTaskFilters {
