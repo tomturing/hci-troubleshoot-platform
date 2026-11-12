@@ -22,6 +22,11 @@ class Phase(StrEnum):
     # 服务重启导致任务中途消失。必须与 failed 区分：它不是"同步失败"，
     # 重新触发通常就能成功，前端不应提示用户去排查日志源。
     INTERRUPTED = "interrupted"
+    # 曾同步成功、产物已按保留期或磁盘水位清理掉。
+    # 这不是终态失败：原件仍在日志源服务器上，随时可以重新同步。
+    # 必须单独一个阶段，否则清理后的工单会从列表里凭空消失，
+    # 用户无法区分"从没同步过"和"同步过但被我删了"。
+    CLEANED = "cleaned"
 
 
 class ErrorCode(StrEnum):
@@ -32,7 +37,12 @@ class ErrorCode(StrEnum):
     TOO_LARGE = "too-large"
     BAD_PASSWORD = "bad-password"
     ARCHIVE_CORRUPT = "archive-corrupt"
+    # 写到一半真的没空间了（unzip exit 50 / ENOSPC）。
     NO_SPACE = "no-space"
+    # 写入**之前**的磁盘水位预检没通过：剩余空间低于熔断阈值，主动拒绝。
+    # 必须与 no-space 分开：前者是"已经发生的事实"，后者是"提前拦下的预防"，
+    # 用户看到前者会怀疑数据被写坏，看到后者只需要知道"等清理跑完再点一次"。
+    LOW_DISK = "low-disk"
     QUOTA_EXCEEDED = "quota-exceeded"
     DEPTH_EXCEEDED = "depth-exceeded"
     SSH_FAILED = "ssh-failed"

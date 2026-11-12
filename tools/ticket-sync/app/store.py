@@ -70,7 +70,32 @@ CREATE TABLE IF NOT EXISTS retries (
     next_retry_at REAL,
     updated_at REAL NOT NULL
 );
+-- 自动清理的动作流水。为什么必须落库：清理是唯一会"无声删除用户数据"的动作，
+-- 只写日志的话，一次 journal 轮转就再也说不清"那个工单是被谁删的、当时盘还剩多少"。
+-- 2026-11-12 事故里 41 个目录被删、577 GiB 记账成为幽灵行，就是因为删除动作
+-- 完全没有留痕，事后只能靠比对 DB 与磁盘反推。
+CREATE TABLE IF NOT EXISTS cleanup_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at REAL NOT NULL,
+    kind TEXT NOT NULL,
+    ticket_id TEXT,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    free_bytes INTEGER,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cleanup_events_time ON cleanup_events(occurred_at);
 """
+
+# 清理事件类型。枚举在这里集中定义，避免各处拼字符串导致统计口径分裂。
+CLEANUP_KIND_RETENTION = "retention"
+CLEANUP_KIND_CAPACITY = "capacity"
+CLEANUP_KIND_STALE_TMP = "stale-tmp"
+CLEANUP_KIND_TRASH = "trash"
+CLEANUP_KIND_WATERLINE = "waterline"
+CLEANUP_KIND_RECONCILE = "reconcile"
+
+# 清理流水的保留天数。与墓碑同量级：够覆盖一次事故回溯，又不至于无限增长。
+CLEANUP_EVENT_RETENTION_DAYS = 30
 
 
 def _locked(method):
@@ -439,3 +464,82 @@ class Store:
             self._conn.commit()
         except sqlite3.Error as exc:
             logger.warning("删除退避状态失败 ticket=%s error=%s", ticket_id, exc)
+
+    # ---------------- 清理动作流水 ----------------
+
+    @_locked
+    def add_cleanup_event(
+        self,
+        kind: str,
+        occurred_at: float,
+        *,
+        ticket_id: str | None = None,
+        bytes_: int = 0,
+        free_bytes: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """登记一次清理/熔断动作。
+
+        写失败只记日志：留痕是辅助事实，不能因为写不进去就把删除动作回滚——
+        磁盘已经满了，回滚留下的只是"没删掉"和"没记录"两个坏结果。
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO cleanup_events (occurred_at, kind, ticket_id, bytes, free_bytes, detail)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (occurred_at, kind, ticket_id, bytes_, free_bytes, detail),
+            )
+            self._conn.commit()
+        except sqlite3.Error as exc:
+            logger.warning("写入清理流水失败 kind=%s ticket=%s error=%s", kind, ticket_id, exc)
+
+    @_locked
+    def list_cleanup_events(
+        self, limit: int = 200, since: float | None = None
+    ) -> list[dict[str, Any]]:
+        """按时间倒序返回清理流水，供界面与排障使用。"""
+        try:
+            if since is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM cleanup_events ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM cleanup_events WHERE occurred_at >= ?"
+                    " ORDER BY occurred_at DESC, id DESC LIMIT ?",
+                    (since, limit),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("读取清理流水失败 error=%s", exc)
+            return []
+        return [dict(row) for row in rows]
+
+    @_locked
+    def prune_cleanup_events(self, before: float) -> int:
+        """回收过期流水，返回删除条数。"""
+        try:
+            cursor = self._conn.execute("DELETE FROM cleanup_events WHERE occurred_at < ?", (before,))
+            self._conn.commit()
+            return cursor.rowcount
+        except sqlite3.Error as exc:
+            logger.warning("回收清理流水失败 error=%s", exc)
+            return 0
+
+    @_locked
+    def cleanup_totals(self, since: float) -> dict[str, dict[str, Any]]:
+        """按类型汇总一段时间的清理量，供 /metrics 与界面概览使用。
+
+        返回 {kind: {"count": n, "bytes": n}}。用 SQL 聚合而不是把明细全读回来：
+        流水表会随每轮维护增长，界面每 2 秒轮询一次不能变成全表扫描。
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT kind, COUNT(*) AS cnt, COALESCE(SUM(bytes), 0) AS total"
+                " FROM cleanup_events WHERE occurred_at >= ? GROUP BY kind",
+                (since,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            logger.warning("汇总清理流水失败 error=%s", exc)
+            return {}
+        return {row["kind"]: {"count": int(row["cnt"]), "bytes": int(row["total"])} for row in rows}

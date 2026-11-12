@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .config import Config
 from .models import ErrorCode, ExtractStats, TicketError
+from .waterline import ensure_waterline
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,11 @@ async def extract(
 
     # 第一层：工单 zip 直接解到 work_dir 根，不额外套目录。
     # 实测归档根就是 log_list.json，套一层会让用户在选择器里多点一次。
+    # 先做水位自查再动手：解压是唯一会往磁盘写几十 GiB 的动作，
+    # 而 `_audit` 里的余量检查发生在**写完一层之后**，那时已经晚了。
+    ensure_waterline(
+        work_dir, cfg.min_free_bytes, stage="depth=1", ticket_id=ticket_id, job_id=job_id
+    )
     logger.info("ticket=%s job=%s phase=extracting depth=1 开始解压顶层归档", ticket_id, job_id)
     _notify_archive(on_archive, archive.name)
     # 顶层同样走魔数判定：工单包被采集端命名为 .zip 而实际是 tar 的情况真实存在。
@@ -191,6 +197,11 @@ async def extract(
             break
 
         depth += 1
+        # 每层都自查：单层解压增量可达 60 GiB，若攒到全部解完再判，
+        # 期间的写入量足以把剩余空间吃穿（max_depth=12）。
+        ensure_waterline(
+            work_dir, cfg.min_free_bytes, stage=f"depth={depth}", ticket_id=ticket_id, job_id=job_id
+        )
         for nested in pending:
             target = _target_for(nested)
             relative = str(nested.relative_to(work_dir))
@@ -714,13 +725,9 @@ def _audit(
             f"bytes={total} threshold={cfg.max_extract_bytes}",
         )
 
-    free = shutil.disk_usage(root).free
-    if free < cfg.min_free_bytes:
-        raise TicketError(
-            ErrorCode.NO_SPACE,
-            "服务器磁盘空间不足",
-            f"free={free} threshold={cfg.min_free_bytes} root={root}",
-        )
+    # 这里仍要查一次：解压过程中余量可能被其它任务吃掉。用 low-disk 而不是
+    # no-space——阈值是"安全水位"，不等于"已经写满"，两者对用户的含义不同。
+    ensure_waterline(root, cfg.min_free_bytes, stage=f"audit depth={stats.depth}")
 
 
 def _strip_escaped_symlinks(root: Path) -> int:

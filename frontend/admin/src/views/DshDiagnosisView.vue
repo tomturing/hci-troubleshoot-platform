@@ -5,16 +5,20 @@ import { createApiClient } from '@hci/shared'
 import { getAccessToken } from '@/utils/auth'
 import {
   PHASE_TEXT,
+  cleanupKindText,
   phaseText,
   TICKET_ID_PATTERN,
   cancelSyncJob,
   createSyncJob,
   errorText,
+  fetchCleanupEvents,
   fetchPercent,
   fetchSyncArtifacts,
   fetchSyncJob,
   isRunning,
   mib,
+  type CleanupEvent,
+  type CleanupThresholds,
   type SyncArtifact,
   type SyncJob,
 } from '@/api/ticketSync'
@@ -74,6 +78,13 @@ const artifacts = ref<SyncArtifact[]>([])
 const artifactQuery = ref('')
 const syncBusy = ref(false)
 const syncTip = ref('')
+// 产物根目录由服务端回传，界面绝不硬编码：路径写错会直接引导用户删错地方。
+const syncRoot = ref('')
+// 清理流水：用户问"我的日志去哪了"时，这里是唯一的答案来源。
+const cleanupDialogVisible = ref(false)
+const cleanupEvents = ref<CleanupEvent[]>([])
+const cleanupThresholds = ref<CleanupThresholds | null>(null)
+const cleanupLoading = ref(false)
 let pollTimer: number | null = null
 let artifactPollTimer: number | null = null
 
@@ -110,7 +121,43 @@ function artifactTagType(artifact: SyncArtifact) {
   if (artifact.phase === 'failed') return 'danger'
   if (artifact.phase === 'cancelled') return 'info'
   if (artifact.phase === 'interrupted') return 'info'
+  // 已清理用中性色：它不是错误，也不是可用状态，只是"曾经同步过、现在没有"。
+  if (artifact.phase === 'cleaned') return 'info'
   return 'warning'
+}
+
+/** 目录路径文案。服务端没回传根目录时退化为只显示工单号，绝不臆造路径。 */
+function artifactPath(ticketId: string): string {
+  return syncRoot.value ? `${syncRoot.value}/${ticketId}` : ticketId
+}
+
+/** 清理时刻的本地化展示；无效值一律回退为固定文案。 */
+function cleanupTime(artifact: SyncArtifact): string {
+  const raw = artifact.cleanedAt
+  if (!raw) return ''
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString()
+}
+
+async function openCleanupEvents() {
+  cleanupDialogVisible.value = true
+  cleanupLoading.value = true
+  try {
+    const data = await fetchCleanupEvents(100)
+    cleanupEvents.value = data.items
+    cleanupThresholds.value = data.thresholds ?? null
+  } catch {
+    cleanupEvents.value = []
+    cleanupThresholds.value = null
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+function gib(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return '—'
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`
 }
 
 function artifactPercent(artifact: SyncArtifact) {
@@ -132,8 +179,9 @@ function startArtifactPolling() {
 async function refreshArtifacts() {
   try {
     const latest = await fetchSyncArtifacts()
-    artifacts.value = latest
-    const selected = latest.find((item) => item.ticketId === activeTicket.value)
+    artifacts.value = latest.items
+    if (latest.root) syncRoot.value = latest.root
+    const selected = latest.items.find((item) => item.ticketId === activeTicket.value)
     if (selected?.job && activeTicket.value === selected.ticketId) {
       job.value = selected.job
     }
@@ -300,6 +348,7 @@ onUnmounted(() => {
             clearable
             placeholder="搜索工单号"
           />
+          <el-button text type="primary" size="small" @click="openCleanupEvents">清理记录</el-button>
           <el-button text type="primary" size="small" @click="refreshArtifacts">刷新</el-button>
         </div>
 
@@ -329,7 +378,7 @@ onUnmounted(() => {
             </div>
 
             <div v-if="artifact.directoryReady" class="artifact-path">
-              目录：/data/tickets/{{ artifact.ticketId }}
+              目录：{{ artifactPath(artifact.ticketId) }}
             </div>
 
             <div v-if="artifact.phase === 'queued'" class="artifact-detail">等待同步任务执行</div>
@@ -362,6 +411,13 @@ onUnmounted(() => {
               {{ errorText(artifact.job?.errorCode ?? null, artifact.job?.message ?? null) }}
               <span v-if="artifact.directoryReady">，本地已有目录仍可使用</span>
             </div>
+            <div v-else-if="artifact.phase === 'cleaned'" class="artifact-detail">
+              <template v-if="cleanupTime(artifact)">已于 {{ cleanupTime(artifact) }} 清理</template>
+              <template v-else>产物已清理</template>
+              <span class="artifact-cleaned-hint">
+                ；原件仍在日志源服务器上，可重新同步
+              </span>
+            </div>
             <div v-else class="artifact-detail">任务已取消</div>
           </div>
         </div>
@@ -374,6 +430,45 @@ onUnmounted(() => {
         class="sync-tip"
         :description="syncTip"
       />
+
+      <el-dialog v-model="cleanupDialogVisible" title="自动清理记录" width="760px">
+        <div v-loading="cleanupLoading" class="cleanup-dialog-body">
+          <div v-if="cleanupThresholds" class="cleanup-thresholds">
+            <span>
+              保留期 {{ cleanupThresholds.retentionDays }} 天（判据为同步完成时刻，非工单日期）
+            </span>
+            <span>最短保留 {{ cleanupThresholds.minKeepDays }} 天</span>
+            <span>余量软阈值 {{ gib(cleanupThresholds.evictFreeBytes) }}（低于即淘汰）</span>
+            <span>余量硬阈值 {{ gib(cleanupThresholds.minFreeBytes) }}（低于即拒绝写入）</span>
+            <span>产物总量上限 {{ gib(cleanupThresholds.maxTotalBytes) }}</span>
+          </div>
+          <el-empty
+            v-if="!cleanupLoading && cleanupEvents.length === 0"
+            :image-size="48"
+            description="暂无清理记录（每 30 秒检查一次，无动作时不写流水）"
+          />
+          <el-table v-else :data="cleanupEvents" size="small" max-height="420">
+            <el-table-column prop="occurredAt" label="时间" width="170">
+              <template #default="{ row }">
+                {{ new Date(row.occurredAt).toLocaleString() }}
+              </template>
+            </el-table-column>
+            <el-table-column label="动作" width="130">
+              <template #default="{ row }">{{ cleanupKindText(row.kind) }}</template>
+            </el-table-column>
+            <el-table-column prop="ticketId" label="工单" width="160">
+              <template #default="{ row }">{{ row.ticketId || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="释放" width="95">
+              <template #default="{ row }">{{ gib(row.bytes) }}</template>
+            </el-table-column>
+            <el-table-column label="当时余量" width="105">
+              <template #default="{ row }">{{ gib(row.freeBytes) }}</template>
+            </el-table-column>
+            <el-table-column prop="detail" label="依据" show-overflow-tooltip />
+          </el-table>
+        </div>
+      </el-dialog>
     </el-card>
 
     <el-card class="dsh-card">
@@ -582,6 +677,28 @@ onUnmounted(() => {
 
 .artifact-error {
   color: #f56c6c;
+}
+
+/* 已清理是中性状态：既不是错误（数据没丢），也不是可用（本地没文件） */
+.artifact-cleaned-hint {
+  color: #909399;
+}
+
+.cleanup-dialog-body {
+  min-height: 120px;
+}
+
+.cleanup-thresholds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  background: #f5f7fa;
+  border-radius: 4px;
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .sync-progress {

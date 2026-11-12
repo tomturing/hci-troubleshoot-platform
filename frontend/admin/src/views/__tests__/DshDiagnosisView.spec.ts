@@ -15,6 +15,7 @@ const ticketApi = vi.hoisted(() => ({
   fetchSyncArtifacts: vi.fn(),
   fetchSyncJob: vi.fn(),
   cancelSyncJob: vi.fn(),
+  fetchCleanupEvents: vi.fn(),
 }))
 // 只替换三个网络调用，保留 TICKET_ID_PATTERN / PHASE_TEXT / errorText 等纯函数，
 // 这样测试校验的是页面真实使用的规则，而不是另写一份。
@@ -60,7 +61,12 @@ describe('DshDiagnosisView 工单同步', () => {
     vi.clearAllMocks()
     shared.launch.mockResolvedValue({ data: { url: 'http://dsh.local/session' } })
     ticketApi.createSyncJob.mockResolvedValue(undefined)
-    ticketApi.fetchSyncArtifacts.mockResolvedValue([])
+    ticketApi.fetchSyncArtifacts.mockResolvedValue({ items: [], root: '/sf/tickets' })
+    ticketApi.fetchCleanupEvents.mockResolvedValue({
+      items: [],
+      last24h: {},
+      thresholds: null,
+    })
     ticketApi.cancelSyncJob.mockResolvedValue(undefined)
   })
 
@@ -140,40 +146,44 @@ describe('DshDiagnosisView 工单同步', () => {
   })
 
   it('目录列表展示已同步工单以及同步中和解压中的状态', async () => {
-    ticketApi.fetchSyncArtifacts.mockResolvedValue([
-      {
-        ticketId: 'Q2026102900001',
-        phase: 'ready',
-        directoryReady: true,
-        directoryUpdatedAt: '2026-10-29T10:00:00+08:00',
-        job: null,
-      },
-      {
-        ticketId: 'Q2026102900002',
-        phase: 'fetching',
-        directoryReady: false,
-        directoryUpdatedAt: null,
-        job: makeJob('fetching', { ticketId: 'Q2026102900002', receivedBytes: 50, totalBytes: 100 }),
-      },
-      {
-        ticketId: 'Q2026102900003',
-        phase: 'extracting',
-        directoryReady: false,
-        directoryUpdatedAt: null,
-        job: makeJob('extracting', {
+    ticketApi.fetchSyncArtifacts.mockResolvedValue({
+      root: '/sf/tickets',
+      items: [
+        {
+          ticketId: 'Q2026102900001',
+          phase: 'ready',
+          directoryReady: true,
+          directoryUpdatedAt: '2026-10-29T10:00:00+08:00',
+          job: null,
+        },
+        {
+          ticketId: 'Q2026102900002',
+          phase: 'fetching',
+          directoryReady: false,
+          directoryUpdatedAt: null,
+          job: makeJob('fetching', { ticketId: 'Q2026102900002', receivedBytes: 50, totalBytes: 100 }),
+        },
+        {
           ticketId: 'Q2026102900003',
-          extractedBytes: 1048576,
-          fileCount: 12,
-          currentArchive: 'sp_10.0.0.1/logs.tar.gz',
-        }),
-      },
-    ])
+          phase: 'extracting',
+          directoryReady: false,
+          directoryUpdatedAt: null,
+          job: makeJob('extracting', {
+            ticketId: 'Q2026102900003',
+            extractedBytes: 1048576,
+            fileCount: 12,
+            currentArchive: 'sp_10.0.0.1/logs.tar.gz',
+          }),
+        },
+      ],
+    })
 
     const wrapper = await mountView()
     wrappers.push(wrapper)
 
     expect(wrapper.text()).toContain('本地工单目录')
-    expect(wrapper.text()).toContain('目录：/data/tickets/Q2026102900001')
+    // 目录路径必须来自服务端 root，不能再是硬编码的 /data/tickets
+    expect(wrapper.text()).toContain('目录：/sf/tickets/Q2026102900001')
     expect(wrapper.text()).toContain('Q2026102900002')
     expect(wrapper.text()).toContain('同步中')
     expect(wrapper.text()).toContain('Q2026102900003')
@@ -182,22 +192,25 @@ describe('DshDiagnosisView 工单同步', () => {
   })
 
   it('按工单号过滤本地目录列表', async () => {
-    ticketApi.fetchSyncArtifacts.mockResolvedValue([
-      {
-        ticketId: 'Q2026102900001',
-        phase: 'ready',
-        directoryReady: true,
-        directoryUpdatedAt: null,
-        job: null,
-      },
-      {
-        ticketId: 'Q2026102900002',
-        phase: 'ready',
-        directoryReady: true,
-        directoryUpdatedAt: null,
-        job: null,
-      },
-    ])
+    ticketApi.fetchSyncArtifacts.mockResolvedValue({
+      root: '/sf/tickets',
+      items: [
+        {
+          ticketId: 'Q2026102900001',
+          phase: 'ready',
+          directoryReady: true,
+          directoryUpdatedAt: null,
+          job: null,
+        },
+        {
+          ticketId: 'Q2026102900002',
+          phase: 'ready',
+          directoryReady: true,
+          directoryUpdatedAt: null,
+          job: null,
+        },
+      ],
+    })
 
     const wrapper = await mountView()
     wrappers.push(wrapper)
@@ -208,5 +221,91 @@ describe('DshDiagnosisView 工单同步', () => {
     expect(wrapper.text()).toContain('Q2026102900002')
     expect(wrapper.text()).not.toContain('Q2026102900001')
     expect(wrapper.text()).not.toContain('没有匹配的工单')
+  })
+
+  it('已清理的工单显示「已清理」标签并说明可重新同步', async () => {
+    ticketApi.fetchSyncArtifacts.mockResolvedValue({
+      root: '/sf/tickets',
+      items: [
+        {
+          ticketId: 'Q2026110500001',
+          phase: 'cleaned',
+          directoryReady: false,
+          directoryUpdatedAt: null,
+          job: null,
+          cleanedAt: '2026-11-12T00:06:48+08:00',
+          cleanupReason: 'cleanup',
+        },
+      ],
+    })
+
+    const wrapper = await mountView()
+    wrappers.push(wrapper)
+
+    // 「已清理」不是失败：文案必须告诉用户原件还在、可以重拉，
+    // 否则用户会以为日志被永久删除。
+    expect(wrapper.text()).toContain('已清理')
+    expect(wrapper.text()).toContain('原件仍在日志源服务器上，可重新同步')
+    expect(wrapper.text()).not.toContain('已就绪')
+  })
+
+  it('水位熔断导致的失败要写明原因', async () => {
+    ticketApi.fetchSyncArtifacts.mockResolvedValue({
+      root: '/sf/tickets',
+      items: [
+        {
+          ticketId: 'Q2026111200002',
+          phase: 'failed',
+          directoryReady: false,
+          directoryUpdatedAt: null,
+          job: makeJob('failed', {
+            ticketId: 'Q2026111200002',
+            errorCode: 'low-disk',
+            message: '磁盘剩余 120.0 GiB，低于安全水位 250 GiB，已暂停写入',
+          }),
+        },
+      ],
+    })
+
+    const wrapper = await mountView()
+    wrappers.push(wrapper)
+
+    expect(wrapper.text()).toContain('磁盘余量低于安全水位')
+    expect(wrapper.text()).toContain('120.0 GiB')
+  })
+
+  it('清理记录弹窗展示双阈值与最近动作', async () => {
+    ticketApi.fetchSyncArtifacts.mockResolvedValue({ items: [], root: '/sf/tickets' })
+    ticketApi.fetchCleanupEvents.mockResolvedValue({
+      items: [
+        {
+          id: 1,
+          kind: 'retention',
+          ticketId: 'Q2026110100001',
+          bytes: 3 * 1024 ** 3,
+          freeBytes: 900 * 1024 ** 3,
+          detail: 'age_days=4.00 retention_days=3',
+          occurredAt: '2026-11-12T00:06:48+08:00',
+        },
+      ],
+      last24h: { retention: { count: 1, bytes: 3 * 1024 ** 3 } },
+      thresholds: {
+        evictFreeBytes: 400 * 1024 ** 3,
+        minFreeBytes: 250 * 1024 ** 3,
+        retentionDays: 3,
+        minKeepDays: 1,
+        maxTotalBytes: 1024 * 1024 ** 3,
+      },
+    })
+
+    const wrapper = await mountView()
+    wrappers.push(wrapper)
+    await buttonByText(wrapper, '清理记录').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('保留期 3 天')
+    expect(wrapper.text()).toContain('400.0 GiB')
+    expect(wrapper.text()).toContain('250.0 GiB')
+    expect(wrapper.text()).toContain('Q2026110100001')
   })
 })

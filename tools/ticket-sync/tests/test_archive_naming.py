@@ -207,6 +207,9 @@ class FetchRemotePathTest(unittest.IsolatedAsyncioTestCase):
             source_port=22468,
             ssh_key="/tmp/id_ed25519",
             max_archive_bytes=10**9,
+            # 水位闸门取 0 表示"永不熔断"：本用例验证的是路径选取，
+            # 与磁盘余量无关，不能让宿主机的真实余量影响结果。
+            min_free_bytes=0,
             remote_archive=lambda tid: f"/sf/log/{tid}/{tid}.zip",
         )
 

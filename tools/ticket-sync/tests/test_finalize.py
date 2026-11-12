@@ -50,8 +50,12 @@ async def _fake_extract(
     return stats
 
 
-def _fake_publish(work_dir, final_dir, trash_dir):
-    """模拟原子发布：产物落到 final_dir，work_dir 被移走。"""
+def _fake_publish(work_dir, final_dir):
+    """模拟原子发布：产物落到 final_dir，work_dir 被移走。
+
+    签名必须与真实 `publish` 一致（旧版本不再进回收站，第三个参数已移除），
+    否则打桩本身就会把"正常路径"跑成失败。
+    """
     final_dir.mkdir(parents=True, exist_ok=True)
     (final_dir / "log_list.json").write_text("{}", encoding="utf-8")
     shutil.rmtree(work_dir, ignore_errors=True)
