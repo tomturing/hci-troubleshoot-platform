@@ -9,8 +9,13 @@
 # 「dsh 绑 loopback + nginx sidecar 反代」的双容器形态。
 # =============================================================================
 
-# DSH 部署的命名空间（本 Chart 自行创建）
+# DSH 部署的命名空间（本 Chart 自行创建）。多个 release 可以在同一命名空间并存，
+# 通过 namePrefix、Ingress path、Service 和存储卷实现真正独立的实例。
 namespace: hci-dsh
+
+# 既有 release 保持空值，资源名继续是 dsh/dsh-proxy；新实例例如使用 dsh-offline，
+# 这样旧服务的 Service、ConfigMap、Ingress 不会被第二个 release 接管。
+namePrefix: ""
 
 # ======================== 全局路由配置 ========================================
 global:
@@ -32,6 +37,10 @@ global:
 # 由环境仓库 environments/<env>/values.yaml 注入，本 Chart 只负责用它渲染
 # hci-dsh 命名空间内的 ghcr 拉取凭证，不内置任何默认值。
 secrets:
+  # 同一 namespace 的第二个 DSH release 可关闭这些管理开关，复用既有 release
+  # 创建的 imagePullSecret/LLM/插件 Secret，避免两个 ArgoCD Application 争抢同名资源。
+  manageImagePullSecret: true
+  manageDshCredentials: true
   ghcrToken: ""
   # DSH 专用 LLM API Key，由环境仓库注入；不复用主平台 secrets.llmApiKey。
   # 本 Chart 用它渲染 hci-dsh 命名空间内的 dsh-llm-credentials，

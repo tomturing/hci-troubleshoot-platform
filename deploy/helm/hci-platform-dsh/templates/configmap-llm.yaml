@@ -15,7 +15,7 @@ DSH 的 LLM 提供商配置，渲染为 $DSH_HOME/profiles/web/cordis.patch.yml�
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dsh-llm-config
+  name: {{ include "dsh.llmConfigName" . }}
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}

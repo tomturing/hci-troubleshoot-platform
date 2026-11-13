@@ -1,0 +1,40 @@
+# =============================================================================
+# ArgoCD Application: hci-platform-dsh-offline-staging
+# HCI 单 Agent 离线诊断实例，独立于既有 hci-platform-dsh-staging release。
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-dsh-offline-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "staging HCI 单 Agent 离线诊断 DSH（/dsh-offline，最新三插件组合）"
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-dsh
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-dsh
+      helm:
+        releaseName: hci-platform-dsh-offline
+        valueFiles:
+          - $values/environments/staging/values.yaml
+          - $values/environments/staging/dsh-values.yaml
+          - $values/environments/staging/dsh-offline-values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m

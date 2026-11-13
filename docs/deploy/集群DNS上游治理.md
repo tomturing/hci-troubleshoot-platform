@@ -113,7 +113,46 @@ k3s 内置 Corefile 的 `.:53` 块：
 | `max_fails` | `2` | 连续 2 次失败标记不可用 |
 | `upstreams` | 3 个不同运营商 | 避免单一公网 DNS 故障导致外部域名整体不可解析；内网 `*.cluster.local` 由 `kubernetes` 插件直接应答，不受影响 |
 
-### 4.3 刻意不做的事
+### 4.3 固定外部主机名
+
+需要把外部主机名固定到稳定 IP 时，在环境仓库的
+`environments/<env>/dns-values.yaml` 中配置 `staticHosts`，例如：
+
+```yaml
+staticHosts:
+  - hostname: it-oneapi.sangfor.com
+    address: 8.138.249.59
+    ttl: 60
+```
+
+Chart 会在 `coredns-custom` 中生成独立的 `static-hosts.server` Server Block：
+
+```text
+it-oneapi.sangfor.com:53 {
+    errors
+    hosts {
+        8.138.249.59 it-oneapi.sangfor.com
+        ttl 60
+        no_reverse
+    }
+}
+```
+
+必须使用独立 Server Block，不能在现有 `forward.override` 中再次声明 `hosts`；K3s 内置
+`.:53` 已经加载 `hosts /etc/coredns/NodeHosts`，同一个 Server Block 重复加载会导致
+CoreDNS 配置冲突。IP 只有在确认长期稳定时才能这样固定，否则应继续使用正常 DNS。
+
+更新 Helm/ArgoCD 后重启 CoreDNS，使导入的 `.server` 文件生效：
+
+```bash
+kubectl -n kube-system rollout restart deployment/coredns
+kubectl -n kube-system rollout status deployment/coredns
+```
+
+临时验证可以直接编辑 `kube-system/coredns` 的 `data.NodeHosts`，但该修改不属于持久化
+部署配置，后续 K3s reconcile 或 ArgoCD selfHeal 可能覆盖，正式环境应回写 Helm values。
+
+### 4.4 刻意不做的事
 
 - **不用 hostAliases 钉死 IP**：目标域名有 4 条 A 记录且会轮换，钉死会在轮换时整片故障；
 - **不在 CoreDNS 里用 template 插件拦截保留网段**：只是掩盖症状，且会误伤合法的基准测试网段；
@@ -130,7 +169,8 @@ k3s 内置 Corefile 的 `.:53` 块：
 | 文件 | 说明 |
 |---|---|
 | `deploy/helm/hci-platform-dns/Chart.yaml` | Chart 元信息 |
-| `deploy/helm/hci-platform-dns/values.yaml` | 上游列表与 forward 参数 |
+| `deploy/helm/hci-platform-dns/values.yaml` | 上游列表、静态主机映射渲染能力与 forward 参数 |
+| `hci-platform-env/environments/<env>/dns-values.yaml` | 环境专属静态主机映射 |
 | `deploy/helm/hci-platform-dns/templates/configmap-coredns-custom.yaml` | 渲染 `coredns-custom` |
 | `deploy/gitops/argo-apps/cloud/hci-platform-dns-staging.yaml` | ArgoCD Application |
 
@@ -235,4 +275,5 @@ ConfigMap——这是刻意的：宁可残留，也不要静默回退到 fake-ip
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-11-13 | v1.1 | 增加 `staticHosts` Helm 渲染能力；环境专属的 `it-oneapi.sangfor.com → 8.138.249.59` 放入双仓环境仓库，通过独立 `.server` Server Block 避免与 K3s 内置 `NodeHosts` 的 `hosts` 插件重复。 |
 | 2026-11-02 | v1.0 | 首次落地。将 staging 的 CoreDNS 上游从「继承节点 resolv.conf」改为显式 `223.5.5.5 / 119.29.29.29 / 114.114.114.114`（`policy sequential` + `health_check 5s` + `max_fails 2`），通过 k3s 官方扩展点 `coredns-custom` 承载，由 ArgoCD Application `hci-platform-dns-staging` 托管。背景：节点 Clash fake-ip 把 `198.18.0.2` 写入节点 DNS 上游，`forward` 默认 `random` 随机命中后返回 Pod 不可路由的 `198.18.0.x`，叠加 `cache 30` 形成 30 秒成簇失败窗口，实测修复前 30 次「解析→建连」失败 6 次（连续 27 秒），修复后 30/30 通过。**刻意否决**：改 k3s 内置清单（重启/升级会被覆盖）、hostAliases 钉死（A 记录轮换）、template 插件拦截保留网段（掩盖根因） |
