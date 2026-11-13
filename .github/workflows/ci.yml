@@ -1269,6 +1269,7 @@ jobs:
       - name: 运行 Helm Unit Tests
         run: |
           helm unittest deploy/helm/hci-platform --strict
+          helm unittest deploy/helm/hci-platform-dsh --strict
           echo "✅ Helm Unit Tests 通过"
 
       # E-3: ArgoCD Application 同步不变式
