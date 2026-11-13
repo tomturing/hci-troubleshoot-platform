@@ -439,7 +439,24 @@ export interface ResolveCaseResult {
   created: boolean
   /** 该工单是否属于当前身份；false 时日志回传与录像回放会被归属校验拒绝 */
   owned?: boolean
+  /** 归属不同但可显式认领（日志收集壳工单：无会话无消息、无在途交付、原身份空闲） */
+  claimable?: boolean
+  /** 不可认领的原因码，见 CLAIM_BLOCKED_REASON_TEXT */
+  claim_blocked_reason?: string | null
+  /** 原身份最后一次采集活动距今秒数 */
+  owner_active_seconds?: number | null
 }
+
+export interface ClaimCaseResult {
+  case_id: string
+  owned: boolean
+  claimed: boolean
+  already_owned: boolean
+  /** 随工单一起转移到当前身份的采集任务数 */
+  tasks_moved: number
+}
+
+
 
 /** 409 时服务端附带的活跃任务摘要（跨客户端已脱敏） */
 export interface ActiveTaskSummary {
@@ -495,6 +512,17 @@ export const logCollectApi = {
    */
   async resolveCase(caseId: string): Promise<ResolveCaseResult> {
     const { data } = await client.post('/cases/resolve', { case_id: caseId })
+    return data
+  },
+
+  /**
+   * 认领日志收集壳工单：把工单归属与名下采集任务转到当前身份。
+   *
+   * 为什么是显式动作而不是自动接管：client_id 是浏览器会话身份而非人，自动转移
+   * 等于"知道工单号就拥有它"，既无审计也绕过越权边界。认领是用户明确表达的意图。
+   */
+  async claimCase(caseId: string): Promise<ClaimCaseResult> {
+    const { data } = await client.post(`/cases/${caseId}/claim`)
     return data
   },
 

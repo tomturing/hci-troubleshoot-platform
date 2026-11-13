@@ -37,7 +37,14 @@ class AdminPathSummary(BaseModel):
     unverified: int = 0
     failed: int = 0
     by_conclusion: dict[str, int] = Field(
-        default_factory=lambda: {"pending": 0, "success": 0, "partial": 0, "failed": 0, "cancelled": 0}
+        default_factory=lambda: {
+            "pending": 0,
+            "success": 0,
+            "partial": 0,
+            "unfinished": 0,
+            "failed": 0,
+            "cancelled": 0,
+        }
     )
 
     @model_validator(mode="after")

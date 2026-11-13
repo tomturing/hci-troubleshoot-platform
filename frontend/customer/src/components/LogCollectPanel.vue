@@ -66,6 +66,7 @@ import {
   validateExtraPath,
 } from '@/utils/logCollectExtraPaths'
 import { checkDateRange } from '@/utils/logCollectDateRange'
+import { CLAIM_BLOCKED_REASON_TEXT } from '@/utils/logCollectOwnership'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
@@ -1159,12 +1160,61 @@ const resultSizeText = computed(() => {
 /**
  * 结果态是否该出现「上传到平台」。
  *
- * 只认对账结论（`adopt` + `deliver`），不自己再判一次"包在不在"：
- * 两处各判一次必然分叉，而"包是否仍在"只有 bridge stat 的 `archive_exists` 可信。
+ * 入口可见性不能只依赖节点实时对账：对账要先建立 SSH/bridge 会话再 stat，面板刚
+ * 打开时那一步通常还没回来（现场截图里 SSH 还在"正在连接"），于是出现"包明明还在
+ * 节点上、平台也记了路径，却连按钮都不给"，用户只能干等或去重新收集。
+ *
+ * 因此分两级：
+ *   1. 对账明确 `adopt + deliver` → 立即给入口；
+ *   2. 对账尚未回来 → 只要平台记录能证明「P2 有包、尚未交付」，先给入口，
+ *      点击时再由 stat 校验；包真的没了会得到明确报错，比不给按钮诚实。
  */
-const canUploadFromNode = computed(
-  () => nodeAction.value === 'adopt' && nodeAdoptMode.value === 'deliver',
+const canUploadFromNode = computed(() => {
+  if (nodeAction.value === 'adopt' && nodeAdoptMode.value === 'deliver') return true
+  // 对账已给出别的结论（直传/被阻塞）时以对账为准
+  if (nodeAction.value) return false
+  const task = resultTask.value
+  if (!task || resultDelivered.value) return false
+  if (resultMode.value === 'acli_direct') return false
+  return Boolean(task.archive_path) && (task.archive_size ?? 0) > 0
+})
+
+/**
+ * 结果态是否仍在等节点对账。
+ *
+ * 用于把"按钮为什么还没出现"变成一句可见的进度，而不是让用户对着没有按钮的
+ * 卡片猜平台是不是又坏了。
+ */
+const nodeVerifyPending = computed(
+  () => viewMode.value === 'result' && !nodeAction.value && !resultDelivered.value,
 )
+
+/** 认领被拒的原因文案（不吞掉原因，也不把内部原因码直接丢给用户）。 */
+const claimBlockedText = computed(() => {
+  const reason = chatStore.logCollectCaseClaimBlockedReason
+  return reason ? (CLAIM_BLOCKED_REASON_TEXT[reason] ?? '该工单当前不能认领') : ''
+})
+
+/**
+ * 认领壳工单：把归属与名下采集任务转到当前身份，然后原地刷新。
+ *
+ * 为什么要用户点确认：把工单从"别人的会话"变成"我的"，是可审计的所有权变更；
+ * 自动做等于给任意单号开了后门。认领成功后不重新采集——节点上那份包还在。
+ */
+async function claimOwnership() {
+  try {
+    await chatStore.claimLogCollectCase()
+    ElMessage.success(
+      chatStore.logCollectClaimedTasks > 0
+        ? `已认领工单，并接管 ${chatStore.logCollectClaimedTasks} 条采集记录`
+        : '已认领工单，可以继续采集与上传',
+    )
+    await restoreTaskState(true)
+    if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'manual' })
+  } catch (error: any) {
+    ElMessage.warning(error?.message || '认领失败，请稍后重试')
+  }
+}
 
 /**
  * 平台是否已有交付证据。
@@ -3712,8 +3762,20 @@ async function fallbackToP2(
  * （delivery_runner.go 的串味判定，超过 5 分钟必然误杀）。补交付的充分必要条件
  * 只有"包在节点上 + 平台有会话"，与采集状态没有因果关系。
  */
+/**
+ * 结果态「上传到平台」。
+ *
+ * 为什么要单独包一层：结果态入口按平台记录先给出（见 canUploadFromNode），此时
+ * 节点对账可能还没回来，`nodeAdoptMode` 仍是默认的 'resume'——直接调
+ * `adoptNodeTask` 会走"续采"分支，把「传已有包」变成「再采一遍」。
+ */
+async function deliverUploadFromNode() {
+  nodeAdoptMode.value = 'deliver'
+  await adoptNodeTask()
+}
+
 async function adoptNodeTask() {
-  const task = currentTask.value
+  const task = currentTask.value ?? resultTask.value
   if (!task) return
   let ws: WebSocket
   try {
@@ -4803,8 +4865,30 @@ onBeforeUnmount(() => {
         :closable="false"
         show-icon
         title="该工单属于其他会话身份"
-        description="采集可以继续，但日志回传与终端录像回放会被平台按归属拒绝；建议换用本人名下的工单号，或直接用当前工单重新采集。"
-      />
+      >
+        <div class="lc-claim">
+          <p class="lc-claim-text">
+            采集可以继续，但日志回传与终端录像回放会被平台按归属拒绝。如果这是你自己上一段会话（换浏览器、清
+            Cookie、换机器）留下的工单，认领到当前身份即可继续上传；否则请换用本人名下的工单号。
+          </p>
+          <div class="lc-claim-actions">
+            <!--
+              只提示不给出路时，用户唯一的选择是重新采集——而重采会覆盖节点上
+              那份还没交付的包（Q2026111301229，454MB）。认领是显式、可审计的动作。
+            -->
+            <el-button
+              v-if="chatStore.logCollectCaseClaimable"
+              size="small"
+              type="primary"
+              :loading="chatStore.logCollectClaiming"
+              @click="claimOwnership"
+            >
+              认领并继续
+            </el-button>
+            <span v-else-if="claimBlockedText" class="lc-claim-blocked">{{ claimBlockedText }}</span>
+          </div>
+        </div>
+      </el-alert>
       <!-- 准备失败的原样输出：acli 的 FATA 行就是用户唯一能拿去求助的证据，必须完整可见 -->
       <el-alert
         v-if="prepareState === 'failed'"
@@ -5466,6 +5550,8 @@ onBeforeUnmount(() => {
       <div class="panel-composer__hint">
         <template v-if="viewMode === 'result'">
           上次采集 {{ resultFinishedText }} · 本工单共 {{ historyTotal }} 条记录
+          <!-- 对账还没回来时按钮先不出现，但必须说明"在等什么"，否则就是干等 -->
+          <span v-if="nodeVerifyPending"> · 正在与节点核对包状态…</span>
         </template>
         <template v-else-if="!canCollect">
           采集依赖 SSH 会话：点「连接 SSH」登录后即可开始收集
@@ -5480,7 +5566,9 @@ onBeforeUnmount(() => {
               采集已完成但产物没到日志服务器时，「重新收集」是唯一的旧出口——
               而包就在节点上，重采一遍是纯粹的浪费。这里把补交付提为主操作。
             -->
-            <el-button v-if="canUploadFromNode" type="primary" @click="adoptNodeTask">上传到平台</el-button>
+            <el-button v-if="canUploadFromNode" type="primary" @click="deliverUploadFromNode">
+              上传到平台
+            </el-button>
             <!--
               P1 的"未交付"只代表"这次回查没查到"，不代表真的没传上去：
               给用户一个重跑核验的入口，避免只能用「重新收集」去洗掉一条误判记录。
@@ -5720,6 +5808,28 @@ onBeforeUnmount(() => {
 }
 /* 选择与探测结论冲突时只加色不改文案：提示必须同时说清"劝你别选"和"但你仍可以选" */
 .lc-hint-warn {
+  color: var(--el-color-warning);
+}
+/* 归属不同时的认领区：文案与动作同块，避免按钮孤零零挂在提示条外被忽略 */
+.lc-claim {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lc-claim-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.lc-claim-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* 不能认领时也要说明为什么，否则用户只会反复点或直接去重新采集 */
+.lc-claim-blocked {
+  font-size: 12px;
   color: var(--el-color-warning);
 }
 /* 场景清单还原：标签 + 说明 + 重试按钮同排，窄屏自动换行，避免按钮被挤出可视区 */

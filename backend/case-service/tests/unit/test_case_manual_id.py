@@ -132,7 +132,10 @@ async def test_resolve_creates_case_when_missing(service):
     created_case = repo.create.await_args.args[0]
     assert created_case.case_id == "Q2026101401684"
     assert created_case.client_id == "client-a"
-    assert created_case.metadata == {"source": "log_collect"}
+    # 必须断言 metadata_ 而不是 metadata：metadata 是 SQLAlchemy declarative 的保留名，
+    # 曾经写成 Case(metadata=...) 只生成了实例影子属性，列里永远是 '{}'
+    # （2026-11-13 壳工单来源标记全部丢失的根因）。
+    assert created_case.metadata_ == {"source": "log_collect"}
 
 
 async def test_resolve_race_treated_as_existing(service):

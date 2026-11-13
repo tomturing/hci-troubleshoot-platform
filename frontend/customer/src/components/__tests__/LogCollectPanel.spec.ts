@@ -77,6 +77,13 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
       },
       setLeftPanelPreferred: vi.fn(),
       setPanelResizing: vi.fn(),
+      // 壳工单归属与认领：面板据此显示「认领并继续」或归属拦截文案
+      logCollectCaseOwned: true as boolean | null,
+      logCollectCaseClaimable: false,
+      logCollectCaseClaimBlockedReason: null as string | null,
+      logCollectClaiming: false,
+      logCollectClaimedTasks: 0,
+      claimLogCollectCase: vi.fn(),
     },
   }
 })
@@ -3883,5 +3890,93 @@ describe('LogCollectPanel P2 交付与对账互斥（结构约束）', () => {
   it('结果态 stage 不得由"采集完成"直接置为 done', () => {
     const showResult = functionBody('showResult')
     expect(showResult).toMatch(/hasDeliveryEvidence\(task\) \? 'done' : 'idle'/)
+  })
+})
+
+/**
+ * 2026-11-13 现场回归（Q2026111301229，454MB 包卡在 queued）：
+ *
+ * 1. 归属不同时只给一句"建议换号或重新采集"，用户唯一可点的就是重新收集——而重采
+ *    会覆盖节点上那份还没交付的包。必须给出可审计的「认领」动作，或至少说明为什么
+ *    现在不能认领。
+ * 2. 「上传到平台」入口此前只在对账结论回来后出现；面板刚打开时 SSH 还在连接，
+ *    用户看到失败卡片却没有按钮，只能干等。平台记录本身已能证明"P2 有包、未交付"，
+ *    入口应当据此先出现，点击时再校验节点。
+ */
+describe('LogCollectPanel 归属认领与补交付入口', () => {
+  it('可认领时给出「认领并继续」，不再只建议重新采集', async () => {
+    mockStore.logCollectCaseOwned = false
+    mockStore.logCollectCaseClaimable = true
+    mockStore.logCollectClaiming = false
+    mockStore.logCollectCaseClaimBlockedReason = null
+    mockStore.claimLogCollectCase = vi.fn().mockResolvedValue(undefined)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('认领并继续')
+    expect(wrapper.text()).not.toContain('建议换用本人名下的工单号，或直接用当前工单重新采集')
+  })
+
+  it('不可认领时说明原因而不是给一个点了会失败的按钮', async () => {
+    mockStore.logCollectCaseOwned = false
+    mockStore.logCollectCaseClaimable = false
+    mockStore.logCollectCaseClaimBlockedReason = 'owner_active'
+
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('认领并继续')
+    expect(wrapper.text()).toContain('原浏览器退出后再试')
+  })
+
+  it('点击认领走 store 动作（权限变更必须由用户显式触发）', async () => {
+    mockStore.logCollectCaseOwned = false
+    mockStore.logCollectCaseClaimable = true
+    const claim = vi.fn().mockResolvedValue(undefined)
+    mockStore.claimLogCollectCase = claim
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const button = wrapper.findAll('button').find((item) => item.text().includes('认领并继续'))
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    await flushPromises()
+
+    expect(claim).toHaveBeenCalledTimes(1)
+  })
+
+  it('对账还没回来时，平台记录的包事实就足以给出「上传到平台」', async () => {
+    // 现场：status=completed、delivery_status=queued、归档 454MB 在节点上，
+    // 但 bridge 会话还在连接，nodeAction 为空 —— 旧逻辑此时不渲染按钮。
+    const wrapper = await mountResultTask({
+      task_id: 'task-q1229',
+      case_id: 'Q2026111301229',
+      origin_node_ip: '10.140.1.20',
+      modules: ['performance'],
+      date_from: '2026-11-09',
+      date_to: '2026-11-13',
+      ips: ['all'],
+      status: 'completed',
+      progress: 100,
+      arch: 'x86_64',
+      acli_version: '1.0.0',
+      upload_mode: 'bridge_relay',
+      delivery_status: 'queued',
+      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026111301229.zip',
+      archive_size: 475_693_225,
+      archive_sha256: 'a'.repeat(64),
+      cleanup_state: 'none',
+      archive_deleted: false,
+      relay_status: 'none',
+      relay_restarts: 0,
+      created_at: '2026-11-13T07:48:55Z',
+      updated_at: '2026-11-13T09:13:48Z',
+      finished_at: '2026-11-13T09:13:48Z',
+    } as any)
+
+    const upload = wrapper.findAll('button').find((item) => item.text().includes('上传到平台'))
+    expect(upload).toBeTruthy()
+    expect(wrapper.text()).toContain('正在与节点核对包状态')
   })
 })

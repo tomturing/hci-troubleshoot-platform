@@ -14,6 +14,7 @@ import {
   rightWidthRange,
 } from '@/utils/workspaceLayout'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
+import { CLAIM_BLOCKED_REASON_TEXT } from '@/utils/logCollectOwnership'
 import { checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, buildSftpMessage, parseSftpListPayload, parseSftpTransferPayload, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec, type SftpEntry, type SftpTransferPayload } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
@@ -819,6 +820,13 @@ export const useChatStore = defineStore('chat', () => {
   // 绑定的工单是否属于当前身份：false 时日志回采/录像回放会被归属校验拒绝。
   // 采集本身仍允许（运维可能需要用外部单号补采），但面板必须先给出前置提示。
   const logCollectCaseOwned = ref<boolean | null>(null)
+  // 归属不同但可显式认领（壳工单）时置 true：只提示不给动作会让用户只能重采，
+  // 而重采会覆盖节点上那份还没交付的包。
+  const logCollectCaseClaimable = ref(false)
+  const logCollectCaseClaimBlockedReason = ref<string | null>(null)
+  const logCollectClaiming = ref(false)
+  // 认领时一并转移过来的任务数（0 表示只是拿到了空壳工单）
+  const logCollectClaimedTasks = ref(0)
   const logCollectCaseDialogVisible = ref(false)
   const logCollectCaseLoading = ref(false)
   // 409 冲突：服务端返回的活跃任务摘要（状态/进度/是否本人）
@@ -1049,6 +1057,7 @@ export const useChatStore = defineStore('chat', () => {
         // 预填当前工单号，减少一次输入
         logCollectCaseId.value = currentCase.value.case_id
       }
+      resetLogCollectClaimState()
       logCollectCaseDialogVisible.value = true
       return
     }
@@ -1065,6 +1074,7 @@ export const useChatStore = defineStore('chat', () => {
       logCollectVisible.value = true
       return
     }
+    resetLogCollectClaimState()
     logCollectCaseDialogVisible.value = true
   }
 
@@ -1073,6 +1083,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function openLogCollectCaseDialog(): void {
+    resetLogCollectClaimState()
     logCollectCaseDialogVisible.value = true
   }
 
@@ -1098,6 +1109,10 @@ export const useChatStore = defineStore('chat', () => {
       logCollectCaseId.value = result.case_id
       // 旧后端不返回 owned：按"未知"处理为已归属，不误报
       logCollectCaseOwned.value = result.owned !== false
+      logCollectCaseClaimable.value = result.owned === false && result.claimable === true
+      logCollectCaseClaimBlockedReason.value =
+        result.owned === false ? (result.claim_blocked_reason ?? null) : null
+      logCollectClaimedTasks.value = 0
       logCollectCaseDialogVisible.value = false
       // 面板打开即占用左栏，同侧的历史工单必须让位
       showHistoryDrawer.value = false
@@ -1117,6 +1132,51 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       logCollectCaseLoading.value = false
     }
+  }
+
+  /**
+   * 认领当前绑定的日志收集壳工单。
+   *
+   * 为什么必须由用户点一次：身份是浏览器会话级凭据，"自动接管"等于知道工单号
+   * 就拥有它。认领成功后归属与名下任务一起转移，旧包/旧录像才能被续用。
+   */
+  async function claimLogCollectCase(): Promise<void> {
+    const caseId = logCollectCaseId.value
+    if (!caseId) throw new Error('当前没有绑定工单')
+    logCollectClaiming.value = true
+    try {
+      const result = await logCollectApi.claimCase(caseId)
+      logCollectCaseOwned.value = true
+      logCollectCaseClaimable.value = false
+      logCollectCaseClaimBlockedReason.value = null
+      logCollectClaimedTasks.value = result.tasks_moved ?? 0
+    } catch (e: any) {
+      const status = e?.response?.status
+      const detail = e?.response?.data?.detail
+      const reason = typeof detail === 'object' && detail ? String(detail.reason ?? '') : ''
+      if (status === 409) {
+        logCollectCaseClaimable.value = false
+        logCollectCaseClaimBlockedReason.value = reason || null
+        throw new Error(CLAIM_BLOCKED_REASON_TEXT[reason] || '该工单当前不能认领，请按提示处理后重试')
+      }
+      if (status === 404) throw new Error('工单不存在，请确认工单号')
+      if (status === 401) throw new Error('身份已失效，请刷新页面后重试')
+      throw new Error('认领失败，请稍后重试')
+    } finally {
+      logCollectClaiming.value = false
+    }
+  }
+
+  /**
+   * 清掉上一次的认领结论。
+   *
+   * 用户可能换一个单号继续采集，旧的"可认领"状态若残留，会对着一个别人的真实
+   * 业务工单显示"认领并继续"，点了才知道不行——比不显示更糟。
+   */
+  function resetLogCollectClaimState(): void {
+    logCollectCaseClaimable.value = false
+    logCollectCaseClaimBlockedReason.value = null
+    logCollectClaimedTasks.value = 0
   }
 
   /** 接管查看已有任务（409 后"查看任务状态"或刷新恢复）。 */
@@ -4601,6 +4661,11 @@ export const useChatStore = defineStore('chat', () => {
     setPanelResizing,
     logCollectCaseId,
     logCollectCaseOwned,
+    logCollectCaseClaimable,
+    logCollectCaseClaimBlockedReason,
+    logCollectClaiming,
+    logCollectClaimedTasks,
+    claimLogCollectCase,
     logCollectCaseDialogVisible,
     logCollectCaseLoading,
     logCollectActiveTask,
