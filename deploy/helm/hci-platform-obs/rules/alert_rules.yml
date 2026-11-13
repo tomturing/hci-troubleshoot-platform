@@ -66,26 +66,48 @@ groups:
           description: "命名空间 {{ $labels.namespace }} 中的 Pod {{ $labels.pod }} 容器 {{ $labels.container }} 频繁重启，请检查日志。"
 
       # 服务全部实例不可用
+      #
+      # 2026-11-13 修正：原表达式按 `job=~"api-gateway|case-service|..."`
+      # 过滤，但本集群所有注解发现的 Pod 都归在同一个 `job="hci-services"`
+      # 里，服务名在 `service_name` 标签上。实测
+      # `count(up{job=~"api-gateway|..."})` 返回**空向量**——这条 critical
+      # 告警自上线起从未执行过一次判断。同类问题：11-12 的 DiskUsageHigh
+      # 缺 node-exporter 数据源。规则写得对不等于规则能响。
       - alert: ServiceDown
         expr: |
-          sum by (job) (
-            up{job=~"api-gateway|case-service|conversation-service|scheduler-service|kb-service"}
+          sum by (service_name) (
+            up{job="hci-services",
+               service_name=~"api-gateway|case-service|conversation-service|scheduler-service|kb-service"}
           ) == 0
         for: 1m
         labels:
           severity: critical
           team: platform
         annotations:
-          summary: "服务 {{ $labels.job }} 全部实例不可用"
-          description: "服务 {{ $labels.job }} 的所有 Prometheus 抓取目标均不可达，请立即检查。"
+          summary: "服务 {{ $labels.service_name }} 全部实例不可用"
+          description: "服务 {{ $labels.service_name }} 的所有 Prometheus 抓取目标均不可达，请立即检查。"
+
+      # 任意抓取目标长期不可达（不限于核心服务）。
+      # 2026-11-13 排查发现 semantica/knowledge-explorer 的 target up=0
+      # 持续 7 天无人察觉：ServiceDown 只盯 5 个核心服务，其余 target 掉线
+      # 在告警层面完全静默。10 分钟门槛避开 Pod 正常重启的秒级抖动。
+      - alert: ScrapeTargetDown
+        expr: up{job="hci-services"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "抓取目标 {{ $labels.instance }} 持续不可达"
+          description: "服务 {{ $labels.service_name }} 的指标端点连续 10 分钟抓取失败。可能是 Pod 异常、端口不通或 NetworkPolicy 拒绝，请检查 Prometheus target 的 lastError。"
 
   # ────────────────────────── 业务告警（H-4）──────────────────────────
   - name: hci_business
     rules:
       # KB Service 不可用（RAG 功能降级）
+      # 同 ServiceDown：`job="kb-service"` 在本集群不存在，原规则恒无数据。
       - alert: KBServiceDown
-        expr: |
-          up{job="kb-service"} == 0
+        expr: up{job="hci-services", service_name="kb-service"} == 0
         for: 1m
         labels:
           severity: critical
