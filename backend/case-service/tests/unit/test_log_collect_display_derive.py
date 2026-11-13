@@ -99,6 +99,24 @@ class TestConclusion:
         assert payload["display"]["conclusion"] == "partial"
         assert key_list(payload) == ["artifact_verified", "delivered_unverified"]
 
+    def test_queued_delivery_is_unfinished_not_failed(self):
+        """01229：包在节点上、交付已登记但没拉走 → 「未完成·待补交付」。
+
+        判 failed 会与「交付已登记、可点上传到平台重试」同屏，用户只能理解成
+        "这次白采了"，于是去重新收集——覆盖掉节点上那份 454MB 的包。
+        """
+        payload = derive(
+            make_task(delivery_status="queued", archive_size=475_693_225),
+            now=NOW,
+        )
+
+        assert payload["display"]["conclusion"] == "unfinished"
+        # 语气必须是警告而不是错误：这是可续传的中间态，不是终态失败
+        assert payload["display"]["conclusion_tone"] == "warning"
+        assert payload["display"]["conclusion_label"] == "未完成 · 待补交付"
+        # 结论里的"可补交付"必须与 handoff_pending 条件一致，不能各说各话
+        assert "handoff_pending" in key_list(payload)
+
     def test_failed_and_cancelled_short_circuit(self):
         assert derive(make_task(status="failed"), now=NOW)["display"]["conclusion"] == "failed"
         assert derive(make_task(status="cancelled"), now=NOW)["display"]["conclusion"] == "cancelled"

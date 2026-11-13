@@ -34,6 +34,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 from shared.database.postgres import DatabaseManager
 from shared.observability.logger import get_logger
+from shared.security.case_access import resolve_data_access
 from sqlalchemy import text
 
 from ..config import settings
@@ -91,11 +92,14 @@ def _is_internal_caller(authorization: str | None) -> bool:
 
 
 async def _assert_case_owned(session, case_id: str, client_id: str) -> None:
-    """校验单个 case 归属 client；不符即 403（复用本服务参数化查询先例）。"""
-    res = await session.execute(text('SELECT client_id FROM "case" WHERE case_id = :case_id'), {"case_id": case_id})
-    row = res.fetchone()
-    owner = row[0] if row else None
-    if owner is None or owner != client_id:
+    """校验当前身份可写该 case 的日志；不符即 403。
+
+    放行口径见 ``shared.security.case_access``：工单归属当前身份，或"日志收集
+    壳工单 + 当前身份在该工单下有采集任务"（同一人换浏览器/换机器后仍能回采，
+    且不会向真实业务工单扩权）。
+    """
+    access = await resolve_data_access(session, case_id, client_id)
+    if not access["data_access"]:
         logger.warning(event="bridge_log_ownership_forbidden", case_id=str(case_id), client_id=client_id)
         raise HTTPException(status_code=403, detail="无权操作此工单的日志")
 
@@ -120,12 +124,9 @@ async def _verify_batch_ownership(body: BridgeLogBatch, client_id: str) -> set[s
     forbidden: set[str] = set()
     async for session in _db_manager.get_session():
         for case_id in case_ids:
-            res = await session.execute(
-                text('SELECT client_id FROM "case" WHERE case_id = :case_id'), {"case_id": case_id}
-            )
-            row = res.fetchone()
-            owner = row[0] if row else None
-            if owner is None or owner != client_id:
+            # 与手动上传共用同一判定：归属，或"壳工单 + 本人采集任务"
+            access = await resolve_data_access(session, case_id, client_id)
+            if not access["data_access"]:
                 logger.warning(event="bridge_log_ownership_forbidden", case_id=str(case_id), client_id=client_id)
                 forbidden.add(case_id)
     return forbidden

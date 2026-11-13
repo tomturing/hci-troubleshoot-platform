@@ -67,27 +67,52 @@ class TestAssertCaseOwned:
     """单工单归属校验测试。"""
 
     @staticmethod
-    def _session(fetchone_value):
+    def _session(owner, *, conversations=0, messages=0, own_task=False, source="chat"):
+        """构造 access 判定所需的 5 列行（shared.security.case_access 的查询契约）。"""
         session = AsyncMock()
         res = MagicMock()
-        res.fetchone.return_value = fetchone_value
+        res.mappings.return_value.first.return_value = None if owner is None else {
+            "client_id": owner,
+            "source": source,
+            "conversations": conversations,
+            "messages": messages,
+            "own_task": own_task,
+        }
         session.execute.return_value = res
         return session
 
     @pytest.mark.asyncio
     async def test_passes_when_owner_matches(self):
-        await _assert_case_owned(self._session(("cust-A",)), "Q001", "cust-A")
+        await _assert_case_owned(self._session("cust-A"), "Q001", "cust-A")
 
     @pytest.mark.asyncio
     async def test_forbidden_when_owner_mismatch(self):
         with pytest.raises(HTTPException) as exc_info:
-            await _assert_case_owned(self._session(("cust-B",)), "Q001", "cust-A")
+            await _assert_case_owned(self._session("cust-B"), "Q001", "cust-A")
         assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_forbidden_when_case_missing(self):
         with pytest.raises(HTTPException) as exc_info:
             await _assert_case_owned(self._session(None), "Q001", "cust-A")
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_passes_for_shell_case_with_own_task(self):
+        """同一人换浏览器后采完仍能回采：壳工单 + 本人采集任务放行。"""
+        await _assert_case_owned(
+            self._session("cust-B", source="log_collect", own_task=True), "Q001", "cust-A"
+        )
+
+    @pytest.mark.asyncio
+    async def test_forbidden_for_business_case_with_task(self):
+        """有会话的工单不能因为"采集过"而放行（跨客户读取）。"""
+        with pytest.raises(HTTPException) as exc_info:
+            await _assert_case_owned(
+                self._session("cust-B", source="log_collect", conversations=1, messages=5, own_task=True),
+                "Q001",
+                "cust-A",
+            )
         assert exc_info.value.status_code == 403
 
 
@@ -111,7 +136,13 @@ class TestVerifyBatchOwnership:
         async def _execute(_stmt, params):
             result = MagicMock()
             owner = owners.get(params["case_id"])
-            result.fetchone.return_value = (owner,) if owner else None
+            result.mappings.return_value.first.return_value = None if not owner else {
+                "client_id": owner,
+                "source": "chat",
+                "conversations": 1,
+                "messages": 1,
+                "own_task": False,
+            }
             return result
 
         session.execute = AsyncMock(side_effect=_execute)

@@ -11,7 +11,8 @@ CONCLUSION_LABELS = {
     "failed": "失败",
     "partial": "已交付 · 有疑点",
     "pending": "进行中",
-    "success": "已交付"
+    "success": "已交付",
+    "unfinished": "未完成 · 待补交付"
 }
 
 CONCLUSION_TONES = {
@@ -19,7 +20,8 @@ CONCLUSION_TONES = {
     "failed": "error",
     "partial": "warning",
     "pending": "info",
-    "success": "success"
+    "success": "success",
+    "unfinished": "warning"
 }
 
 PHASE_LABELS = {
