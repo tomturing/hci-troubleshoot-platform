@@ -8,14 +8,14 @@ tests:
       ingress.path: /dsh-offline
     asserts:
       - matchRegex:
-          path: data.nginx.conf
+          path: data["nginx.conf"]
           pattern: "location = /dsh-offline"
       - matchRegex:
-          path: data.nginx.conf
+          path: data["nginx.conf"]
           pattern: "location /dsh-offline/"
       - matchRegex:
-          path: data.nginx.conf
+          path: data["nginx.conf"]
           pattern: "proxy_redirect / /dsh-offline/;"
       - matchRegex:
-          path: data.nginx.conf
+          path: data["nginx.conf"]
           pattern: "proxy_cookie_path / /dsh-offline/;"
