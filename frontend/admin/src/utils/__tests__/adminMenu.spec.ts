@@ -33,7 +33,7 @@ describe('admin menu', () => {
     // 排在 DSH诊断 之前，不再属于「Catalog基线」(5.5) 那一组配置文案。
     expect(buildMenuItems(router.getRoutes()).map((item) => item.title)).toEqual([
       '仪表盘', '用户管理', '工单管理', '可观测性', '日志收集', 'DSH诊断', '分类基线', 'Catalog基线',
-      'KBD管理', 'SOP管理', '工具管理', '技能管理', 'Prompt管理', '离线诊断',
+      'KBD管理', 'SOP管理', 'acli插件', 'agent工具', '技能管理', 'Prompt管理', '离线诊断',
       'Console审计', '仿真测试', 'Bundle工厂', '模板实例库',
     ])
   })

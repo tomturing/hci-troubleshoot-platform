@@ -4316,3 +4316,88 @@ CREATE INDEX IF NOT EXISTS idx_dsh_diagnosis_session_source_path
 
 CREATE INDEX IF NOT EXISTS idx_dsh_diagnosis_session_activity
     ON dsh_diagnosis_session (last_activity_at DESC);
+
+-- ── acli 插件配置与下发 ────────────────────────────────────────────────────────
+-- 平台侧唯一事实源：admin-ui「acli插件」页面维护的插件定义，以及经 terminal_bridge
+-- 下发到客户 HCI 后的部署回执。HCI 侧运行时契约见 docs/solution/admin-ui/管理台设计.md §2.1.1。
+-- 手工插件（方案 B）依赖四要素：<name>/plugin、<name>/manifest.json、
+-- plugin_register.json 注册项、原始脚本；本表保存生成这四要素所需的全部输入。
+CREATE TABLE IF NOT EXISTS acli_plugin (
+    id serial PRIMARY KEY,
+    plugin_name varchar(64) NOT NULL UNIQUE,
+    plugin_uuid varchar(36) NOT NULL DEFAULT '',
+    display_name varchar(200) NOT NULL,
+    title_zh varchar(300) NOT NULL DEFAULT '',
+    title_en varchar(300) NOT NULL DEFAULT '',
+    description_zh text NOT NULL DEFAULT '',
+    description_en text NOT NULL DEFAULT '',
+    vendor_name varchar(200) NOT NULL DEFAULT 'HTP',
+    change_log text NOT NULL DEFAULT '',
+    version varchar(20) NOT NULL DEFAULT '0.0.1',
+    acli_version varchar(64) NOT NULL DEFAULT '>=1.0.0',
+    hci_version varchar(64) NOT NULL DEFAULT '',
+    source smallint NOT NULL DEFAULT 3,
+    status smallint NOT NULL DEFAULT 1,
+    arch smallint NOT NULL DEFAULT 1,
+    container varchar(64) NOT NULL DEFAULT '',
+    interpreter varchar(64) NOT NULL DEFAULT 'bash',
+    script_filename varchar(255) NOT NULL DEFAULT 'troubleshoot.sh',
+    script_content text NOT NULL,
+    parameters jsonb NOT NULL DEFAULT '[]'::jsonb,
+    extra_files jsonb NOT NULL DEFAULT '[]'::jsonb,
+    enable_completion boolean NOT NULL DEFAULT true,
+    passthrough_help boolean NOT NULL DEFAULT false,
+    enable_pid_lock boolean NOT NULL DEFAULT false,
+    timeout_seconds integer NOT NULL DEFAULT 120,
+    smoke_args varchar(255) NOT NULL DEFAULT '',
+    device_host varchar(128) NOT NULL DEFAULT '',
+    device_port integer NOT NULL DEFAULT 22,
+    device_username varchar(64) NOT NULL DEFAULT 'root',
+    node_ip varchar(64) NOT NULL DEFAULT '',
+    source_url text NOT NULL DEFAULT '',
+    spec_hash varchar(64) NOT NULL DEFAULT '',
+    last_deploy_id varchar(64) NOT NULL DEFAULT '',
+    last_deploy_status varchar(32) NOT NULL DEFAULT 'never',
+    last_deploy_at timestamptz,
+    last_deploy_detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+    is_active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_acli_plugin_name_format CHECK ((plugin_name)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text),
+    CONSTRAINT ck_acli_plugin_source CHECK (source = ANY (ARRAY[1, 2, 3])),
+    CONSTRAINT ck_acli_plugin_status CHECK (status = 1)
+);
+
+COMMENT ON TABLE acli_plugin IS 'acli 手工插件定义 — admin-ui 维护、经 terminal_bridge 下发到客户 HCI 的唯一配置事实源';
+COMMENT ON COLUMN acli_plugin.plugin_uuid IS 'manifest.json 与 plugin_register.json 共用的插件 UUID，首次生成后保持不变';
+COMMENT ON COLUMN acli_plugin.script_content IS '用户上传的原始巡检/排障脚本原文，平台不改写内容';
+COMMENT ON COLUMN acli_plugin.parameters IS '参数定义数组 [{flag,name,type,required,default,description}]，用于生成 wrapper 帮助与命令预览';
+COMMENT ON COLUMN acli_plugin.extra_files IS '附加文件数组 [{path,content,mode}]，随插件一并下发';
+COMMENT ON COLUMN acli_plugin.spec_hash IS 'sha256(规范化 spec + 全部文件字节)，用于幂等与漂移检测';
+COMMENT ON COLUMN acli_plugin.last_deploy_status IS 'never | success | failed | rolled_back，来自最后一次 bridge 下发回执';
+COMMENT ON COLUMN acli_plugin.device_host IS '目标 HCI 设备 IP；口令不落库，仅由页面在 ssh_connect 时输入';
+
+CREATE INDEX IF NOT EXISTS idx_acli_plugin_active ON acli_plugin (is_active, plugin_name);
+
+CREATE TABLE IF NOT EXISTS acli_plugin_deployment (
+    id serial PRIMARY KEY,
+    deploy_id varchar(64) NOT NULL UNIQUE,
+    plugin_id integer NOT NULL REFERENCES acli_plugin(id) ON DELETE CASCADE,
+    plugin_name varchar(64) NOT NULL,
+    version varchar(20) NOT NULL,
+    spec_hash varchar(64) NOT NULL,
+    device_host varchar(128) NOT NULL DEFAULT '',
+    node_ip varchar(64) NOT NULL DEFAULT '',
+    exec_id varchar(64) NOT NULL DEFAULT '',
+    trace_id varchar(128) NOT NULL DEFAULT '',
+    status varchar(32) NOT NULL,
+    exit_code integer,
+    stdout text NOT NULL DEFAULT '',
+    stderr text NOT NULL DEFAULT '',
+    verification jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE acli_plugin_deployment IS 'acli 插件下发回执 — 每次页面触发下发产生一条，trace_id/exec_id 与 bridge 日志对齐';
+CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_plugin ON acli_plugin_deployment (plugin_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_trace ON acli_plugin_deployment (trace_id);
