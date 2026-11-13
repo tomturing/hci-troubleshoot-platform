@@ -51,7 +51,7 @@ dsh_cockpit-rules/
 |---|---:|---|
 | `deepseek-harness-wecom` | `0.1.33` | 企业微信通道 |
 | `deepseek-harness-session-bi` | `0.1.21` | 会话运营台账与规则包 |
-| `hci-offline-diagnosis-bundle` | `0.4.1` | HCI 单 Agent 离线诊断 Preset |
+| `hci-offline-diagnosis-bundle` | `0.4.2` | HCI 单 Agent 离线诊断 Preset；移除 DSH 0.2.1 未提供的执行器插件 |
 
 这些 tgz 是构建上下文中的不可变本地制品；部署 values 必须使用精确文件名，禁止在
 容器启动时从 npm registry 解析浮动版本。
