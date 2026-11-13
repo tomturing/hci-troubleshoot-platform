@@ -155,3 +155,102 @@ tests:
               summary: "ticket-sync 指标采集失败"
               description: "无法抓取 192.168.0.4:18080/metrics 超过 2 分钟。可能原因：宿主机服务已停止（崩溃循环 5 次后 systemd 不再重启）、节点 IP 变更、或 18080 端口被占用。该服务长期不可用会导致新工单日志无法落盘。"
 
+  # ══════════════════════════════════════════════════════════════════════════
+  # 抓取目标与核心服务可用性（2026-11-13 新增/修正）
+  #
+  # 背景：同一天查出三个同源缺陷——ServiceDown / KBServiceDown 按 job 名过滤，
+  # 而本集群所有注解发现的 Pod 都归 job="hci-services"，服务名在 service_name
+  # 标签上；两条规则实测恒为空向量。加上原本没有任何规则覆盖非核心 target，
+  # semantica/knowledge-explorer 的 up=0 静默了 7 天。
+  #
+  # 这些用例的作用是钉住「标签口径」：以后谁把 service_name 改回 job，
+  # 正例会立刻失败，而不是又静默 7 天。
+  # ══════════════════════════════════════════════════════════════════════════
+
+  # ── ScrapeTargetDown 正例：单 target 掉线 12 分钟 → firing ──
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hci-services",instance="10.42.0.126:8000",service_name="knowledge-explorer"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ScrapeTargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              team: platform
+              instance: "10.42.0.126:8000"
+              job: hci-services
+              service_name: knowledge-explorer
+            exp_annotations:
+              summary: "抓取目标 10.42.0.126:8000 持续不可达"
+              description: "服务 knowledge-explorer 的指标端点连续 10 分钟抓取失败。可能是 Pod 异常、端口不通或 NetworkPolicy 拒绝，请检查 Prometheus target 的 lastError。"
+
+  # ── 反例一：target 健康 → 静默 ──
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hci-services",instance="10.42.0.126:8000",service_name="knowledge-explorer"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ScrapeTargetDown
+        exp_alerts: []
+
+  # ── 反例二：掉线仅 6 分钟，未达 for: 10m → 静默（避开 Pod 正常重启）──
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hci-services",instance="10.42.0.126:8000",service_name="knowledge-explorer"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ScrapeTargetDown
+        exp_alerts: []
+
+  # ── ServiceDown 正例：按 service_name 聚合，全部副本掉线 → firing ──
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hci-services",service_name="api-gateway",instance="10.42.0.1:8000"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: platform
+              service_name: api-gateway
+            exp_annotations:
+              summary: "服务 api-gateway 全部实例不可用"
+              description: "服务 api-gateway 的所有 Prometheus 抓取目标均不可达，请立即检查。"
+
+  # ── ServiceDown 反例：只有一个副本掉线，另一个健康 → 不得 firing ──
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hci-services",service_name="api-gateway",instance="10.42.0.1:8000"}'
+        values: '0x5'
+      - series: 'up{job="hci-services",service_name="api-gateway",instance="10.42.0.2:8000"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts: []
+
+  # ── KBServiceDown 正例：标签口径修正后必须能触发 ──
+  - interval: 1m
+    input_series:
+      - series: 'up{job="hci-services",service_name="kb-service",instance="10.42.0.3:8000"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KBServiceDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              team: platform
+              service_name: kb-service
+              job: hci-services
+              instance: "10.42.0.3:8000"
+            exp_annotations:
+              summary: "KB Service 不可用，RAG 功能已降级"
+              description: "kb-service 已有 1 分钟不可达，所有 AI 回答将无法检索知识库，请立即处理。"
+
