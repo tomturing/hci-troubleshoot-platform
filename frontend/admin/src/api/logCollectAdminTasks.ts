@@ -55,6 +55,47 @@ export interface DisplayCondition {
   label: string
 }
 
+/** 三段五组件里的单个组件；标签与段来自契约生成物。 */
+export interface AdminStageComponent {
+  key: string
+  label: string
+  tag: string
+  scope: string
+  scope_label: string
+}
+
+/** S1-S8 阶段：与客户横幅、阶段条同源。 */
+export interface AdminStageView {
+  key: string
+  label: string
+  scopes: string[]
+  scope_label: string
+  components: AdminStageComponent[]
+  status: string
+  status_label: string
+  criteria: string
+  fault_code: string | null
+  customer_text: string | null
+}
+
+/** 首个异常点：管理员用来判断真实链路问题出在哪一段。 */
+export interface AdminFaultAttribution {
+  code: string
+  scope: string
+  scope_label: string
+  component: string
+  component_label: string
+  component_tag: string
+  stage: string
+  stage_label: string
+  problem: string
+  action: string
+  customer_text: string
+  admin_detail: string
+  evidence: string
+  trace_id: string | null
+}
+
 export interface LogCollectDisplay {
   phase: string
   phase_label: string
@@ -64,6 +105,9 @@ export interface LogCollectDisplay {
   conditions: DisplayCondition[]
   progress_percent: number | null
   upload_mode_label?: string | null
+  stages?: AdminStageView[]
+  fault_attribution?: AdminFaultAttribution | null
+  trace_id?: string | null
 }
 
 export interface ArtifactInfo {

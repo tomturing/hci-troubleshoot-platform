@@ -161,6 +161,47 @@ export interface P1ArchiveVerifyResult {
   detail?: Record<string, unknown>
 }
 
+/** 三段五组件里的单个组件（标签与段来自契约）。 */
+export interface LogCollectStageComponentView {
+  key: string
+  label: string
+  tag: string
+  scope: string
+  scope_label: string
+}
+
+/** S1-S8 阶段时间线：与横幅、管理端详情同源。 */
+export interface LogCollectStageView {
+  key: string
+  label: string
+  scopes: string[]
+  scope_label: string
+  components: LogCollectStageComponentView[]
+  status: string
+  status_label: string
+  criteria: string
+  fault_code: string | null
+  customer_text: string | null
+}
+
+/** 首个异常点：客户只看 customer_text，其余字段供管理端判读。 */
+export interface LogCollectFaultView {
+  code: string
+  scope: string
+  scope_label: string
+  component: string
+  component_label: string
+  component_tag: string
+  stage: string
+  stage_label: string
+  problem: string
+  action: string
+  customer_text: string
+  admin_detail: string
+  evidence: string
+  trace_id: string | null
+}
+
 /** 平台派生的三维状态：界面只读，不得自行用 status/progress 拼结论。 */
 export interface LogCollectDisplayView {
   phase: string
@@ -171,6 +212,10 @@ export interface LogCollectDisplayView {
   conditions: Array<{ key: string; label: string }>
   progress_percent: number | null
   upload_mode_label?: string | null
+  stages?: LogCollectStageView[]
+  fault_attribution?: LogCollectFaultView | null
+  /** 唯一调用链：客户截图反馈时随文案一起给出 */
+  trace_id?: string | null
 }
 
 export interface ArtifactEvidence {

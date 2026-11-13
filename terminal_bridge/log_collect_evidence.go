@@ -62,8 +62,36 @@ type evidenceConfig struct {
 	Host         string
 }
 
-var evidenceConfigs sync.Map // task_id -> evidenceConfig
-var evidenceOnce sync.Map    // 去重键 -> struct{}（包探测/进程日志只做一次）
+var evidenceConfigs sync.Map    // task_id -> evidenceConfig
+var evidenceOnce sync.Map       // 去重键 -> struct{}（包探测/进程日志只做一次）
+var evidenceTLSRelaxed sync.Map // task_id -> struct{}（命中自签证书后仅本任务放宽）
+
+// evidenceTLSInsecure 只放宽「本次任务的证据通道」。
+//
+// 客户内网平台普遍自签，客户机系统根证书库不可能预置该 CA；而 P1 场景前端
+// 从不下发 tls_insecure（授权只挂在交付 job 上），严格校验会让 4443 四张证据表
+// 永远 0 行（Q2026111300155）。安全边界：只跳过证书校验，X-Evidence-Ticket
+// 仍绑定 task_id；状态按 task_id 存内存，不落盘、不污染其它任务或交付通道。
+func evidenceTLSInsecure(cfg evidenceConfig) bool {
+	if cfg.TLSInsecure {
+		return true
+	}
+	_, relaxed := evidenceTLSRelaxed.Load(cfg.TaskID)
+	return relaxed
+}
+
+func markEvidenceTLSRelaxed(cfg evidenceConfig, cause error) {
+	if strings.TrimSpace(cfg.TaskID) == "" {
+		return
+	}
+	if _, loaded := evidenceTLSRelaxed.LoadOrStore(cfg.TaskID, struct{}{}); loaded {
+		return
+	}
+	blog("WARN", "log_collect.evidence_tls_relaxed", "证据通道命中自签证书，已放宽证书校验", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+		"task_id": cfg.TaskID, "trace_id": cfg.TraceID, "reason": cause.Error(),
+		"scope": "仅本次任务的证据通道", "auth": "X-Evidence-Ticket 鉴权不变",
+	})
+}
 
 func configureEvidence(msg InMessage, customUI string) {
 	if strings.TrimSpace(msg.ExecID) == "" || strings.TrimSpace(msg.EvidenceTicket) == "" {
@@ -85,6 +113,8 @@ func configureEvidence(msg InMessage, customUI string) {
 		Ticket: msg.EvidenceTicket, TraceID: msg.TraceID, TLSInsecure: msg.TransferTLSInsecure,
 		LogServerURL: msg.RemoteURL, UploadMode: mode, NodeIP: msg.NodeIP, CustomUI: customUI,
 	}
+	// 每次新下发都重新严格校验一次：平台换成正式 CA 后不应继续沿用旧的放宽状态。
+	evidenceTLSRelaxed.Delete(cfg.TaskID)
 	evidenceConfigs.Store(cfg.TaskID, cfg)
 	// 下发前探测是异步的：绝不因为弱网/平台不可达拖延 acli 下发。
 	go runNetworkProbes(cfg)
@@ -102,13 +132,8 @@ func evidenceFor(taskID string) (evidenceConfig, bool) {
 	return cfg, ok
 }
 
-// postEvidence 把事实 POST 到数据面；返回响应体供测速票据二次使用。
-func (e evidenceConfig) postEvidence(ctx context.Context, path string, payload any, probeTicket string) (map[string]any, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	target := strings.TrimRight(e.PlatformURL, "/") + path
+// newEvidenceRequest 构造带票据的请求；重试必须重建，首次请求已消耗 body。
+func (e evidenceConfig) newEvidenceRequest(ctx context.Context, target string, body []byte, probeTicket string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -119,8 +144,33 @@ func (e evidenceConfig) postEvidence(ctx context.Context, path string, payload a
 	if probeTicket != "" {
 		req.Header.Set("X-Probe-Ticket", probeTicket)
 	}
-	client := httpClientFor(e.TLSInsecure, 15*time.Second)
-	resp, err := client.Do(req)
+	return req, nil
+}
+
+// postEvidence 把事实 POST 到数据面；返回响应体供测速票据二次使用。
+//
+// 命中自签证书时只对本次任务放宽一次并留痕，随后所有证据端点（网络探测、
+// 传输指标、包内容清单、进程日志）都复用同一状态，不必每类证据各失败一轮。
+func (e evidenceConfig) postEvidence(ctx context.Context, path string, payload any, probeTicket string) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	target := strings.TrimRight(e.PlatformURL, "/") + path
+	insecure := evidenceTLSInsecure(e)
+	req, err := e.newEvidenceRequest(ctx, target, body, probeTicket)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClientFor(insecure, 15*time.Second).Do(req)
+	if err != nil && !insecure && isUntrustedCertificateError(err) {
+		markEvidenceTLSRelaxed(e, err)
+		retry, buildErr := e.newEvidenceRequest(ctx, target, body, probeTicket)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		resp, err = httpClientFor(true, 15*time.Second).Do(retry)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +301,7 @@ func runNetworkProbes(cfg evidenceConfig) {
 		}{"log_server", cfg.LogServerURL})
 	}
 	for _, target := range targets {
-		measured := measureNetwork(ctx, target.url, cfg.TLSInsecure)
+		measured := measureNetwork(ctx, target.url, evidenceTLSInsecure(cfg))
 		facts := networkSample{
 			Target: target.name, Reachable: measured.Reachable, SampleCount: measured.SampleCount,
 			LossRate: measured.LossRate, RTTMinMS: measured.RTTMinMS, RTTAvgMS: measured.RTTAvgMS,
@@ -284,7 +334,7 @@ func runNetworkProbes(cfg evidenceConfig) {
 
 func measureBandwidth(ctx context.Context, cfg evidenceConfig, probeID, ticket string) (int64, int64) {
 	base := strings.TrimRight(cfg.PlatformURL, "/") + evidenceDirectPrefix + "/network-probe/" + url.PathEscape(probeID)
-	client := httpClientFor(cfg.TLSInsecure, 15*time.Second)
+	client := httpClientFor(evidenceTLSInsecure(cfg), 15*time.Second)
 	payload := bytes.Repeat([]byte{'x'}, evidenceBandwidthBytes)
 
 	started := time.Now()

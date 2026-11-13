@@ -15,6 +15,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CONCLUSION_TONES, formatLogCollectSize } from '@hci/shared'
+import LogCollectAttribution from './LogCollectAttribution.vue'
 
 import {
   getAdminTask,
@@ -52,6 +53,7 @@ const detailVisible = ref(false)
 const detailTask = ref<AdminLogCollectTask | null>(null)
 const detailData = ref<AdminTaskDetail | null>(null)
 const detailTab = ref('transfer')
+
 const evidenceLoading = ref(false)
 const evidenceError = ref('')
 const transferMetrics = ref<TransferMetricsResponse | null>(null)
@@ -600,7 +602,22 @@ const summaryCells = computed(() => [
           >{{ item.label }}</el-tag>
         </div>
 
+        <!--
+          链路定界摘要：无论停在哪一个证据页签，管理员都能先看到首个异常点。
+          客户只看到 customer_text；判据、证据入口与调用链只在管理端展开。
+        -->
+        <LogCollectAttribution
+          variant="summary"
+          :display="detailTask?.display"
+          :error-code="detailTask?.error_code"
+          :fallback-trace-id="detailTask?.trace_id"
+        />
+
         <el-tabs v-model="detailTab" class="upload-tabs">
+          <el-tab-pane label="链路定界" name="attribution">
+            <LogCollectAttribution variant="panel" :display="detailTask?.display" />
+          </el-tab-pane>
+
           <el-tab-pane label="传输时间线" name="transfer">
             <div v-if="evidenceError" class="upload-error">{{ evidenceError }}</div>
             <div v-if="!transferMetrics?.items?.length" class="upload-sub">{{ BRIDGE_OUTDATED_HINT }}（无传输样本）</div>
@@ -689,6 +706,35 @@ const summaryCells = computed(() => [
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* 链路定界：摘要卡 + 段/组件表 + 阶段时间线 */
+.upload-attribution {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color);
+  border-left: 4px solid var(--el-color-warning);
+  border-radius: 6px;
+}
+.upload-attribution-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.upload-attribution-line {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.6;
+  word-break: break-word;
+}
+.upload-attribution .upload-sub {
+  word-break: break-word;
+}
+.upload-section-title {
+  margin: 14px 0 8px;
+  font-size: 13px;
 }
 .upload-intro {
   font-size: 12px;

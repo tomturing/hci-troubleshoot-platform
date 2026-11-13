@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "conclusion": {
     "pending": "进行中",
     "success": "已交付",
@@ -20,6 +20,7 @@
     "fetching": "拉取中",
     "uploading": "上传中",
     "relaying": "代传中",
+    "verifying": "核验中",
     "settled": "已结束"
   },
   "condition": {
@@ -29,6 +30,7 @@
     "artifact_uninspected": "包内容未探测",
     "integrity_mismatch": "完整性不一致",
     "handoff_pending": "采集完成但未交付",
+    "verifying_archive": "正在核验归档件",
     "delivered_unverified": "已交付未核验",
     "network_degraded": "网络质量不佳",
     "stalled": "传输已停滞",
@@ -80,10 +82,328 @@
     "min_archive_bytes": 1048576,
     "max_process_log_file_bytes": 2097152,
     "max_process_log_task_bytes": 20971520,
-    "stall_seconds": 60
+    "stall_seconds": 60,
+    "archive_verify_wait_minutes": 10
   },
   "bands": {
     "collect_end": 60,
     "delivery_end": 90
+  },
+  "scope": {
+    "intranet": "内网",
+    "local": "本地",
+    "cloud": "云端"
+  },
+  "component": {
+    "hci": {
+      "scope": "intranet",
+      "label": "HCI环境",
+      "tag": "[内网·HCI环境]",
+      "duty": "主机、SSH/cgroup、磁盘、产物落盘路径"
+    },
+    "acli": {
+      "scope": "intranet",
+      "label": "acli工具",
+      "tag": "[内网·acli工具]",
+      "duty": "版本、下发、采集进度、压缩、直传动作"
+    },
+    "bridge": {
+      "scope": "local",
+      "label": "terminal_bridge",
+      "tag": "[本地·terminal_bridge]",
+      "duty": "协议解析、任务下发、证据上报、P2 中继"
+    },
+    "htp": {
+      "scope": "cloud",
+      "label": "htp平台",
+      "tag": "[云端·htp平台]",
+      "duty": "任务状态、归档回查、结论派生、界面"
+    },
+    "log_server": {
+      "scope": "cloud",
+      "label": "日志服务器5888",
+      "tag": "[云端·日志服务器5888]",
+      "duty": "收包、归档命名、票据校验"
+    }
+  },
+  "stage": {
+    "S1": {
+      "label": "环境探测",
+      "scopes": ["intranet"],
+      "scope_label": "内网",
+      "components": ["hci"],
+      "criteria": "probe.hosts_count / available_mb / architecture"
+    },
+    "S2": {
+      "label": "工具就绪",
+      "scopes": ["intranet"],
+      "scope_label": "内网",
+      "components": ["acli"],
+      "criteria": "acli_sync.install_done / acli_build_time"
+    },
+    "S3": {
+      "label": "任务下发",
+      "scopes": ["local"],
+      "scope_label": "本地",
+      "components": ["bridge"],
+      "criteria": "create_ack=confirmed、exit_code=0"
+    },
+    "S4": {
+      "label": "采集打包",
+      "scopes": ["intranet"],
+      "scope_label": "内网",
+      "components": ["hci", "acli"],
+      "criteria": "percent/done/total、archive_path/size"
+    },
+    "S5": {
+      "label": "交付传输",
+      "scopes": ["intranet", "cloud"],
+      "scope_label": "内网 → 云端",
+      "components": ["acli", "bridge", "htp", "log_server"],
+      "criteria": "5888 UploadComplete / relay 分片",
+      "note": "P1：acli→5888；P2：bridge→htp→5888"
+    },
+    "S6": {
+      "label": "归档核验",
+      "scopes": ["cloud"],
+      "scope_label": "云端",
+      "components": ["htp", "log_server"],
+      "criteria": "p1_archive_check.verified、/archive_status"
+    },
+    "S7": {
+      "label": "证据回传",
+      "scopes": ["local", "cloud"],
+      "scope_label": "本地 → 云端",
+      "components": ["bridge", "htp"],
+      "criteria": "4443 /api/direct/log-collect 四类端点、四张证据表"
+    },
+    "S8": {
+      "label": "结论呈现",
+      "scopes": ["cloud"],
+      "scope_label": "云端",
+      "components": ["htp"],
+      "criteria": "derive() 输出、横幅/抽屉"
+    }
+  },
+  "stage_status": {
+    "success": "成功",
+    "running": "进行中",
+    "waiting": "等待中",
+    "failed": "失败",
+    "unknown": "未知",
+    "skipped": "未启用"
+  },
+  "fault_attribution": {
+    "customer_format": "{component_label}：{problem}；{action}",
+    "default_code": "LC-HTP-002",
+    "stage_order": ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"],
+    "fields": ["code", "scope", "scope_label", "component", "component_label", "component_tag", "stage", "stage_label", "problem", "action", "customer_text", "admin_detail", "evidence", "trace_id"],
+    "match_policy": "longest_keyword",
+    "api_field_case": "snake_case",
+    "note": "首个异常点按 stage_order 取第一个 failed/waiting 阶段；结论本身不是异常点。归类取最长命中关键词，泛词不得抢走更具体的证据；前后端 API 字段一律 snake_case。"
+  },
+  "fault_matchers": [
+    { "code": "LC-BRIDGE-002", "keywords": ["x509", "certificate signed by unknown authority", "证书不受信", "tls: failed to verify certificate"] },
+    { "code": "LC-ACLI-001", "keywords": ["未知的命令或者命名空间", "unknown command", "log collect create", "log_collect create"] },
+    { "code": "LC-5888-001", "keywords": ["上传票据校验失败", "票据校验失败", "鉴权失败", "[P1] 票据", "401 unauthorized"] },
+    { "code": "LC-ACLI-002", "keywords": ["acli版本过低", "version_outdated", "缺少日志收集插件", "acli 安装重试失败", "acli 重试失败", "acli安装失败"] },
+    { "code": "LC-ACLI-003", "keywords": ["parse_ok=false", "采集进度无法解析", "进度解析失败"] },
+    { "code": "LC-ACLI-004", "keywords": ["压缩包体积异常偏小", "metadata_only", "包内没有日志内容", "空壳包"] },
+    { "code": "LC-HCI-001", "keywords": ["SSH连接失败", "ssh: connect", "connection refused", "无法连接SSH", "ssh_exchange_identification"] },
+    { "code": "LC-HCI-002", "keywords": ["磁盘空间不足", "no space left", "DiskPressure", "磁盘压力"] },
+    { "code": "LC-HCI-003", "keywords": ["auto-logout", "会话已断开", "SSH 会话已断开", "TMOUT"] },
+    { "code": "LC-BRIDGE-001", "keywords": ["无法连接本地服务", "BRIDGE_CHANNEL_LOST", "连接 terminal_bridge 超时", "本地桥接端未启动", "websocket connection", "WebSocket 连接失败", "无法连接桥接端"] },
+    { "code": "LC-BRIDGE-003", "keywords": ["桥接端版本较旧", "capabilities.log_collect_evidence=false", "暂无该数据"] },
+    { "code": "LC-BRIDGE-004", "keywords": ["代传失败", "relay_last_error", "P2平台中转失败"] },
+    { "code": "LC-BRIDGE-006", "keywords": ["下发失败", "任务下发失败", "log_collect create 失败"] },
+    { "code": "LC-HTP-001", "keywords": ["archive_missing", "未核验到归档件", "归档核验未完成"] },
+    { "code": "LC-HTP-003", "keywords": ["任务状态加载失败", "任务进度查询失败", "任务状态查询失败"] },
+    { "code": "LC-BRIDGE-005", "keywords": ["包内容未探测", "artifact_uninspected", "包内容清单未回传"] },
+    { "code": "LC-5888-002", "keywords": ["日志服务器不可达", "log_server_reachable=false", "5888不可达"] },
+    { "code": "LC-5888-003", "keywords": ["size_mismatch", "stale_archive", "归档件大小不一致"] },
+    { "code": "LC-5888-004", "keywords": ["归档核验等待超时", "archive_verify_timeout", "始终未发布归档件"] },
+    { "code": "LC-HTP-002", "keywords": ["未给出可识别的错误码", "未返回具体原因"] }
+  ],
+  "fault_catalog": {
+    "LC-HCI-001": {
+      "component": "hci",
+      "stage": "S1",
+      "problem": "SSH连接失败",
+      "action": "请尝试其他终端连接HCI验证连接是否正常",
+      "tone": "error",
+      "admin_detail": "检查 bridge_execution_logs 的 ssh.connected / ssh.disconnected(reason) / conn.role，并核对节点 22 端口与凭据；内网主机 SSH 端口可能是 22468。",
+      "evidence": "ssh.disconnected.reason、ssh.output.output_preview"
+    },
+    "LC-HCI-002": {
+      "component": "hci",
+      "stage": "S4",
+      "problem": "HCI磁盘空间不足",
+      "action": "请联系管理员确认/sf可用空间，不要自行删除文件",
+      "tone": "error",
+      "admin_detail": "用 probe.available_mb 与 archive_size 比对；磁盘压力会触发 Pod 驱逐并造成全栈中断，禁止在界面给出删除命令。",
+      "evidence": "log_collect.probe.available_mb、archive_size_probe.diag"
+    },
+    "LC-HCI-003": {
+      "component": "hci",
+      "stage": "S4",
+      "problem": "HCI会话超时断开",
+      "action": "请重新连接SSH；已完成的日志包无需重新收集",
+      "tone": "warning",
+      "admin_detail": "TMOUT auto-logout 后 session.shell_respawned 自动重生；核对断连时间是否晚于 5888 UploadComplete，晚于则不影响交付。",
+      "evidence": "ssh.output.output_preview、session.shell_respawned.respawns"
+    },
+    "LC-ACLI-001": {
+      "component": "acli",
+      "stage": "S3",
+      "problem": "未知的命令或者命名空间(log collect create)",
+      "action": "请在HCI后台执行acli --version确认acli版本",
+      "tone": "error",
+      "admin_detail": "acli 1.0.0 不同 build 的子命令集合不同；比对 detail.probe.acli_build_time 与 log_collect.create.command / output_preview，确认下发命令是否被该 build 支持。",
+      "evidence": "log_collect.create.output_preview、detail.probe.acli_build_time"
+    },
+    "LC-ACLI-002": {
+      "component": "acli",
+      "stage": "S2",
+      "problem": "acli版本过低或缺少日志收集插件",
+      "action": "请联系管理员升级acli后重试，不要重复下发",
+      "tone": "error",
+      "admin_detail": "看 acli_sync.version_outdated / install_done；旧 build 可能不支持 -m other 或 -H 票据头。",
+      "evidence": "acli_sync.version_check.current_build / remote_build"
+    },
+    "LC-ACLI-003": {
+      "component": "acli",
+      "stage": "S4",
+      "problem": "采集进度无法解析",
+      "action": "请联系管理员更新桥接端解析规则，暂不要重复下发",
+      "tone": "warning",
+      "admin_detail": "log_collect.progress.parse_ok=false；中英文输出差异指纹为 catalog_source=platform_default + parse_ok=false。",
+      "evidence": "parse_ok、status_text、catalog_source"
+    },
+    "LC-ACLI-004": {
+      "component": "acli",
+      "stage": "S4",
+      "problem": "压缩包体积异常偏小",
+      "action": "请核对采集时间范围与场景后重新收集",
+      "tone": "error",
+      "admin_detail": "archive_size < min_archive_bytes 或 manifest 仅含配置条目；608 字节空壳包先例说明 sha256 一致不等于内容有效。",
+      "evidence": "archive_size、artifact_manifest.entry_count / entry_total_bytes"
+    },
+    "LC-BRIDGE-001": {
+      "component": "bridge",
+      "stage": "S3",
+      "problem": "无法连接terminal_bridge",
+      "action": "请确认本地桥接端已启动，刷新页面后重试",
+      "tone": "error",
+      "admin_detail": "本地 WS 未监听或 exe 过旧；查 bridge_startup.service.version 与 capabilities.log_collect_evidence。",
+      "evidence": "openSocket 错误、BRIDGE_CHANNEL_LOST"
+    },
+    "LC-BRIDGE-002": {
+      "component": "bridge",
+      "stage": "S7",
+      "problem": "证据上报失败：平台证书不受信",
+      "action": "日志已交付，请联系管理员更新桥接端后补传证据",
+      "tone": "warning",
+      "admin_detail": "4443 自签 CA 不在客户机系统信任库；create 的 tls_insecure 依赖浏览器会话显式授权，P1 场景永不触发，证据通道需遇 x509 自动放宽一次并留痕（只放宽证书校验，不动票据鉴权）。",
+      "evidence": "log_collect.network_probe_failed.error、log_collect.node_manifest_failed.error"
+    },
+    "LC-BRIDGE-003": {
+      "component": "bridge",
+      "stage": "S7",
+      "problem": "桥接端版本较旧，暂无该数据",
+      "action": "请联系管理员更新桥接端exe，日志本身不受影响",
+      "tone": "warning",
+      "admin_detail": "capabilities.log_collect_evidence 缺失；四张证据表 0 行是能力缺失，不是采集失败，界面禁止显示 0 或空白。",
+      "evidence": "log_collect.capabilities、log_collect.evidence_enabled"
+    },
+    "LC-BRIDGE-004": {
+      "component": "bridge",
+      "stage": "S5",
+      "problem": "P2平台中转失败",
+      "action": "请点「上传到平台」重试，不需要重新采集",
+      "tone": "error",
+      "admin_detail": "看 relay_status / relay_last_error；分片已落平台可续传，failed 后需人工点一次。",
+      "evidence": "delivery.job_finished、relay_last_error"
+    },
+    "LC-BRIDGE-005": {
+      "component": "bridge",
+      "stage": "S7",
+      "problem": "已交付但包内容清单未回传",
+      "action": "日志包已到日志服务器，请联系管理员补传证据，不要重新收集",
+      "tone": "warning",
+      "admin_detail": "artifact_manifest 缺行使 quality=unknown，结论只能是 partial「已交付 · 有疑点」；引入方是 S7 证据回传（x509 或旧桥），不是采集失败，也不是平台损坏。先查四张证据表与 *_failed 事件，别让用户重采。",
+      "evidence": "artifact.quality=unknown、log_collect_artifact_manifest 行数、log_collect.node_manifest_failed.error"
+    },
+    "LC-HTP-001": {
+      "component": "htp",
+      "stage": "S6",
+      "problem": "归档核验未完成，正在等待日志服务器发布归档名",
+      "action": "请等待最多10分钟或点「重新核验归档」，不要重新收集",
+      "tone": "info",
+      "admin_detail": "P1 UploadComplete 与 5888 发布规范归档名之间存在竞态（现场实测约 31 秒）；verify-archive 返回 archive_missing 只写快照不写终态，等待窗口内结论应为 pending。",
+      "evidence": "detail.p1_archive_check.reason=archive_missing / checked_at、case-service P1 归档核验日志"
+    },
+    "LC-HTP-002": {
+      "component": "htp",
+      "stage": "S8",
+      "problem": "平台未给出可识别的错误码",
+      "action": "请截图本页并联系管理员，附上调用链ID",
+      "tone": "warning",
+      "admin_detail": "error_code / error_message 为空；按 trace_id 串 bridge_execution_logs 与 case-service 日志，禁止编造错误码。",
+      "evidence": "trace_id、detail.write_audit"
+    },
+    "LC-5888-001": {
+      "component": "log_server",
+      "stage": "S5",
+      "problem": "上传票据校验失败(401)",
+      "action": "请联系管理员核对日志服务器鉴权配置",
+      "tone": "error",
+      "admin_detail": "5888 upload_server.log 出现「鉴权失败: /init_upload」且无 [P1] 票据通过；当前阶段一 relaxed 匿名放行，切换强鉴权前必须确认 [P1] 票据通过。",
+      "evidence": "upload_server.log 鉴权失败 / [P1] 票据通过"
+    },
+    "LC-5888-002": {
+      "component": "log_server",
+      "stage": "S5",
+      "problem": "日志服务器不可达",
+      "action": "请检查节点到5888的网络，或改用P2平台中转",
+      "tone": "error",
+      "admin_detail": "probe.log_server_reachable=false 或 network_probe target=log_server reachable=false；注意 P2 代传落点仍是同一个 5888。",
+      "evidence": "detail.probe.log_server_reachable、log_collect_network_probe"
+    },
+    "LC-5888-003": {
+      "component": "log_server",
+      "stage": "S6",
+      "problem": "归档件大小或时间不一致",
+      "action": "请联系管理员按上传ID核对，不要直接覆盖归档件",
+      "tone": "warning",
+      "admin_detail": "verify-archive reason=size_mismatch / stale_archive；同工单目录可能留有旧包，规范名=最新包、旧包带时间戳。",
+      "evidence": "p1_archive_check.expected_size / archived_size / stored_name"
+    },
+    "LC-5888-004": {
+      "component": "log_server",
+      "stage": "S6",
+      "problem": "等待10分钟后日志服务器仍未发布归档件",
+      "action": "请截图本页并联系管理员核对日志服务器，不要重复收集",
+      "tone": "error",
+      "admin_detail": "p1_archive_check.reason=archive_missing 且 checked_at 已超过 archive_verify_wait_minutes；先查 5888 upload_server.log 的 UploadComplete 与 /sf/log 规范归档名，再决定重传还是补归档，禁止直接重新采集。",
+      "evidence": "detail.p1_archive_check.checked_at / reason、5888 upload_server.log"
+    },
+    "LC-HTP-003": {
+      "component": "htp",
+      "stage": "S8",
+      "problem": "任务状态或进度查询失败",
+      "action": "请刷新页面后重试；若持续失败请截图本页并联系管理员",
+      "tone": "error",
+      "admin_detail": "客户端 GET /log-collect/tasks 或 /progress 失败；按 trace_id 查 case-service 与网关日志，重点排除 502/503/504「结果未知」，不要把一次轮询失败写成任务终态。",
+      "evidence": "case-service 访问日志、网关状态码、trace_id"
+    },
+    "LC-BRIDGE-006": {
+      "component": "bridge",
+      "stage": "S3",
+      "problem": "任务下发失败",
+      "action": "请查看下方诊断并截图联系管理员，不要重复下发",
+      "tone": "error",
+      "admin_detail": "create 阶段 create_ack 非 confirmed 或 exit_code 非 0；比对 detail.create_output 与 probe.acli_build_time，重复下发会在节点上叠加多个采集任务。",
+      "evidence": "log_collect.create.output_preview、create_ack、exit_code"
+    }
   }
 }

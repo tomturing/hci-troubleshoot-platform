@@ -55,6 +55,8 @@ import {
   type RelayProgressView,
 } from '@/utils/logCollectDelivery'
 import { logCollectErrorHint } from '@/services/logCollectErrorHints'
+import { customerFaultText, showCustomerFault } from '@/utils/logCollectFault'
+import LogCollectFaultCard from './LogCollectFaultCard.vue'
 import LogCollectDiagnosis from '@/components/LogCollectDiagnosis.vue'
 import {
   EXTRA_PATH_MAX_COUNT,
@@ -1691,7 +1693,7 @@ async function prepare(
       if (isRetryableProbeError(error) && attempt < maxRetries) continue
       probeRetry.value = null
       prepareState.value = 'failed'
-      if (!options.silent) ElMessage.error(prepareError.value)
+      if (!options.silent) showCustomerFault(prepareError.value)
       return false
     }
   }
@@ -2105,7 +2107,9 @@ async function resumeTask(taskId: string) {
     startAutoSync(TERMINAL_TASK_STATUSES.includes(task.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL)
   } catch (e: any) {
     ElMessage.error(
-      e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务状态加载失败',
+      e?.response?.status === 404
+        ? '任务不存在或不属于当前客户端'
+        : customerFaultText('任务状态加载失败', 'LC-HTP-003'),
     )
   }
 }
@@ -2219,7 +2223,9 @@ async function refreshProgress(silent = false) {
   } catch (e: any) {
     if (!silent) {
       ElMessage.error(
-        e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务进度查询失败',
+        e?.response?.status === 404
+          ? '任务不存在或不属于当前客户端'
+          : customerFaultText('任务进度查询失败', 'LC-HTP-003'),
       )
     }
   } finally {
@@ -2505,7 +2511,7 @@ async function handleStart() {
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
 
@@ -2876,7 +2882,7 @@ async function handleStart() {
     }
     // 兜底文案必须可行动：只显示"日志收集失败"等于没给任何信息，
     // 现场只能再点一次碰运气（2026-11-12 Q2026110302155）。
-    ElMessage.error(errorMessage.value || '下发失败：平台未返回具体原因，请查看下方诊断或任务详情')
+    showCustomerFault(errorMessage.value || '下发失败：平台未返回具体原因，请查看下方诊断或任务详情')
   } finally {
     // 主流程退出（成功/失败/取消）后必须交还写权限，否则自动对账永久停摆，
     // 结果态里「上传到平台」与归档状态就再也不会随节点态刷新。
@@ -2992,7 +2998,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
   acliRetrying.value = true
@@ -3002,7 +3008,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
     const result = await sendAndWait(ws, 'acli_sync', { retryStage }, ACLI_SYNC_TIMEOUT_MS)
     if (result.status !== 'installed' && result.status !== 'up_to_date') {
       recordAcliFailure(result, 'acli 安装重试失败')
-      ElMessage.error(result.message || 'acli 安装重试失败')
+      showCustomerFault(result.message || 'acli 安装重试失败')
       return
     }
     await markAcliInstalled()
@@ -3015,7 +3021,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
       { status: 'error', stage: 'upload', message: error?.message || 'acli 重试失败' },
       'acli 重试失败',
     )
-    ElMessage.error(error?.message || 'acli 重试失败')
+    showCustomerFault(error?.message || 'acli 重试失败')
   } finally {
     acliRetrying.value = false
     // 失败前如果已经在别的阶段（如采集中），不能被一次重试拉回 installing。
@@ -3713,7 +3719,7 @@ async function adoptNodeTask() {
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
   const token = ++runToken
@@ -3743,7 +3749,7 @@ async function adoptNodeTask() {
       errorMessage.value = normalizeErrorMessage(String(error?.message || error))
       failedStep.value = stepActive.value
       stage.value = 'failed'
-      ElMessage.error(errorMessage.value)
+      showCustomerFault(errorMessage.value)
       // 交付失败不写 status=failed：采集完成是真实结论，抹掉它会让用户
       // 既看不到包在哪、也找不到重试入口。失败只落在 delivery_* 上。
       //
@@ -3785,7 +3791,7 @@ async function adoptNodeTask() {
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
-    ElMessage.error(errorMessage.value)
+    showCustomerFault(errorMessage.value)
   }
 }
 
@@ -3812,7 +3818,7 @@ async function correctFromNode() {
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
   const token = ++runToken
@@ -3832,7 +3838,7 @@ async function correctFromNode() {
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
-    ElMessage.error(errorMessage.value)
+    showCustomerFault(errorMessage.value)
   }
 }
 
@@ -4978,6 +4984,8 @@ onBeforeUnmount(() => {
           :title="resultHeadline.title"
           :description="resultHeadline.description"
         />
+        <!-- 一眼定界：三段五组件 + 首个异常点 + S1-S8 阶段条，与管理端同源 -->
+        <LogCollectFaultCard :display="resultTask.display" />
         <!-- 观察事实单独成行：多值并存，不能被折叠进一条横幅描述里。 -->
         <div v-if="resultTask.display?.conditions?.length" class="lc-evidence">
           观察事实：

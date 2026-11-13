@@ -1,0 +1,641 @@
+{
+  "list": {
+    "items": [
+      {
+        "task_id": "85d87375-91d1-4450-8b28-529b2b646180c",
+        "case_id": "Q2026111300155",
+        "client_id": null,
+        "customer_name": null,
+        "origin_node_ip": "192.168.3.10",
+        "upload_mode": "acli_direct",
+        "status": "completed",
+        "progress": 100,
+        "archive_size": null,
+        "object_size": null,
+        "delivery_status": "none",
+        "relay_status": "none",
+        "error_code": null,
+        "error_message": null,
+        "trace_id": "trace-Q2026111300155-001",
+        "created_at": "2026-11-13T09:48:00Z",
+        "updated_at": "2026-11-13T09:49:10Z",
+        "finished_at": "2026-11-13T09:49:00Z",
+        "delivery_finished_at": null,
+        "detail": {
+          "p1_archive_check": {
+            "verified": false,
+            "reason": "archive_missing",
+            "checked_at": "2026-11-13T09:49:10Z"
+          }
+        },
+        "display": {
+          "phase": "verifying",
+          "phase_label": "核验中",
+          "conclusion": "pending",
+          "conclusion_label": "进行中",
+          "conclusion_tone": "info",
+          "conditions": [
+            {
+              "key": "verifying_archive",
+              "label": "正在核验归档件"
+            }
+          ],
+          "progress_percent": null,
+          "upload_mode_label": "P1 直传日志服务器",
+          "stages": [
+            {
+              "key": "S1",
+              "label": "环境探测",
+              "scopes": [
+                "intranet"
+              ],
+              "scope_label": "内网",
+              "components": [
+                {
+                  "key": "hci",
+                  "label": "HCI环境",
+                  "tag": "[内网·HCI环境]",
+                  "scope": "intranet",
+                  "scope_label": "内网"
+                }
+              ],
+              "status": "unknown",
+              "status_label": "未知",
+              "criteria": "probe.hosts_count / available_mb / architecture",
+              "fault_code": null,
+              "customer_text": null
+            },
+            {
+              "key": "S2",
+              "label": "工具就绪",
+              "scopes": [
+                "intranet"
+              ],
+              "scope_label": "内网",
+              "components": [
+                {
+                  "key": "acli",
+                  "label": "acli工具",
+                  "tag": "[内网·acli工具]",
+                  "scope": "intranet",
+                  "scope_label": "内网"
+                }
+              ],
+              "status": "unknown",
+              "status_label": "未知",
+              "criteria": "acli_sync.install_done / acli_build_time",
+              "fault_code": null,
+              "customer_text": null
+            },
+            {
+              "key": "S3",
+              "label": "任务下发",
+              "scopes": [
+                "local"
+              ],
+              "scope_label": "本地",
+              "components": [
+                {
+                  "key": "bridge",
+                  "label": "terminal_bridge",
+                  "tag": "[本地·terminal_bridge]",
+                  "scope": "local",
+                  "scope_label": "本地"
+                }
+              ],
+              "status": "success",
+              "status_label": "成功",
+              "criteria": "create_ack=confirmed、exit_code=0",
+              "fault_code": null,
+              "customer_text": null
+            },
+            {
+              "key": "S4",
+              "label": "采集打包",
+              "scopes": [
+                "intranet"
+              ],
+              "scope_label": "内网",
+              "components": [
+                {
+                  "key": "hci",
+                  "label": "HCI环境",
+                  "tag": "[内网·HCI环境]",
+                  "scope": "intranet",
+                  "scope_label": "内网"
+                },
+                {
+                  "key": "acli",
+                  "label": "acli工具",
+                  "tag": "[内网·acli工具]",
+                  "scope": "intranet",
+                  "scope_label": "内网"
+                }
+              ],
+              "status": "success",
+              "status_label": "成功",
+              "criteria": "percent/done/total、archive_path/size",
+              "fault_code": null,
+              "customer_text": null
+            },
+            {
+              "key": "S5",
+              "label": "交付传输",
+              "scopes": [
+                "intranet",
+                "cloud"
+              ],
+              "scope_label": "内网 → 云端",
+              "components": [
+                {
+                  "key": "acli",
+                  "label": "acli工具",
+                  "tag": "[内网·acli工具]",
+                  "scope": "intranet",
+                  "scope_label": "内网"
+                },
+                {
+                  "key": "bridge",
+                  "label": "terminal_bridge",
+                  "tag": "[本地·terminal_bridge]",
+                  "scope": "local",
+                  "scope_label": "本地"
+                },
+                {
+                  "key": "htp",
+                  "label": "htp平台",
+                  "tag": "[云端·htp平台]",
+                  "scope": "cloud",
+                  "scope_label": "云端"
+                },
+                {
+                  "key": "log_server",
+                  "label": "日志服务器5888",
+                  "tag": "[云端·日志服务器5888]",
+                  "scope": "cloud",
+                  "scope_label": "云端"
+                }
+              ],
+              "status": "waiting",
+              "status_label": "等待中",
+              "criteria": "5888 UploadComplete / relay 分片",
+              "fault_code": null,
+              "customer_text": null
+            },
+            {
+              "key": "S6",
+              "label": "归档核验",
+              "scopes": [
+                "cloud"
+              ],
+              "scope_label": "云端",
+              "components": [
+                {
+                  "key": "htp",
+                  "label": "htp平台",
+                  "tag": "[云端·htp平台]",
+                  "scope": "cloud",
+                  "scope_label": "云端"
+                },
+                {
+                  "key": "log_server",
+                  "label": "日志服务器5888",
+                  "tag": "[云端·日志服务器5888]",
+                  "scope": "cloud",
+                  "scope_label": "云端"
+                }
+              ],
+              "status": "waiting",
+              "status_label": "等待中",
+              "criteria": "p1_archive_check.verified、/archive_status",
+              "fault_code": "LC-HTP-001",
+              "customer_text": "htp平台：归档核验未完成，正在等待日志服务器发布归档名；请等待最多10分钟或点「重新核验归档」，不要重新收集"
+            },
+            {
+              "key": "S7",
+              "label": "证据回传",
+              "scopes": [
+                "local",
+                "cloud"
+              ],
+              "scope_label": "本地 → 云端",
+              "components": [
+                {
+                  "key": "bridge",
+                  "label": "terminal_bridge",
+                  "tag": "[本地·terminal_bridge]",
+                  "scope": "local",
+                  "scope_label": "本地"
+                },
+                {
+                  "key": "htp",
+                  "label": "htp平台",
+                  "tag": "[云端·htp平台]",
+                  "scope": "cloud",
+                  "scope_label": "云端"
+                }
+              ],
+              "status": "unknown",
+              "status_label": "未知",
+              "criteria": "4443 /api/direct/log-collect 四类端点、四张证据表",
+              "fault_code": null,
+              "customer_text": null
+            },
+            {
+              "key": "S8",
+              "label": "结论呈现",
+              "scopes": [
+                "cloud"
+              ],
+              "scope_label": "云端",
+              "components": [
+                {
+                  "key": "htp",
+                  "label": "htp平台",
+                  "tag": "[云端·htp平台]",
+                  "scope": "cloud",
+                  "scope_label": "云端"
+                }
+              ],
+              "status": "running",
+              "status_label": "进行中",
+              "criteria": "derive() 输出、横幅/抽屉",
+              "fault_code": null,
+              "customer_text": null
+            }
+          ],
+          "fault_attribution": {
+            "code": "LC-HTP-001",
+            "scope": "cloud",
+            "scope_label": "云端",
+            "component": "htp",
+            "component_label": "htp平台",
+            "component_tag": "[云端·htp平台]",
+            "stage": "S6",
+            "stage_label": "归档核验",
+            "problem": "归档核验未完成，正在等待日志服务器发布归档名",
+            "action": "请等待最多10分钟或点「重新核验归档」，不要重新收集",
+            "customer_text": "htp平台：归档核验未完成，正在等待日志服务器发布归档名；请等待最多10分钟或点「重新核验归档」，不要重新收集",
+            "admin_detail": "P1 UploadComplete 与 5888 发布规范归档名之间存在竞态（现场实测约 31 秒）；verify-archive 返回 archive_missing 只写快照不写终态，等待窗口内结论应为 pending。",
+            "evidence": "detail.p1_archive_check.reason=archive_missing / checked_at、case-service P1 归档核验日志",
+            "trace_id": "trace-Q2026111300155-001"
+          },
+          "trace_id": "trace-Q2026111300155-001"
+        },
+        "artifact": {
+          "quality": "unknown",
+          "quality_label": "未知",
+          "reason": "not_inspected",
+          "reason_text": "尚未探测包内容",
+          "size": null,
+          "size_text": "—",
+          "entry_count": null,
+          "entry_total_bytes": null,
+          "entry_total_text": null,
+          "source": "size_inference"
+        },
+        "transfer": null,
+        "network": null,
+        "archive_check": {
+          "verified": false,
+          "reason": "archive_missing",
+          "checked_at": "2026-11-13T09:49:10Z"
+        }
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "page_size": 20,
+    "summary": {
+      "total": 1,
+      "by_conclusion": {
+        "pending": 1,
+        "success": 0,
+        "partial": 0,
+        "failed": 0,
+        "cancelled": 0
+      }
+    }
+  },
+  "detail": {
+    "task_id": "85d87375-91d1-4450-8b28-529b2b646180c",
+    "case_id": "Q2026111300155",
+    "client_id": null,
+    "customer_name": null,
+    "origin_node_ip": "192.168.3.10",
+    "upload_mode": "acli_direct",
+    "status": "completed",
+    "progress": 100,
+    "archive_size": null,
+    "object_size": null,
+    "delivery_status": "none",
+    "relay_status": "none",
+    "error_code": null,
+    "error_message": null,
+    "trace_id": "trace-Q2026111300155-001",
+    "created_at": "2026-11-13T09:48:00Z",
+    "updated_at": "2026-11-13T09:49:10Z",
+    "finished_at": "2026-11-13T09:49:00Z",
+    "delivery_finished_at": null,
+    "detail": {
+      "p1_archive_check": {
+        "verified": false,
+        "reason": "archive_missing",
+        "checked_at": "2026-11-13T09:49:10Z"
+      }
+    },
+    "display": {
+      "phase": "verifying",
+      "phase_label": "核验中",
+      "conclusion": "pending",
+      "conclusion_label": "进行中",
+      "conclusion_tone": "info",
+      "conditions": [
+        {
+          "key": "verifying_archive",
+          "label": "正在核验归档件"
+        }
+      ],
+      "progress_percent": null,
+      "upload_mode_label": "P1 直传日志服务器",
+      "stages": [
+        {
+          "key": "S1",
+          "label": "环境探测",
+          "scopes": [
+            "intranet"
+          ],
+          "scope_label": "内网",
+          "components": [
+            {
+              "key": "hci",
+              "label": "HCI环境",
+              "tag": "[内网·HCI环境]",
+              "scope": "intranet",
+              "scope_label": "内网"
+            }
+          ],
+          "status": "unknown",
+          "status_label": "未知",
+          "criteria": "probe.hosts_count / available_mb / architecture",
+          "fault_code": null,
+          "customer_text": null
+        },
+        {
+          "key": "S2",
+          "label": "工具就绪",
+          "scopes": [
+            "intranet"
+          ],
+          "scope_label": "内网",
+          "components": [
+            {
+              "key": "acli",
+              "label": "acli工具",
+              "tag": "[内网·acli工具]",
+              "scope": "intranet",
+              "scope_label": "内网"
+            }
+          ],
+          "status": "unknown",
+          "status_label": "未知",
+          "criteria": "acli_sync.install_done / acli_build_time",
+          "fault_code": null,
+          "customer_text": null
+        },
+        {
+          "key": "S3",
+          "label": "任务下发",
+          "scopes": [
+            "local"
+          ],
+          "scope_label": "本地",
+          "components": [
+            {
+              "key": "bridge",
+              "label": "terminal_bridge",
+              "tag": "[本地·terminal_bridge]",
+              "scope": "local",
+              "scope_label": "本地"
+            }
+          ],
+          "status": "success",
+          "status_label": "成功",
+          "criteria": "create_ack=confirmed、exit_code=0",
+          "fault_code": null,
+          "customer_text": null
+        },
+        {
+          "key": "S4",
+          "label": "采集打包",
+          "scopes": [
+            "intranet"
+          ],
+          "scope_label": "内网",
+          "components": [
+            {
+              "key": "hci",
+              "label": "HCI环境",
+              "tag": "[内网·HCI环境]",
+              "scope": "intranet",
+              "scope_label": "内网"
+            },
+            {
+              "key": "acli",
+              "label": "acli工具",
+              "tag": "[内网·acli工具]",
+              "scope": "intranet",
+              "scope_label": "内网"
+            }
+          ],
+          "status": "success",
+          "status_label": "成功",
+          "criteria": "percent/done/total、archive_path/size",
+          "fault_code": null,
+          "customer_text": null
+        },
+        {
+          "key": "S5",
+          "label": "交付传输",
+          "scopes": [
+            "intranet",
+            "cloud"
+          ],
+          "scope_label": "内网 → 云端",
+          "components": [
+            {
+              "key": "acli",
+              "label": "acli工具",
+              "tag": "[内网·acli工具]",
+              "scope": "intranet",
+              "scope_label": "内网"
+            },
+            {
+              "key": "bridge",
+              "label": "terminal_bridge",
+              "tag": "[本地·terminal_bridge]",
+              "scope": "local",
+              "scope_label": "本地"
+            },
+            {
+              "key": "htp",
+              "label": "htp平台",
+              "tag": "[云端·htp平台]",
+              "scope": "cloud",
+              "scope_label": "云端"
+            },
+            {
+              "key": "log_server",
+              "label": "日志服务器5888",
+              "tag": "[云端·日志服务器5888]",
+              "scope": "cloud",
+              "scope_label": "云端"
+            }
+          ],
+          "status": "waiting",
+          "status_label": "等待中",
+          "criteria": "5888 UploadComplete / relay 分片",
+          "fault_code": null,
+          "customer_text": null
+        },
+        {
+          "key": "S6",
+          "label": "归档核验",
+          "scopes": [
+            "cloud"
+          ],
+          "scope_label": "云端",
+          "components": [
+            {
+              "key": "htp",
+              "label": "htp平台",
+              "tag": "[云端·htp平台]",
+              "scope": "cloud",
+              "scope_label": "云端"
+            },
+            {
+              "key": "log_server",
+              "label": "日志服务器5888",
+              "tag": "[云端·日志服务器5888]",
+              "scope": "cloud",
+              "scope_label": "云端"
+            }
+          ],
+          "status": "waiting",
+          "status_label": "等待中",
+          "criteria": "p1_archive_check.verified、/archive_status",
+          "fault_code": "LC-HTP-001",
+          "customer_text": "htp平台：归档核验未完成，正在等待日志服务器发布归档名；请等待最多10分钟或点「重新核验归档」，不要重新收集"
+        },
+        {
+          "key": "S7",
+          "label": "证据回传",
+          "scopes": [
+            "local",
+            "cloud"
+          ],
+          "scope_label": "本地 → 云端",
+          "components": [
+            {
+              "key": "bridge",
+              "label": "terminal_bridge",
+              "tag": "[本地·terminal_bridge]",
+              "scope": "local",
+              "scope_label": "本地"
+            },
+            {
+              "key": "htp",
+              "label": "htp平台",
+              "tag": "[云端·htp平台]",
+              "scope": "cloud",
+              "scope_label": "云端"
+            }
+          ],
+          "status": "unknown",
+          "status_label": "未知",
+          "criteria": "4443 /api/direct/log-collect 四类端点、四张证据表",
+          "fault_code": null,
+          "customer_text": null
+        },
+        {
+          "key": "S8",
+          "label": "结论呈现",
+          "scopes": [
+            "cloud"
+          ],
+          "scope_label": "云端",
+          "components": [
+            {
+              "key": "htp",
+              "label": "htp平台",
+              "tag": "[云端·htp平台]",
+              "scope": "cloud",
+              "scope_label": "云端"
+            }
+          ],
+          "status": "running",
+          "status_label": "进行中",
+          "criteria": "derive() 输出、横幅/抽屉",
+          "fault_code": null,
+          "customer_text": null
+        }
+      ],
+      "fault_attribution": {
+        "code": "LC-HTP-001",
+        "scope": "cloud",
+        "scope_label": "云端",
+        "component": "htp",
+        "component_label": "htp平台",
+        "component_tag": "[云端·htp平台]",
+        "stage": "S6",
+        "stage_label": "归档核验",
+        "problem": "归档核验未完成，正在等待日志服务器发布归档名",
+        "action": "请等待最多10分钟或点「重新核验归档」，不要重新收集",
+        "customer_text": "htp平台：归档核验未完成，正在等待日志服务器发布归档名；请等待最多10分钟或点「重新核验归档」，不要重新收集",
+        "admin_detail": "P1 UploadComplete 与 5888 发布规范归档名之间存在竞态（现场实测约 31 秒）；verify-archive 返回 archive_missing 只写快照不写终态，等待窗口内结论应为 pending。",
+        "evidence": "detail.p1_archive_check.reason=archive_missing / checked_at、case-service P1 归档核验日志",
+        "trace_id": "trace-Q2026111300155-001"
+      },
+      "trace_id": "trace-Q2026111300155-001"
+    },
+    "artifact": {
+      "quality": "unknown",
+      "quality_label": "未知",
+      "reason": "not_inspected",
+      "reason_text": "尚未探测包内容",
+      "size": null,
+      "size_text": "—",
+      "entry_count": null,
+      "entry_total_bytes": null,
+      "entry_total_text": null,
+      "source": "size_inference"
+    },
+    "transfer": null,
+    "network": null,
+    "archive_check": {
+      "verified": false,
+      "reason": "archive_missing",
+      "checked_at": "2026-11-13T09:49:10Z"
+    }
+  },
+  "transferMetrics": {
+    "items": []
+  },
+  "networkProbe": {
+    "items": [],
+    "grade": "unknown",
+    "grade_label": "未探测",
+    "targets": []
+  },
+  "processLogs": {
+    "items": []
+  },
+  "artifactManifest": {
+    "items": []
+  },
+  "destinationProgress": {
+    "state": "no_record",
+    "path": "",
+    "target_path": null
+  }
+}
