@@ -1,0 +1,21 @@
+suite: "DSH sidecar 路径配置测试"
+templates:
+  - configmap.yaml
+tests:
+  - it: "offline 实例应使用自己的 Ingress 前缀反代"
+    set:
+      namePrefix: dsh-offline
+      ingress.path: /dsh-offline
+    asserts:
+      - matchRegex:
+          path: data.nginx.conf
+          pattern: "location = /dsh-offline"
+      - matchRegex:
+          path: data.nginx.conf
+          pattern: "location /dsh-offline/"
+      - matchRegex:
+          path: data.nginx.conf
+          pattern: "proxy_redirect / /dsh-offline/;"
+      - matchRegex:
+          path: data.nginx.conf
+          pattern: "proxy_cookie_path / /dsh-offline/;"
