@@ -55,12 +55,17 @@ _EXIT_CODES = {
 
 @dataclass(frozen=True)
 class RemoteArchive:
-    """远端当天生成的顶层工单归档元数据。"""
+    """远端单个工单归档的元数据。"""
 
     ticket_id: str
     path: str
     size: int
     mtime: float
+
+    @property
+    def name(self) -> str:
+        """归档文件名。多包合并时用它做本地落盘名与日志展示。"""
+        return Path(self.path).name
 
 
 # ssh 自身失败的退出码：连接、认证、主机密钥等原因，与远端命令无关。
@@ -229,13 +234,21 @@ def _list_entries_command(remote: str, limit: int) -> str:
     )
 
 
-async def list_remote_entries(cfg: Config, ticket_id: str, limit: int = 50) -> list[str]:
+async def list_remote_entries(
+    cfg: Config,
+    ticket_id: str,
+    limit: int = 50,
+    remote_path: str | None = None,
+) -> list[str]:
     """只读远端归档的条目名（不解压、不下载），返回条目名。
 
     这是唯一能在"下载 30 GiB 之前"判断包里到底是什么的手段（实测有工单只含
     vmcore）。格式按魔数识别，见 `_list_entries_command`。
+
+    `remote_path` 显式指定时探测那一份：同一工单有多个采集包时，转储判定必须
+    逐包做——最新包是转储不代表更早的包里没有日志。
     """
-    remote = cfg.remote_archive(ticket_id)
+    remote = remote_path or cfg.remote_archive(ticket_id)
     # 本地超时比远端宽 10s：让远端的 timeout 先结束、交回空结果正常退出，
     # 而不是被本地 kill 成 ssh-failed（两者相等时会出现莫名其妙的连接级报错）。
     stdout = await _ssh_run(
@@ -280,19 +293,18 @@ def looks_like_non_log_bundle(entries: list[str]) -> bool:
     return any(marker in entry for entry in lowered for marker in _NON_LOG_MARKERS)
 
 
-def _parse_remote_archives(output: str) -> list[RemoteArchive]:
-    """解析 find 的固定三列输出；同一工单有多份时只保留最新一份。
+def _parse_remote_archive_list(output: str) -> list[RemoteArchive]:
+    """解析 find 的固定三列输出，返回目录内的**全部**合法归档（不聚合）。
 
     为什么允许带时间戳的包名：5888 在 2026-10-31 ~ 11-06 之间把**重传的新包**
     存成 `<工单号>-<YYYYmmddHHMMSS>.zip`，规范名留在首次上传的旧包上。现场
     Q2026110600493 就是这样：规范名是 11:04 采集的 335M 旧包，12:06 采集的
     545M 新包沉在时间戳名下。只认规范名会让这类工单永久同步到过期日志。
 
-    取最新的判据是 mtime，不是包名里的时间戳：名字里的时间戳只是服务端打戳
-    时刻的近似，mtime 才是真实的落盘时间；mtime 相同（同秒重传）时优先规范名，
-    因为那正是 2026-11-06 之后 5888 的"规范名 = 最新"约定。
+    这层只做「合法性 + 同一工单目录」过滤，不排序也不挑最新：多包合并需要
+    全部候选，"谁算最新"由 `archive_sort_key` / `is_newer_archive` 统一回答。
     """
-    per_ticket: dict[str, RemoteArchive] = {}
+    archives: list[RemoteArchive] = []
     for raw in output.splitlines():
         path, separator, rest = raw.partition("\t")
         if not separator:
@@ -312,64 +324,100 @@ def _parse_remote_archives(output: str) -> list[RemoteArchive]:
             continue
         if size < 0 or mtime <= 0:
             continue
-        ticket_id = match.group(1)
-        archive = RemoteArchive(ticket_id, path, size, mtime)
-        current = per_ticket.get(ticket_id)
-        if current is None or _is_newer_archive(archive, current):
-            per_ticket[ticket_id] = archive
+        archives.append(RemoteArchive(match.group(1), path, size, mtime))
+    return archives
+
+
+def _parse_remote_archives(output: str) -> list[RemoteArchive]:
+    """解析 find 的固定三列输出；同一工单有多份时只保留最新一份。
+
+    取最新的判据是 mtime，不是包名里的时间戳：名字里的时间戳只是服务端打戳
+    时刻的近似，mtime 才是真实的落盘时间；mtime 相同（同秒重传）时优先规范名，
+    因为那正是 2026-11-06 之后 5888 的"规范名 = 最新"约定。
+
+    自动巡检、墓碑、换包判据都只需要"这一轮有没有新东西"，所以保留这个
+    「每工单一条」的视图；真正拉取时改用 `list_ticket_archives` 拿全部归档。
+    """
+    per_ticket: dict[str, RemoteArchive] = {}
+    for archive in _parse_remote_archive_list(output):
+        current = per_ticket.get(archive.ticket_id)
+        if current is None or is_newer_archive(archive, current):
+            per_ticket[archive.ticket_id] = archive
     return sorted(per_ticket.values(), key=lambda item: item.ticket_id)
 
 
-def _is_newer_archive(candidate: RemoteArchive, current: RemoteArchive) -> bool:
+def is_newer_archive(candidate: RemoteArchive, current: RemoteArchive) -> bool:
     """candidate 是否比 current 更新：先比 mtime，同 mtime 时规范名优先。"""
     if candidate.mtime != current.mtime:
         return candidate.mtime > current.mtime
-    return _is_canonical_archive(candidate) and not _is_canonical_archive(current)
+    return is_canonical_archive(candidate) and not is_canonical_archive(current)
 
 
-def _is_canonical_archive(archive: RemoteArchive) -> bool:
+def is_canonical_archive(archive: RemoteArchive) -> bool:
     """是否平台/5888 两侧约定的规范名 `/sf/log/<工单号>/<工单号>.zip`。"""
     return archive.path == f"/sf/log/{archive.ticket_id}/{archive.ticket_id}.zip"
 
 
-async def resolve_archive_path(cfg: Config, ticket_id: str) -> str:
-    """返回该工单当前应当同步的远端包路径。
+def archive_sort_key(archive: RemoteArchive) -> tuple[float, int]:
+    """合并优先级排序键：mtime 越大越新；同 mtime 时规范名（1）压过带戳包（0）。
 
-    单工单目录里可能同时躺着规范名与历史带戳包（2026-10-31 ~ 11-06 的产物），
-    直接拉规范名会拿到旧包，所以在任务开始时先列一次目录取最新那份。
+    升序处理即"旧包先落、新包后覆盖"；与 `is_newer_archive` 的判定必须同源，
+    否则"谁算最新"在排序与比较两处会给出不同答案。
+    """
+    return (archive.mtime, 1 if is_canonical_archive(archive) else 0)
 
-    列目录失败或无结果时回退规范名：这里不臆造失败原因，让随后的 rsync 去
-    报真正的错误（NOT_FOUND / SSH_FAILED），错误码语义保持单一来源。
+
+async def list_ticket_archives(cfg: Config, ticket_id: str) -> list[RemoteArchive]:
+    """列出单个工单目录内的全部归档，按合并优先级**升序**返回（最新在末尾）。
+
+    与自动巡检的 `list_recent_archives` 不同：这里不受"当天/最近 N 天"窗口
+    限制，凡目录里还在的合法包都返回。多包合并必须在任务开始前拿到完整清单，
+    否则只合今天的新包会把更早的采集内容永久漏掉。
+
+    目录不存在时返回空列表（远端命令用 `[ -d ... ]` 守卫，不让 find 的
+    非零退出被误判成 ssh 故障）；真正的连接失败仍抛 SSH_FAILED。
     """
     root = f"/sf/log/{ticket_id}"
     command = (
+        f"if [ -d {shlex.quote(root)} ]; then "
         f"LC_ALL=C find {shlex.quote(root)} -mindepth 1 -maxdepth 1 -type f "
-        "-name '*.zip' -printf '%p\\t%s\\t%T@\\n'"
+        "-name '*.zip' -printf '%p\\t%s\\t%T@\\n'; "
+        "fi"
     )
-    try:
-        stdout = await _ssh_run(cfg, command, "无法枚举工单归档目录")
-    except TicketError as exc:
-        logger.warning(
-            "ticket=%s 枚举归档目录失败，回退规范名 error=%s", ticket_id, exc.detail
-        )
-        return cfg.remote_archive(ticket_id)
-
+    stdout = await _ssh_run(cfg, command, "无法枚举工单归档目录")
     archives = [
         archive
-        for archive in _parse_remote_archives(stdout.decode("utf-8", errors="replace"))
+        for archive in _parse_remote_archive_list(stdout.decode("utf-8", errors="replace"))
         if archive.ticket_id == ticket_id
     ]
+    return sorted(archives, key=archive_sort_key)
+
+
+async def resolve_archive_path(cfg: Config, ticket_id: str) -> str:
+    """返回该工单当前应当同步的远端包路径（仅单包场景兼容入口）。
+
+    多包合并走 `list_ticket_archives`；这个入口保留给 CLI 与既有调用，
+    语义仍是"取目录内最新一份"。列目录失败或无结果时回退规范名：这里不臆造
+    失败原因，让随后的 rsync 去报真正的错误（NOT_FOUND / SSH_FAILED）。
+    """
+    try:
+        archives = await list_ticket_archives(cfg, ticket_id)
+    except TicketError as exc:
+        logger.warning("ticket=%s 枚举归档目录失败，回退规范名 error=%s", ticket_id, exc.detail)
+        return cfg.remote_archive(ticket_id)
+
     if not archives:
         return cfg.remote_archive(ticket_id)
-    if not _is_canonical_archive(archives[0]):
+    latest = archives[-1]
+    if not is_canonical_archive(latest):
         logger.info(
             "ticket=%s 目录内最新包不是规范名，按最新同步 path=%s size=%d mtime=%.3f",
             ticket_id,
-            archives[0].path,
-            archives[0].size,
-            archives[0].mtime,
+            latest.path,
+            latest.size,
+            latest.mtime,
         )
-    return archives[0].path
+    return latest.path
 
 
 def _remote_spec(cfg: Config, ticket_id: str, remote_path: str | None) -> str:
@@ -384,19 +432,24 @@ async def fetch(
     job_id: str,
     on_progress: Callable[[int, int], None] | None = None,
     remote_path: str | None = None,
+    target_name: str | None = None,
 ) -> Path:
-    """把 <工单号>.zip 拉到 work_dir，返回本地路径。
+    """把工单归档拉到 work_dir，返回本地路径。
 
     `remote_path` 留空时先解析工单目录内最新的一份（历史带戳包场景），解析结果仍
     是规范名就是常规路径。放在这里而不是调用方，是为了让自动任务、手动触发与 CLI
     三条入口共用同一套选取逻辑——漏改任何一条都会静默同步到旧包。
-    本地落盘名始终是 `<工单号>.zip`：rsync 目标是文件名而非目录，远端叫什么不影响
-    断点续传与解压。
+
+    多包合并时由调用方显式传 `remote_path` 与 `target_name`：同一个工单目录下的
+    不同采集包必须落到不同本地文件名，否则后一个会覆盖前一个（rsync 目标是文件
+    而非目录）。留空时仍保持旧契约：本地落盘名 `<工单号>.zip`，兼容 CLI 与旧调用。
 
     失败一律抛 TicketError，调用方不需要关心 subprocess 细节。
     """
     work_dir.mkdir(parents=True, exist_ok=True)
-    target = work_dir / f"{ticket_id}.zip"
+    target = work_dir / (target_name or f"{ticket_id}.zip")
+    if target_name:
+        target.parent.mkdir(parents=True, exist_ok=True)
     # 拉取前的水位闸门：rsync 一开跑就会把整个归档写进来（实测最大 27 GiB），
     # 等服务路径上的检查（原先只有 CLI 有）已经太晚——盘写满之后 rsync 只会
     # 留下一个半截文件，而 kubelet 可能已经把整栈驱逐了。

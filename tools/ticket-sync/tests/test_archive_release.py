@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 from app.config import Config
 from app.main import JobRegistry
+from app.models import ErrorCode, TicketError
 
 TICKET_ID = "Q2026010100001"
 
@@ -71,24 +72,30 @@ class ArchiveReleaseTest(unittest.TestCase):
         self.assertFalse(self.archive.exists())
 
     def test_archive_kept_when_disk_is_ample(self) -> None:
-        """余量充足时优先保续传，不做提前删除。"""
+        """余量充足时不得提前删除：解压要读的就是这份归档。"""
         with patch(
             "app.main.shutil.disk_usage",
             return_value=shutil._ntuple_diskusage(total=10**12, used=0, free=10**12),
         ):
-            self.registry._release_archive_for_space(self.work_dir, self.archive)
+            self.registry._ensure_extract_space(self.work_dir, self.archive)
 
         self.assertTrue(self.archive.exists())
 
-    def test_archive_released_early_when_disk_is_tight(self) -> None:
-        """放不下两份时才牺牲续传：写满磁盘比重新下载更糟。"""
+    def test_tight_disk_fails_fast_and_keeps_archive(self) -> None:
+        """余量不足必须报 no-space 并保留归档。
+
+        历史实现会在解压前把归档删掉"腾空间"，结果把"磁盘不足"伪装成解压失败，
+        还让下次重试只能全量重下。
+        """
         with patch(
             "app.main.shutil.disk_usage",
             return_value=shutil._ntuple_diskusage(total=10**6, used=10**6, free=1),
         ):
-            self.registry._release_archive_for_space(self.work_dir, self.archive)
+            with self.assertRaises(TicketError) as ctx:
+                self.registry._ensure_extract_space(self.work_dir, self.archive)
 
-        self.assertFalse(self.archive.exists())
+        self.assertEqual(ctx.exception.code, ErrorCode.NO_SPACE)
+        self.assertTrue(self.archive.exists())
 
 
 if __name__ == "__main__":

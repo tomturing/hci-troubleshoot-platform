@@ -179,9 +179,7 @@ def _enforce_with_store(
     for row in store.eviction_order(cutoff):
         # 两个条件必须**同时**满足才停：只满足其一说明还差一半。
         # 用 free + freed 而不是反复 statvfs：本轮释放的字节必然回到同一文件系统。
-        if total <= max_total_bytes and (
-            evict_free_bytes is None or free + freed >= evict_free_bytes
-        ):
+        if total <= max_total_bytes and (evict_free_bytes is None or free + freed >= evict_free_bytes):
             break
         ticket_id = str(row["ticket_id"])
         if ticket_id in active_ticket_ids:
@@ -285,9 +283,7 @@ def _enforce_by_scanning(
     removed = 0
     freed = 0
     for _, _, entry, size in sorted(candidates, key=lambda item: (item[0], item[1])):
-        if total <= max_total_bytes and (
-            evict_free_bytes is None or free + freed >= evict_free_bytes
-        ):
+        if total <= max_total_bytes and (evict_free_bytes is None or free + freed >= evict_free_bytes):
             break
         try:
             make_removable(entry)
@@ -519,10 +515,13 @@ def run_cleanup_cycle(
 
     顺序不是随意的，每一步都在为下一步准备前提：
     1. 幽灵行对账——先让"记账总量"回到与磁盘一致，否则后面的淘汰会误判；
-    2. 保留期删除——无论磁盘余量如何，超过保留期的产物一律删（判据是同步时刻）；
-    3. 容量/水位淘汰——只在超限或余量低于软阈值时动手，删到两个条件都满足；
-    4. 回收站清空——历史遗留，无保留价值；
-    5. `.tmp` 陈旧回收——失败残留是续传本钱，但超过 2 小时就不值得留。
+    2. 回收站清空——历史遗留，无保留价值；
+    3. `.tmp` 陈旧回收——失败残留是续传本钱，但超过 2 小时就不值得留；
+    4. 保留期删除——无论磁盘余量如何，超过保留期的产物一律删（判据是同步时刻）；
+    5. 容量/水位淘汰——只在超限或余量低于软阈值时动手，删到两个条件都满足。
+
+    第 2、3 步必须在第 5 步之前：`.trash` 与超龄 `.tmp` 都是可再生数据，
+    先释放它们，才轮得到删除用户可能还要用的已发布产物（本地分支的原始诉求）。
 
     全部删除动作都通过 `on_event` 落库（`cleanup_events`），
     这是唯一会无声删除用户数据的路径，必须可回溯。
@@ -567,7 +566,7 @@ def run_cleanup_cycle(
                 detail="记账行存在但目录已不存在（程序外删除）",
             )
 
-    # 2. 回收站（先清，避免它被算进 3、4 步的释放量）
+    # 2. 回收站（先清，避免它被算进后续步骤的释放量）
     if trash_dir.is_dir():
         report.trash_purged = purge_trash(trash_dir)
         if report.trash_purged:
@@ -578,9 +577,28 @@ def run_cleanup_cycle(
                 detail=f"purged={report.trash_purged}（回收站不再保留旧版本）",
             )
 
-    # 3. 保留期
+    # 3. `.tmp` 陈旧残留：可再生数据，必须先于第 5 步淘汰已发布产物释放。
+    #    必须带上活跃工单集合：正在同步的 work_dir 即使暂时没刷新 mtime
+    #    （例如 rsync 卡在远端）也不能删，否则会毁掉续传与当前解压产物。
+    if tmp_root.is_dir():
+        report.stale_tmp_removed = cleanup_stale_workspaces(
+            tmp_root, stale_tmp_seconds, protected=active_ticket_ids
+        )
+        if report.stale_tmp_removed:
+            record(CLEANUP_KIND_STALE_TMP)(
+                ticket_id=None,
+                bytes_=0,
+                free_bytes=report.free_before,
+                detail=f"count={report.stale_tmp_removed} stale_seconds={stale_tmp_seconds:.0f}",
+            )
+
+    # 4. 保留期
     record_retention = record(CLEANUP_KIND_RETENTION)
-    before = report.free_before
+    try:
+        # 重新取余量：前面的回收站/.tmp 释放不能算进"保留期释放量"里。
+        before = shutil.disk_usage(root).free
+    except OSError:
+        before = 0
     report.retention_removed = cleanup_expired(
         root,
         now,
@@ -594,7 +612,7 @@ def run_cleanup_cycle(
     except OSError:
         report.retention_freed = 0
 
-    # 4. 容量 / 水位淘汰。跳过重量对账：第 1 步已保证记账与磁盘一致，
+    # 5. 容量 / 水位淘汰。跳过重量对账：第 1 步已保证记账与磁盘一致，
     #    而体积重算在冷缓存下可达数分钟，不能挂在 30 秒的循环上。
     record_capacity = record(CLEANUP_KIND_CAPACITY)
     report.capacity_removed, report.capacity_freed = enforce_capacity(
@@ -609,17 +627,6 @@ def run_cleanup_cycle(
         on_event=record_capacity,
         reconcile=False,
     )
-
-    # 5. `.tmp` 陈旧残留
-    if tmp_root.is_dir():
-        report.stale_tmp_removed = cleanup_stale_workspaces(tmp_root, stale_tmp_seconds)
-        if report.stale_tmp_removed:
-            record(CLEANUP_KIND_STALE_TMP)(
-                ticket_id=None,
-                bytes_=0,
-                free_bytes=report.free_before,
-                detail=f"count={report.stale_tmp_removed} stale_seconds={stale_tmp_seconds:.0f}",
-            )
 
     try:
         report.free_after = shutil.disk_usage(root).free

@@ -15,7 +15,12 @@ from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
 
+from app.fetcher import RemoteArchive
 from app.main import app
+
+
+async def _list_archives(cfg, ticket_id):
+    return [RemoteArchive(ticket_id, f"/sf/log/{ticket_id}/{ticket_id}.zip", 3, 1.0)]
 
 
 async def _hang(*_args, **_kwargs):
@@ -29,6 +34,9 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         self.root = tempfile.mkdtemp(prefix="ticket-sync-test-")
         os.environ["TICKET_ROOT"] = self.root
         os.environ["TICKET_ARCHIVE_PASSWORD"] = "test-password"
+        # 本用例验证的是任务生命周期，不是磁盘水位：宿主机余量不该决定测试结果
+        # （默认硬阈值 250 GiB，小盘/CI 机器必然低于它而让任务在入口就被熔断）。
+        os.environ["TICKET_MIN_FREE_BYTES"] = "0"
 
         # 手动驱动 lifespan：httpx 的 ASGITransport 不会替我们执行 startup/shutdown。
         self._lifespan = app.router.lifespan_context(app)
@@ -39,8 +47,8 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
         await self._lifespan.__aexit__(None, None, None)
-        os.environ.pop("TICKET_ROOT", None)
-        os.environ.pop("TICKET_ARCHIVE_PASSWORD", None)
+        for key in ("TICKET_ROOT", "TICKET_ARCHIVE_PASSWORD", "TICKET_MIN_FREE_BYTES"):
+            os.environ.pop(key, None)
         shutil.rmtree(self.root, ignore_errors=True)
 
     async def test_health(self) -> None:
@@ -91,7 +99,10 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["error"], "not-found")
 
     async def test_create_then_conflict(self) -> None:
-        with patch("app.main.fetch", side_effect=_hang):
+        with (
+            patch("app.main.list_ticket_archives", _list_archives),
+            patch("app.main.fetch", side_effect=_hang),
+        ):
             first = await self.client.post("/jobs", json={"ticketId": "Q2026010100001"})
             self.assertEqual(first.status_code, 202)
             self.assertEqual(first.json()["phase"], "queued")
@@ -106,7 +117,10 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
             await self.client.delete("/jobs/Q2026010100001")
 
     async def test_cancel_running_job(self) -> None:
-        with patch("app.main.fetch", side_effect=_hang):
+        with (
+            patch("app.main.list_ticket_archives", _list_archives),
+            patch("app.main.fetch", side_effect=_hang),
+        ):
             await self.client.post("/jobs", json={"ticketId": "Q2026010100002"})
             await asyncio.sleep(0)
 
@@ -121,7 +135,10 @@ class ApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 404)
 
     async def test_cancel_finished_job_is_idempotent(self) -> None:
-        with patch("app.main.fetch", side_effect=_hang):
+        with (
+            patch("app.main.list_ticket_archives", _list_archives),
+            patch("app.main.fetch", side_effect=_hang),
+        ):
             await self.client.post("/jobs", json={"ticketId": "Q2026010100004"})
             await asyncio.sleep(0)
             await self.client.delete("/jobs/Q2026010100004")
