@@ -243,9 +243,24 @@ describe('chat store - 覆盖态左右互斥', () => {
     expect(store.showTerminalSidebar).toBe(true)
   })
 
-  it('1280 双开放不下 → 开右侧自动收起左侧', async () => {
+  it('1280 双开：终端让位中央后放得下 → 两侧共存，不再互斥关面板', async () => {
     const store = await storeWith('Q2026102300202')
     store.setViewportWidth(1280)
+
+    store.openLogCollect()
+    expect(store.logCollectVisible).toBe(true)
+
+    store.openTerminalSidebar()
+
+    // 互斥只在真·窄屏（<1024）才成立：1280 屏上两栏共占整屏，用户的面板不该被吞掉
+    expect(store.logCollectVisible).toBe(true)
+    expect(store.showTerminalSidebar).toBe(true)
+    expect(store.workspaceLayout.centerMaxWidth).toBe(0)
+  })
+
+  it('900 真·窄屏覆盖态：开右侧自动收起左侧（一次看一块）', async () => {
+    const store = await storeWith('Q2026102300203')
+    store.setViewportWidth(900)
 
     store.openLogCollect()
     expect(store.logCollectVisible).toBe(true)
@@ -256,9 +271,9 @@ describe('chat store - 覆盖态左右互斥', () => {
     expect(store.showTerminalSidebar).toBe(true)
   })
 
-  it('1280 反方向同样互斥 → 开左侧自动收起右侧', async () => {
-    const store = await storeWith('Q2026102300203')
-    store.setViewportWidth(1280)
+  it('900 真·窄屏覆盖态：开左侧自动收起右侧', async () => {
+    const store = await storeWith('Q2026102300204')
+    store.setViewportWidth(900)
     store.openTerminalSidebar()
 
     store.openLogCollect()
