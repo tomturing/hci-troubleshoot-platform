@@ -33,13 +33,7 @@ logger = get_logger("gateway-dsh")
 TOKEN_FETCH_TIMEOUT_SECONDS = 5.0
 
 
-@router.api_route(
-    "/api/dsh/launch",
-    methods=["GET"],
-    dependencies=[Depends(require_admin)],
-    tags=["dsh"],
-)
-async def dsh_launch():
+async def _fetch_launch_url(*, service_url: str, public_path: str, service_label: str) -> dict[str, str]:
     """取得 DSH Web UI 的会话入口地址（内含一次性 launch token）。
 
     返回的是同源相对路径，admin-ui 前端直接作为 iframe 的 src 使用；
@@ -49,12 +43,12 @@ async def dsh_launch():
 
     try:
         async with httpx.AsyncClient(timeout=TOKEN_FETCH_TIMEOUT_SECONDS) as client:
-            response = await client.get(f"{settings.DSH_SERVICE_URL}/__internal/token")
+            response = await client.get(f"{service_url}/__internal/token")
     except httpx.HTTPError as exc:
         # 只记录异常类型，不记录任何可能携带凭据的内容
         logger.error(
             event="dsh_launch_upstream_unreachable",
-            message="请求 DSH token 接口失败",
+            message=f"请求 {service_label} token 接口失败",
             error_type=type(exc).__name__,
             trace_id=trace_id,
         )
@@ -66,7 +60,7 @@ async def dsh_launch():
         # 前端应据此提示"DSH 正在启动"而不是当作鉴权失败。
         logger.warning(
             event="dsh_launch_token_not_ready",
-            message="DSH 尚未注入 launch token",
+            message=f"{service_label} 尚未注入 launch token",
             upstream_status=response.status_code,
             trace_id=trace_id,
         )
@@ -74,7 +68,35 @@ async def dsh_launch():
 
     logger.info(
         event="dsh_launch_token_issued",
-        message="已下发 DSH 会话入口",
+        message=f"已下发 {service_label} 会话入口",
         trace_id=trace_id,
     )
-    return {"url": f"{settings.DSH_PUBLIC_PATH}?token={token}"}
+    return {"url": f"{public_path}?token={token}"}
+
+
+@router.get(
+    "/api/dsh/launch",
+    dependencies=[Depends(require_admin)],
+    tags=["dsh"],
+)
+async def dsh_launch():
+    """取得旧版 DSH 诊断工作台的会话入口。"""
+    return await _fetch_launch_url(
+        service_url=settings.DSH_SERVICE_URL,
+        public_path=settings.DSH_PUBLIC_PATH,
+        service_label="DSH",
+    )
+
+
+@router.get(
+    "/api/dsh-offline/launch",
+    dependencies=[Depends(require_admin)],
+    tags=["dsh"],
+)
+async def dsh_offline_launch():
+    """取得 HCI 单 Agent 离线诊断 DSH 的会话入口。"""
+    return await _fetch_launch_url(
+        service_url=settings.DSH_OFFLINE_SERVICE_URL,
+        public_path=settings.DSH_OFFLINE_PUBLIC_PATH,
+        service_label="DSH 离线诊断",
+    )

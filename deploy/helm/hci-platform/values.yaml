@@ -196,6 +196,9 @@ apiGateway:
   # DSH 独立 Chart 的内部 token 读取地址与对外路径；Compose 会覆盖为 dsh 服务名。
   dshServiceUrl: "http://dsh.hci-dsh.svc.cluster.local:8080"
   dshPublicPath: "/dsh/"
+  # HCI 单 Agent 离线诊断实例，与旧 DSH 使用独立 Service、Ingress path 和会话目录。
+  dshOfflineServiceUrl: "http://dsh-offline.hci-dsh.svc.cluster.local:8080"
+  dshOfflinePublicPath: "/dsh-offline/"
   # PR-D 管理台强认证开关：true 后共享内部令牌不再赋予 admin（必须 JWT 登录）。
   # 默认 false 保持向后兼容；置 true 前必须先通过 PR-C 人工回归，
   # 详见 docs/solution/events/2026-09-24-统一认证系统-PRC人工回归与PRD强认证方案.md。
@@ -584,6 +587,8 @@ adminUI:
   # DSH 独立 Chart 的 Service 地址。路径路由下 DSH Ingress 会优先接管，
   # 该地址同时保证管理入口直接访问 /dsh 时仍可用。
   dshUpstream: "http://dsh.hci-dsh.svc.cluster.local:8080"
+  # HCI 单 Agent 离线诊断 DSH 的同源反代地址。
+  dshOfflineUpstream: "http://dsh-offline.hci-dsh.svc.cluster.local:8080"
   resources:
     requests:
       cpu: "10m"

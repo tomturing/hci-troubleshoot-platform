@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     DSH_SERVICE_URL: str = "http://dsh.hci-dsh.svc.cluster.local:8080"
     # 对外暴露的子路径，需与 DSH chart 的 ingress.path 及 --public-url 保持一致
     DSH_PUBLIC_PATH: str = "/dsh/"
+    # HCI 单 Agent 离线诊断 DSH：与旧诊断实例使用不同的 Service、路径和会话空间。
+    DSH_OFFLINE_SERVICE_URL: str = "http://dsh-offline.hci-dsh.svc.cluster.local:8080"
+    DSH_OFFLINE_PUBLIC_PATH: str = "/dsh-offline/"
     DIAGNOSIS_IDENTITY_MODE: str = "internal"
     # internal 模式下网关代表浏览器调用方重签内部身份时使用的租户标识。
     # 必须与 chart `diagnosisService.internalIdentity.tenantId` 保持一致，

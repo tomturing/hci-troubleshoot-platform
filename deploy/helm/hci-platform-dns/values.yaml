@@ -31,6 +31,10 @@ upstreams:
   - 119.29.29.29     # 腾讯 DNSPod
   - 114.114.114.114  # 114DNS
 
+# 需要固定解析的外部主机由环境仓库注入；平台仓只提供通用渲染能力。
+# 使用独立的 *.server Server Block，避免与 K3s 内置的 hosts /etc/coredns/NodeHosts 冲突。
+staticHosts: []
+
 # forward 插件参数。取值依据见 docs/deploy/集群DNS上游治理.md
 forward:
   # 必须保持 sequential。

@@ -15,7 +15,9 @@
 #      /__internal/token 接口读取。
 #   3. 就绪信号：该启动行由上游在 Loader 树就绪后才打印，是官方的
 #      readiness 信号，因此可作为抓取 token 的同步点。
-FROM node:22-bookworm-slim
+# 新增的 hci-offline-diagnosis-bundle 0.4.1 要求 Node >=24.9；旧服务继续使用
+# 原有插件和配置，因此升级基础运行时不会改变旧服务的 profile 组合。
+FROM node:24.9.0-bookworm-slim
 
 ARG DSH_VERSION=0.2.1-rc.2
 # DSH plugin manager 通过 pnpm 管理 profile bundle，版本固定避免 CLI 行为漂移。
