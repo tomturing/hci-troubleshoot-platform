@@ -45,6 +45,27 @@ if [ -n "${DSH_PLUGIN_PACKAGES:-}" ]; then
     done
 fi
 
+# 根据实际安装的 bundle 版本选择镜像构建期生成的 venv；新增 bundle 版本时无需修改本文件。
+HCI_BUNDLE_PACKAGE="${PROFILE_DIR}/node_modules/hci-offline-diagnosis-bundle/package.json"
+if [ -z "${HCI_DIAGNOSIS_PYTHON:-}" ] && [ -f "$HCI_BUNDLE_PACKAGE" ]; then
+    HCI_BUNDLE_VERSION=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).version' "$HCI_BUNDLE_PACKAGE")
+    HCI_DIAGNOSIS_PYTHON="/opt/hci-offline-diagnosis/${HCI_BUNDLE_VERSION}/.venv/bin/python"
+    export HCI_DIAGNOSIS_PYTHON
+fi
+
+# HCI 离线工具必须在 DSH 启动前可用，否则企微消息进入 MCP 工具阶段后才会
+# 退化成「处理消息时发生错误」，既晚又无法给运维明确指向。
+if [ -n "${HCI_DIAGNOSIS_PYTHON:-}" ]; then
+    if [ ! -x "$HCI_DIAGNOSIS_PYTHON" ]; then
+        echo "[dsh-entrypoint] ERROR: HCI_DIAGNOSIS_PYTHON 不存在或不可执行: ${HCI_DIAGNOSIS_PYTHON}" >&2
+        exit 1
+    fi
+    if ! "$HCI_DIAGNOSIS_PYTHON" -c 'import hci_diagnosis, yaml, rank_bm25, mcp' >/dev/null 2>&1; then
+        echo "[dsh-entrypoint] ERROR: HCI 离线 Python 运行时依赖导入失败" >&2
+        exit 1
+    fi
+fi
+
 # ConfigMap/bind mount 只读，部署基线作为 launcher 的 --patch invocation layer
 # 传给 DSH；不能直接写 profile cordis.patch.yml，否则 Web 设置页保存时会覆盖部署基线。
 if [ -n "${DSH_PROFILE_PATCH_SOURCE:-}" ]; then
