@@ -2,7 +2,8 @@
 Case Service - 业务逻辑层
 """
 
-from datetime import datetime
+import os
+from datetime import UTC, datetime
 
 from shared.models.schemas import (
     CaseCreate,
@@ -15,12 +16,21 @@ from shared.models.schemas import (
 )
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
+from shared.security.case_access import resolve_data_access
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from ..models.case import Case, CaseStatus
 from ..repositories.case_repo import CaseRepository
 
 logger = get_logger("case-service")
+
+# 日志收集入口自建的壳工单来源标记（写进 case.metadata.source）
+_SHELL_CASE_SOURCE = "log_collect"
+# 交付在途状态：搬运中转移归属会丢分片，认领必须等它结束
+_ACTIVE_DELIVERY_STATUSES = frozenset({"pulling", "uploading", "relaying"})
+# 原身份最后活动距今小于该秒数时禁止认领，避免两个浏览器互相踢（默认 10 分钟）
+_CLAIM_IDLE_SECONDS = int(os.getenv("LOG_COLLECT_CLAIM_IDLE_SECONDS", "600"))
 
 # 分类关键词映射表（用于自动推断工单分类）
 _CATEGORY_KEYWORDS = {
@@ -96,7 +106,9 @@ class CaseService:
             assistant_type=case_create.assistant_type or "htp-agent",
             category=category,
             trace_id=trace_id,
-            metadata=metadata or {},
+            # ORM 真实属性是 metadata_（metadata 是 SQLAlchemy 保留名，写 metadata= 只会
+            # 生成实例影子属性，永远不落库），壳工单来源标记依赖这一列，勿改回。
+            metadata_=metadata or {},
         )
 
         created_case = await self.repository.create(case)
@@ -150,6 +162,167 @@ class CaseService:
             raced = await self.repository.get_by_id(case_id)
             return case_id, False, raced is not None and raced.client_id == client_id
         return case_id, True, True
+
+    async def _case_task_activity(self, case_id: str) -> list[dict]:
+        """该工单下所有采集任务的归属与交付状态（用于认领门禁）。"""
+        result = await self.repository.session.execute(
+            text(
+                "SELECT created_by, status, delivery_status, updated_at"
+                " FROM log_collect_task WHERE case_id = :cid"
+            ),
+            {"cid": case_id},
+        )
+        return [dict(row) for row in result.mappings().all()]
+
+    async def describe_case_access(self, case_id: str, client_id: str) -> dict:
+        """判定当前身份对该工单数据的访问资格，并给出"能否认领"的结论。
+
+        返回字段：
+        - ``owned``：工单归属当前身份（BOLA 防护的既有口径）；
+        - ``shell_case``：壳工单（可认领的必要条件之一）；
+        - ``claimable``：当前是否允许认领；
+        - ``blocked_reason``：不可认领的原因，供前端展示而不是静默失败；
+        - ``owner_active_seconds``：原身份最后一次任务活动距今秒数。
+        """
+        # 归属与"壳工单 + 本人任务"的判定复用 shared 单一判定点，
+# 保证 case-service / conversation-service / gateway 三处口径一致。
+        access = await resolve_data_access(self.repository.session, case_id, client_id)
+        if not access["exists"]:
+            return {
+                "case_id": case_id,
+                "owned": False,
+                "shell_case": False,
+                "claimable": False,
+                "blocked_reason": "case_not_found",
+                "owner_active_seconds": None,
+                "task_granted": False,
+                "data_access": False,
+            }
+
+        if access["owned"]:
+            return {
+                "case_id": case_id,
+                "owned": True,
+                "shell_case": access["shell_case"],
+                "claimable": False,
+                "blocked_reason": "already_owned",
+                "owner_active_seconds": 0,
+                "task_granted": False,
+                "data_access": True,
+            }
+
+        shell_case = access["shell_case"]
+        tasks = await self._case_task_activity(case_id) if shell_case else []
+        idle_seconds: int | None = None
+        if tasks:
+            latest = max((row["updated_at"] for row in tasks if row["updated_at"]), default=None)
+            if latest is not None:
+                idle_seconds = max(0, int((datetime.now(UTC) - latest).total_seconds()))
+
+        if not shell_case:
+            blocked_reason = "not_shell_case"
+        elif any(row["delivery_status"] in _ACTIVE_DELIVERY_STATUSES for row in tasks):
+            # 有交付正在进行时转移归属会让搬运中的分片丢失归属，必须先结束交付
+            blocked_reason = "delivery_in_progress"
+        elif idle_seconds is not None and idle_seconds < _CLAIM_IDLE_SECONDS:
+            # 原身份可能仍在同一个浏览器里操作，直接转移会互相踢
+            blocked_reason = "owner_active"
+        else:
+            blocked_reason = None
+
+        return {
+            "case_id": case_id,
+            "owned": False,
+            "shell_case": shell_case,
+            "claimable": blocked_reason is None,
+            "blocked_reason": blocked_reason,
+            "owner_active_seconds": idle_seconds,
+            "task_granted": access["task_granted"],
+            "data_access": access["data_access"],
+        }
+
+    async def claim_shell_case(self, case_id: str, client_id: str) -> dict:
+        """把壳工单（及其名下采集任务）认领到当前身份。
+
+        为什么必须显式认领而不是自动接管：``client_id`` 是浏览器会话身份而非人，
+        自动接管等于"知道工单号就能成为所有者"，既无审计也绕过 BOLA。认领是用户
+        明确表达的意图，平台据此改归属并留痕。
+        """
+        access = await self.describe_case_access(case_id, client_id)
+        if access["owned"]:
+            return {**access, "claimed": False, "already_owned": True, "tasks_moved": 0}
+        if not access["claimable"]:
+            return {**access, "claimed": False, "already_owned": False, "tasks_moved": 0}
+
+        case = await self.repository.get_by_id(case_id)
+        if case is None:  # describe_case_access 已保证存在，仅防御并发删除
+            raise LookupError(case_id)
+
+        from shared.models.user import User
+
+        trace_id = get_current_trace_id()
+        user = await self.repository.get_user_by_client_id(client_id)
+        if not user:
+            user = User(client_id=client_id, user_type="temporary", trace_id=trace_id)
+            user = await self.repository.create_user(user)
+
+        previous_client_id = case.client_id
+        case.client_id = client_id
+        case.user_id = user.user_id
+        metadata = dict(case.metadata_ or {})
+        claims = list(metadata.get("claims") or [])
+        claimed_at = datetime.now(UTC)
+        claims.append(
+            {
+                "from": previous_client_id,
+                "to": client_id,
+                "at": claimed_at.isoformat(),
+                "trace_id": trace_id,
+            }
+        )
+        metadata["claims"] = claims[-5:]
+        case.metadata_ = metadata
+
+        # 产物与录像按任务维度授权，任务归属必须一起转移，否则认领完仍旧看不到旧包
+        moved = await self.repository.session.execute(
+            text(
+                "UPDATE log_collect_task"
+                " SET created_by = :new_client,"
+                "     detail = coalesce(detail, '{}'::jsonb) || jsonb_build_object("
+                "       'claim', jsonb_build_object('from', :old_client, 'to', :new_client,"
+                "                                    'at', :claimed_at, 'trace_id', :trace_id))"
+                " WHERE case_id = :case_id AND created_by = :old_client"
+            ),
+            {
+                "new_client": client_id,
+                "old_client": previous_client_id,
+                "claimed_at": claimed_at.isoformat(),
+                "trace_id": trace_id,
+                "case_id": case_id,
+            },
+        )
+        await self.repository.session.commit()
+
+        logger.info(
+            event="log_collect_case_claimed",
+            message=f"Case {case_id} claimed by {client_id}",
+            case_id=case_id,
+            previous_client_id=previous_client_id,
+            client_id=client_id,
+            tasks_moved=moved.rowcount,
+            trace_id=trace_id,
+        )
+        return {
+            **access,
+            "owned": True,
+            "claimable": False,
+            "blocked_reason": "already_owned",
+            "task_granted": False,
+            "data_access": True,
+            "claimed": True,
+            "already_owned": False,
+            "tasks_moved": moved.rowcount,
+        }
 
     async def get_case(self, case_id: str) -> CaseResponse | None:
         """获取工单详情"""

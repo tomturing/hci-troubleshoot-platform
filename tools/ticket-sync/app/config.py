@@ -70,6 +70,12 @@ DEFAULT_MIN_KEEP_DAYS = 1
 # 扫得更窄则会漏掉前几天的失败任务。
 DEFAULT_AUTO_SCAN_DAYS = 7
 
+# 升级前发布的历史产物没有"已合并哪些包"的记录，自动任务默认**不回填**这些
+# 历史包：它们可能合计几百 GiB，2026-11-01 已因类似判据一次性吃掉 766 GiB。
+# 需要让存量工单也满足"设备上要有全部采集内容"时，按运维窗口显式打开本开关
+# （或直接用手动同步逐单回填），默认关闭。
+DEFAULT_MERGE_BACKFILL_LEGACY = False
+
 
 @dataclass(frozen=True)
 class Config:
@@ -96,16 +102,20 @@ class Config:
     # 软阈值：剩余空间低于它就主动淘汰最旧产物。必须大于 min_free_bytes，
     # 否则"淘汰"来不及在"熔断"之前生效。构造时校验，见 _validate_waterline。
     evict_free_bytes: int = DEFAULT_EVICT_FREE_BYTES
-    # 产物总量上限：超过后按"最旧优先"淘汰，默认 400 GiB。
-    # 单一保留天数是不够的：实测客户一天能推来 5 个 50~65 GiB 的工单，
-    # 7 天内就能把 1.2T 的盘填满，届时只会拒绝新任务而不会自愈。
-    max_total_bytes: int = 400 * 1024**3
+    # 已发布产物总量上限：超过后按"非日志优先、最旧优先"淘汰。这只是第三重
+    # 保险（代理指标），主控是剩余空间软阈值（见 _validate_waterline）；.tmp 与
+    # .trash 不在这里记账，由每轮清理主动回收。默认值与 DEFAULT_MAX_TOTAL_BYTES
+    # 保持一致，避免"dataclass 默认 400 GiB、运行时 1 TiB"两套口径。
+    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
     # 容量淘汰的最短保留天数：不足该天数即使超限也不删，避免刚同步就被清掉。
     min_keep_days: int = 3
     # 失败任务补扫的回看窗口（天）。常规扫描永远只看当天；这个窗口只用来找回
     # "曾经尝试过、失败过"的工单（判据是 retries 表），**不是**把窗口内所有历史
     # 归档都补拉一遍——2026-11-01 正是那样一次性入队 57 个工单、吃掉 766 GiB。
     auto_scan_days: int = DEFAULT_AUTO_SCAN_DAYS
+    # 自动任务是否回填"升级前发布"的历史包。默认关闭：盘量代价由运维决定，
+    # 打开后每个工单首次被扫到时会补齐该工单目录下的全部历史归档。
+    merge_backfill_legacy: bool = DEFAULT_MERGE_BACKFILL_LEGACY
 
     @property
     def source(self) -> str:
@@ -168,6 +178,9 @@ class Config:
             ),
             retention_days=int(optional("TICKET_RETENTION_DAYS", str(DEFAULT_RETENTION_DAYS))),
             auto_scan_days=int(optional("TICKET_AUTO_SCAN_DAYS", str(DEFAULT_AUTO_SCAN_DAYS))),
+            merge_backfill_legacy=_as_bool(
+                optional("TICKET_MERGE_BACKFILL_LEGACY", str(DEFAULT_MERGE_BACKFILL_LEGACY))
+            ),
             max_total_bytes=int(optional("TICKET_MAX_TOTAL_BYTES", str(DEFAULT_MAX_TOTAL_BYTES))),
             min_keep_days=int(optional("TICKET_MIN_KEEP_DAYS", str(DEFAULT_MIN_KEEP_DAYS))),
         )

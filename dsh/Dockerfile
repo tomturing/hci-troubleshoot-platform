@@ -15,11 +15,15 @@
 #      /__internal/token 接口读取。
 #   3. 就绪信号：该启动行由上游在 Loader 树就绪后才打印，是官方的
 #      readiness 信号，因此可作为抓取 token 的同步点。
-FROM node:22-bookworm-slim
+# 新增的 hci-offline-diagnosis-bundle 0.4.1 要求 Node >=24.9；旧服务继续使用
+# 原有插件和配置，因此升级基础运行时不会改变旧服务的 profile 组合。
+FROM node:24.9.0-bookworm-slim
 
 ARG DSH_VERSION=0.2.1-rc.2
 # DSH plugin manager 通过 pnpm 管理 profile bundle，版本固定避免 CLI 行为漂移。
 ARG PNPM_VERSION=10.33.4
+# HCI 离线 bundle 使用锁文件安装 Python 依赖；固定 uv 版本避免构建行为漂移。
+ARG UV_VERSION=0.13.1
 # Compose 本地通过 build args 覆盖为 npmmirror；CI/直接 docker build 默认使用官方源。
 ARG NPM_REGISTRY=https://registry.npmjs.org
 
@@ -32,6 +36,13 @@ RUN npm install -g --registry="${NPM_REGISTRY}" "@deepseek-ai/dsh@${DSH_VERSION}
 RUN npm install -g --registry="${NPM_REGISTRY}" "pnpm@${PNPM_VERSION}" \
     && npm cache clean --force
 
+# HCI 离线诊断 bundle 的 MCP 工具是 Python 实现。运行时不再依赖容器外部的
+# python/uv；依赖由 uv.lock 在构建期冻结安装到独立 venv。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
+    && python3 -m pip install --break-system-packages --no-cache-dir "uv==${UV_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
 # 预建可写目录；运行时由 emptyDir / PVC 覆盖挂载
 RUN mkdir -p /work /home/dsh /run/dsh \
     && chown -R node:node /work /home/dsh /run/dsh
@@ -43,7 +54,20 @@ COPY dsh/docker-compose-entrypoint.sh /usr/local/bin/docker-compose-entrypoint.s
 # 本地 bundle 不需要发布到 npm：构建上下文中的 dsh/plugins 会原样带入镜像，
 # 环境 values 用 /opt/dsh-plugins/<目录名> 作为 dsh.plugins.packages。
 COPY dsh/plugins /opt/dsh-plugins
-RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-compose-entrypoint.sh
+RUN set -eu; \
+    found=0; \
+    for archive in /opt/dsh-plugins/hci-offline-diagnosis-bundle-*.tgz; do \
+      [ -f "$archive" ] || continue; \
+      version="$(tar -xOf "$archive" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0)).version')"; \
+      runtime_dir="/opt/hci-offline-diagnosis/${version}"; \
+      mkdir -p "$runtime_dir"; \
+      tar -xzf "$archive" --strip-components=1 -C "$runtime_dir"; \
+      uv sync --directory "$runtime_dir" --frozen --no-dev --no-editable; \
+      "$runtime_dir/.venv/bin/python" -c 'import hci_diagnosis, yaml, rank_bm25, mcp'; \
+      found=1; \
+    done; \
+    [ "$found" = 1 ] \
+    && chmod 0755 /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-compose-entrypoint.sh
 
 # 固定以非 root 身份运行（node 官方镜像自带 node:node = 1000:1000）
 USER 1000:1000

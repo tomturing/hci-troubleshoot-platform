@@ -14,6 +14,7 @@ import {
   rightWidthRange,
 } from '@/utils/workspaceLayout'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
+import { CLAIM_BLOCKED_REASON_TEXT } from '@/utils/logCollectOwnership'
 import { checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, buildSftpMessage, parseSftpListPayload, parseSftpTransferPayload, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec, type SftpEntry, type SftpTransferPayload } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
@@ -819,6 +820,13 @@ export const useChatStore = defineStore('chat', () => {
   // 绑定的工单是否属于当前身份：false 时日志回采/录像回放会被归属校验拒绝。
   // 采集本身仍允许（运维可能需要用外部单号补采），但面板必须先给出前置提示。
   const logCollectCaseOwned = ref<boolean | null>(null)
+  // 归属不同但可显式认领（壳工单）时置 true：只提示不给动作会让用户只能重采，
+  // 而重采会覆盖节点上那份还没交付的包。
+  const logCollectCaseClaimable = ref(false)
+  const logCollectCaseClaimBlockedReason = ref<string | null>(null)
+  const logCollectClaiming = ref(false)
+  // 认领时一并转移过来的任务数（0 表示只是拿到了空壳工单）
+  const logCollectClaimedTasks = ref(0)
   const logCollectCaseDialogVisible = ref(false)
   const logCollectCaseLoading = ref(false)
   // 409 冲突：服务端返回的活跃任务摘要（状态/进度/是否本人）
@@ -866,16 +874,20 @@ export const useChatStore = defineStore('chat', () => {
   )
 
   /**
-   * 中央排障 Agent 是否应临时隐藏。
+   * 中央会话是否让位给右栏终端。
    *
-   * 日志收集与 Agent **不联动**（Agent 收不了 acpi/acli 日志），两者并排会让用户
-   * 误以为可以“让 Agent 去收”。所以左栏日志收集 + 右栏终端同时可见时，把中央区收起，
-   * 把像素全给日志表格与终端；用 v-show 隐藏（不销毁），会话与滚动位置全部保留。
+   * 条件已从「日志收集 + 终端同时可见」放开为「终端可见即让位」，原因有两条：
+   * 1. 旧版右栏是 el-drawer 浮层，打开终端会直接盖住中央；面板化之后中央成了抢像素的
+   *    邻居，在 1080 / 1366 屏上终端只剩 60 列左右，现场观感就是「终端开了，中间那块
+   *    排障窗口还杵着」。让位是「覆盖」在新布局下的等价物，且比遮罩更好——会话用
+   *    v-show 隐藏，消息、滚动位置、输入框草稿全部保留，关掉终端立刻回来。
+   * 2. 终端列数是硬瓶颈，而中央此刻不是用户要看的块；日志收集开不开与终端宽度无关，
+   *    不该继续充当让位的前置条件。
    *
-   * 终端不可用（未连接 / bridge 未运行 / 右栏被文件下载占用）时不隐藏：
-   * 此时没有“替身”可看，藏了 Agent 就只剩一片空白，改为在中央标题栏挂一条提示。
+   * 仍以「终端页签可见」而不是「右栏打开」为条件：右栏被文件下载占用时中央保留，
+   * 传文件不需要 xterm 列宽，藏掉中央只会剩一片空白。
    */
-  const isAgentChatHidden = computed(() => logCollectVisible.value && isTerminalVisible.value)
+  const isCenterCollapsed = computed(() => isTerminalVisible.value)
 
   /**
    * 日志收集打开后自动把右栏切到 SSH 终端。
@@ -898,6 +910,9 @@ export const useChatStore = defineStore('chat', () => {
       rightOpen: true,
       leftPreferred: leftPanelPreferred.value ?? undefined,
       rightPreferred: rightPanelPreferred.value ?? undefined,
+      // 按「打开后」的最终形态判定：终端一就绪中央就让位，左右两栏共占整屏，
+      // 因此 1024~1439 这一段也能并排，不该因为按常规三栏求解放不下就放弃联动。
+      centerHidden: true,
     })
     if (bothOpen.mode === 'overlay') return
     if (isTerminalVisible.value) return
@@ -942,8 +957,8 @@ export const useChatStore = defineStore('chat', () => {
       rightOpen: isRightPanelOpen.value,
       leftPreferred: leftPanelPreferred.value ?? undefined,
       rightPreferred: rightPanelPreferred.value ?? undefined,
-      // 日志收集 + 终端并排时中央让位：求解器把中央宽度记为 0，App 外壳据此收合
-      centerHidden: isAgentChatHidden.value,
+      // 终端可见时中央让位：求解器把中央宽度记为 0，App 外壳据此收合
+      centerHidden: isCenterCollapsed.value,
     }),
   )
 
@@ -957,6 +972,11 @@ export const useChatStore = defineStore('chat', () => {
    * 此刻 mode 还是 slide，等另一侧真的打开才会退化成 overlay——
    * 用当前 mode 判定等于永远慢一拍，最后就是两块面板各占 86% 叠在一起、
    * 中央只剩一条缝还压着遮罩。
+   *
+   * 求解必须带上 centerHidden：打开右栏后终端可见、中央立刻让位，两栏共占整屏，
+   * 1024~1439 这一段（1080 / 1366 屏）本来就放得下。此前漏传该参数，导致这段宽度
+   * 被判成 overlay，于是「日志收集进行中点开终端」会把刚采集的面板直接关掉。
+   *
    * 覆盖态本身就是"一次看一块"的语义；宽屏推挤得下时不受影响，可并排看日志与终端。
    */
   function enforceOverlayExclusive(side: 'left' | 'right'): void {
@@ -966,6 +986,7 @@ export const useChatStore = defineStore('chat', () => {
       rightOpen: true,
       leftPreferred: leftPanelPreferred.value ?? undefined,
       rightPreferred: rightPanelPreferred.value ?? undefined,
+      centerHidden: true,
     })
     if (bothOpen.mode !== 'overlay') return
     if (side === 'left') {
@@ -1049,6 +1070,7 @@ export const useChatStore = defineStore('chat', () => {
         // 预填当前工单号，减少一次输入
         logCollectCaseId.value = currentCase.value.case_id
       }
+      resetLogCollectClaimState()
       logCollectCaseDialogVisible.value = true
       return
     }
@@ -1065,6 +1087,7 @@ export const useChatStore = defineStore('chat', () => {
       logCollectVisible.value = true
       return
     }
+    resetLogCollectClaimState()
     logCollectCaseDialogVisible.value = true
   }
 
@@ -1073,6 +1096,7 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   function openLogCollectCaseDialog(): void {
+    resetLogCollectClaimState()
     logCollectCaseDialogVisible.value = true
   }
 
@@ -1098,6 +1122,10 @@ export const useChatStore = defineStore('chat', () => {
       logCollectCaseId.value = result.case_id
       // 旧后端不返回 owned：按"未知"处理为已归属，不误报
       logCollectCaseOwned.value = result.owned !== false
+      logCollectCaseClaimable.value = result.owned === false && result.claimable === true
+      logCollectCaseClaimBlockedReason.value =
+        result.owned === false ? (result.claim_blocked_reason ?? null) : null
+      logCollectClaimedTasks.value = 0
       logCollectCaseDialogVisible.value = false
       // 面板打开即占用左栏，同侧的历史工单必须让位
       showHistoryDrawer.value = false
@@ -1117,6 +1145,51 @@ export const useChatStore = defineStore('chat', () => {
     } finally {
       logCollectCaseLoading.value = false
     }
+  }
+
+  /**
+   * 认领当前绑定的日志收集壳工单。
+   *
+   * 为什么必须由用户点一次：身份是浏览器会话级凭据，"自动接管"等于知道工单号
+   * 就拥有它。认领成功后归属与名下任务一起转移，旧包/旧录像才能被续用。
+   */
+  async function claimLogCollectCase(): Promise<void> {
+    const caseId = logCollectCaseId.value
+    if (!caseId) throw new Error('当前没有绑定工单')
+    logCollectClaiming.value = true
+    try {
+      const result = await logCollectApi.claimCase(caseId)
+      logCollectCaseOwned.value = true
+      logCollectCaseClaimable.value = false
+      logCollectCaseClaimBlockedReason.value = null
+      logCollectClaimedTasks.value = result.tasks_moved ?? 0
+    } catch (e: any) {
+      const status = e?.response?.status
+      const detail = e?.response?.data?.detail
+      const reason = typeof detail === 'object' && detail ? String(detail.reason ?? '') : ''
+      if (status === 409) {
+        logCollectCaseClaimable.value = false
+        logCollectCaseClaimBlockedReason.value = reason || null
+        throw new Error(CLAIM_BLOCKED_REASON_TEXT[reason] || '该工单当前不能认领，请按提示处理后重试')
+      }
+      if (status === 404) throw new Error('工单不存在，请确认工单号')
+      if (status === 401) throw new Error('身份已失效，请刷新页面后重试')
+      throw new Error('认领失败，请稍后重试')
+    } finally {
+      logCollectClaiming.value = false
+    }
+  }
+
+  /**
+   * 清掉上一次的认领结论。
+   *
+   * 用户可能换一个单号继续采集，旧的"可认领"状态若残留，会对着一个别人的真实
+   * 业务工单显示"认领并继续"，点了才知道不行——比不显示更糟。
+   */
+  function resetLogCollectClaimState(): void {
+    logCollectCaseClaimable.value = false
+    logCollectCaseClaimBlockedReason.value = null
+    logCollectClaimedTasks.value = 0
   }
 
   /** 接管查看已有任务（409 后"查看任务状态"或刷新恢复）。 */
@@ -4589,7 +4662,7 @@ export const useChatStore = defineStore('chat', () => {
     collapseLeftPanel,
     rightPanelTab,
     isTerminalVisible,
-    isAgentChatHidden,
+    isCenterCollapsed,
     showTerminalReplay,
     terminalReplayCaseId,
     openTerminalReplay,
@@ -4601,6 +4674,11 @@ export const useChatStore = defineStore('chat', () => {
     setPanelResizing,
     logCollectCaseId,
     logCollectCaseOwned,
+    logCollectCaseClaimable,
+    logCollectCaseClaimBlockedReason,
+    logCollectClaiming,
+    logCollectClaimedTasks,
+    claimLogCollectCase,
     logCollectCaseDialogVisible,
     logCollectCaseLoading,
     logCollectActiveTask,

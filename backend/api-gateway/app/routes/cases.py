@@ -158,6 +158,19 @@ async def resolve_case(request: Request, client_id: str = Depends(require_user))
     return JSONResponse(content=response.json(), status_code=response.status_code)
 
 
+@router.post("/{case_id}/claim")
+async def claim_shell_case(case_id: str, client_id: str = Depends(require_user)):
+    """认领日志收集壳工单（把工单归属与其名下采集任务转到当前身份）。
+
+    门禁全部在 case-service：壳工单、无在途交付、原身份空闲；不满足时返回 409 与
+    具体 blocked_reason。网关只做身份重签并原样透传，保证前端拿到可展示的原因。
+    """
+    response = await proxy_request("POST", f"/{case_id}/claim", headers=_signed_headers(client_id))
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="Case not found")
+    return JSONResponse(content=response.json(), status_code=response.status_code)
+
+
 @router.get("/{case_id}")
 async def get_case(case_id: str, client_id: str = Depends(require_user)):
     """获取工单详情（归属校验在 case-service 完成）"""

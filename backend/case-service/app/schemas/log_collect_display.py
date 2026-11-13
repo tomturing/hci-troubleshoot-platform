@@ -23,12 +23,58 @@ class LogCollectCondition(BaseModel):
     label: str = Field(description="中文文案（契约生成）")
 
 
-class LogCollectDisplay(BaseModel):
-    """三维展示结论：环节 + 结论 + 观察事实。"""
+class LogCollectStageComponent(BaseModel):
+    """三段五组件里的单个组件；段与标签全部来自契约生成物。"""
 
-    phase: str = Field(description="当前环节：queued/collecting/fetching/uploading/relaying/settled")
+    key: str
+    label: str
+    tag: str
+    scope: str
+    scope_label: str
+
+
+class LogCollectStage(BaseModel):
+    """S1-S8 单个阶段：状态、组件、判据与该阶段的客户文案。"""
+
+    key: str
+    label: str
+    scopes: list[str] = Field(default_factory=list)
+    scope_label: str
+    components: list[LogCollectStageComponent] = Field(default_factory=list)
+    status: str = Field(description="success/running/waiting/failed/unknown/skipped")
+    status_label: str
+    criteria: str
+    fault_code: str | None = None
+    customer_text: str | None = None
+
+
+class LogCollectFaultAttribution(BaseModel):
+    """首个异常点：客户只看 customer_text，管理员看判据、证据与调用链。"""
+
+    code: str
+    scope: str
+    scope_label: str
+    component: str
+    component_label: str
+    component_tag: str
+    stage: str
+    stage_label: str
+    problem: str
+    action: str
+    customer_text: str = Field(description="组件标签：问题描述；建议动作")
+    admin_detail: str
+    evidence: str
+    trace_id: str | None = None
+
+
+class LogCollectDisplay(BaseModel):
+    """三维展示结论：环节 + 结论 + 观察事实 + 阶段时间线 + 首个异常点。"""
+
+    phase: str = Field(description="当前环节：queued/collecting/fetching/uploading/relaying/verifying/settled")
     phase_label: str
-    conclusion: str = Field(description="业务结论：pending/success/partial/failed/cancelled")
+    conclusion: str = Field(
+        description="业务结论：pending/success/partial/unfinished/failed/cancelled"
+    )
     conclusion_label: str
     conclusion_tone: str = Field(description="展示色板：success/warning/error/info")
     conditions: list[LogCollectCondition] = Field(default_factory=list)
@@ -39,6 +85,9 @@ class LogCollectDisplay(BaseModel):
         ),
     )
     upload_mode_label: str | None = None
+    stages: list[LogCollectStage] = Field(default_factory=list)
+    fault_attribution: LogCollectFaultAttribution | None = None
+    trace_id: str | None = None
 
 
 class LogCollectArtifactInfo(BaseModel):

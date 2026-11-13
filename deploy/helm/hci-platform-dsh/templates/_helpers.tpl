@@ -30,6 +30,26 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+实例资源名。旧 release 保持历史名称；第二个 release 通过 namePrefix 隔离资源，
+但容器内部名称和 selector 语义仍保持稳定。
+*/}}
+{{- define "dsh.name" -}}
+{{- if .Values.namePrefix }}{{ .Values.namePrefix }}{{ else }}dsh{{ end }}
+{{- end }}
+
+{{- define "dsh.proxyName" -}}
+{{ include "dsh.name" . }}-proxy
+{{- end }}
+
+{{- define "dsh.llmConfigName" -}}
+{{ include "dsh.name" . }}-llm-config
+{{- end }}
+
+{{- define "dsh.ingressName" -}}
+{{ include "dsh.name" . }}-ingress
+{{- end }}
+
+{{/*
 对外主机名：从 global.publicUrl 中解析裸主机名（去掉协议、端口与路径）
 用法: {{ include "dsh.publicHost" . }}
 */}}

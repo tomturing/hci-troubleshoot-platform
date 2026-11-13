@@ -55,6 +55,7 @@ class TestSummaryIdentity:
             "pending": 1,
             "success": 1,
             "partial": 1,
+            "unfinished": 0,
             "failed": 1,
             "cancelled": 1,
         }

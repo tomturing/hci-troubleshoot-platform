@@ -255,6 +255,7 @@ onBeforeUnmount(() => {
         :width="chatStore.leftPanelWidth"
         :overlay="isOverlayMode"
         :resizing="chatStore.isPanelResizing"
+        :resizable="!chatStore.isCenterCollapsed"
         @collapse="chatStore.collapseLeftPanel()"
         @resize-start="startPanelResize('left', $event)"
       >
@@ -298,7 +299,7 @@ onBeforeUnmount(() => {
         />
       </PanelShell>
 
-      <main class="app-main" :class="{ 'is-center-hidden': chatStore.isAgentChatHidden }">
+      <main class="app-main" :class="{ 'is-center-hidden': chatStore.isCenterCollapsed }">
         <!--
           中央会话的标题栏：高度与两侧面板的 panel-head 一致（48px），
           三栏顶部形成一条贯通的分隔线。之前中央没有这一条，
@@ -318,7 +319,7 @@ onBeforeUnmount(() => {
               必须在这里把“不联动”说清楚，否则用户会以为 Agent 正在配合采集日志。
             -->
             <el-tooltip
-              v-if="chatStore.logCollectVisible && !chatStore.isAgentChatHidden"
+              v-if="chatStore.logCollectVisible && !chatStore.isCenterCollapsed"
               content="日志采集由 SSH 终端里的 acli 完成，排障 Agent 不参与采集。连接 SSH 终端后中央会话会自动收起。"
               placement="bottom"
             >
@@ -332,7 +333,7 @@ onBeforeUnmount(() => {
           v-show 而不是 v-if：会话消息、滚动位置、输入框里的草稿都要保留。
           中央隐藏只是“此刻不需要看”，不是“关掉会话”。
         -->
-        <ChatWindow v-show="!chatStore.isAgentChatHidden" />
+        <ChatWindow v-show="!chatStore.isCenterCollapsed" />
       </main>
 
       <PanelShell
@@ -341,6 +342,7 @@ onBeforeUnmount(() => {
         :width="chatStore.rightPanelWidth"
         :overlay="isOverlayMode"
         :resizing="chatStore.isPanelResizing"
+        :resizable="!chatStore.isCenterCollapsed"
         @collapse="chatStore.closeTerminalSidebar()"
         @resize-start="startPanelResize('right', $event)"
       >
@@ -468,7 +470,10 @@ body {
 }
 
 /*
- * 中央隐藏（日志收集 + SSH 终端并排）。
+ * 中央让位（右栏终端可见）。
+ *
+ * 这是旧版「SSH 终端弹出覆盖中央」在新布局下的等价物：终端一出现就把中央的
+ * 像素全部拿走，而不是让中央继续当竞争对手、把 xterm 挤到 60 列。
  *
  * 宽度归 0 而不是 display:none：display:none 会让 flex 子项从布局里消失、
  * 两侧面板不会重新分配空间（它们本来就只是 flex:0 0 auto），

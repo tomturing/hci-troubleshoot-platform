@@ -66,6 +66,11 @@ if [[ ! -f "$VALUES_FILE" ]]; then
   exit 1
 fi
 
+# DSH 独立于平台业务 values 维护，镜像 tag 写入 dsh-values.yaml；其余服务仍写入
+# 环境主 values.yaml。这样旧 DSH 与离线 DSH 可以共同继承 dsh.image.tag，插件组合
+# 则分别由 dsh-values.yaml / dsh-offline-values.yaml 覆盖。
+DSH_VALUES_FILE="${ENV_REPO_PATH}/environments/${TARGET_ENV}/dsh-values.yaml"
+
 update_service_tag() {
   local file="$1"
   local service_key="$2"
@@ -152,7 +157,15 @@ if [[ -n "$SERVICES_CSV" ]]; then
     fi
     repository="$(service_repository "$svc")"
     echo "更新 ${svc}.image.tag -> ${IMAGE_TAG}"
-    update_service_tag "$VALUES_FILE" "$svc" "$repository" "$IMAGE_TAG"
+    if [[ "$svc" == "dsh" ]]; then
+      if [[ ! -f "$DSH_VALUES_FILE" ]]; then
+        echo "未找到 DSH 专属 values 文件: $DSH_VALUES_FILE" >&2
+        exit 1
+      fi
+      update_service_tag "$DSH_VALUES_FILE" "$svc" "$repository" "$IMAGE_TAG"
+    else
+      update_service_tag "$VALUES_FILE" "$svc" "$repository" "$IMAGE_TAG"
+    fi
   done
 else
   echo "本次没有业务服务镜像需要同步，仅处理 dbMigrate（如有）"

@@ -187,7 +187,7 @@ _SUMMARY_SELECT = f"""
            {_EVIDENCE_DETAIL} AS detail
 """
 
-_CONCLUSION_KEYS = ("pending", "success", "partial", "failed", "cancelled")
+_CONCLUSION_KEYS = ("pending", "success", "partial", "unfinished", "failed", "cancelled")
 
 
 def _coerce_json(value: Any) -> Any:

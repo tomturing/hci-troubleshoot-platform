@@ -32,17 +32,30 @@ from .extractor import extract
 from .fetcher import (
     RemoteArchive,
     fetch,
+    is_newer_archive,
     list_recent_archives,
     list_remote_entries,
+    list_ticket_archives,
     looks_like_non_log_bundle,
 )
 from .maintenance import (
+    SYNC_META_NAME,
     CleanupReport,
     has_usable_logs,
     read_sync_meta,
     reconcile_artifacts,
     run_cleanup_cycle,
     write_sync_meta,
+)
+from .merge import (
+    archive_key,
+    build_baseline_records,
+    build_merged_records,
+    clone_tree,
+    max_merged_archive,
+    merge_into,
+    plan_pending,
+    tree_stats,
 )
 from .models import (
     RUNNING_PHASES,
@@ -53,7 +66,13 @@ from .models import (
     TicketError,
     validate_ticket_id,
 )
-from .publisher import cleanup_stale_workspaces, prepare_workspace, publish
+from .publisher import (
+    MERGE_ARCHIVES_DIR,
+    cleanup_stale_workspaces,
+    cleanup_workspace,
+    prepare_merge_workspace,
+    publish,
+)
 from .store import (
     CLEANUP_EVENT_RETENTION_DAYS,
     CLEANUP_KIND_WATERLINE,
@@ -276,9 +295,7 @@ class JobRegistry:
                     # 老库没有 origin 列（迁移前写入的历史行），来源不可考时
                     # 按 auto 展示：历史上绝大多数任务是巡检自动入队的。
                     origin=row.get("origin") or ORIGIN_AUTO,
-                    started_at=(
-                        datetime.fromtimestamp(row["started_at"], TZ) if row["started_at"] else None
-                    ),
+                    started_at=(datetime.fromtimestamp(row["started_at"], TZ) if row["started_at"] else None),
                     received_bytes=row["received_bytes"],
                     total_bytes=row["total_bytes"],
                     extracted_bytes=row["extracted_bytes"],
@@ -302,9 +319,7 @@ class JobRegistry:
             next_at = row.get("next_retry_at")
             self._retries[ticket_id] = RetryState(
                 failures=int(row.get("failures") or 0),
-                next_retry_at=(
-                    datetime.fromtimestamp(float(next_at), TZ) if next_at is not None else None
-                ),
+                next_retry_at=(datetime.fromtimestamp(float(next_at), TZ) if next_at is not None else None),
             )
         if self._retries:
             logger.info("已恢复失败退避状态 工单数=%d", len(self._retries))
@@ -531,9 +546,7 @@ class JobRegistry:
     async def full_reconcile(self) -> tuple[int, int, int]:
         """重量对账：补写历史目录的 meta、重算体积。低频执行。"""
         active = self.active_ticket_ids()
-        return await asyncio.to_thread(
-            reconcile_artifacts, self.cfg.root, self._store, active
-        )
+        return await asyncio.to_thread(reconcile_artifacts, self.cfg.root, self._store, active)
 
     def prune_cleanup_events(self, before: float) -> int:
         """回收过期清理流水，返回删除条数。"""
@@ -643,7 +656,10 @@ class JobRegistry:
         # rsync --partial 永远找不到上次的文件，65 GiB 级的包一旦失败就要从 0 重来。
         # 同工单串行由 RUNNING_PHASES 保证，这里不会有两个任务共用同一目录。
         work_dir = self.cfg.tmp_dir() / ticket_id
-        archive_name = f"{ticket_id}.zip"
+        final_dir = self.cfg.root / ticket_id
+        archives_dir = work_dir / MERGE_ARCHIVES_DIR
+        extract_root = work_dir / "extract"
+        build_dir = work_dir / "build"
 
         # 手动任务不进并发闸门：用户点击代表"现在就要看到结果"，不该排在自动巡检
         # 成批入队的 5 个 65 GiB 任务后面。自动任务仍必须受限——它们的数量由扫描
@@ -671,22 +687,42 @@ class JobRegistry:
                     job_id=job.job_id,
                 )
 
-                # 上次失败留下的解压产物必须先清掉，只留归档供 rsync 续传，
-                # 否则新旧产物混在一起，发布会把脏目录推给用户。
-                prepare_workspace(work_dir, archive_name)
+                # 上次失败留下的 build/extract 必须先清掉，只留已下载归档供 rsync
+                # 续传；半套合并树混进新一次发布，用户看到的就是脏目录。
+                prepare_merge_workspace(work_dir)
 
-                await self._reject_non_log_payload(job)
+                # 关键点：任务开始前列**该工单目录内的全部归档**，不能沿用巡检
+                # 那条"每工单只保留最新一份"的视图，否则多采集中更早的包永远
+                # 进不了本地产物。
+                archives = await list_ticket_archives(self.cfg, ticket_id)
+                if not archives:
+                    raise TicketError(
+                        ErrorCode.NOT_FOUND,
+                        "该工单在日志服务器上没有归档",
+                        f"ticket={ticket_id} root=/sf/log/{ticket_id}",
+                    )
 
-                archive = await fetch(
+                has_final = final_dir.is_dir()
+                meta = read_sync_meta(final_dir) if has_final else {}
+                pending = plan_pending(
                     ticket_id,
-                    self.cfg,
-                    work_dir,
-                    job.job_id,
-                    on_progress=self._progress_writer(job),
+                    archives,
+                    meta,
+                    job.origin,
+                    has_final=has_final,
+                    backfill_legacy=self.cfg.merge_backfill_legacy,
                 )
-                # 远端版本身份必须在解压/发布前取：解压可能删掉归档，发布还会把
-                # 整个 work_dir rename 走，之后就拿不到这个文件的 stat 了。
-                fetched_mtime, fetched_size = _file_identity(archive)
+
+                if not pending:
+                    self._complete_without_new_archives(job, final_dir, meta, archives)
+                    return
+
+                # 转储包（vmcore 等）按包探测、按包跳过：最新包是转储不代表更早的
+                # 包里没有日志；只有"整批都是转储"才沿用原来的确定性失败语义。
+                pending, ignored = await self._filter_non_log_archives(job, pending)
+                if not pending:
+                    self._handle_all_non_log(job, final_dir, meta, archives, ignored)
+                    return
 
                 if not self.cfg.archive_password:
                     raise TicketError(
@@ -695,99 +731,165 @@ class JobRegistry:
                         "TICKET_ARCHIVE_PASSWORD 为空",
                     )
 
-                job.phase = Phase.EXTRACTING
-                job.updated_at = _now()
-                self._persist(job)
+                # 以已发布产物为基线做硬链接克隆，只拉新增包合并进去：
+                # 重新下载全部历史包在 65 GiB 量级下不可接受。首次同步则从空树开始。
+                if has_final:
+                    clone_tree(final_dir, build_dir)
+                else:
+                    build_dir.mkdir(parents=True, exist_ok=True)
 
-                self._release_archive_for_space(work_dir, archive)
+                job.total_bytes = sum(archive.size for archive in pending)
+                job.received_bytes = 0
+                max_merged = max_merged_archive(ticket_id, meta)
+                processed: list[RemoteArchive] = []
+                totals = ExtractStats()
+                extracted_bytes = 0
+                extracted_files = 0
+                received_bytes = 0
 
-                stats = await extract(
-                    ticket_id,
-                    archive,
-                    work_dir,
-                    self.cfg,
-                    job.job_id,
-                    on_progress=self._extract_writer(job),
-                    on_archive=self._archive_writer(job),
-                )
+                for index, archive in enumerate(pending, start=1):
+                    job.phase = Phase.FETCHING
+                    job.current_archive = archive.name
+                    job.updated_at = _now()
+                    self._persist(job)
 
-                # 解压已全部成功，归档的续传价值消失；必须在 publish 前删掉，
-                # 否则它会跟着 work_dir 一起 rename 进产物目录。
-                self._release_archive(work_dir, archive.name)
+                    local_archive = await fetch(
+                        ticket_id,
+                        self.cfg,
+                        archives_dir,
+                        job.job_id,
+                        on_progress=self._progress_writer(job, received_bytes),
+                        remote_path=archive.path,
+                        target_name=archive.name,
+                    )
+                    # 远端版本身份必须在解压后取；这里只用于进度累计，失败也
+                    # 不臆造值：拿不到就退回列表里的声明体积。
+                    _, fetched_size = _file_identity(local_archive)
+
+                    job.phase = Phase.EXTRACTING
+                    job.updated_at = _now()
+                    self._persist(job)
+
+                    self._ensure_extract_space(work_dir, local_archive)
+
+                    # 每个包解到独立目录，再逐包合并。目录名带序号：同一工单目录里
+                    # 的包名理论上唯一，但序号保证即使远端出现同名副本也不会串。
+                    archive_extract = extract_root / f"{index:03d}-{Path(archive.name).stem}"
+                    stats = await extract(
+                        ticket_id,
+                        local_archive,
+                        archive_extract,
+                        self.cfg,
+                        job.job_id,
+                        on_progress=self._extract_writer(job, extracted_bytes, extracted_files),
+                        on_archive=self._archive_writer(job),
+                    )
+                    self._accumulate_extract_stats(totals, stats)
+
+                    # 优先级：按 mtime（同 mtime 规范名优先）从旧到新处理，新包覆盖
+                    # 旧包。若某个待合并包其实比已合并内容更旧（服务端人工恢复旧包
+                    # 之类的乱序），只补缺失文件、不覆盖，保证"最新包赢"不被破坏。
+                    overwrite = max_merged is None or is_newer_archive(archive, max_merged)
+                    merge_stats = merge_into(archive_extract, build_dir, overwrite=overwrite)
+                    if overwrite:
+                        max_merged = archive
+                    elif merge_stats.skipped_conflicts:
+                        logger.warning(
+                            "ticket=%s job=%s 归档优先级低于已合并内容，仅补充缺失文件 path=%s skipped=%d",
+                            ticket_id,
+                            job.job_id,
+                            archive.path,
+                            merge_stats.skipped_conflicts,
+                        )
+                    logger.info(
+                        "ticket=%s job=%s 合并归档 path=%s 新增=%d 覆盖=%d 冲突跳过=%d",
+                        ticket_id,
+                        job.job_id,
+                        archive.path,
+                        merge_stats.added,
+                        merge_stats.overwritten,
+                        merge_stats.skipped_conflicts,
+                    )
+
+                    cleanup_workspace(archive_extract)
+                    # 该包已完整进入 build 树，归档的续传价值消失；立刻删除腾出
+                    # 空间，否则同时保留"归档 + 解压树 + 合并树"会放大峰值。
+                    self._release_archive_path(local_archive)
+                    processed.append(archive)
+                    received_bytes += fetched_size or archive.size
+                    extracted_bytes += stats.bytes
+                    extracted_files += stats.files
+                    job.received_bytes = received_bytes
+                    job.extracted_bytes = extracted_bytes
+                    job.file_count = extracted_files
+                    job.updated_at = _now()
+                    self._persist(job)
+
+                # 产物统计以**合并后的最终树**为准：各包 stats 相加会把重复文件
+                # 计算多次，bytes/files 会明显偏大。
+                final_stats = tree_stats(build_dir, exclude_names={SYNC_META_NAME})
+                has_logs = has_usable_logs(build_dir)
 
                 # 旧版本直接删除，不进回收站：原件在日志源服务器上可随时重拉，
                 # 留一份"可回退"只会白占几十 GiB 且不计入容量记账。
-                replaced = publish(work_dir, self.cfg.root / ticket_id)
+                replaced = publish(build_dir, final_dir)
 
                 # 产物已经原子落盘——从这一刻起「本次同步成功」是既成事实。
                 # 后面的元数据、记账都只是辅助事实，任何一步失败都不能把它改判成
                 # failed：用户看到 failed 会点重试，几十 GiB 的包就要再完整拉一遍。
-                job.extracted_bytes = stats.bytes
-                job.file_count = stats.files
+                # 最终树统计为空但解压统计非空，只可能出现在测试桩/异常降级路径；
+                # 此时保留逐包累计值，别让界面从"已解出 3 个文件"退回 0。
+                job.extracted_bytes = final_stats.bytes if final_stats.files else extracted_bytes
+                job.file_count = final_stats.files if final_stats.files else extracted_files
                 job.current_archive = None
                 job.phase = Phase.READY
-                # 解压成功但有归档解不开（如 RAR5 新压缩方法）：必须让用户看见，
-                # 否则"已就绪"会掩盖"少了一份转储"的事实。
-                if stats.unreadable_archives:
-                    job.message = (
-                        f"{stats.unreadable_archives} 个归档工具无法解压，已保留原压缩文件"
-                    )
-                # 截断与"工具不支持"是两种事实：前者解出了一部分、可用；后者一点都打不开。
-                # 混成一句话会让用户以为整份日志都不可信。
-                if stats.truncated_archives:
-                    suffix = f"{stats.truncated_archives} 个归档被截断，已保留可读部分"
-                    job.message = f"{job.message}；{suffix}" if job.message else suffix
-                # 深度上限从「整单失败」改为「停止下钻」后，截断信息不能静默：
-                # 用户需要知道产物里少了更深层的附件，而不是以为日志齐了。
-                if stats.depth_truncated:
-                    suffix = f"{stats.depth_truncated} 个归档超出嵌套层数上限，未继续解压"
+                self._apply_extract_warnings(job, totals)
+
+                if not has_logs:
+                    suffix = "产物中未发现日志清单（log_list.json / sp_*），可能仅含转储文件"
                     job.message = f"{job.message}；{suffix}" if job.message else suffix
 
-                # 只有两项都取到才写版本判据：只剩一半的判据会让"远端更新"永远
-                # 判不出来（甚至反过来每轮重拉），不如显式退化成"不判版本"。
-                identity_fields = (
-                    {"remoteMtime": fetched_mtime, "remoteSize": fetched_size}
-                    if fetched_mtime is not None and fetched_size is not None
-                    else {}
+                latest = archives[-1]
+                processed_keys = {archive_key(item) for item in processed}
+                processed_keys.update(archive_key(item) for item in ignored)
+                merged_records = build_merged_records(meta, processed, ignored)
+                baseline_records = build_baseline_records(
+                    archives,
+                    meta,
+                    job.origin,
+                    processed_keys,
+                    has_final=has_final,
                 )
 
                 try:
-                    # 把"何时同步完、多大、有没有日志"固化成显式事实：
-                    # 清理与容量判断不再依赖目录 mtime，也不用每天全盘扫描。
-                    has_logs = has_usable_logs(self.cfg.root / ticket_id)
-                    # 「流程跑通」不等于「产物可用」：实测 Q2026102101911 解出 65 GiB
-                    # 的 kasi/kasi.dump，状态却是 ready，用户点进去无日志可看。
-                    if not has_logs:
-                        suffix = "产物中未发现日志清单（log_list.json / sp_*），可能仅含转储文件"
-                        job.message = f"{job.message}；{suffix}" if job.message else suffix
+                    # 把"合并了哪些包、哪些历史包没回填、最终尺寸"固化成显式事实：
+                    # 下一次是否要再拉包由 mergedArchives 决定，而不是靠目录 mtime。
                     write_sync_meta(
-                        self.cfg.root / ticket_id,
+                        final_dir,
                         completedAt=_now().timestamp(),
-                        bytes=stats.bytes,
-                        files=stats.files,
+                        bytes=final_stats.bytes,
+                        files=final_stats.files,
                         hasLogs=has_logs,
-                        # 记下"这份产物对应远端的哪个版本"。自动扫描据此判断
-                        # 远端有没有换包（客户重传修复版），而不是靠完成时间
-                        # 猜——完成时间会被收尾失败、时钟回拨污染，且不可重放。
-                        **(identity_fields or {}),
+                        remoteMtime=latest.mtime,
+                        remoteSize=latest.size,
+                        mergedArchives=merged_records,
+                        baselineArchives=baseline_records,
                     )
                     # 产物用量单独记账：容量判断只读这张表，不再遍历目录算体积。
                     try:
-                        dir_mtime = (self.cfg.root / ticket_id).stat().st_mtime
+                        dir_mtime = final_dir.stat().st_mtime
                     except OSError:
                         dir_mtime = None
                     self._store.upsert_artifact(
                         ticket_id,
-                        stats.bytes,
-                        stats.files,
+                        final_stats.bytes,
+                        final_stats.files,
                         has_logs,
                         _now().timestamp(),
                         dir_mtime,
                     )
                 except Exception as error:  # noqa: BLE001 - 收尾失败不能否定已落盘的产物
-                    logger.exception(
-                        "ticket=%s job=%s 产物已就绪但收尾失败 %s", ticket_id, job.job_id, error
-                    )
+                    logger.exception("ticket=%s job=%s 产物已就绪但收尾失败 %s", ticket_id, job.job_id, error)
                     suffix = "产物已就绪，但同步元数据写入失败，请检查磁盘与目录权限"
                     job.message = f"{job.message}；{suffix}" if job.message else suffix
 
@@ -799,12 +901,13 @@ class JobRegistry:
                 self._store.clear_tombstone(ticket_id)
                 self._tombstones.discard(ticket_id)
                 logger.info(
-                    "ticket=%s job=%s 完成 层数=%d 文件=%d 字节=%d 旧版本=%s",
+                    "ticket=%s job=%s 完成 合并包数=%d 层数=%d 文件=%d 字节=%d 旧版本=%s",
                     ticket_id,
                     job.job_id,
-                    stats.depth,
-                    stats.files,
-                    stats.bytes,
+                    len(processed),
+                    totals.depth,
+                    final_stats.files,
+                    final_stats.bytes,
                     replaced or "无",
                 )
 
@@ -840,34 +943,184 @@ class JobRegistry:
             self._note_failure(ticket_id)
             self._append_terminal_hint(job)
         finally:
-            # 成功时 work_dir 已被 rename 走，这里是空操作。
-            # 失败与取消时只清解压产物、保留已下载的归档，下次重试才有得续传；
-            # 陈旧残留交给每日维护按年龄回收，不再"每次失败都删干净"。
-            prepare_workspace(work_dir, archive_name)
+            # 成功时 build 已被 rename 走、归档与解压目录已在循环里释放；失败与
+            # 取消时保留 archives/ 供 rsync 续传，清掉半套 build/extract。
+            prepare_merge_workspace(work_dir)
 
-    async def _reject_non_log_payload(self, job: Job) -> None:
-        """下载前识别非日志载荷（vmcore 等），避免为几十 GiB 的转储白耗资源。
+    async def _filter_non_log_archives(
+        self, job: Job, pending: list[RemoteArchive]
+    ) -> tuple[list[RemoteArchive], list[RemoteArchive]]:
+        """下载前逐包识别转储载荷，返回 (可合并包, 已判定转储包)。
 
-        探测本身只是优化：ssh 不可用、unzip 缺失等失败一律放行，
-        绝不能因为"探测失败"把正常工单挡在门外。
+        必须逐包探测：最新包是 vmcore 不代表更早的采集包里没有日志。探测本身
+        只是优化，ssh 不可用、unzip 缺失等失败一律放行——绝不能因为"探测失败"
+        把正常工单挡在门外。
         """
-        try:
-            entries = await list_remote_entries(self.cfg, job.ticket_id)
-        except Exception as error:  # noqa: BLE001 - 探测失败必须降级放行
-            logger.warning(
-                "ticket=%s job=%s 归档内容探测失败，按日志包继续 error=%s",
-                job.ticket_id,
-                job.job_id,
-                error,
-            )
+        kept: list[RemoteArchive] = []
+        ignored: list[RemoteArchive] = []
+        for archive in pending:
+            try:
+                entries = await list_remote_entries(
+                    self.cfg,
+                    job.ticket_id,
+                    remote_path=archive.path,
+                )
+            except Exception as error:  # noqa: BLE001 - 探测失败必须降级放行
+                logger.warning(
+                    "ticket=%s job=%s 归档内容探测失败，按日志包继续 path=%s error=%s",
+                    job.ticket_id,
+                    job.job_id,
+                    archive.path,
+                    error,
+                )
+                kept.append(archive)
+                continue
+            if looks_like_non_log_bundle(entries):
+                logger.warning(
+                    "ticket=%s job=%s 跳过转储包 path=%s entries=%s",
+                    job.ticket_id,
+                    job.job_id,
+                    archive.path,
+                    entries[:5],
+                )
+                ignored.append(archive)
+                continue
+            kept.append(archive)
+        return kept, ignored
+
+    def _handle_all_non_log(
+        self,
+        job: Job,
+        final_dir: Path,
+        meta: dict[str, Any],
+        archives: list[RemoteArchive],
+        ignored: list[RemoteArchive],
+    ) -> None:
+        """本批待合并包全是转储时的收尾。
+
+        - 本地已有产物：把它们记入 mergedArchives 后直接 ready，避免每轮巡检
+          反复探测同一批转储；
+        - 本地没有产物：沿用原来的确定性失败语义（NON_LOG_PAYLOAD 首轮即终态），
+          不创建空目录冒充"已同步"。
+        """
+        job.current_archive = None
+        job.updated_at = _now()
+        if not final_dir.is_dir():
+            job.phase = Phase.FAILED
+            job.error_code = ErrorCode.NON_LOG_PAYLOAD
+            job.message = "该工单包不是日志包（仅含转储文件），已跳过"
+            self._persist(job)
+            self._note_failure(job.ticket_id, ErrorCode.NON_LOG_PAYLOAD)
+            self._append_terminal_hint(job)
             return
 
-        if looks_like_non_log_bundle(entries):
-            raise TicketError(
-                ErrorCode.NON_LOG_PAYLOAD,
-                "该工单包不是日志包（仅含转储文件），已跳过",
-                f"entries={entries[:5]}",
+        latest = archives[-1]
+        processed_keys = {archive_key(item) for item in ignored}
+        merged_records = build_merged_records(meta, [], ignored)
+        baseline_records = build_baseline_records(
+            archives,
+            meta,
+            job.origin,
+            processed_keys,
+            has_final=True,
+        )
+        try:
+            write_sync_meta(
+                final_dir,
+                remoteMtime=latest.mtime,
+                remoteSize=latest.size,
+                mergedArchives=merged_records,
+                baselineArchives=baseline_records,
             )
+        except OSError as error:
+            logger.warning("ticket=%s 写入转储包判定失败 error=%s", job.ticket_id, error)
+        job.phase = Phase.READY
+        job.message = "本次待合并归档均为转储包，已跳过"
+        self._persist(job)
+        self._clear_retry(job.ticket_id)
+        self._store.clear_tombstone(job.ticket_id)
+        self._tombstones.discard(job.ticket_id)
+        logger.info(
+            "ticket=%s job=%s 全部为转储包，不更新产物 skipped=%d",
+            job.ticket_id,
+            job.job_id,
+            len(ignored),
+        )
+
+    def _complete_without_new_archives(
+        self,
+        job: Job,
+        final_dir: Path,
+        meta: dict[str, Any],
+        archives: list[RemoteArchive],
+    ) -> None:
+        """没有待合并包时的快速收尾：不下载、不重建，只对齐一次版本标记。
+
+        手动同步在"已是最新"时走这里；自动任务理论上不会走到（触发条件就是
+        版本变化），但并发窗口下仍可能出现，不能把它当成错误。
+        """
+        latest = archives[-1]
+        job.phase = Phase.READY
+        job.current_archive = None
+        job.message = "已是最新，无新增归档"
+        job.extracted_bytes = int(meta.get("bytes") or 0)
+        files = meta.get("files")
+        job.file_count = int(files) if isinstance(files, int) and not isinstance(files, bool) else 0
+        job.updated_at = _now()
+        self._persist(job)
+        # 版本标记写失败只影响下一轮是否重复入队，不影响产物本身。
+        if meta.get("remoteMtime") != latest.mtime or meta.get("remoteSize") != latest.size:
+            try:
+                write_sync_meta(
+                    final_dir,
+                    remoteMtime=latest.mtime,
+                    remoteSize=latest.size,
+                )
+            except OSError as error:
+                logger.warning("ticket=%s 对齐远端版本失败 error=%s", job.ticket_id, error)
+        self._clear_retry(job.ticket_id)
+        self._store.clear_tombstone(job.ticket_id)
+        self._tombstones.discard(job.ticket_id)
+        logger.info(
+            "ticket=%s job=%s 无需合并 已是最新 path=%s",
+            job.ticket_id,
+            job.job_id,
+            latest.path,
+        )
+
+    @staticmethod
+    def _accumulate_extract_stats(totals: ExtractStats, stats: ExtractStats) -> None:
+        """把单包解压统计累加成整次任务的统计；depth 取最大值。"""
+        totals.depth = max(totals.depth, stats.depth)
+        for name in (
+            "files",
+            "bytes",
+            "archives",
+            "symlinks_removed",
+            "placeholders_skipped",
+            "permissions_fixed",
+            "unreadable_archives",
+            "depth_truncated",
+            "truncated_archives",
+        ):
+            setattr(totals, name, getattr(totals, name) + getattr(stats, name))
+
+    @staticmethod
+    def _apply_extract_warnings(job: Job, stats: ExtractStats) -> None:
+        """把"解不开/截断/深度上限"三类降级写进 job.message。
+
+        多次采集合并后这些计数是**所有包之和**：任一包里有转储、有截断都必须
+        让用户看见，不能被最后一包的成功覆盖掉。
+        """
+        if stats.unreadable_archives:
+            suffix = f"{stats.unreadable_archives} 个归档工具无法解压，已保留原压缩文件"
+            job.message = f"{job.message}；{suffix}" if job.message else suffix
+        if stats.truncated_archives:
+            suffix = f"{stats.truncated_archives} 个归档被截断，已保留可读部分"
+            job.message = f"{job.message}；{suffix}" if job.message else suffix
+        if stats.depth_truncated:
+            suffix = f"{stats.depth_truncated} 个归档超出嵌套层数上限，未继续解压"
+            job.message = f"{job.message}；{suffix}" if job.message else suffix
 
     def _record_waterline(self, ticket_id: str, detail: str) -> None:
         """把一次水位熔断写进清理流水，并累计指标。"""
@@ -976,14 +1229,17 @@ class JobRegistry:
         self._persist(job)
 
     def _release_archive(self, work_dir: Path, archive_name: str) -> None:
-        """释放 work_dir 里的顶层归档。
+        """释放 work_dir 里的顶层归档（兼容旧单包调用）。"""
+        self._release_archive_path(work_dir / archive_name)
 
-        时机是"解压全部成功之后、发布之前"：
+    def _release_archive_path(self, target: Path) -> None:
+        """释放一个已下载归档。
+
+        时机是"该包解压+合并全部成功之后"：
         - 早于解压完成就会毁掉续传能力（旧实现在开始解压时就 unlink，导致
           extract 阶段失败后 work_dir 全空，下轮重试只能全量重下）；
         - 晚于发布会跟着 rename 进产物目录，污染用户可见的目录结构。
         """
-        target = work_dir / archive_name
         try:
             size = target.stat().st_size
             target.unlink()
@@ -995,11 +1251,13 @@ class JobRegistry:
             return
         logger.info("已释放归档 path=%s bytes=%d", target, size)
 
-    def _release_archive_for_space(self, work_dir: Path, archive: Path) -> None:
-        """余量不足以同时容纳归档与解压产物时，提前释放归档。
+    def _ensure_extract_space(self, work_dir: Path, archive: Path) -> None:
+        """解压前确认余量至少能放下这份归档的展开起点，否则立刻以 no-space 失败。
 
-        默认优先保续传；只有磁盘放不下两份时才牺牲它——解压中途把磁盘写满，
-        代价比重下一次更大（还会触发 min_free_bytes 熔断）。
+        这里**不能删归档**：解压要读的正是它，删掉只会把"磁盘不足"变成一条
+        莫名其妙的解压失败，还白白丢掉已下载的几十 GiB（下次只能全量重拉）。
+        原实现（#1413）在解压前按余量删除归档，属自毁式"腾空间"，本次一并纠正：
+        余量真的不够时应当明确报错，由运维清盘后重试——归档仍在，可续传。
         """
         try:
             size = archive.stat().st_size
@@ -1008,26 +1266,29 @@ class JobRegistry:
             return
         if free >= size:
             return
-        logger.warning(
-            "磁盘余量不足 free=%d archive=%d，提前释放归档（本次失败将无法续传）",
-            free,
-            size,
+        raise TicketError(
+            ErrorCode.NO_SPACE,
+            "服务器磁盘空间不足",
+            f"free={free} archive={size} path={archive}",
         )
-        self._release_archive(work_dir, archive.name)
 
-    def _progress_writer(self, job: Job):
+    def _progress_writer(self, job: Job, offset: int = 0):
+        """fetch 进度回调。多包场景下 received 从 0 重新计数，必须加已传偏移。"""
+
         def callback(received: int, total: int) -> None:
-            job.received_bytes = received
-            if total > 0:
-                job.total_bytes = total
+            job.received_bytes = offset + received
+            # 多包时 total_bytes 已在任务开始时按远端清单求和，不能被单个包的
+            # rsync 估算值覆盖；只有完全未知时才用 rsync 的估算兜底。
+            if job.total_bytes <= 0 and total > 0:
+                job.total_bytes = offset + total
             job.updated_at = _now()
 
         return callback
 
-    def _extract_writer(self, job: Job):
+    def _extract_writer(self, job: Job, base_bytes: int = 0, base_files: int = 0):
         def callback(stats: ExtractStats) -> None:
-            job.extracted_bytes = stats.bytes
-            job.file_count = stats.files
+            job.extracted_bytes = base_bytes + stats.bytes
+            job.file_count = base_files + stats.files
             job.updated_at = _now()
 
         return callback
@@ -1174,9 +1435,7 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
                 added, updated, removed_rows = await registry.full_reconcile()
                 last_full_reconcile = time.monotonic()
                 if added or updated or removed_rows:
-                    logger.info(
-                        "产物对账完成 新增=%d 更新=%d 清理=%d", added, updated, removed_rows
-                    )
+                    logger.info("产物对账完成 新增=%d 更新=%d 清理=%d", added, updated, removed_rows)
 
             # 墓碑与清理流水的回收按小时做，属于记账清理，与磁盘压力无关。
             if time.monotonic() - last_housekeeping >= 3600:
@@ -1234,6 +1493,7 @@ async def _maintenance_loop(cfg: Config, registry: JobRegistry) -> None:
             _MAINTENANCE_STATS["last_duration_seconds"] = report.elapsed_ms / 1000
             _MAINTENANCE_STATS["last_free_bytes"] = report.free_after
             _MAINTENANCE_STATS["expired_removed"] += report.retention_removed
+            _MAINTENANCE_STATS["capacity_removed_total"] += report.capacity_removed
             _MAINTENANCE_STATS["capacity_freed_bytes"] += report.capacity_freed
             _MAINTENANCE_STATS["orphan_rows_removed"] += report.orphan_rows
 
@@ -1353,9 +1613,7 @@ async def list_cleanup_events(request: Request, limit: int = 100) -> dict[str, A
             event["occurredAt"] = None
         event["ticketId"] = event.pop("ticket_id", None)
         event["freeBytes"] = event.pop("free_bytes", None)
-    summary = await asyncio.to_thread(
-        registry.store.cleanup_totals, _now().timestamp() - 86400
-    )
+    summary = await asyncio.to_thread(registry.store.cleanup_totals, _now().timestamp() - 86400)
     return {
         "items": events,
         "last24h": summary,
@@ -1429,6 +1687,7 @@ _MAINTENANCE_STATS: dict[str, float] = {
     "last_duration_seconds": 0.0,
     "last_free_bytes": 0.0,
     "expired_removed": 0.0,
+    "capacity_removed_total": 0.0,
     "capacity_freed_bytes": 0.0,
     "orphan_rows_removed": 0.0,
     "waterline_blocks": 0.0,
@@ -1495,13 +1754,13 @@ async def metrics(request: Request) -> Response:
 
     lines.extend(
         [
-        "# HELP ticket_sync_active_jobs 正在运行或排队中的任务数",
-        "# TYPE ticket_sync_active_jobs gauge",
-        f"ticket_sync_active_jobs {registry.active_count()}",
-        "# HELP ticket_sync_active_jobs_origin 正在运行或排队中的任务数（按来源）",
-        "# TYPE ticket_sync_active_jobs_origin gauge",
-        f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_AUTO}"}} {running_by_origin[ORIGIN_AUTO]}',
-        f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_MANUAL}"}} {running_by_origin[ORIGIN_MANUAL]}',
+            "# HELP ticket_sync_active_jobs 正在运行或排队中的任务数",
+            "# TYPE ticket_sync_active_jobs gauge",
+            f"ticket_sync_active_jobs {registry.active_count()}",
+            "# HELP ticket_sync_active_jobs_origin 正在运行或排队中的任务数（按来源）",
+            "# TYPE ticket_sync_active_jobs_origin gauge",
+            f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_AUTO}"}} {running_by_origin[ORIGIN_AUTO]}',
+            f'ticket_sync_active_jobs_origin{{origin="{ORIGIN_MANUAL}"}} {running_by_origin[ORIGIN_MANUAL]}',
             "# HELP ticket_sync_jobs 内存中的任务数（按阶段）",
             "# TYPE ticket_sync_jobs gauge",
         ]
@@ -1519,7 +1778,10 @@ async def metrics(request: Request) -> Response:
             "# HELP ticket_sync_expired_removed_total 累计删除的过期目录数",
             "# TYPE ticket_sync_expired_removed_total counter",
             f"ticket_sync_expired_removed_total {_MAINTENANCE_STATS['expired_removed']:.0f}",
-            "# HELP ticket_sync_capacity_freed_bytes_total 累计容量淘汰释放的字节数",
+            "# HELP ticket_sync_capacity_removed_total 累计容量治理删除的已发布产物数",
+            "# TYPE ticket_sync_capacity_removed_total counter",
+            f"ticket_sync_capacity_removed_total {_MAINTENANCE_STATS['capacity_removed_total']:.0f}",
+            "# HELP ticket_sync_capacity_freed_bytes_total 累计容量/水位淘汰释放的已发布产物字节数",
             "# TYPE ticket_sync_capacity_freed_bytes_total counter",
             f"ticket_sync_capacity_freed_bytes_total {_MAINTENANCE_STATS['capacity_freed_bytes']:.0f}",
         ]
@@ -1559,9 +1821,7 @@ def _remote_archive_changed(ticket_dir: Path, archive: RemoteArchive) -> bool:
 
     # bool 是 int 的子类，`true` 会被当成 1 秒/1 字节，必须显式排除。
     size_known = isinstance(recorded_size, int) and not isinstance(recorded_size, bool)
-    mtime_known = (
-        isinstance(recorded_mtime, (int, float)) and not isinstance(recorded_mtime, bool)
-    )
+    mtime_known = isinstance(recorded_mtime, int | float) and not isinstance(recorded_mtime, bool)
     if not size_known and not mtime_known:
         return False
 

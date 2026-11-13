@@ -31,6 +31,7 @@ spec:
         releaseName: hci-platform-dsh
         valueFiles:
           - $values/environments/staging/values.yaml
+          - $values/environments/staging/dsh-values.yaml
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values

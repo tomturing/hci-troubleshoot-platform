@@ -1269,6 +1269,7 @@ jobs:
       - name: 运行 Helm Unit Tests
         run: |
           helm unittest deploy/helm/hci-platform --strict
+          helm unittest deploy/helm/hci-platform-dsh --strict
           echo "✅ Helm Unit Tests 通过"
 
       # E-3: ArgoCD Application 同步不变式
@@ -2362,15 +2363,26 @@ jobs:
               bash "$GITHUB_WORKSPACE/scripts/ops/sync-env-repo-tags.sh"
 
             VALUES_FILE="environments/${env}/values.yaml"
+            DSH_VALUES_FILE="environments/${env}/dsh-values.yaml"
             verify_values_file() {
               local file="$1"
-              local service actual
+              local dsh_file="$2"
+              local service actual service_file
               local services=()
               if [[ -n "${SERVICES_CSV}" ]]; then
                 IFS=',' read -r -a services <<< "${SERVICES_CSV}"
               fi
 
               for service in "${services[@]}"; do
+                # DSH 的公共镜像 tag 位于独立 dsh-values.yaml，不能按平台主 values 校验。
+                service_file="${file}"
+                if [[ "${service}" == "dsh" ]]; then
+                  service_file="${dsh_file}"
+                fi
+                if [[ ! -f "${service_file}" ]]; then
+                  echo "::error::未找到 ${service} 的 values 文件：${service_file}"
+                  return 1
+                fi
                 actual="$(awk -v key="${service}" '
                   $0 ~ "^" key ":$" { in_block=1; next }
                   in_block && $0 ~ /^[^[:space:]]/ { exit }
@@ -2381,9 +2393,9 @@ jobs:
                     print value
                     exit
                   }
-                ' "${file}")"
+                ' "${service_file}")"
                 if [[ "${actual}" != "${IMAGE_TAG}" ]]; then
-                  echo "::error::${file} 的 ${service}.image.tag=${actual:-<missing>}，期望 ${IMAGE_TAG}"
+                  echo "::error::${service_file} 的 ${service}.image.tag=${actual:-<missing>}，期望 ${IMAGE_TAG}"
                   return 1
                 fi
               done
@@ -2408,12 +2420,12 @@ jobs:
             }
 
             # 先核验工作区，再提交，避免同步脚本漏更新时仍产生“成功”提交。
-            verify_values_file "${VALUES_FILE}"
-            if git diff --quiet "${VALUES_FILE}"; then
+            verify_values_file "${VALUES_FILE}" "${DSH_VALUES_FILE}"
+            if git diff --quiet -- "${VALUES_FILE}" "${DSH_VALUES_FILE}"; then
               echo "::error::${env} values.yaml 未发生镜像标签变更，拒绝宣称晋级成功（image_tag=${IMAGE_TAG}）"
               exit 1
             else
-              git add "${VALUES_FILE}"
+              git add "${VALUES_FILE}" "${DSH_VALUES_FILE}"
               git commit -m "chore(${env}): 自动更新镜像标签为 ${IMAGE_TAG} [skip ci]"
               # 推送前 rebase，避免并发提交导致 non-fast-forward 失败
               pushed=0
@@ -2435,9 +2447,11 @@ jobs:
               # 推送成功后从远端 main 重新读取 values，确认环境仓库确实保存了本次 tag。
               git fetch origin main
               REMOTE_VALUES="$(mktemp)"
-              trap 'rm -f "${REMOTE_VALUES}"' EXIT
+              REMOTE_DSH_VALUES="$(mktemp)"
+              trap 'rm -f "${REMOTE_VALUES}" "${REMOTE_DSH_VALUES}"' EXIT
               git show "origin/main:${VALUES_FILE}" > "${REMOTE_VALUES}"
-              verify_values_file "${REMOTE_VALUES}"
+              git show "origin/main:${DSH_VALUES_FILE}" > "${REMOTE_DSH_VALUES}"
+              verify_values_file "${REMOTE_VALUES}" "${REMOTE_DSH_VALUES}"
               echo "${env} 环境仓库已确认：$(git rev-parse origin/main)"
             fi
           done

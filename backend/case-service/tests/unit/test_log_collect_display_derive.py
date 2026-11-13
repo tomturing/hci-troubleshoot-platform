@@ -99,6 +99,24 @@ class TestConclusion:
         assert payload["display"]["conclusion"] == "partial"
         assert key_list(payload) == ["artifact_verified", "delivered_unverified"]
 
+    def test_queued_delivery_is_unfinished_not_failed(self):
+        """01229：包在节点上、交付已登记但没拉走 → 「未完成·待补交付」。
+
+        判 failed 会与「交付已登记、可点上传到平台重试」同屏，用户只能理解成
+        "这次白采了"，于是去重新收集——覆盖掉节点上那份 454MB 的包。
+        """
+        payload = derive(
+            make_task(delivery_status="queued", archive_size=475_693_225),
+            now=NOW,
+        )
+
+        assert payload["display"]["conclusion"] == "unfinished"
+        # 语气必须是警告而不是错误：这是可续传的中间态，不是终态失败
+        assert payload["display"]["conclusion_tone"] == "warning"
+        assert payload["display"]["conclusion_label"] == "未完成 · 待补交付"
+        # 结论里的"可补交付"必须与 handoff_pending 条件一致，不能各说各话
+        assert "handoff_pending" in key_list(payload)
+
     def test_failed_and_cancelled_short_circuit(self):
         assert derive(make_task(status="failed"), now=NOW)["display"]["conclusion"] == "failed"
         assert derive(make_task(status="cancelled"), now=NOW)["display"]["conclusion"] == "cancelled"
@@ -307,3 +325,119 @@ class TestWriteSide:
 
         assert result.status == "collecting"
         assert result.detail["write_audit"]["legacy"] == {"status": "collecting"}
+
+
+class TestScopeComponentAttribution:
+    """三段五组件 + S1-S8 + 首个异常点：用户「一眼定界」的可回归验收。"""
+
+    def waiting_task(self, minutes_ago: int = 0, **overrides) -> dict:
+        checked_at = (NOW - timedelta(minutes=minutes_ago)).isoformat().replace("+00:00", "Z")
+        data = {
+            "status": "completed",
+            "upload_mode": "acli_direct",
+            "delivery_status": "none",
+            "relay_status": "none",
+            "trace_id": "trace-Q2026111300155",
+            "detail": {
+                "p1_archive_check": {
+                    "verified": False,
+                    "reason": "archive_missing",
+                    "checked_at": checked_at,
+                }
+            },
+        }
+        data.update(overrides)
+        return make_task(**data)
+
+    def test_archive_verify_window_is_pending_not_failed(self):
+        """上线首错：31 秒归档命名竞态不是失败，结论必须是「核验中」。"""
+        display = derive(self.waiting_task(), now=NOW)["display"]
+
+        assert display["phase"] == "verifying"
+        assert display["phase_label"] == "核验中"
+        assert display["conclusion"] == "pending"
+        assert display["progress_percent"] is None
+        assert key_list({"display": display}) == ["verifying_archive"]
+        assert display["fault_attribution"]["code"] == "LC-HTP-001"
+        assert display["fault_attribution"]["customer_text"] == (
+            "htp平台：归档核验未完成，正在等待日志服务器发布归档名；"
+            "请等待最多10分钟或点「重新核验归档」，不要重新收集"
+        )
+        assert display["trace_id"] == "trace-Q2026111300155"
+        assert next(s for s in display["stages"] if s["key"] == "S6")["status"] == "waiting"
+
+    def test_archive_verify_window_expires_to_honest_terminal(self):
+        """等满 10 分钟仍查不到才落终态，且归因到日志服务器而非采集端。"""
+        payload = derive(self.waiting_task(minutes_ago=11), now=NOW)
+        display = payload["display"]
+
+        assert display["phase"] == "settled"
+        assert display["conclusion"] == "failed"
+        assert display["fault_attribution"]["code"] == "LC-5888-004"
+        # P1 平台不留副本、节点包自删：体积缺失不能被写成「未取到有效日志」。
+        assert "artifact_missing" not in key_list(payload)
+        assert "handoff_pending" in key_list(payload)
+
+    def test_delivered_flips_waiting_to_delivered_conclusion(self):
+        """核验通过后同一任务必须自动刷新结论，不能停在等待态。"""
+        assert derive(self.waiting_task(), now=NOW)["display"]["conclusion"] == "pending"
+
+        result = derive(
+            self.waiting_task(
+                delivery_status="delivered",
+                detail={"p1_archive_check": {"verified": True, "reason": "verified"}},
+            ),
+            now=NOW,
+        )["display"]
+
+        assert result["phase"] == "settled"
+        assert result["conclusion"] == "partial"
+        assert result["fault_attribution"]["code"] == "LC-BRIDGE-005"
+        assert next(s for s in result["stages"] if s["key"] == "S7")["status"] == "failed"
+
+    def test_no_checked_at_never_hangs_in_waiting(self):
+        """对抗：缺时间戳不得无限等待，否则任务会被永久挂起。"""
+        payload = derive(
+            self.waiting_task(detail={"p1_archive_check": {"verified": False, "reason": "archive_missing"}}),
+            now=NOW,
+        )
+        assert payload["display"]["phase"] != "verifying"
+
+    def test_stages_are_three_scopes_and_five_components(self):
+        stages = derive(make_task(), now=NOW)["display"]["stages"]
+
+        assert [stage["key"] for stage in stages] == [f"S{i}" for i in range(1, 9)]
+        assert stages[4]["scope_label"] == "内网 → 云端"
+        assert stages[6]["scope_label"] == "本地 → 云端"
+        components = {c["key"]: c for stage in stages for c in stage["components"]}
+        assert set(components) == {"hci", "acli", "bridge", "htp", "log_server"}
+        assert components["hci"]["tag"] == "[内网·HCI环境]"
+        assert components["log_server"]["scope_label"] == "云端"
+
+    def test_user_supplied_error_texts_render_exactly(self):
+        hci = derive(make_task(error_message="SSH连接失败"), now=NOW)["display"]
+        assert hci["fault_attribution"]["customer_text"] == (
+            "HCI环境：SSH连接失败；请尝试其他终端连接HCI验证连接是否正常"
+        )
+
+        acli = derive(make_task(error_message="未知的命令或者命名空间(log collect create)"), now=NOW)["display"]
+        assert acli["fault_attribution"]["customer_text"] == (
+            "acli工具：未知的命令或者命名空间(log collect create)；"
+            "请在HCI后台执行acli --version确认acli版本"
+        )
+
+    def test_specific_error_beats_generic_component_name(self):
+        display = derive(
+            make_task(error_message="terminal_bridge 证据上报失败：x509: certificate signed by unknown authority"),
+            now=NOW,
+        )["display"]
+        assert display["fault_attribution"]["code"] == "LC-BRIDGE-002"
+        assert display["fault_attribution"]["stage"] == "S7"
+
+    def test_response_model_accepts_new_fields(self):
+        from app.schemas.log_collect_display import build_display_payload
+
+        payload = build_display_payload(self.waiting_task(), now=NOW)
+        assert payload.display.fault_attribution is not None
+        assert payload.display.stages[5].status == "waiting"
+        assert payload.display.trace_id == "trace-Q2026111300155"

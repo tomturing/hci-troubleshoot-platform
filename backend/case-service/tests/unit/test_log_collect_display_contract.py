@@ -87,3 +87,35 @@ def test_small_archive_never_renders_as_zero_megabytes() -> None:
     """608 字节必须显示为 608 B；这正是历史缺陷的复现点。"""
     assert format_size(608) == "608 B"
     assert "0.0 MB" not in format_size(608)
+
+
+def test_fault_catalog_is_actionable_and_safe() -> None:
+    """错误字典必须可定界、可操作；界面绝不出现删除命令（误删事故防线）。"""
+    from app.domain.log_collect_display_generated import (
+        COMPONENTS,
+        FAULT_ATTRIBUTION,
+        FAULT_CATALOG,
+        format_fault_text,
+    )
+
+    assert len(FAULT_CATALOG) >= 17
+    for code, item in FAULT_CATALOG.items():
+        assert item["component"] in COMPONENTS, code
+        assert item["stage"] in FAULT_ATTRIBUTION["stage_order"], code
+        assert item["problem"] and item["action"], code
+        text = format_fault_text(code)
+        assert text == f"{COMPONENTS[item['component']]['label']}：{item['problem']}；{item['action']}"
+        # 只拦「命令」：像「不要自行删除文件」这类劝阻语是安全提示，属于防线本身。
+        for forbidden in ("rm -", "rm /", "sudo rm", "del /", "rmdir", "rmtree", "请删除", "执行删除"):
+            assert forbidden not in text, (code, forbidden)
+
+
+def test_fault_detail_fields_match_contract() -> None:
+    """归因字段与契约逐字对齐，且唯一调用链可透传。"""
+    from app.domain.log_collect_display_generated import FAULT_ATTRIBUTION, fault_detail
+
+    detail = fault_detail("LC-HCI-001", trace_id="trace-1")
+    assert set(detail) == set(FAULT_ATTRIBUTION["fields"])
+    assert detail["customer_text"] == "HCI环境：SSH连接失败；请尝试其他终端连接HCI验证连接是否正常"
+    assert detail["scope_label"] == "内网"
+    assert detail["trace_id"] == "trace-1"

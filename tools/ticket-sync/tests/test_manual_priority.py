@@ -63,7 +63,18 @@ class ManualPriorityTest(unittest.IsolatedAsyncioTestCase):
         self.started: list[str] = []
         self.release = asyncio.Event()
 
-        async def fake_fetch(ticket_id, cfg, work_dir, job_id, on_progress=None):
+        async def fake_list_archives(cfg, ticket_id):
+            return [_archive(ticket_id)]
+
+        async def fake_fetch(
+            ticket_id,
+            cfg,
+            work_dir,
+            job_id,
+            on_progress=None,
+            remote_path=None,
+            target_name=None,
+        ):
             self.started.append(ticket_id)
             await self.release.wait()
             raise AssertionError("本用例不应跑到拉取完成之后")
@@ -73,6 +84,7 @@ class ManualPriorityTest(unittest.IsolatedAsyncioTestCase):
             return []
 
         self._patches = [
+            patch("app.main.list_ticket_archives", fake_list_archives),
             patch("app.main.fetch", fake_fetch),
             patch("app.main.list_remote_entries", no_remote_entries),
         ]

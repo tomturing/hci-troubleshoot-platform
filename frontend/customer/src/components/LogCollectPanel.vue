@@ -55,6 +55,8 @@ import {
   type RelayProgressView,
 } from '@/utils/logCollectDelivery'
 import { logCollectErrorHint } from '@/services/logCollectErrorHints'
+import { customerFaultText, showCustomerFault } from '@/utils/logCollectFault'
+import LogCollectFaultCard from './LogCollectFaultCard.vue'
 import LogCollectDiagnosis from '@/components/LogCollectDiagnosis.vue'
 import {
   EXTRA_PATH_MAX_COUNT,
@@ -64,6 +66,7 @@ import {
   validateExtraPath,
 } from '@/utils/logCollectExtraPaths'
 import { checkDateRange } from '@/utils/logCollectDateRange'
+import { CLAIM_BLOCKED_REASON_TEXT } from '@/utils/logCollectOwnership'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
@@ -1157,12 +1160,61 @@ const resultSizeText = computed(() => {
 /**
  * 结果态是否该出现「上传到平台」。
  *
- * 只认对账结论（`adopt` + `deliver`），不自己再判一次"包在不在"：
- * 两处各判一次必然分叉，而"包是否仍在"只有 bridge stat 的 `archive_exists` 可信。
+ * 入口可见性不能只依赖节点实时对账：对账要先建立 SSH/bridge 会话再 stat，面板刚
+ * 打开时那一步通常还没回来（现场截图里 SSH 还在"正在连接"），于是出现"包明明还在
+ * 节点上、平台也记了路径，却连按钮都不给"，用户只能干等或去重新收集。
+ *
+ * 因此分两级：
+ *   1. 对账明确 `adopt + deliver` → 立即给入口；
+ *   2. 对账尚未回来 → 只要平台记录能证明「P2 有包、尚未交付」，先给入口，
+ *      点击时再由 stat 校验；包真的没了会得到明确报错，比不给按钮诚实。
  */
-const canUploadFromNode = computed(
-  () => nodeAction.value === 'adopt' && nodeAdoptMode.value === 'deliver',
+const canUploadFromNode = computed(() => {
+  if (nodeAction.value === 'adopt' && nodeAdoptMode.value === 'deliver') return true
+  // 对账已给出别的结论（直传/被阻塞）时以对账为准
+  if (nodeAction.value) return false
+  const task = resultTask.value
+  if (!task || resultDelivered.value) return false
+  if (resultMode.value === 'acli_direct') return false
+  return Boolean(task.archive_path) && (task.archive_size ?? 0) > 0
+})
+
+/**
+ * 结果态是否仍在等节点对账。
+ *
+ * 用于把"按钮为什么还没出现"变成一句可见的进度，而不是让用户对着没有按钮的
+ * 卡片猜平台是不是又坏了。
+ */
+const nodeVerifyPending = computed(
+  () => viewMode.value === 'result' && !nodeAction.value && !resultDelivered.value,
 )
+
+/** 认领被拒的原因文案（不吞掉原因，也不把内部原因码直接丢给用户）。 */
+const claimBlockedText = computed(() => {
+  const reason = chatStore.logCollectCaseClaimBlockedReason
+  return reason ? (CLAIM_BLOCKED_REASON_TEXT[reason] ?? '该工单当前不能认领') : ''
+})
+
+/**
+ * 认领壳工单：把归属与名下采集任务转到当前身份，然后原地刷新。
+ *
+ * 为什么要用户点确认：把工单从"别人的会话"变成"我的"，是可审计的所有权变更；
+ * 自动做等于给任意单号开了后门。认领成功后不重新采集——节点上那份包还在。
+ */
+async function claimOwnership() {
+  try {
+    await chatStore.claimLogCollectCase()
+    ElMessage.success(
+      chatStore.logCollectClaimedTasks > 0
+        ? `已认领工单，并接管 ${chatStore.logCollectClaimedTasks} 条采集记录`
+        : '已认领工单，可以继续采集与上传',
+    )
+    await restoreTaskState(true)
+    if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'manual' })
+  } catch (error: any) {
+    ElMessage.warning(error?.message || '认领失败，请稍后重试')
+  }
+}
 
 /**
  * 平台是否已有交付证据。
@@ -1691,7 +1743,7 @@ async function prepare(
       if (isRetryableProbeError(error) && attempt < maxRetries) continue
       probeRetry.value = null
       prepareState.value = 'failed'
-      if (!options.silent) ElMessage.error(prepareError.value)
+      if (!options.silent) showCustomerFault(prepareError.value)
       return false
     }
   }
@@ -2105,7 +2157,9 @@ async function resumeTask(taskId: string) {
     startAutoSync(TERMINAL_TASK_STATUSES.includes(task.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL)
   } catch (e: any) {
     ElMessage.error(
-      e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务状态加载失败',
+      e?.response?.status === 404
+        ? '任务不存在或不属于当前客户端'
+        : customerFaultText('任务状态加载失败', 'LC-HTP-003'),
     )
   }
 }
@@ -2219,7 +2273,9 @@ async function refreshProgress(silent = false) {
   } catch (e: any) {
     if (!silent) {
       ElMessage.error(
-        e?.response?.status === 404 ? '任务不存在或不属于当前客户端' : '任务进度查询失败',
+        e?.response?.status === 404
+          ? '任务不存在或不属于当前客户端'
+          : customerFaultText('任务进度查询失败', 'LC-HTP-003'),
       )
     }
   } finally {
@@ -2505,7 +2561,7 @@ async function handleStart() {
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
 
@@ -2876,7 +2932,7 @@ async function handleStart() {
     }
     // 兜底文案必须可行动：只显示"日志收集失败"等于没给任何信息，
     // 现场只能再点一次碰运气（2026-11-12 Q2026110302155）。
-    ElMessage.error(errorMessage.value || '下发失败：平台未返回具体原因，请查看下方诊断或任务详情')
+    showCustomerFault(errorMessage.value || '下发失败：平台未返回具体原因，请查看下方诊断或任务详情')
   } finally {
     // 主流程退出（成功/失败/取消）后必须交还写权限，否则自动对账永久停摆，
     // 结果态里「上传到平台」与归档状态就再也不会随节点态刷新。
@@ -2992,7 +3048,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
   acliRetrying.value = true
@@ -3002,7 +3058,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
     const result = await sendAndWait(ws, 'acli_sync', { retryStage }, ACLI_SYNC_TIMEOUT_MS)
     if (result.status !== 'installed' && result.status !== 'up_to_date') {
       recordAcliFailure(result, 'acli 安装重试失败')
-      ElMessage.error(result.message || 'acli 安装重试失败')
+      showCustomerFault(result.message || 'acli 安装重试失败')
       return
     }
     await markAcliInstalled()
@@ -3015,7 +3071,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
       { status: 'error', stage: 'upload', message: error?.message || 'acli 重试失败' },
       'acli 重试失败',
     )
-    ElMessage.error(error?.message || 'acli 重试失败')
+    showCustomerFault(error?.message || 'acli 重试失败')
   } finally {
     acliRetrying.value = false
     // 失败前如果已经在别的阶段（如采集中），不能被一次重试拉回 installing。
@@ -3706,14 +3762,26 @@ async function fallbackToP2(
  * （delivery_runner.go 的串味判定，超过 5 分钟必然误杀）。补交付的充分必要条件
  * 只有"包在节点上 + 平台有会话"，与采集状态没有因果关系。
  */
+/**
+ * 结果态「上传到平台」。
+ *
+ * 为什么要单独包一层：结果态入口按平台记录先给出（见 canUploadFromNode），此时
+ * 节点对账可能还没回来，`nodeAdoptMode` 仍是默认的 'resume'——直接调
+ * `adoptNodeTask` 会走"续采"分支，把「传已有包」变成「再采一遍」。
+ */
+async function deliverUploadFromNode() {
+  nodeAdoptMode.value = 'deliver'
+  await adoptNodeTask()
+}
+
 async function adoptNodeTask() {
-  const task = currentTask.value
+  const task = currentTask.value ?? resultTask.value
   if (!task) return
   let ws: WebSocket
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
   const token = ++runToken
@@ -3743,7 +3811,7 @@ async function adoptNodeTask() {
       errorMessage.value = normalizeErrorMessage(String(error?.message || error))
       failedStep.value = stepActive.value
       stage.value = 'failed'
-      ElMessage.error(errorMessage.value)
+      showCustomerFault(errorMessage.value)
       // 交付失败不写 status=failed：采集完成是真实结论，抹掉它会让用户
       // 既看不到包在哪、也找不到重试入口。失败只落在 delivery_* 上。
       //
@@ -3785,7 +3853,7 @@ async function adoptNodeTask() {
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
-    ElMessage.error(errorMessage.value)
+    showCustomerFault(errorMessage.value)
   }
 }
 
@@ -3812,7 +3880,7 @@ async function correctFromNode() {
   try {
     ws = await openSocket()
   } catch (error: any) {
-    ElMessage.error(error.message)
+    showCustomerFault(error.message)
     return
   }
   const token = ++runToken
@@ -3832,7 +3900,7 @@ async function correctFromNode() {
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
-    ElMessage.error(errorMessage.value)
+    showCustomerFault(errorMessage.value)
   }
 }
 
@@ -4797,8 +4865,30 @@ onBeforeUnmount(() => {
         :closable="false"
         show-icon
         title="该工单属于其他会话身份"
-        description="采集可以继续，但日志回传与终端录像回放会被平台按归属拒绝；建议换用本人名下的工单号，或直接用当前工单重新采集。"
-      />
+      >
+        <div class="lc-claim">
+          <p class="lc-claim-text">
+            采集可以继续，但日志回传与终端录像回放会被平台按归属拒绝。如果这是你自己上一段会话（换浏览器、清
+            Cookie、换机器）留下的工单，认领到当前身份即可继续上传；否则请换用本人名下的工单号。
+          </p>
+          <div class="lc-claim-actions">
+            <!--
+              只提示不给出路时，用户唯一的选择是重新采集——而重采会覆盖节点上
+              那份还没交付的包（Q2026111301229，454MB）。认领是显式、可审计的动作。
+            -->
+            <el-button
+              v-if="chatStore.logCollectCaseClaimable"
+              size="small"
+              type="primary"
+              :loading="chatStore.logCollectClaiming"
+              @click="claimOwnership"
+            >
+              认领并继续
+            </el-button>
+            <span v-else-if="claimBlockedText" class="lc-claim-blocked">{{ claimBlockedText }}</span>
+          </div>
+        </div>
+      </el-alert>
       <!-- 准备失败的原样输出：acli 的 FATA 行就是用户唯一能拿去求助的证据，必须完整可见 -->
       <el-alert
         v-if="prepareState === 'failed'"
@@ -4978,6 +5068,8 @@ onBeforeUnmount(() => {
           :title="resultHeadline.title"
           :description="resultHeadline.description"
         />
+        <!-- 一眼定界：三段五组件 + 首个异常点 + S1-S8 阶段条，与管理端同源 -->
+        <LogCollectFaultCard :display="resultTask.display" />
         <!-- 观察事实单独成行：多值并存，不能被折叠进一条横幅描述里。 -->
         <div v-if="resultTask.display?.conditions?.length" class="lc-evidence">
           观察事实：
@@ -5458,6 +5550,8 @@ onBeforeUnmount(() => {
       <div class="panel-composer__hint">
         <template v-if="viewMode === 'result'">
           上次采集 {{ resultFinishedText }} · 本工单共 {{ historyTotal }} 条记录
+          <!-- 对账还没回来时按钮先不出现，但必须说明"在等什么"，否则就是干等 -->
+          <span v-if="nodeVerifyPending"> · 正在与节点核对包状态…</span>
         </template>
         <template v-else-if="!canCollect">
           采集依赖 SSH 会话：点「连接 SSH」登录后即可开始收集
@@ -5472,7 +5566,9 @@ onBeforeUnmount(() => {
               采集已完成但产物没到日志服务器时，「重新收集」是唯一的旧出口——
               而包就在节点上，重采一遍是纯粹的浪费。这里把补交付提为主操作。
             -->
-            <el-button v-if="canUploadFromNode" type="primary" @click="adoptNodeTask">上传到平台</el-button>
+            <el-button v-if="canUploadFromNode" type="primary" @click="deliverUploadFromNode">
+              上传到平台
+            </el-button>
             <!--
               P1 的"未交付"只代表"这次回查没查到"，不代表真的没传上去：
               给用户一个重跑核验的入口，避免只能用「重新收集」去洗掉一条误判记录。
@@ -5712,6 +5808,28 @@ onBeforeUnmount(() => {
 }
 /* 选择与探测结论冲突时只加色不改文案：提示必须同时说清"劝你别选"和"但你仍可以选" */
 .lc-hint-warn {
+  color: var(--el-color-warning);
+}
+/* 归属不同时的认领区：文案与动作同块，避免按钮孤零零挂在提示条外被忽略 */
+.lc-claim {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lc-claim-text {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.lc-claim-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* 不能认领时也要说明为什么，否则用户只会反复点或直接去重新采集 */
+.lc-claim-blocked {
+  font-size: 12px;
   color: var(--el-color-warning);
 }
 /* 场景清单还原：标签 + 说明 + 重试按钮同排，窄屏自动换行，避免按钮被挤出可视区 */

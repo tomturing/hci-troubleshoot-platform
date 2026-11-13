@@ -411,6 +411,9 @@ export function buildResultHeadline(args: {
     conclusion_tone: string
     phase_label?: string
     conditions?: Array<{ label: string }>
+    /** 首个异常点；存在时客户侧只呈现一句话定界 */
+    fault_attribution?: { customer_text?: string | null } | null
+    trace_id?: string | null
   } | null
   /** 平台派生的产物证据 */
   artifact?: { quality_label?: string; reason_text?: string; size_text?: string } | null
@@ -434,12 +437,22 @@ export function buildResultHeadline(args: {
   if (display) {
     // 第一性原理：界面不该有第二套判定。平台已按「交付事实 + 产物证据」给出结论，
     // 这里的旧文案只能作为旧后端降级路径，不能覆盖三维结论。
-    // 但结论不能吞掉诊断信息：错误码与「先检查再处理」必须随结论一起上第一屏，
-    // 否则新后端下失败工单会退回「只说失败、不知查哪一层」。
     const toneMap: Record<string, ResultHeadline['type']> = {
       success: 'success', warning: 'warning', error: 'error', info: 'info',
     }
     const tone = toneMap[display.conclusion_tone] ?? 'info'
+    // 客户侧只回答三件事：哪里出了问题、什么问题、下一步做什么。
+    // 阶段判据、证据表与管理员判据留在 admin-ui，不把客户淹没在诊断细节里。
+    if (display.fault_attribution?.customer_text) {
+      const traceId = String(display.trace_id || '').trim()
+      return {
+        type: tone,
+        title: `${display.conclusion_label}（${when}）`,
+        description: `${display.fault_attribution.customer_text}${
+          traceId ? `；调用链ID ${traceId}（截图反馈请一并带上）` : ''
+        }。`,
+      }
+    }
     const code = String(errorCode || '').trim()
     const hint = String(hintTitle || '').trim()
     const needDiagnosis = tone === 'error' || tone === 'warning'

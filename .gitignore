@@ -51,6 +51,9 @@ dist/
 # Logs
 *.log
 logs/
+# 例外：dsh_cockpit-rules 规则包把知识原文放在 knowledge/logs/，
+# 属于受版本管理的规则内容，不能被通用日志目录规则吞掉。
+!dsh_cockpit-rules/**/knowledge/logs/
 
 # Database
 *.db

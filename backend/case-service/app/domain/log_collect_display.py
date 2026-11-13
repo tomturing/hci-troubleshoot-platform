@@ -11,12 +11,15 @@
     conclusion  业务结论，互斥，``pending`` 表示尚未终结
     conditions  并存的观察事实，多值
 
-conclusion 的三条硬规则（对抗性审查后收敛）：
-    1. 已结束但从未交付 → ``failed``；若按 ``pending`` 渲染，界面会重现
-       「已完成 100% + 交付未开始」，且交付可补、结论必须诚实。
-    2. 已交付但产物不可用/不可信 → ``partial``：字节确实到了，结论是
+conclusion 的四条硬规则（对抗性审查后收敛）：
+    1. 已结束且从未发起交付（``delivery_status=none``）→ ``failed``；若按 ``pending``
+       渲染，界面会重现「已完成 100% + 交付未开始」，且交付可补、结论必须诚实。
+    2. 已结束但交付已登记、只是没被拉走/传完（``delivery_status=queued``）→
+       ``unfinished``：这是可续传的中间态，判 ``failed`` 会让用户放弃一个仍能补交付
+       的包（Q2026111301229 就是这样被"失败"红条劝去重新收集的）。
+    3. 已交付但产物不可用/不可信 → ``partial``：字节确实到了，结论是
        「有疑点，建议重采」，既不宣称成功也不宣称什么都没到。
-    3. 只有「已交付 + 交付证据成立 + 包内容校验通过」才是 ``success``。
+    4. 只有「已交付 + 交付证据成立 + 包内容校验通过」才是 ``success``。
 """
 
 from __future__ import annotations
@@ -26,19 +29,30 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .log_collect_display_generated import (
+    ARCHIVE_VERIFY_WAIT_MINUTES,
     ARTIFACT_QUALITY_LABELS,
     ARTIFACT_REASON_LABELS,
     COLLECT_BAND_END,
+    COMPONENTS,
     CONCLUSION_LABELS,
     CONCLUSION_TONES,
     CONDITION_LABELS,
     DELIVERY_BAND_END,
+    FAULT_ATTRIBUTION,
+    FAULT_CATALOG,
+    FAULT_DEFAULT_CODE,
     MIN_ARCHIVE_BYTES,
     NETWORK_GRADE_LABELS,
     PHASE_LABELS,
+    SCOPE_LABELS,
+    STAGE_STATUS_LABELS,
+    STAGES,
     STALL_SECONDS,
     TRANSFER_STAGE_LABELS,
     UPLOAD_MODE_LABELS,
+    classify_fault,
+    fault_detail,
+    format_fault_text,
     format_size,
 )
 
@@ -46,6 +60,10 @@ SETTLED_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"
 _ARTIFACT_QUALITIES = frozenset({"ok", "suspect", "invalid", "unknown"})
 # 「最差档」排序：unknown 排在最低，避免一个未探测目标把已知的 poor 盖掉。
 _GRADE_RANK = {"unknown": 0, "good": 1, "fair": 2, "poor": 3}
+
+# 归档核验的「结果未知」窗口：5888 收完包才发布规范归档名，一次查不到不是失败。
+_WAITING_ARCHIVE_REASONS = frozenset({"archive_missing", "archive_size_invalid"})
+_ARCHIVE_MISMATCH_REASONS = frozenset({"size_mismatch", "stale_archive"})
 
 # 顺序固定：同一份数据在任何入口都必须渲染出同一个顺序。
 _CONDITION_ORDER: tuple[str, ...] = (
@@ -55,6 +73,7 @@ _CONDITION_ORDER: tuple[str, ...] = (
     "artifact_uninspected",
     "integrity_mismatch",
     "handoff_pending",
+    "verifying_archive",
     "delivered_unverified",
     "network_degraded",
     "stalled",
@@ -156,8 +175,10 @@ def assess_artifact(
     delivered = str(_get(task, "delivery_status") or "") == "delivered"
 
     if size is None:
-        # P1 直传成功后 acli 自删节点包：体积缺失是正常现象，不是失败证据。
-        if mode == "acli_direct" and delivered:
+        # P1 直传：平台不留副本，节点插件成功后自删压缩包。只要走到归档核验
+        # （p1_archive_check 已落快照）或已交付，体积缺失都是正常现象；
+        # 不能据此写「未取到有效日志」，否则等待窗口内又会变成「失败 + 无日志」。
+        if mode == "acli_direct" and (delivered or "p1_archive_check" in detail):
             return "unknown", "not_inspected", "deleted_after_delivery"
         return "invalid", "missing", "size_inference"
     if size < MIN_ARCHIVE_BYTES:
@@ -180,8 +201,10 @@ def delivery_evidence_ok(task: Any) -> bool:
     return detail.get("delivery_evidence") == "archive_verified"
 
 
-def derive_phase(task: Any) -> str:
-    """当前环节。交付阶段优先：采集结束后交付仍在跑时，用户要看的是「代传中」。"""
+def derive_phase(task: Any, *, now: datetime | None = None) -> str:
+    """当前环节。归档核验等待优先于「已结束」，否则结果未知会被写成终态失败。"""
+    if archive_verify_state(task, now=now or datetime.now(UTC)) == "waiting":
+        return "verifying"
     delivery = str(_get(task, "delivery_status") or "")
     # 交付已终结是比采集状态更强的事实：节点可能永远不把 status 推到 completed，
     # 但平台已经收妥字节，就不能继续把任务算作「传输中」。
@@ -214,6 +237,9 @@ def _progress_percent(
     终结态只有「平台已收妥」才给 100：零产物/从未交付的终态若给 100%，
     管理端会再次出现「合成进度 100% + 交付事实 未开始」的认知冲突。
     """
+    if phase == "verifying":
+        # 等待归档核验时进度是「结果未知」，不能拿传输样本假装还在跑。
+        return None
     if phase == "settled":
         return 100 if delivered else None
     if phase == "queued":
@@ -416,6 +442,243 @@ def build_network_view(probes: Iterable[Mapping[str, Any]] | None, upload_mode: 
     return _network_payload(probes, str(upload_mode or "") or None)
 
 
+def archive_verify_state(task: Any, *, now: datetime) -> str:
+    """P1 归档核验的等待态判定（唯一判据）。
+
+    返回 ``waiting`` / ``expired`` / ``mismatch`` / ``verified`` / ``none``。
+
+    一次 ``archive_missing`` 只说明「这一刻没查到」：5888 收完包才发布规范归档名
+    （现场实测约 31 秒）。有界窗口内结论必须是「结果未知」，既不能写 delivered，
+    也不能写 failed——后者一旦写下就没有第二个写入者会纠正。超过窗口仍查不到
+    才允许落终态，且归因到日志服务器，不甩给采集端。
+    """
+    if str(_get(task, "delivery_status") or "") == "delivered":
+        return "none"
+    if str(_get(task, "status") or "") in {"failed", "cancelled"}:
+        return "none"
+    check = _detail(task).get("p1_archive_check")
+    if not isinstance(check, Mapping):
+        return "none"
+    if check.get("verified") is True:
+        return "verified"
+    reason = str(check.get("reason") or "")
+    if reason in _ARCHIVE_MISMATCH_REASONS:
+        return "mismatch"
+    if reason not in _WAITING_ARCHIVE_REASONS:
+        return "none"
+    checked = _sample_time({"created_at": check.get("checked_at")})
+    if checked is None:
+        # 没有时间戳就不敢无限等待：宁可落到终态，也不能把任务永久挂起。
+        return "none"
+    reference = checked if checked.tzinfo else checked.replace(tzinfo=UTC)
+    elapsed = (now - reference).total_seconds()
+    if elapsed < 0:
+        return "none"
+    return "waiting" if elapsed <= ARCHIVE_VERIFY_WAIT_MINUTES * 60 else "expired"
+
+
+def _trace_id(task: Any) -> str | None:
+    """唯一调用链：优先任务列，其次 detail 快照，取不到如实留空。"""
+    for key in ("trace_id", "request_id", "correlation_id"):
+        value = _get(task, key)
+        if value:
+            return str(value)
+    detail = _detail(task)
+    for key in ("trace_id", "request_id", "correlation_id"):
+        value = detail.get(key)
+        if value:
+            return str(value)
+    audit = detail.get("write_audit")
+    if isinstance(audit, Mapping) and audit.get("trace_id"):
+        return str(audit["trace_id"])
+    return None
+
+
+def _stage_components(item: Mapping[str, Any]) -> list[dict[str, str]]:
+    components: list[dict[str, str]] = []
+    for key in item.get("components", []):
+        component = COMPONENTS.get(key)
+        if component is None:
+            continue
+        components.append(
+            {
+                "key": key,
+                "label": component["label"],
+                "tag": component["tag"],
+                "scope": component["scope"],
+                "scope_label": SCOPE_LABELS[component["scope"]],
+            }
+        )
+    return components
+
+
+def _stage_codes(signals: list[tuple[str, str, bool]]) -> dict[str, str]:
+    """把客观错误信号按阶段归并；强事实优先于「平台没说原因」的兜底。"""
+    codes: dict[str, str] = {}
+    for stage_key in FAULT_ATTRIBUTION["stage_order"]:
+        strong = [code for stage, code, is_strong in signals if stage == stage_key and is_strong]
+        weak = [code for stage, code, is_strong in signals if stage == stage_key and not is_strong]
+        chosen = (strong or weak or [None])[0]
+        if chosen:
+            codes[stage_key] = chosen
+    return codes
+
+
+def _build_stages(
+    task: Any,
+    *,
+    phase: str,
+    conclusion: str,
+    delivered: bool,
+    evidence_ok: bool,
+    quality: str,
+    archive_state: str,
+    manifest: Mapping[str, Any] | None,
+    network: Mapping[str, Any] | None,
+    trace_id: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """S1-S8 阶段时间线 + 首个异常点归因。
+
+    只从任务行与已传入的证据派生：查不到证据的阶段一律 ``unknown``，
+    绝不把「平台没数据」当成「该环节失败」。归因按 stage_order 取第一个
+    异常段，客户横幅、阶段条、管理端三处看到的是同一个点。
+    """
+    detail = _detail(task)
+    probe = detail.get("probe") if isinstance(detail.get("probe"), Mapping) else {}
+    capabilities = detail.get("capabilities") if isinstance(detail.get("capabilities"), Mapping) else {}
+    status = str(_get(task, "status") or "")
+    delivery_status = str(_get(task, "delivery_status") or "")
+    relay_status = str(_get(task, "relay_status") or "")
+    error_code = str(_get(task, "error_code") or "")
+    error_message = str(_get(task, "error_message") or "")
+
+    signals: list[tuple[str, str, bool]] = []
+    if archive_state == "waiting":
+        signals.append(("S6", "LC-HTP-001", True))
+    elif archive_state == "expired":
+        signals.append(("S6", "LC-5888-004", True))
+    elif archive_state == "mismatch":
+        signals.append(("S6", "LC-5888-003", True))
+
+    log_server_down = probe.get("log_server_reachable") is False
+    if not log_server_down and isinstance(network, Mapping):
+        log_server_down = any(
+            item.get("target") == "log_server" and item.get("reachable") is False
+            for item in network.get("targets", [])
+        )
+    if log_server_down:
+        signals.append(("S5", "LC-5888-002", True))
+    if probe.get("acli_installed") is False:
+        signals.append(("S2", "LC-ACLI-002", True))
+    if detail.get("bridge_outdated") or capabilities.get("log_collect_evidence") is False:
+        signals.append(("S7", "LC-BRIDGE-003", True))
+    if quality == "unknown" and delivered:
+        signals.append(("S7", "LC-BRIDGE-005", True))
+    if error_code in FAULT_CATALOG:
+        signals.append((FAULT_CATALOG[error_code]["stage"], error_code, True))
+    if error_message:
+        classified = classify_fault(error_message)
+        if classified != FAULT_DEFAULT_CODE:
+            signals.append((FAULT_CATALOG[classified]["stage"], classified, True))
+        else:
+            # 只作兜底：任何更靠前的具体异常都会先被选中。
+            signals.append(("S8", FAULT_DEFAULT_CODE, False))
+
+    statuses: dict[str, str] = {}
+    if probe:
+        statuses["S1"] = "success"
+    elif phase == "queued":
+        statuses["S1"] = "running"
+    else:
+        statuses["S1"] = "unknown"
+
+    if probe.get("acli_installed") is False:
+        statuses["S2"] = "failed"
+    elif probe.get("acli_version") or probe.get("acli_build_time"):
+        statuses["S2"] = "success"
+    else:
+        statuses["S2"] = "unknown"
+
+    ack = str(detail.get("create_ack") or "")
+    if ack == "not_established":
+        statuses["S3"] = "failed"
+    elif ack == "confirmed" or detail.get("create_output") or status not in {"", "pending", "probing", "installing"}:
+        statuses["S3"] = "success"
+    elif phase in {"queued", "collecting"}:
+        statuses["S3"] = "running"
+    else:
+        statuses["S3"] = "unknown"
+
+    if status in {"collecting", "packaging"}:
+        statuses["S4"] = "running"
+    elif status == "failed" and archive_bytes(task) is None:
+        statuses["S4"] = "failed"
+    elif archive_bytes(task) is not None or status == "completed":
+        statuses["S4"] = "success"
+    else:
+        statuses["S4"] = "unknown"
+
+    if delivery_status == "delivered" or relay_status == "success":
+        statuses["S5"] = "success"
+    elif delivery_status in {"pulling", "uploading", "relaying"}:
+        statuses["S5"] = "running"
+    elif delivery_status == "failed":
+        statuses["S5"] = "failed"
+    elif delivery_status == "none" and status in {"completed", "uploading"}:
+        statuses["S5"] = "waiting"
+    else:
+        statuses["S5"] = "unknown"
+
+    if archive_state == "waiting":
+        statuses["S6"] = "waiting"
+    elif evidence_ok:
+        statuses["S6"] = "success"
+    elif archive_state in {"expired", "mismatch"}:
+        statuses["S6"] = "failed"
+    else:
+        statuses["S6"] = "unknown"
+
+    if isinstance(manifest, Mapping) and manifest:
+        statuses["S7"] = "success"
+    elif detail.get("bridge_outdated") or capabilities.get("log_collect_evidence") is False:
+        statuses["S7"] = "skipped"
+    elif (quality == "unknown" and delivered) or detail.get("evidence_enabled") is True:
+        statuses["S7"] = "failed"
+    else:
+        statuses["S7"] = "unknown"
+
+    statuses["S8"] = "running" if conclusion == "pending" else "success"
+
+    codes = _stage_codes(signals)
+    stages: list[dict[str, Any]] = []
+    for key in FAULT_ATTRIBUTION["stage_order"]:
+        item = STAGES[key]
+        code = codes.get(key)
+        stage_status = statuses.get(key, "unknown")
+        stages.append(
+            {
+                "key": key,
+                "label": item["label"],
+                "scopes": list(item["scopes"]),
+                "scope_label": item["scope_label"],
+                "components": _stage_components(item),
+                "status": stage_status,
+                "status_label": STAGE_STATUS_LABELS[stage_status],
+                "criteria": item["criteria"],
+                "fault_code": code,
+                "customer_text": format_fault_text(code) if code else None,
+            }
+        )
+
+    attribution: dict[str, Any] | None = None
+    for key in FAULT_ATTRIBUTION["stage_order"]:
+        code = codes.get(key)
+        if code:
+            attribution = fault_detail(code, trace_id=trace_id)
+            break
+    return stages, attribution
+
+
 def _conclusion(
     *,
     status: str,
@@ -433,6 +696,10 @@ def _conclusion(
         return "pending"
     if delivered:
         return "success" if evidence_ok and quality == "ok" else "partial"
+    # 交付已登记但没被拉走/传完：可续传的中间态，不是失败
+    # （Q2026111301229：包在节点上、delivery_status=queued，被判「失败」自相矛盾）
+    if delivery_status == "queued":
+        return "unfinished"
     # 已结束但从未交付（Q2026111201130 的形态）：不能显示「进行中」。
     return "failed"
 
@@ -448,6 +715,7 @@ def _build_conditions(
     detail: Mapping[str, Any],
     transfer: Mapping[str, Any] | None,
     network: Mapping[str, Any] | None,
+    verifying: bool = False,
 ) -> list[dict[str, str]]:
     present: set[str] = set()
 
@@ -464,7 +732,12 @@ def _build_conditions(
 
     if detail.get("integrity_mismatch") or detail.get("sha_mismatch"):
         present.add("integrity_mismatch")
-    if status == "completed" and delivery_status == "none":
+    if verifying:
+        # 等待窗口内只报「正在核验归档件」：说「采集完成但未交付」会让人误以为要重采。
+        present.add("verifying_archive")
+    elif status == "completed" and delivery_status in ("none", "queued"):
+        # queued 也要计入：交付已登记但平台零字节，"未交付"是事实而非终态失败，
+        # 与 conclusion=unfinished 必须同屏出现，否则结论与条件各说各话。
         present.add("handoff_pending")
     if delivered and not evidence_ok:
         present.add("delivered_unverified")
@@ -488,17 +761,21 @@ def derive(
 ) -> dict[str, Any]:
     """返回响应四件套：``display / artifact / transfer / network``。
 
-    ``manifest`` / ``metrics`` / ``probes`` 由调用方按需提供：
-    客户面板与列表只用任务行（含 detail 快照）以避免 N+1；管理端详情抽屉
-    再额外传入三张窄表的真实行。
+    ``display`` 另带三段五组件的 S1-S8 阶段时间线、首个异常点归因与唯一调用链，
+    三者与客户横幅、阶段条、管理端详情共用同一个派生结果，不允许各视图另算一套。
+    ``manifest`` / ``metrics`` / ``probes`` 由调用方按需提供：客户面板与列表
+    只用任务行（含 detail 快照）以避免 N+1；管理端详情抽屉再传三张窄表的真实行。
     """
     now = now or datetime.now(UTC)
     status = str(_get(task, "status") or "")
     delivery_status = str(_get(task, "delivery_status") or "")
     detail = _detail(task)
-    phase = derive_phase(task)
+    archive_state = archive_verify_state(task, now=now)
+    phase = derive_phase(task, now=now)
+    verifying = phase == "verifying"
     delivered = delivery_status == "delivered"
     evidence_ok = delivery_evidence_ok(task)
+    trace_id = _trace_id(task)
 
     artifact = _artifact_payload(task, manifest, allow_size_inference=phase == "settled")
     quality = artifact["quality"]
@@ -516,6 +793,18 @@ def derive(
         quality=quality,
         delivered=delivered,
         evidence_ok=evidence_ok,
+    )
+    stages, fault_attribution = _build_stages(
+        task,
+        phase=phase,
+        conclusion=conclusion,
+        delivered=delivered,
+        evidence_ok=evidence_ok,
+        quality=quality,
+        archive_state=archive_state,
+        manifest=manifest,
+        network=network,
+        trace_id=trace_id,
     )
 
     return {
@@ -535,11 +824,15 @@ def derive(
                 detail=detail,
                 transfer=transfer,
                 network=network,
+                verifying=verifying,
             ),
             "progress_percent": _progress_percent(phase, task, transfer, delivered=delivered),
             "upload_mode_label": UPLOAD_MODE_LABELS.get(
                 str(_get(task, "upload_mode") or ""), UPLOAD_MODE_LABELS["unknown"]
             ),
+            "stages": stages,
+            "fault_attribution": fault_attribution,
+            "trace_id": trace_id,
         },
         "artifact": artifact,
         "transfer": transfer,

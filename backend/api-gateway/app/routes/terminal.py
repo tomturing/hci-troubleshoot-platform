@@ -38,15 +38,29 @@ def get_terminal_service(request: Request) -> TerminalService:
 
 
 async def verify_case_owner(case_id: str, client_id: str) -> None:
-    """校验当前身份是否拥有该工单（调用 case-service，携带签名身份）。"""
+    """校验当前身份可读写该工单的终端数据（调用 case-service，携带签名身份）。
+
+    判定口径由 case-service 统一给出（``/data-access``）：
+      - 工单归属当前身份；
+      - 或日志收集壳工单 + 当前身份在该工单下有采集任务（同一人换浏览器后
+        仍能回放录像，且不会向真实业务工单扩权）。
+    """
     headers = sign_client_identity(client_id, settings.INTERNAL_API_TOKEN)
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.CASE_SERVICE_URL}/api/cases/{case_id}", headers=headers)
+            resp = await client.get(
+                f"{settings.CASE_SERVICE_URL}/api/cases/{case_id}/data-access", headers=headers
+            )
     except httpx.RequestError:
         raise HTTPException(status_code=503, detail="Case Service unavailable")
     if resp.status_code != 200:
-        # 404（不存在）或 403（非归属）统一按无权限处理，避免泄露存在性
+        # 404（不存在）统一按无权限处理，避免泄露存在性
+        raise HTTPException(status_code=403, detail="无权访问该工单的终端数据")
+    try:
+        access = resp.json()
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Case Service returned invalid payload") from None
+    if not access.get("data_access"):
         raise HTTPException(status_code=403, detail="无权访问该工单的终端数据")
 
 
