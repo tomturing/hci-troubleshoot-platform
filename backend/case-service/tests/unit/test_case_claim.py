@@ -20,8 +20,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-import pytest
 import app.services.case_service as case_service_module
+import pytest
 from app.models.case import Case, CaseStatus
 from app.services.case_service import CaseService
 from shared.security.case_access import resolve_data_access
