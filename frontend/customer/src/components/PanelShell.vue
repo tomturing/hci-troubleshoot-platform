@@ -22,8 +22,16 @@ const props = withDefaults(
     overlay?: boolean
     /** 是否正在拖拽（拖拽时关掉宽度过渡，保证跟手） */
     resizing?: boolean
+    /**
+     * 是否允许拖拽调宽。
+     *
+     * 中央让位（终端可见）时面板独占整屏，没有可让的邻居：此时拖拽只会把宽度
+     * 从「视口 - 图标条」猛跌到常规上限（1080 屏是 1032 → 520），看起来像手柄失灵。
+     * 与其维护一套只在让位态生效的区间，不如直接收起手柄——想恢复中央就收起终端。
+     */
+    resizable?: boolean
   }>(),
-  { overlay: false, resizing: false },
+  { overlay: false, resizing: false, resizable: true },
 )
 
 defineEmits<{
@@ -34,7 +42,7 @@ defineEmits<{
 /**
  * 折叠态宽度直接复用布局求解器的常量。
  *
- * 中央隐藏（日志收集 + 终端并排）时求解器按「视口 - RAIL_WIDTH」算展开侧宽度，
+ * 中央让位（终端可见）时求解器按「视口 - RAIL_WIDTH」算展开侧宽度，
  * 若这里另写一个 48，两侧一改就会持续多出/少掉一条图标条的缝。
  */
 
@@ -85,7 +93,7 @@ const collapseIcon = computed(() => (props.side === 'left' ? ArrowLeft : ArrowRi
       </div>
 
       <div
-        v-if="!overlay"
+        v-if="!overlay && resizable"
         class="panel-resizer"
         title="拖拽调整宽度"
         @mousedown="$emit('resizeStart', $event)"
