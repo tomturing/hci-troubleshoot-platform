@@ -22,6 +22,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
+from app.fetcher import RemoteArchive
 from app.main import app
 from app.models import ExtractStats, Phase
 
@@ -33,16 +34,26 @@ async def _no_remote_entries(*_args, **_kwargs):
     return []
 
 
-async def _fake_fetch(ticket_id, cfg, work_dir, job_id, on_progress=None):
+async def _fake_list_archives(cfg, ticket_id):
+    return [RemoteArchive(ticket_id, f"/sf/log/{ticket_id}/{ticket_id}.zip", 3, 1.0)]
+
+
+async def _fake_fetch(
+    ticket_id,
+    cfg,
+    work_dir,
+    job_id,
+    on_progress=None,
+    remote_path=None,
+    target_name=None,
+):
     work_dir.mkdir(parents=True, exist_ok=True)
-    archive = work_dir / f"{ticket_id}.zip"
+    archive = work_dir / (target_name or f"{ticket_id}.zip")
     archive.write_bytes(b"zip")
     return archive
 
 
-async def _fake_extract(
-    ticket_id, archive, work_dir, cfg, job_id, on_progress=None, on_archive=None
-):
+async def _fake_extract(ticket_id, archive, work_dir, cfg, job_id, on_progress=None, on_archive=None):
     stats = ExtractStats()
     stats.depth = 1
     stats.files = 3
@@ -68,6 +79,8 @@ class FinalizeFailureTest(unittest.IsolatedAsyncioTestCase):
         os.environ["TICKET_ROOT"] = self.root
         os.environ["TICKET_ARCHIVE_PASSWORD"] = "test-password"
         os.environ["TICKET_AUTO_SYNC_ENABLED"] = "false"
+        # 收尾失败语义与水无关：显式关掉水位闸门，避免宿主机余量左右测试结果。
+        os.environ["TICKET_MIN_FREE_BYTES"] = "0"
         # 手动驱动 lifespan：ASGITransport 不会替我们执行 startup/shutdown。
         self._lifespan = app.router.lifespan_context(app)
         await self._lifespan.__aenter__()
@@ -75,13 +88,19 @@ class FinalizeFailureTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self._lifespan.__aexit__(None, None, None)
-        for key in ("TICKET_ROOT", "TICKET_ARCHIVE_PASSWORD", "TICKET_AUTO_SYNC_ENABLED"):
+        for key in (
+            "TICKET_ROOT",
+            "TICKET_ARCHIVE_PASSWORD",
+            "TICKET_AUTO_SYNC_ENABLED",
+            "TICKET_MIN_FREE_BYTES",
+        ):
             os.environ.pop(key, None)
         shutil.rmtree(self.root, ignore_errors=True)
 
     async def _run_with(self, *extra):
         with ExitStack() as stack:
             stack.enter_context(patch("app.main.list_remote_entries", _no_remote_entries))
+            stack.enter_context(patch("app.main.list_ticket_archives", _fake_list_archives))
             stack.enter_context(patch("app.main.fetch", _fake_fetch))
             stack.enter_context(patch("app.main.extract", _fake_extract))
             stack.enter_context(patch("app.main.publish", _fake_publish))

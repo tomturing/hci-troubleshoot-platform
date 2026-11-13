@@ -25,6 +25,7 @@ from shared.security.identity import IDENTITY_COOKIE_NAME, issue_identity
 
 ADMIN_HEADERS = {"Authorization": f"Bearer {settings.INTERNAL_API_TOKEN}"}
 DSH_LAUNCH_URL = "/api/dsh/launch"
+DSH_OFFLINE_LAUNCH_URL = "/api/dsh-offline/launch"
 
 
 def _anon_client() -> TestClient:
@@ -52,8 +53,7 @@ def _patch_upstream(status_code: int, text: str):
     client.get.return_value = upstream
     return patch(
         "app.routes.dsh.httpx.AsyncClient",
-        return_value=MagicMock(__aenter__=AsyncMock(return_value=client),
-                               __aexit__=AsyncMock(return_value=None)),
+        return_value=MagicMock(__aenter__=AsyncMock(return_value=client), __aexit__=AsyncMock(return_value=None)),
     )
 
 
@@ -84,6 +84,17 @@ def test_admin_gets_relative_launch_url():
     assert body["url"] == f"{settings.DSH_PUBLIC_PATH}?token=tok-abc"
     # 不得把集群内 Service 地址暴露给浏览器
     assert settings.DSH_SERVICE_URL not in body["url"]
+
+
+def test_admin_gets_independent_offline_launch_url():
+    """新版 HCI 单 Agent DSH 返回独立路径，不能误复用旧实例入口。"""
+    with _patch_upstream(200, "tok-offline"):
+        response = _admin_client().get(DSH_OFFLINE_LAUNCH_URL)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["url"] == f"{settings.DSH_OFFLINE_PUBLIC_PATH}?token=tok-offline"
+    assert settings.DSH_PUBLIC_PATH not in body["url"]
+    assert settings.DSH_OFFLINE_SERVICE_URL not in body["url"]
 
 
 def test_upstream_called_with_internal_token_path():
@@ -123,8 +134,7 @@ def test_unreachable_returns_503():
     client.get.side_effect = httpx.ConnectError("boom")
     with patch(
         "app.routes.dsh.httpx.AsyncClient",
-        return_value=MagicMock(__aenter__=AsyncMock(return_value=client),
-                               __aexit__=AsyncMock(return_value=None)),
+        return_value=MagicMock(__aenter__=AsyncMock(return_value=client), __aexit__=AsyncMock(return_value=None)),
     ):
         response = _admin_client().get(DSH_LAUNCH_URL)
     assert response.status_code == 503

@@ -36,23 +36,7 @@ spec:
         releaseName: hci-platform-dsh
         valueFiles:
           - $values/environments/dev/values.yaml
-        # dev 单机拓扑覆盖：关闭仅存在于云端宿主机的 hostPath，
-        # 否则 DSH Pod 会卡在 Pending（hostPath type=Directory 不存在）。
-        # 同时补齐绝对 publicUrl：DSH 上游强制要求 --public-url 为
-        # http(s)://host[/prefix]，留空会渲染成 /dsh/ 并在启动时直接退出。
-        values: |
-          global:
-            # 与环境仓 dev values 的 agentService.allowedOrigins 同源。
-            publicUrl: "http://172.28.24.21:30080"
-          customerLogs:
-            enabled: false
-          tickets:
-            enabled: false
-          # dev 入口是 IP，而 K8s Ingress 的 host 必须是 DNS 名称；
-          # 渲染出的 host: "172.28.24.21" 会让 patch 永久失败并触发 SyncError。
-          # dev 的 /dsh/ 由 admin-ui pathRoute 反代到 dsh Service，不需要独立 Ingress。
-          ingress:
-            enabled: false
+          - $values/environments/dev/dsh-values.yaml
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main
       ref: values

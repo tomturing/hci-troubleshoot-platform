@@ -10,7 +10,8 @@
 #   - 变更影响面被限制在 DNS 解析这一件事上，回滚粒度更细。
 #
 # 前置依赖：k3s 内置 CoreDNS 的 Corefile 必须包含
-#   import /etc/coredns/custom/*.override（k3s 全版本默认包含）
+#   import /etc/coredns/custom/*.override（k3s 全版本默认包含），并由第二 source
+#   注入 hci-platform-env/environments/staging/dns-values.yaml。
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -25,12 +26,17 @@ spec:
     server: https://kubernetes.default.svc
     # coredns-custom 必须与 CoreDNS 同 namespace
     namespace: kube-system
-  source:
-    repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
-    targetRevision: main
-    path: deploy/helm/hci-platform-dns
-    helm:
-      releaseName: hci-platform-dns
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-dns
+      helm:
+        releaseName: hci-platform-dns
+        valueFiles:
+          - $values/environments/staging/dns-values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
   syncPolicy:
     automated:
       prune: true

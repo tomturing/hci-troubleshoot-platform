@@ -30,6 +30,13 @@ const router = createRouter({
       meta: { title: 'DSH诊断', icon: 'MagicStick', order: 4.5 },
     },
     {
+      // 新版 HCI 单 Agent DSH 与旧诊断实例使用独立的 iframe 入口和会话空间。
+      path: '/dsh-offline-diagnosis',
+      name: 'DshOfflineDiagnosis',
+      component: () => import('@/views/DshOfflineDiagnosisView.vue'),
+      meta: { title: 'DSH离线诊断', icon: 'FirstAidKit', order: 4.6 },
+    },
+    {
       path: '/simulation',
       name: 'SimulationTest',
       component: () => import('@/views/SimulationTestView.vue'),

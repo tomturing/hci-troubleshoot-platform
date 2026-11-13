@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dsh-proxy
+  name: {{ include "dsh.proxyName" . }}
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
@@ -73,11 +73,11 @@ data:
 
                 # 上游完成 token 交换后会 302 到自身根路径。
                 # Traefik 的 stripPrefix 无法反向补前缀，故必须在这里还原。
-                proxy_redirect / /dsh/;
+                proxy_redirect / {{ .Values.ingress.path }}/;
 
-                # 上游签发的 cookie 为 Path=/，会让会话凭据被带到 /admin/、
-                # /api/ 等同域路径；此处收拢到 /dsh/，避免凭据串域。
-                proxy_cookie_path / /dsh/;
+                # 上游签发的 cookie 为 Path=/；按当前实例的 Ingress path 收拢，
+                # 旧实例得到 /dsh/，新实例得到 /dsh-offline/，保持两个 DSH 会话互不串用。
+                proxy_cookie_path / {{ .Values.ingress.path }}/;
 
                 # 必须保留浏览器侧 Host：上游按它做 Host/Origin 白名单校验。
                 # 用 $http_host 而不是 $host：后者会丢掉端口，上游拼出的期望 Origin

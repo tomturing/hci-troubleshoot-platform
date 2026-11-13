@@ -56,6 +56,9 @@ if [ -n "${DSH_PROFILE_PATCH_SOURCE:-}" ]; then
 fi
 
 mkdir -p "$TOKEN_DIR"
+# token 卷会跨容器重建保留；必须先清掉上一进程的凭据，避免新进程尚未就绪时
+# api-gateway 继续下发旧 token，浏览器随后收到 DSH 的 404（一次性 token 已失效）。
+rm -f "$TOKEN_FILE" "${TOKEN_FILE}.tmp"
 : > "$LOG_FILE"
 
 # 只绑定 127.0.0.1：非 loopback 绑定会触发上游的暴露告警，

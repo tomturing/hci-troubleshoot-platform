@@ -70,6 +70,38 @@ def purge_trash(trash_dir: Path) -> int:
     return removed
 
 
+# 多包合并工作区里，已下载归档统一放在这个子目录：任务是按包串行处理的，
+# 已合并成功的归档会立刻删除；失败时保留下来的部分供 rsync --partial 续传。
+MERGE_ARCHIVES_DIR = "archives"
+
+
+def prepare_merge_workspace(work_dir: Path) -> int:
+    """清理多包合并工作区：只保留 `archives/`，其余中间态全部删除。
+
+    为什么保留 archives：一个包里可能失败在解压/合并阶段，下次重试必须能续传；
+    为什么删除 build/extract：半套合并树与半套解压产物若留着，会把"旧包内容"
+    混进新一次发布，用户看到的是脏目录。
+    """
+    if not work_dir.is_dir():
+        return 0
+
+    removed = 0
+    for entry in work_dir.iterdir():
+        if entry.name == MERGE_ARCHIVES_DIR and entry.is_dir() and not entry.is_symlink():
+            continue
+        try:
+            if entry.is_dir() and not entry.is_symlink():
+                make_removable(entry)
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        except OSError as exc:
+            logger.warning("清理合并工作区失败 path=%s error=%s", entry, exc)
+            continue
+        removed += 1
+    return removed
+
+
 def cleanup_workspace(work_dir: Path) -> None:
     """失败路径上的清理。
 
@@ -121,13 +153,20 @@ def prepare_workspace(work_dir: Path, keep: str) -> int:
     return removed
 
 
-def cleanup_stale_workspaces(tmp_root: Path, max_age_seconds: float) -> int:
+def cleanup_stale_workspaces(
+    tmp_root: Path,
+    max_age_seconds: float,
+    protected: set[str] | frozenset[str] = frozenset(),
+) -> int:
     """回收 `.tmp` 下超龄的半成品，返回清理条目数。
 
     work_dir 按工单号固定之后，失败残留会一直留着供续传——这必须有回收阀门，
     否则一个再也不会被重试的工单会永久占着几十 GiB。
     判据用 mtime：`rsync --inplace` 持续写入会不断刷新它，
     所以"正在下载"的目录不会被误判成陈旧。
+
+    `protected` 是正在同步的工单号：容量检查可能在任务中途执行，活跃 work_dir
+    即使暂时没刷新 mtime 也不能删，否则会毁掉 rsync 续传与当前解压产物。
     """
     if not tmp_root.is_dir():
         return 0
@@ -135,6 +174,8 @@ def cleanup_stale_workspaces(tmp_root: Path, max_age_seconds: float) -> int:
     cutoff = time.time() - max_age_seconds
     removed = 0
     for entry in tmp_root.iterdir():
+        if entry.name in protected:
+            continue
         try:
             info = entry.stat()
         except OSError:

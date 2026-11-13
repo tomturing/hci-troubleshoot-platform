@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: dsh
+  name: {{ include "dsh.name" . }}
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
@@ -226,11 +226,11 @@ spec:
           emptyDir: {}
         - name: proxy-config
           configMap:
-            name: dsh-proxy
+            name: {{ include "dsh.proxyName" . }}
         {{- if or .Values.dsh.llm.enabled (gt (len .Values.dsh.plugins.entries) 0) }}
         # 入口脚本把只读 patch 复制到可写 profile 目录；DSH 设置页仍可更新它
         #，Pod 重建后再回到 GitOps 基线。
         - name: llm-config
           configMap:
-            name: dsh-llm-config
+            name: {{ include "dsh.llmConfigName" . }}
         {{- end }}
