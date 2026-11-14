@@ -8,7 +8,9 @@ owner: 平台开发组
 
 # acli 新增插件信息收集模板
 
-> 用途：当只拿到「一份脚本 + 一份使用说明」（例如《[HCI-V1] 1mt 排障工具使用方法》）时，按本模板逐项补齐 acli 插件管理机制要求的信息，再在 admin-ui「acli 插件」页选择「从模板新建」填写。服务端 `/api/v1/acli-plugins/templates` 返回同结构的 JSON 模板，可直接下载导入。
+> 用途：当只拿到「一份脚本 + 一份使用说明」（例如《[HCI-V1] lmt 排障工具使用方法》）时，按本模板逐项补齐 acli 插件管理机制要求的信息，再在 admin-ui「acli 插件」页选择「从模板新建」填写。服务端 `/api/v1/acli-plugins/templates` 返回同结构的 JSON 模板，可直接下载导入。
+
+> **命名口径**：工具名是 `lmt`（小写字母 L 加 `mt`），不是数字 `1` 开头的写法；平台侧插件标识统一 `hci_lmt_check`。
 
 ## 1. 必须先确认的硬性前提
 
@@ -17,17 +19,17 @@ owner: 平台开发组
 | 目标环境 | 选一个已登记的环境代号（如 `24` / `25`） | 页面不填 IP、端口、口令；由服务端环境表 + Secret 解析 |
 | 插件名 `plugin_name` | `^[a-z][a-z0-9_]{0,63}$`，不得与出厂 7 个插件重名 | 24 环境出厂：`asan_ops` / `asys` / `log_collect` / `netdoctor` / `performance_tools` / `vm_suspend` / `vm_start` |
 | 更新模式 | 新增填 `third_party`；覆盖出厂插件填 `builtin_override` | `builtin_override` 需二次确认，且强制备份 |
-| 冒烟参数 `smoke_args` | 必须能真实跑通并产生非空输出 | 例如 1mt：`-m env -c cpu_load`；只用 `--help` 不算生效 |
+| 冒烟参数 `smoke_args` | 必须能真实跑通并产生非空输出 | 例如 lmt：`-m env -c cpu_load`；只用 `--help` 不算生效 |
 
 ## 2. manifest.json 必填 15 字段
 
 | 字段 | 类型 | 填写要求 | 示例 |
 |------|------|----------|------|
 | `id` | string | 插件 UUID，新增时由平台生成，更新内置插件时沿用原值 | `b1f...` |
-| `name` | string | 同 `plugin_name` | `hci_1mt_check` |
+| `name` | string | 同 `plugin_name` | `hci_lmt_check` |
 | `version` | string | 语义化版本，每次下发递增 | `0.0.1` |
 | `source` | int | `1` 官方包 / `2` 运维包 / `3` 第三方包 | `3`（新增）、`1`（覆盖 netdoctor） |
-| `title` | object | `zh_cn` / `en_us` 双语标题 | `{"zh_cn":"1mt 排障工具","en_us":"1mt Check"}` |
+| `title` | object | `zh_cn` / `en_us` 双语标题 | `{"zh_cn":"lmt 排障工具","en_us":"lmt Check"}` |
 | `vendor_name` | object | `zh_cn` / `en_us` | `{"zh_cn":"HTP","en_us":"HTP"}` |
 | `description` | object | `zh_cn` / `en_us`，写清用途与是否只读 | — |
 | `change_log` | object | `zh_cn` / `en_us`，本次变更说明 | — |
@@ -152,4 +154,5 @@ exit $rc
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-11-14 | v1.1 | 事实订正：工具名统一为 `lmt`、插件标识统一 `hci_lmt_check`，全文 4 处订正并补充命名口径说明 | [acli 插件管理服务端编排重新设计](../events/2026-11-14-acli插件管理服务端编排重新设计.md) |
 | 2026-11-14 | v1.0 | 首版：补齐新增 acli 插件所需信息清单、目录/wrapper/注册项模板、HCI 脚本约束与生效验收清单 | [acli 插件管理服务端编排重新设计](../events/2026-11-14-acli插件管理服务端编排重新设计.md) |
