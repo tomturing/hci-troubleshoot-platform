@@ -12,11 +12,16 @@
 import { computed, onMounted } from 'vue'
 import {
   COMPONENTS,
+  CONDITION_LABELS,
+  CONCLUSION_LABELS,
   FAULT_ATTRIBUTION,
   FAULT_CATALOG,
+  PHASE_LABELS,
   SCOPE_LABELS,
   STAGES,
   STAGE_STATUS_LABELS,
+  UI_TEXT,
+  UPLOAD_MODE_LABELS,
   faultDetail,
   formatFaultText,
   type ComponentKey,
@@ -64,15 +69,16 @@ function stagesFor(target: FaultCode): LogCollectStageView[] {
   })
 }
 
+// 夹具的所有标签都取自契约生成物：验收页自己不写第二份中文口径。
 const display: LogCollectDisplayView = {
   phase: 'settled',
-  phase_label: '已结束',
+  phase_label: PHASE_LABELS.settled,
   conclusion: 'failed',
-  conclusion_label: '失败',
+  conclusion_label: CONCLUSION_LABELS.failed,
   conclusion_tone: 'error',
-  conditions: [{ key: 'artifact_uninspected', label: '包内容未探测' }],
+  conditions: [{ key: 'artifact_uninspected', label: CONDITION_LABELS.artifact_uninspected }],
   progress_percent: null,
-  upload_mode_label: 'P1 直传日志服务器',
+  upload_mode_label: UPLOAD_MODE_LABELS.acli_direct,
   stages: stagesFor(code),
   fault_attribution: faultDetail(code, traceId),
   trace_id: traceId,
@@ -145,7 +151,7 @@ onMounted(triggerFault)
         />
         <LogCollectFaultCard :display="display" />
         <div class="verify-facts">
-          观察事实：
+          {{ UI_TEXT.labels.observed_facts }}：
           <el-tag v-for="item in display.conditions" :key="item.key" size="small" effect="plain">
             {{ item.label }}
           </el-tag>

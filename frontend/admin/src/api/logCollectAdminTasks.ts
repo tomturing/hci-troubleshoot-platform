@@ -190,6 +190,8 @@ export interface AdminLogCollectTask {
   created_at: string | null
   finished_at: string | null
   delivery_finished_at: string | null
+  /** 结构化原文（逐台明细、归因来源、写审计），只在详情接口返回。 */
+  detail?: Record<string, unknown> | null
   /** 老后端/未升级 bridge 可能没有这些字段，界面必须能降级。 */
   display?: LogCollectDisplay | null
   artifact?: ArtifactInfo | null

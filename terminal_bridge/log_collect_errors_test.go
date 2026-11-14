@@ -177,17 +177,41 @@ func TestLogCollectFailureLineFallback(t *testing.T) {
 	}
 }
 
-// TestSpcErrorTitle 标题必须是可处置的中文原因，不是"节点不可达"。
+// TestSpcErrorTitle 标题必须取自契约生成码表：测试不再手写第二份中文。
+// 断言从 contractTitle 取期望值，文案改版时测试自动跟随唯一出处。
 func TestSpcErrorTitle(t *testing.T) {
 	cases := map[string]string{
-		"host_auth_failed": "节点 SSH 认证失败",
-		"host_timeout":     "节点命令执行超时",
-		"spc_dir_missing":  "场景清单目录缺失",
-		"spc_file_missing": "场景清单文件缺失",
+		"host_auth_failed": ErrSpcSSHAuthFailed,
+		"host_timeout":     ErrSpcSSHTimeout,
+		"spc_dir_missing":  ErrSpcDirMissing,
+		"spc_file_missing": ErrSpcFileMissing,
 	}
-	for errType, want := range cases {
-		if got := spcErrorTitle(errType); got != want {
-			t.Fatalf("spcErrorTitle(%s) = %q，期望 %q", errType, got, want)
+	for errType, code := range cases {
+		want := contractTitle(code)
+		if want == "" {
+			t.Fatalf("契约码 %s 缺少标题", code)
 		}
+		if got := spcErrorTitle(errType); got != want {
+			t.Fatalf("spcErrorTitle(%s) = %q，期望契约标题 %q", errType, got, want)
+		}
+	}
+}
+
+// TestContractCatalogIsConsumed 防止生成码表再次退化成死代码：
+// 71 个运行时码都必须有标题，且至少有一个真实的调用方（spcErrorTitle）。
+func TestContractCatalogIsConsumed(t *testing.T) {
+	if len(contractErrors) < 71 {
+		t.Fatalf("契约运行时码数量不足：%d", len(contractErrors))
+	}
+	for code, item := range contractErrors {
+		if item.Title == "" {
+			t.Fatalf("契约码 %s 没有 Title", code)
+		}
+	}
+	if got := spcErrorTitle("unknown_short_name"); got == "" || got != contractTitle(ErrSpcAggregate) {
+		t.Fatalf("未知短名应回退到聚合码标题，得到 %q", got)
+	}
+	if len(contractText) < 5 {
+		t.Fatalf("桥侧文案模板未生成：%d 条", len(contractText))
 	}
 }

@@ -633,6 +633,23 @@ async def admin_task_detail(task_id: UUID) -> AdminLogCollectTaskDetail:
     payload = build_display_payload(row, metrics=metrics, probes=probes)
 
     item = AdminLogCollectTaskDetail(**row)
+    # 结构化原文按「详情专用白名单」单独取：列表 SQL 只取判定所需 6 键，
+    # 逐台明细/归因来源/原始输出只对单任务展开，避免按页拖大 detail。
+    extra_rows = await _fetch(
+        """SELECT jsonb_strip_nulls(jsonb_build_object(
+                   'spc_hosts', t.detail -> 'spc_hosts',
+                   'error_code_derivation', t.detail -> 'error_code_derivation',
+                   'create_output', t.detail -> 'create_output',
+                   'write_audit', t.detail -> 'write_audit'
+               )) AS extra
+           FROM log_collect_task t WHERE t.task_id = :task_id""",
+        {"task_id": str(task_id)},
+    )
+    extra = _coerce_json(extra_rows[0]["extra"]) if extra_rows else {}
+    item.detail = {
+        **dict(row.get("detail") or {}),
+        **(extra if isinstance(extra, Mapping) else {}),
+    }
     item.display = payload.display
     item.artifact = payload.artifact
     item.transfer = payload.transfer

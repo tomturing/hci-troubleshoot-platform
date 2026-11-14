@@ -8,6 +8,7 @@
  */
 import { computed } from 'vue'
 import { logCollectErrorHint } from '@/services/logCollectErrorHints'
+import { UI_FALLBACK, UI_TEXT } from '@hci/shared'
 
 const props = defineProps<{
   /** 规范错误码（LC-*），为空时走「无码」兜底 */
@@ -24,7 +25,7 @@ const reason = computed(() => String(props.reason || '').trim())
 <template>
   <div class="lc-diagnosis">
     <div class="lc-diagnosis-head">
-      <span class="lc-diagnosis-title">{{ hint?.title || '任务失败' }}</span>
+      <span class="lc-diagnosis-title">{{ hint?.title || UI_TEXT.labels.task_failed }}</span>
       <el-tag v-if="code" size="small" effect="plain" class="lc-diagnosis-code">
         {{ code }}
       </el-tag>
@@ -32,21 +33,20 @@ const reason = computed(() => String(props.reason || '').trim())
     <p v-if="reason" class="lc-diagnosis-reason">{{ reason }}</p>
     <template v-if="hint">
       <div class="lc-diagnosis-block">
-        <strong>如何检查</strong>
+        <strong>{{ UI_TEXT.labels.how_to_check }}</strong>
         <ol>
           <li v-for="(item, index) in hint.check" :key="`check-${index}`">{{ item }}</li>
         </ol>
       </div>
       <div class="lc-diagnosis-block">
-        <strong>如何处理</strong>
+        <strong>{{ UI_TEXT.labels.how_to_fix }}</strong>
         <ol>
           <li v-for="(item, index) in hint.fix" :key="`fix-${index}`">{{ item }}</li>
         </ol>
       </div>
     </template>
     <p v-else class="lc-diagnosis-fallback">
-      平台未返回可识别的错误码。请在任务详情中查看 error_message 与 create_output，
-      并记录任务号与时间后提交支持；不要反复重试，避免覆盖现场。
+      {{ UI_FALLBACK.no_code }}
     </p>
   </div>
 </template>

@@ -306,7 +306,9 @@ class TestUpdateTask:
         assert result.cleanup_state == "none"
         assert result.finished_at is None
         # 原产物值必须留在审计文案里，方便事后核对"当时到底归档了什么"
-        assert result.error_code == "corrected_by_node"
+        # 纠正是动作不是失败类别：码列必须为空，动作留在 detail 审计里。
+        assert result.error_code is None
+        assert result.detail.get("correction_action") == "corrected_by_node"
         assert "/sf/data/local/acli/tasks/Q1.tar.gz" in result.error_message
         assert "success" in result.error_message
 
@@ -491,7 +493,8 @@ class TestCancelTask:
         result = await service.cancel_task("11111111-1111-1111-1111-111111111111", "测试取消")
 
         assert result.status == "cancelled"
-        assert result.error_code == "cancelled_by_user"
+        assert result.error_code is None
+        assert result.detail.get("cancel_action") == "cancelled_by_user"
         assert result.error_message == "测试取消"
 
     async def test_cancel_terminal_task_rejected(self, service, mock_repo):

@@ -14,7 +14,16 @@
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CONCLUSION_TONES, formatLogCollectSize } from '@hci/shared'
+import {
+  BUCKET_LABELS,
+  CONCLUSION_TONES,
+  DELIVERY_TEXT,
+  MISSING_DATA_TEXT,
+  MODE_TEXT,
+  STATUS_TEXT,
+  UI_TEXT,
+  formatLogCollectSize,
+} from '@hci/shared'
 import LogCollectAttribution from './LogCollectAttribution.vue'
 
 import {
@@ -79,17 +88,8 @@ let progressTimer: ReturnType<typeof setInterval> | undefined
 let destroyed = false
 let progressSeq = 0
 
-const STATUS_TEXT: Record<string, string> = {
-  pending: '待下发', probing: '探测中', installing: '安装中', collecting: '采集中',
-  packaging: '打包中', uploading: '上传中', completed: '已完成', failed: '失败', cancelled: '已取消',
-}
-const DELIVERY_TEXT: Record<string, string> = {
-  none: '未开始', queued: '排队中', pulling: '拉取中', uploading: '上传中',
-  relaying: '代传中', delivered: '已交付', failed: '失败',
-}
-const MODE_TEXT: Record<string, string> = {
-  acli_direct: 'P1 直传', bridge_relay: 'P2 中转', none: '未定',
-}
+// 状态/交付/模式/统计桶的文案全部来自 contracts/log_collect_display.json 的生成物，
+// 管理端不再自建映射表：历史漂移（P1 直传 vs P1 直传日志服务器）就是从两份表来的。
 
 /** 只有还在途的任务才值得查 5888：终态任务再查只会制造无效请求。
  * 口径与后端 _TRANSFERRING 一致（2026-11-12 修复）：
@@ -227,8 +227,41 @@ function toneToTag(tone: string | undefined): 'success' | 'warning' | 'danger' |
   return 'info'
 }
 
-/** 没有证据时说清楚「为什么没有」，而不是拿 0/100 或绿色成功顶替。 */
-const BRIDGE_OUTDATED_HINT = '桥接端版本较旧，暂无该数据'
+/**
+ * 没有证据时说清楚「为什么没有」，而不是拿 0/100 或绿色成功顶替。
+ * 判据与 custom-ui 共用同一份契约：未进入该环节 ≠ 桥接端版本较旧。
+ */
+function evidenceEmptyText(): string {
+  const display = detailTask.value?.display
+  if (!display) return MISSING_DATA_TEXT.genuinely_empty
+  if (display.conclusion === 'failed' && !transferMetrics.value?.items?.length) {
+    return MISSING_DATA_TEXT.not_reached
+  }
+  if (display.conditions?.some(item => item.key === 'bridge_outdated')) {
+    return MISSING_DATA_TEXT.bridge_outdated
+  }
+  return MISSING_DATA_TEXT.genuinely_empty
+}
+
+/** 逐台明细：只在详情接口返回；没有上报就如实说没有，不拿 error_message 凑一行。 */
+const spcHostRows = computed<Record<string, unknown>[]>(() => {
+  const detail = detailTask.value?.detail
+  const hosts = detail?.spc_hosts
+  return Array.isArray(hosts) ? (hosts as Record<string, unknown>[]) : []
+})
+
+/**
+ * 可解释性：错误码是节点直报的，还是平台按文案推断的。
+ * 推断出来的码不能当成权威事实展示，管理员必须能一眼分辨。
+ */
+const attributionSource = computed<string>(() => {
+  const detail = detailTask.value?.detail
+  const derivation = detail?.error_code_derivation
+  if (derivation && typeof derivation === 'object') return UI_TEXT.admin.attribution_derived
+  return detailTask.value?.error_code
+    ? UI_TEXT.admin.attribution_declared
+    : UI_TEXT.admin.attribution_fallback
+})
 
 function formatTime(value: string | null): string {
   if (!value) return '—'
@@ -277,7 +310,7 @@ function artifactText(task: AdminLogCollectTask): string {
 }
 
 function rateText(transfer: TransferInfo | null | undefined): string {
-  if (!transfer) return BRIDGE_OUTDATED_HINT
+  if (!transfer) return evidenceEmptyText()
   if (transfer.stalled) return `已停滞 ${transfer.stalled_seconds ?? 0} 秒`
   return transfer.rate_text ?? '—'
 }
@@ -368,11 +401,8 @@ async function copyPath(value: string | null) {
 }
 
 const bucketKeys = ['pending', 'success', 'partial', 'unfinished', 'failed', 'cancelled'] as const
-const bucketLabels: Record<(typeof bucketKeys)[number], string> = {
-  pending: '进行中', success: '已交付', partial: '已交付 · 有疑点',
-  // 交付已登记但没被拉走/传完：补一次交付就能完成，不能并入「失败」劝退用户
-  unfinished: '未完成 · 待补交付', failed: '失败', cancelled: '已取消',
-}
+// 统计桶标签同样只认契约：口径层与展示层必须能对账，前后端不能各写一份。
+const bucketLabels = BUCKET_LABELS
 
 /** 统计条只展示后端五桶，且现场给出可对账数字；口径不一致时显式告警。 */
 const conclusionBuckets = computed(() => {
@@ -575,6 +605,7 @@ const summaryCells = computed(() => [
           <el-descriptions-item label="日志服务器进度">{{ progressText(detailTask) }}</el-descriptions-item>
           <el-descriptions-item label="错误码 / 原因">{{ detailTask.error_code || '—' }} {{ detailTask.error_message || '' }}</el-descriptions-item>
           <el-descriptions-item label="调用链 trace_id">{{ detailTask.trace_id || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="UI_TEXT.admin.attribution_source">{{ attributionSource }}</el-descriptions-item>
           <el-descriptions-item label="创建 / 完成 / 交付完成">
             {{ formatTime(detailTask.created_at) }} / {{ formatTime(detailTask.finished_at) }} /
             {{ formatTime(detailTask.delivery_finished_at) }}
@@ -616,6 +647,26 @@ const summaryCells = computed(() => [
           :fallback-trace-id="detailTask?.trace_id"
         />
 
+        <!--
+          可解释性分区：逐台明细回答「哪台、哪一步、原始输出」，结构化原文
+          保留 detail jsonb 全貌。两者都只在详情接口返回，不影响列表查询。
+        -->
+        <el-collapse class="upload-structured">
+          <el-collapse-item :title="UI_TEXT.admin.per_host_section" name="hosts">
+            <div v-if="spcHostRows.length">
+              <div v-for="(host, index) in spcHostRows" :key="index" class="upload-host-row">
+                <code>{{ host.ip ?? host.host ?? '—' }}</code>
+                <span>{{ host.error ?? host.error_code ?? '—' }}</span>
+                <span v-if="host.error_detail" class="upload-sub">{{ host.error_detail }}</span>
+              </div>
+            </div>
+            <div v-else class="upload-sub">该任务未上报逐台明细。</div>
+          </el-collapse-item>
+          <el-collapse-item :title="UI_TEXT.admin.raw_section" name="raw">
+            <pre class="upload-raw">{{ JSON.stringify(detailTask.detail ?? {}, null, 2) }}</pre>
+          </el-collapse-item>
+        </el-collapse>
+
         <el-tabs v-model="detailTab" class="upload-tabs">
           <el-tab-pane label="链路定界" name="attribution">
             <LogCollectAttribution variant="panel" :display="detailTask?.display" />
@@ -623,7 +674,7 @@ const summaryCells = computed(() => [
 
           <el-tab-pane label="传输时间线" name="transfer">
             <div v-if="evidenceError" class="upload-error">{{ evidenceError }}</div>
-            <div v-if="!transferMetrics?.items?.length" class="upload-sub">{{ BRIDGE_OUTDATED_HINT }}（无传输样本）</div>
+            <div v-if="!transferMetrics?.items?.length" class="upload-sub">{{ evidenceEmptyText() }}</div>
             <el-timeline v-else>
               <el-timeline-item
                 v-for="(sample, index) in transferMetrics.items"
@@ -658,7 +709,7 @@ const summaryCells = computed(() => [
               </el-descriptions-item>
               <el-descriptions-item label="证据来源">{{ detailTask.artifact?.source ?? '—' }}</el-descriptions-item>
             </el-descriptions>
-            <div v-if="!artifactManifests.length" class="upload-sub">暂无内容探测记录（{{ BRIDGE_OUTDATED_HINT }}）</div>
+            <div v-if="!artifactManifests.length" class="upload-sub">{{ evidenceEmptyText() }}</div>
             <div v-for="item in artifactManifests" :key="`${item.source}-${item.inspected_at}`" class="upload-manifest">
               <div>{{ item.source }} · {{ item.quality_label }} · {{ item.entry_count ?? 0 }} 条 ·
                 {{ item.entry_total_text ?? '—' }}</div>
@@ -671,7 +722,7 @@ const summaryCells = computed(() => [
           </el-tab-pane>
 
           <el-tab-pane label="网络探测" name="network">
-            <div v-if="!networkInfo" class="upload-sub">{{ BRIDGE_OUTDATED_HINT }}（尚未上报探测）</div>
+            <div v-if="!networkInfo" class="upload-sub">{{ evidenceEmptyText() }}</div>
             <template v-else>
               <div>网络质量：{{ networkInfo.grade_label }}（相关目标 {{ networkInfo.relevant_target ?? '未定' }}）</div>
               <div v-for="target in networkInfo.targets" :key="target.target" class="upload-network">
@@ -686,7 +737,7 @@ const summaryCells = computed(() => [
           </el-tab-pane>
 
           <el-tab-pane label="进程日志" name="process">
-            <div v-if="!processLogs.length" class="upload-sub">暂无采集进程日志（{{ BRIDGE_OUTDATED_HINT }}）</div>
+            <div v-if="!processLogs.length" class="upload-sub">{{ evidenceEmptyText() }}</div>
             <div v-for="item in processLogs" :key="item.log_id" class="upload-process-log">
               <div class="upload-path-row">
                 <el-button size="small" @click="loadProcessLogContent(item.log_id)">查看内容</el-button>

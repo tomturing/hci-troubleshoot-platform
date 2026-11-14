@@ -455,7 +455,7 @@ describe('buildResultHeadline', () => {
 
   it('没有可识别错误码时横幅指向任务详情，不编造结论', () => {
     const headline = buildResultHeadline({ status: 'failed', when: WHEN })
-    expect(headline.description).toContain('平台未给出可识别的错误码')
+    expect(headline.description).toContain('平台未记录到可定位的错误码')
     expect(headline.description).toContain('error_message')
     expect(headline.description).not.toContain('LC-')
   })
@@ -547,7 +547,10 @@ describe('平台派生结论优先', () => {
     })
     expect(headline.type).toBe('error')
     expect(headline.title).toContain('未取到有效日志')
-    expect(headline.description).toContain('采集完成但未交付')
+    // 观察事实已移到 LogCollectStatusCard 独立成行，横幅不再重复拼同一段；
+    // 组件级用例负责断言「采集完成但未交付」仍在页面上可见。
+    expect(headline.description).not.toContain('观察事实')
+    expect(headline.description).toContain('当前环节：已结束')
     expect(headline.description).toContain('产物质量')
     expect(headline.title).not.toContain('已交付')
   })
