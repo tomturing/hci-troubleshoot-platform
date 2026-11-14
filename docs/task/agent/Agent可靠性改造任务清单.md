@@ -19,7 +19,6 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
-| 2026-11-13 | v3.77 | 新增 acli 手工插件运行时契约与下发链路说明：四要素、原子部署与回滚、`printf %b` 无外部解码器依赖、真实冒烟执行验证。 | [acli 插件配置下发闭环](../../solution/events/2026-11-13-acli插件配置下发闭环.md) |
 | 2026-10-26 | v3.76 | `atlas-migrations/20261013000000_add_kbd_entry_root_signal_json.sql` 标注历史路径，并说明幂等 ALTER 语义由 `database/desired_schema.sql` 承接；`backend/shared/tests/test_root_signal_runtime_cdd.py` 标注曾用名与现行位置 `backend/kb-service/tests/test_root_signal_track.py`（#1173 迁移）（详见 [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md)） |
 | 2026-10-24 | v3.75 | **修复多 Agent Prompt 事实源断链与文档门禁失效**：① **Prompt 缺失（生产必崩）**：`signal_orchestrator.py:295` 硬编码加载 `kbd_signal_count_v1`（分类、建模、验证同理），但这 4 个 Prompt 的唯一 SQL 定义长期只存在于 `database/atlas-migrations/`（`atlas.hcl` 无 `migration_dir`，`db-migrate.sh` 全链路不执行该目录，故已于本日整体删除 47 文件），生产库调抽取必抛 `PromptLoadError`；现将 count/classify 迁入 `database/seeds/02_system_prompts.sql`（种子为新库完整基线，存量库走 `data-migrations/`）并补齐 4 条 `prompt_slot`。② **门禁丢失**：`data-migrations/034` 将 `kbd_signal_model_v1`/`kbd_signal_verify_v1` 升到 1.1 时，相对同源 1.0 逐行比对各丢失一条约束（建模缺「JSON 取值路径契约（严苛门禁）」、验证缺「修复 JSON 取值路径错误」），按「已执行迁移永不修改、变更走 Forward Fix」铁律新增 `050_restore_json_extract_path_contract.sql` 升至 1.2 补回，Prompt 契约测试统一指向种子以覆盖四个 Agent 的最终版。③ **文档门禁失效**：`scripts/ci/check_module_doc_sync.py` 的 20 条 ModuleMapping 中 11 条指向不存在的文档（`docs/solution/agent/design/agent工具设计.md` 漏 `design/` 中间层、`AI助手设计.md` 已改名），这些模块的 docs-governance 长期只能靠 `[skip doc-sync]` 绕过；已全部修正为现存路径。 | [知识库设计](../../solution/knowledge-base/知识库设计.md) |
 | 2026-09-20 | v3.74 | **客户端 SSH 与 acli 状态管理安全加固**：`chat.ts` 补充 `typeof localStorage !== 'undefined'` 防御性保护消除单测环境异常；在 SSH 连接就绪后异步触发 `checkAndSyncAcli` 自动就绪自检 | [acli自动检测与安装更新方案](../../solution/custom-ui/events/2026-09-20-acli自动检测与安装更新方案.md) |
@@ -770,5 +769,3 @@ owner: team
   `logCollectResumeTaskId` + `openLogCollectForTask` 支持"查看任务状态"接管为只读轮询。
 - [x] **测试**：store 6 例（含 resolve 422、接管）、对话框 4 例（格式/列表/取消）；
   customer 全量 162 passed。
-
-- [x] **acli 插件配置与下发（2026-11-13）**：conversation-service 新增 app/routes/acli_plugin.py、app/models/acli_plugin.py，挂载 /api/v1/tools/acli-plugins（复用网关 /api/v1/tools/{path} 泛向代理）；新增 acli_plugin、acli_plugin_deployment 两表。Builder 生成 wrapper / manifest / 注册项与原子部署脚本（flock + 备份 + sha256 自证 + jq 原子替换 + 生效验证 + 失败回滚）。管理台「工具注册表」改名「agent工具」，其左侧新增「acli插件」页；页面经 terminal_bridge ssh_connect + ssh_exec_process 下发，按 exec_id 收 exec_result 并落库回执。验收：页面保存并下发 → 24 环境 acli plugin list 出现插件且 acli <name> --help 返回 0。
