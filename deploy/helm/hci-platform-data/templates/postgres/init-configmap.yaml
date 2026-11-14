@@ -260,6 +260,83 @@ data:
     -- 此处同步移除建表/索引/注释。该评分体系从未落地运行，desired_schema.sql 已无此表。
 
     -- ============================================================================
+    -- acli 插件管理（服务端编排事实源）：环境 / 插件 / 不可变规格 / 下发任务
+    -- ============================================================================
+
+    CREATE TABLE IF NOT EXISTS acli_plugin_environment (
+        env_code varchar(32) NOT NULL,
+        display_name varchar(128) NOT NULL DEFAULT '',
+        node_ip varchar(64) NOT NULL,
+        ssh_port integer NOT NULL DEFAULT 22,
+        auth_type varchar(16) NOT NULL DEFAULT 'key',
+        credential_ref varchar(128) NOT NULL DEFAULT '',
+        bridge_url varchar(256) NOT NULL DEFAULT '',
+        enabled boolean NOT NULL DEFAULT true,
+        created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT acli_plugin_environment_pkey PRIMARY KEY (env_code)
+    );
+    COMMENT ON TABLE acli_plugin_environment IS 'acli 插件下发目标环境；只存凭据引用，不存口令或私钥';
+
+    CREATE TABLE IF NOT EXISTS acli_plugin (
+        plugin_name varchar(64) NOT NULL,
+        display_name varchar(200) NOT NULL DEFAULT '',
+        update_mode varchar(24) NOT NULL DEFAULT 'third_party',
+        current_spec_hash varchar(64) NOT NULL DEFAULT '',
+        desired_spec_hash varchar(64) NOT NULL DEFAULT '',
+        last_deploy_status varchar(32) NOT NULL DEFAULT 'never',
+        last_deploy_at timestamptz,
+        enabled boolean NOT NULL DEFAULT true,
+        created_by varchar(128) NOT NULL DEFAULT '',
+        created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT acli_plugin_pkey PRIMARY KEY (plugin_name)
+    );
+    COMMENT ON TABLE acli_plugin IS 'acli 插件当前态；current/desired spec_hash 分离用于识别待下发变更';
+
+    CREATE TABLE IF NOT EXISTS acli_plugin_spec (
+        spec_id uuid NOT NULL DEFAULT gen_random_uuid(),
+        plugin_name varchar(64) NOT NULL,
+        revision integer NOT NULL,
+        spec_json jsonb NOT NULL,
+        spec_hash varchar(64) NOT NULL,
+        validation jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_by varchar(128) NOT NULL DEFAULT '',
+        created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT acli_plugin_spec_pkey PRIMARY KEY (spec_id),
+        CONSTRAINT uq_acli_plugin_spec_hash UNIQUE (spec_hash),
+        CONSTRAINT uq_acli_plugin_spec_revision UNIQUE (plugin_name, revision)
+    );
+    COMMENT ON TABLE acli_plugin_spec IS 'acli 插件不可变规格版本；spec_hash 覆盖规范化 spec 与全部文件字节';
+
+    CREATE TABLE IF NOT EXISTS acli_plugin_deployment (
+        deploy_id varchar(64) NOT NULL,
+        plugin_name varchar(64) NOT NULL,
+        revision integer NOT NULL,
+        spec_hash varchar(64) NOT NULL,
+        env_code varchar(32) NOT NULL,
+        node_ip varchar(64) NOT NULL DEFAULT '',
+        status varchar(24) NOT NULL DEFAULT 'pending',
+        lease_owner varchar(128) NOT NULL DEFAULT '',
+        lease_until timestamptz,
+        attempt integer NOT NULL DEFAULT 0,
+        exec_id varchar(64) NOT NULL DEFAULT '',
+        trace_id varchar(128) NOT NULL DEFAULT '',
+        verification jsonb NOT NULL DEFAULT '{}'::jsonb,
+        bridge_result jsonb NOT NULL DEFAULT '{}'::jsonb,
+        error_code varchar(64) NOT NULL DEFAULT '',
+        error_message text NOT NULL DEFAULT '',
+        created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        finished_at timestamptz,
+        CONSTRAINT acli_plugin_deployment_pkey PRIMARY KEY (deploy_id)
+    );
+    COMMENT ON TABLE acli_plugin_deployment IS 'acli 插件下发任务；租约/重试/回执正交，按 exec_id 与 bridge 日志对齐';
+
+    CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_status ON acli_plugin_deployment (status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_hash ON acli_plugin_deployment (spec_hash, env_code);
+    CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_plugin ON acli_plugin_deployment (plugin_name, created_at DESC);
+
+    -- ============================================================================
     -- 5. 创建视图
     -- ============================================================================
 
