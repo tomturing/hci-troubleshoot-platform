@@ -158,14 +158,13 @@ def main() -> int:
     problems += check_frontend()
     problems += check_attribution()
 
-    print("契约 v3：codes=%d（runtime=%d / signal=%d），matchers=%d，有序补码=%d" % (
-        len(contract["fault_catalog"]),
-        sum(1 for v in contract["fault_catalog"].values() if v.get("kind") == "runtime"),
-        sum(1 for v in contract["fault_catalog"].values() if v.get("kind") == "signal"),
-        len(contract["fault_matchers"]),
-        len(contract["attribution_rules"]),
-    ))
-    print("仍写在前端模板中的中文串（后续收敛基线）：%d" % report_legacy_chinese())
+    runtime = sum(1 for v in contract["fault_catalog"].values() if v.get("kind") == "runtime")
+    signal = sum(1 for v in contract["fault_catalog"].values() if v.get("kind") == "signal")
+    print(
+        f"契约 v3：codes={len(contract['fault_catalog'])}（runtime={runtime} / signal={signal}），"
+        f"matchers={len(contract['fault_matchers'])}，有序补码={len(contract['attribution_rules'])}"
+    )
+    print(f"仍写在前端模板中的中文串（后续收敛基线）：{report_legacy_chinese()}")
     if problems:
         for item in problems:
             print("FAIL:", item)

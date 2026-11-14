@@ -265,6 +265,8 @@ tests:
         alertname: LogCollectContractDrift
         exp_alerts:
           - exp_labels:
+              # 指标按 service 打标签，告警会把它带进 labels；漏写会让正例恒红。
+              service: "case-service"
               severity: critical
               team: platform
             exp_annotations:

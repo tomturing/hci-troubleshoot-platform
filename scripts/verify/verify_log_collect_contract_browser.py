@@ -52,8 +52,8 @@ ASSERTIONS = [
 def build_bundle(workdir: Path) -> Path:
     entry = workdir / "entry.ts"
     entry.write_text(
-        "export * from '%s/logCollectDisplay'\n"
-        "export * from '%s/logCollectUi'\n" % (SHARED, SHARED),
+        f"export * from '{SHARED}/logCollectDisplay'\n"
+        f"export * from '{SHARED}/logCollectUi'\n",
         encoding="utf-8",
     )
     out = workdir / "lc-shared.js"
@@ -90,13 +90,13 @@ def main() -> int:
                 print(("ok   " if ok else "FAIL ") + name)
                 if not ok:
                     failed.append(name)
-            print("浏览器产物码数：%s" % page.evaluate("() => Object.keys(LC.FAULT_CATALOG).length"))
+            print(f"浏览器产物码数：{page.evaluate('() => Object.keys(LC.FAULT_CATALOG).length')}")
             browser.close()
     if failed:
         for name in failed:
             print("FAIL:", name, file=sys.stderr)
         return 1
-    print("[PASS] 契约生成物在 chromium 中 %d 项口径一致" % len(ASSERTIONS))
+    print(f"[PASS] 契约生成物在 chromium 中 {len(ASSERTIONS)} 项口径一致")
     return 0
 
 

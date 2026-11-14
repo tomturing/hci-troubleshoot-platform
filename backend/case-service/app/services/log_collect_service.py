@@ -18,6 +18,12 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
+from shared.observability.metrics import (
+    LOG_COLLECT_ATTRIBUTION_TOTAL,
+    LOG_COLLECT_CONTRACT_DRIFT_TOTAL,
+    LOG_COLLECT_TRACE_FALLBACK_TOTAL,
+)
+
 from ..domain.log_collect_display import snapshot_artifact_evidence
 from ..models.log_collect import LogCollectTask
 from ..repositories.log_collect_repo import LogCollectTaskRepository
@@ -26,12 +32,6 @@ from ..schemas.log_collect import (
     LogCollectTaskCreate,
     LogCollectTaskPatch,
 )
-from shared.observability.metrics import (
-    LOG_COLLECT_ATTRIBUTION_TOTAL,
-    LOG_COLLECT_CONTRACT_DRIFT_TOTAL,
-    LOG_COLLECT_TRACE_FALLBACK_TOTAL,
-)
-
 from .log_collect_error_attribution import (
     UNATTRIBUTED_CODE,
     derive_error_code,
