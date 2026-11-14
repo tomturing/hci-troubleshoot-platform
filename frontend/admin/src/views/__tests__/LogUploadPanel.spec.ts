@@ -311,10 +311,13 @@ describe('LogUploadPanel', () => {
     wrapper.unmount()
   })
 
-  it('旧桥接端无传输样本：明示版本较旧，不拿 0/100 顶替', async () => {
+  it('无传输样本时如实说明没有数据，不拿 0/100 顶替，也不无判据归因桥版本', async () => {
     const wrapper = await mountPanel()
     const text = wrapper.text()
-    expect(text).toContain('桥接端版本较旧，暂无该数据')
+    // 只有后端明确给出 bridge_outdated 条件才允许说「版本较旧」；
+    // 单纯没有样本只能说没有数据，否则 S1 就失败的任务也会被误判为桥没升级。
+    expect(text).toContain('该环节尚无上报记录')
+    expect(text).not.toContain('100%')
     expect(text).toContain('合成进度 —')
     wrapper.unmount()
   })

@@ -56,6 +56,7 @@ import {
 } from '@/utils/logCollectDelivery'
 import { logCollectErrorHint } from '@/services/logCollectErrorHints'
 import { customerFaultText, showCustomerFault } from '@/utils/logCollectFault'
+import { UI_TEXT, MISSING_DATA_TEXT, RENDER_POLICY } from '@hci/shared'
 import LogCollectFaultCard from './LogCollectFaultCard.vue'
 import LogCollectDiagnosis from '@/components/LogCollectDiagnosis.vue'
 import {
@@ -993,13 +994,38 @@ const resultHeadline = computed<{ type: 'success' | 'warning' | 'error' | 'info'
     }),
 )
 
-/** 桥接端没升级时不上报速率/探测：明确说「没有数据」，不拿 0 或 100 顶替。 */
-const BRIDGE_OUTDATED_HINT = '桥接端版本较旧，暂无该数据'
 /** capabilities 探测结论：旧桥不认识 log_collect_evidence 时显式提示，不静默降级。 */
 const bridgeEvidenceCapable = ref(true)
 const platformTransfer = computed(() => currentTask.value?.transfer ?? resultTask.value?.transfer ?? null)
 const platformNetwork = computed(() => currentTask.value?.network ?? resultTask.value?.network ?? null)
 const platformDisplay = computed(() => currentTask.value?.display ?? resultTask.value?.display ?? null)
+
+/**
+ * 「没有数据」同页只说一次，且必须可归因：
+ * 未进入传输/探测环节 → 如实说未进入，不能赖到桥接端版本上；
+ * 明确旧桥 → 说版本旧；其余 → 说尚无上报记录。文案全部来自契约。
+ */
+const evidenceHint = computed(() => {
+  if (!platformDisplay.value) return ''
+  const failedBeforeTransfer =
+    (stage.value === 'failed' || platformDisplay.value.conclusion === 'failed') &&
+    !platformTransfer.value && !platformNetwork.value
+  if (failedBeforeTransfer || platformDisplay.value.phase === 'queued') {
+    return MISSING_DATA_TEXT.not_reached
+  }
+  const outdated = platformDisplay.value.conditions?.some(item => item.key === 'bridge_outdated')
+  if (!bridgeEvidenceCapable.value || outdated) return MISSING_DATA_TEXT.bridge_outdated
+  if (!platformTransfer.value && !platformNetwork.value) return MISSING_DATA_TEXT.genuinely_empty
+  return ''
+})
+
+/** 失败且未进入采集时，「未取到有效日志」是必然结果，不作为独立观察事实重复展示。 */
+const visibleConditions = computed(() => {
+  const list = platformDisplay.value?.conditions ?? []
+  if (platformDisplay.value?.conclusion !== 'failed') return list
+  const skip = RENDER_POLICY.conditions_skip_when_not_collected as readonly string[]
+  return list.filter(item => !skip.includes(item.key))
+})
 
 function formatEtaText(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—'
@@ -1797,7 +1823,8 @@ const percent = computed(() =>
 )
 
 const statusText = computed(() => {
-  if (stage.value === 'failed') return errorMessage.value || currentTask.value?.error_message || '任务失败'
+  // 失败原文由下方诊断卡完整展示一次；状态行只给结论，避免同页重复同一长句。
+  if (stage.value === 'failed') return UI_TEXT.labels.task_failed
   // 「完成」这一步有两种结局，必须分开说：真的归档了，还是只采完没交付。
   // 一律写"已归档"等于替平台撒谎（Q2026110900356：平台零产物、5888 found=false）。
   if (stage.value === 'done') {
@@ -2932,7 +2959,7 @@ async function handleStart() {
     }
     // 兜底文案必须可行动：只显示"日志收集失败"等于没给任何信息，
     // 现场只能再点一次碰运气（2026-11-12 Q2026110302155）。
-    showCustomerFault(errorMessage.value || '下发失败：平台未返回具体原因，请查看下方诊断或任务详情')
+    showCustomerFault(errorMessage.value || UI_TEXT.fallback.no_code, failureCode.value || undefined)
   } finally {
     // 主流程退出（成功/失败/取消）后必须交还写权限，否则自动对账永久停摆，
     // 结果态里「上传到平台」与归档状态就再也不会随节点态刷新。
@@ -3811,6 +3838,8 @@ async function adoptNodeTask() {
       errorMessage.value = normalizeErrorMessage(String(error?.message || error))
       failedStep.value = stepActive.value
       stage.value = 'failed'
+      // 此处失败补丁尚未落库，currentTask.error_code 可能是上一次的旧码，
+      // 绝不拿它当本次权威码；交给 customerFaultText 按契约归类。
       showCustomerFault(errorMessage.value)
       // 交付失败不写 status=failed：采集完成是真实结论，抹掉它会让用户
       // 既看不到包在哪、也找不到重试入口。失败只落在 delivery_* 上。
@@ -5204,29 +5233,26 @@ onBeforeUnmount(() => {
           <el-progress :percentage="percent" :status="progressStatus" />
           <div class="lc-status">{{ statusText }}</div>
           <div v-if="platformDisplay" class="lc-evidence">
-            <div v-if="!bridgeEvidenceCapable" class="lc-hint">
-              桥接端版本较旧：速率、网络、包内容与进程日志探测不可用；升级桌面桥后重新收集即可补齐。
-            </div>
             <div>
-              平台结论：{{ platformDisplay.conclusion_label }} · {{ platformDisplay.phase_label }} ·
-              合成进度 {{ platformDisplay.progress_percent ?? '—' }}<span v-if="platformDisplay.progress_percent !== null">%</span>
+              {{ UI_TEXT.labels.platform_conclusion }}：{{ platformDisplay.conclusion_label }} · {{ platformDisplay.phase_label }} ·
+              {{ UI_TEXT.labels.synthetic_progress }} {{ platformDisplay.progress_percent ?? UI_TEXT.fallback.unknown }}<span v-if="platformDisplay.progress_percent !== null">%</span>
             </div>
             <div v-if="platformTransfer" class="lc-hint">
-              {{ platformTransfer.stage_label ?? '—' }} · 速率 {{ platformTransfer.rate_text ?? '—' }} ·
+              {{ platformTransfer.stage_label ?? UI_TEXT.fallback.unknown }} · 速率 {{ platformTransfer.rate_text ?? UI_TEXT.fallback.unknown }} ·
               预计完成 {{ formatEtaText(platformTransfer.eta_sec) }}
               <span v-if="platformTransfer.stalled"> · 传输已停滞 {{ platformTransfer.stalled_seconds ?? 0 }} 秒</span>
             </div>
-            <div v-else class="lc-hint">{{ BRIDGE_OUTDATED_HINT }}（无传输速率样本）</div>
             <div v-if="platformNetwork" class="lc-hint">
-              网络质量：{{ platformNetwork.grade_label }} · 相关目标 {{ platformNetwork.relevant_target ?? '未定' }}
+              网络质量：{{ platformNetwork.grade_label }} · 相关目标 {{ platformNetwork.relevant_target ?? UI_TEXT.mode_text.unknown }}
               <span v-for="item in platformNetwork.targets" :key="item.target">
-                ｜{{ item.target }} {{ item.grade_label }}；上行 {{ item.up_text ?? '—' }}；下行 {{ item.down_text ?? '—' }}
+                ｜{{ item.target }} {{ item.grade_label }}；上行 {{ item.up_text ?? UI_TEXT.fallback.unknown }}；下行 {{ item.down_text ?? UI_TEXT.fallback.unknown }}
                 <span v-if="item.advice">（{{ item.advice }}）</span>
               </span>
             </div>
-            <div v-else class="lc-hint">{{ BRIDGE_OUTDATED_HINT }}（无网络探测数据）</div>
-            <div v-if="platformDisplay.conditions.length" class="lc-hint">
-              观察事实：{{ platformDisplay.conditions.map(item => item.label).join('、') }}
+            <!-- 无数据提示按判据合并成一条，不再把「没数据」直接说成「桥接端版本较旧」。 -->
+            <div v-if="evidenceHint" class="lc-hint">{{ evidenceHint }}</div>
+            <div v-if="visibleConditions.length" class="lc-hint">
+              {{ UI_TEXT.labels.observed_facts }}：{{ visibleConditions.map(item => item.label).join('、') }}
             </div>
           </div>
         </div>

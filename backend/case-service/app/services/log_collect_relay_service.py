@@ -490,7 +490,15 @@ class LogCollectRelayService:
         # 5888 会直接 400 Invalid filename，而那个错误对排障毫无指向性。
         archive_name = self.archive_filename(task.case_id)
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+        # 5888 的 before_request 会复用上游 X-Request-ID，并写进日志与响应头。
+        # 在此注入任务 trace_id，P2 代传的每个分片、状态查询与归档确认就都挂在
+        # 同一条调用链上；现网日志服务器无需改代码或重启。
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=10.0),
+            # 历史/测试对象可能没有 trace_id 列，取值必须容错；空值让 5888 自行生成，
+            # 但绝不能因为缺属性把一次正常代传打成失败。
+            headers={"X-Request-ID": str(getattr(task, "trace_id", "") or "")},
+        ) as client:
             upload_id = (task.relay_upload_id or "").strip()
             chunk_size = int(task.relay_chunk_size or 0)
             chunk_total = int(task.relay_chunk_total or 0)

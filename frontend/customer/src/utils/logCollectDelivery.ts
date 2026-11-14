@@ -1,4 +1,5 @@
 import type { UploadInitResult } from '@/api/logCollect'
+import { UI_TEXT } from '@hci/shared'
 
 /**
  * 日志包交付的协议层工具。
@@ -459,7 +460,7 @@ export function buildResultHeadline(args: {
     const diagnosis = needDiagnosis
       ? code
         ? `错误码 ${code}${hint ? `（${hint}）` : ''}：先按下方「如何检查」确认，再按「如何处理」修复`
-        : '平台未给出可识别的错误码：请先看下方诊断与任务详情里的 error_message / create_output'
+        : UI_TEXT.fallback.no_code
       : ''
     const facts = (display.conditions ?? []).map((item) => item.label).filter(Boolean)
     const evidence = artifact?.quality_label
@@ -486,7 +487,7 @@ export function buildResultHeadline(args: {
     // 且把错误码与结论直接摆到第一屏。
     const diagnosis = code
       ? `错误码 ${code}${conclusion ? `（${conclusion}）` : ''}：先按下方「如何检查」确认，再按「如何处理」修复`
-      : '平台未给出可识别的错误码：请先看下方诊断与任务详情里的 error_message / create_output'
+      : UI_TEXT.fallback.no_code
     return {
       type: 'error',
       title: `该工单上次采集失败（${when}）`,

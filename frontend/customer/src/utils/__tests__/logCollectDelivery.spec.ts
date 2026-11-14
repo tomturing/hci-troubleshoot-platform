@@ -455,7 +455,7 @@ describe('buildResultHeadline', () => {
 
   it('没有可识别错误码时横幅指向任务详情，不编造结论', () => {
     const headline = buildResultHeadline({ status: 'failed', when: WHEN })
-    expect(headline.description).toContain('平台未给出可识别的错误码')
+    expect(headline.description).toContain('平台未记录到可定位的错误码')
     expect(headline.description).toContain('error_message')
     expect(headline.description).not.toContain('LC-')
   })

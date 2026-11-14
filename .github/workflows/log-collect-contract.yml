@@ -1,0 +1,37 @@
+name: log-collect-contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'contracts/log_collect_display.json'
+      - 'scripts/gen_log_collect_display.py'
+      - 'scripts/verify_log_collect_contract.py'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'terminal_bridge/**'
+      - '.github/workflows/log-collect-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/log_collect_display.json'
+      - 'scripts/gen_log_collect_display.py'
+      - 'scripts/verify_log_collect_contract.py'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'terminal_bridge/**'
+      - '.github/workflows/log-collect-contract.yml'
+  workflow_dispatch:
+
+jobs:
+  single-source:
+    name: 日志收集唯一出处
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # 两个脚本只依赖 Python 标准库，不需要安装第三方包或创建虚拟环境。
+      - name: 契约生成物一致性（七份产物）
+        run: python3 scripts/gen_log_collect_display.py --check
+      - name: 唯一出处门禁（字典闭合 / 手写表回归 / 禁词 / 调用链表）
+        run: python3 scripts/verify_log_collect_contract.py

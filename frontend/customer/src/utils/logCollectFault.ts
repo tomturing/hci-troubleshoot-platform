@@ -9,12 +9,16 @@
  * 说法，客户截图回来仍要人肉反查是哪一层。统一出口后，任何报错都能一眼定界。
  */
 import { ElMessage } from 'element-plus'
-import { FAULT_CATALOG, FAULT_DEFAULT_CODE, classifyFault, formatFaultText } from '@hci/shared'
+import { FAULT_CATALOG, FAULT_DEFAULT_CODE, UI_TEXT, classifyFault, formatFaultText } from '@hci/shared'
 
 /** 已知错误码优先（调用点比文本更清楚是哪一段），否则按契约关键词归类。 */
 export function customerFaultText(error: unknown, preferredCode?: string | null): string {
-  const resolved = preferredCode && preferredCode in FAULT_CATALOG ? preferredCode : classifyFault(error)
-  return formatFaultText(resolved || FAULT_DEFAULT_CODE)
+  if (preferredCode && preferredCode in FAULT_CATALOG) return formatFaultText(preferredCode)
+  const guessed = classifyFault(error)
+  // 没有权威码时，不能把「未命中关键词」说成「平台没给码」：
+  // 诊断卡与任务详情里已有完整原因，这里只引导去看，不编造结论。
+  if (guessed === FAULT_DEFAULT_CODE) return UI_TEXT.fallback.no_code
+  return formatFaultText(guessed)
 }
 
 /** 链路故障弹框：客户截图反馈时，这一行就是定位所需的全部信息。 */

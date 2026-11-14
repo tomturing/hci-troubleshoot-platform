@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""从 contracts/log_collect_display.json 生成前后端共用常量。
+"""从 contracts/log_collect_display.json 生成全平台日志收集常量与文案。
 
-单一来源：契约 JSON。产物：Python 常量 + TS 常量。
+单一来源：契约 JSON（schema v3）。产物共七份，覆盖 Go / Python / TS / SQL 消费端：
+    backend/case-service/app/domain/log_collect_display_generated.py
+    backend/case-service/app/services/log_collect_attribution_rules_generated.py
+    backend/shared/resolution/catalogs/log_collect_error_catalog.json
+    terminal_bridge/log_collect_contract_generated.go
+    frontend/shared/src/logCollectDisplay.ts
+    frontend/shared/src/logCollectUi.ts
+    frontend/customer/src/services/logCollectErrorHints.ts
+
 用法：
     python3 scripts/gen_log_collect_display.py           # 写入产物
     python3 scripts/gen_log_collect_display.py --check   # 仅校验，漂移则退出码 1
 
-为什么不手写两份：状态文案、体积格式化、阈值一旦两侧各写一份，必然漂移
+为什么不手写第二份：状态文案、体积格式化、阈值一旦两侧各写一份，必然漂移
 （历史上同一个 608 字节包出现过 608 B / 0.0 MB / 608 字节三种口径）。
-三段五组件、S1-S8 阶段、错误字典与「组件标签：问题描述；建议动作」文案同样只认这一份。
+运行时 71 码、证据派生 20 码、客户检查/处理建议、无数据提示与呈现策略同样只认这一份。
 """
 
 from __future__ import annotations
@@ -29,6 +37,21 @@ PY_OUT = (
     / "log_collect_display_generated.py"
 )
 TS_OUT = REPO_ROOT / "frontend" / "shared" / "src" / "logCollectDisplay.ts"
+# 以下文件原本由人工维护，v3 起全部改为契约生成物：全仓库只允许一份手写字典。
+CATALOG_OUT = (
+    REPO_ROOT / "backend" / "shared" / "resolution" / "catalogs"
+    / "log_collect_error_catalog.json"
+)
+HINTS_OUT = (
+    REPO_ROOT / "frontend" / "customer" / "src" / "services"
+    / "logCollectErrorHints.ts"
+)
+UI_OUT = REPO_ROOT / "frontend" / "shared" / "src" / "logCollectUi.ts"
+RULES_OUT = (
+    REPO_ROOT / "backend" / "case-service" / "app" / "services"
+    / "log_collect_attribution_rules_generated.py"
+)
+GO_OUT = REPO_ROOT / "terminal_bridge" / "log_collect_contract_generated.go"
 
 PY_HEADER = '''"""自动生成，请勿手改。
 
@@ -233,7 +256,11 @@ export function faultDetail(code: string, traceId?: string | null) {
 
 
 def _py_literal(name: str, value: object) -> str:
-    return f"{name} = {json.dumps(value, ensure_ascii=False, indent=4, sort_keys=True)}\n"
+    # 必须用 Python 字面量而非 JSON：运行时码里含布尔 retryable / 空值，
+    # json.dumps 会写出 false/null，在 Python 源码里是 NameError。
+    import pprint
+
+    return f"{name} = {pprint.pformat(value, indent=4, sort_dicts=False, width=100)}\n"
 
 
 def _ts_literal(name: str, value: object) -> str:
@@ -400,6 +427,147 @@ def render_ts(contract: dict) -> str:
     return "".join(parts)
 
 
+def render_error_catalog(contract: dict) -> str:
+    """运行时字典生成物：保持原 JSON 结构，Go 侧双向校验测试继续读取。"""
+    errors = [
+        {
+            "code": code,
+            "layer": item["layer"],
+            "stage": item["business_stage"],
+            "title_zh": item["title_zh"],
+            "owner": item["owner"],
+            "retryable": item["retryable"],
+            "http_status": item["http_status"],
+            "user_hint": item["action"],
+            "ops_hint": item["admin_detail"],
+        }
+        for code, item in contract["fault_catalog"].items()
+        if item.get("kind") == "runtime"
+    ]
+    payload = {
+        "schema_version": 1,
+        "_generated_from": "contracts/log_collect_display.json",
+        "domain": "log_collect",
+        "naming": "LC-<LAYER>-<NNN>",
+        "conventions": contract["conventions"],
+        "layers": contract["layers"],
+        "errors": errors,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def render_hints(contract: dict) -> str:
+    """客户诊断卡建议表：导出接口不变，内容全部来自契约。"""
+    rows = []
+    for code, item in sorted(contract["fault_catalog"].items()):
+        if item.get("kind") != "runtime":
+            continue
+        rows.append(
+            f"  {json.dumps(code)}: {{\n"
+            f"    title: {json.dumps(item['title_zh'], ensure_ascii=False)},\n"
+            f"    check: {json.dumps(item['check'], ensure_ascii=False)},\n"
+            f"    fix: {json.dumps(item['fix'], ensure_ascii=False)},\n"
+            f"  }},"
+        )
+    return (
+        "/** 自动生成，请勿手改。源：contracts/log_collect_display.json */\n"
+        "export interface LogCollectErrorHint {\n"
+        "  title: string\n"
+        "  check: string[]\n"
+        "  fix: string[]\n"
+        "}\n\n"
+        "const HINTS: Record<string, LogCollectErrorHint> = {\n"
+        + "\n".join(rows)
+        + "\n}\n\n"
+        "/** 按错误码取建议；未知码返回 null，由界面指向任务详情。 */\n"
+        "export function logCollectErrorHint(code?: string | null): LogCollectErrorHint | null {\n"
+        "  const key = String(code || '').trim().toUpperCase()\n"
+        "  if (!key) return null\n"
+        "  return HINTS[key] || null\n"
+        "}\n"
+    )
+
+
+def render_ui(contract: dict) -> str:
+    """所有非码展示文案与呈现策略：custom-ui / admin-ui / verify 页共用。"""
+    ui = contract["ui"]
+    obs = contract["observability"]
+    parts = [
+        "/** 自动生成，请勿手改。源：contracts/log_collect_display.json */\n",
+        _ts_literal("UI_TEXT", ui),
+        "\n",
+        _ts_literal("STATUS_TEXT", ui["status_text"]),
+        _ts_literal("DELIVERY_TEXT", ui["delivery_text"]),
+        _ts_literal("MODE_TEXT", ui["mode_text"]),
+        _ts_literal("BUCKET_LABELS", ui["bucket_labels"]),
+        _ts_literal("MISSING_DATA_TEXT", ui["missing_data"]),
+        _ts_literal("UI_FALLBACK", ui["fallback"]),
+        _ts_literal("RENDER_POLICY", ui["render_policy"]),
+        _ts_literal("OBSERVABILITY_CONTRACT", obs),
+        "\n",
+    ]
+    return "".join(parts)
+
+
+def render_rules(contract: dict) -> str:
+    """有序补码规则：替换 log_collect_error_attribution.py 里手写的 _RULES。"""
+    rows = "\n".join(
+        f"    ({json.dumps(rule['needle'], ensure_ascii=False)}, "
+        f"{json.dumps(rule['code'])}),"
+        for rule in contract["attribution_rules"]
+    )
+    return (
+        '"""自动生成，请勿手改。源：contracts/log_collect_display.json。\n\n'
+        "顺序即优先级：具体到泛化，新增规则必须想清楚会不会抢走更具体的语义。\n"
+        '"""\n\n'
+        "from __future__ import annotations\n\n"
+        "ATTRIBUTION_RULES: tuple[tuple[str, str], ...] = (\n"
+        + rows
+        + "\n)\n"
+    )
+
+
+def render_go(contract: dict) -> str:
+    """桥侧码 → 中文文案/元数据表。常量仍由 log_collect_errors.go 定义，避免重复声明。"""
+    rows = []
+    for code, item in sorted(contract["fault_catalog"].items()):
+        if item.get("kind") != "runtime":
+            continue
+        rows.append(
+            f"\t{json.dumps(code)}: {{\n"
+            f"\t\tTitle: {json.dumps(item['title_zh'], ensure_ascii=False)},\n"
+            f"\t\tProblem: {json.dumps(item['problem'], ensure_ascii=False)},\n"
+            f"\t\tAction: {json.dumps(item['action'], ensure_ascii=False)},\n"
+            f"\t\tLayer: {json.dumps(item['layer'])},\n"
+            f"\t\tComponent: {json.dumps(item['component'])},\n"
+            f"\t\tStage: {json.dumps(item['stage'])},\n"
+            f"\t}},"
+        )
+    return (
+        "// Code generated by scripts/gen_log_collect_display.py; DO NOT EDIT.\n"
+        "// 源：contracts/log_collect_display.json；中文失败文案只在这张表里出现。\n"
+        "package main\n\n"
+        "type contractError struct {\n"
+        "\tTitle     string\n"
+        "\tProblem   string\n"
+        "\tAction    string\n"
+        "\tLayer     string\n"
+        "\tComponent string\n"
+        "\tStage     string\n"
+        "}\n\n"
+        "var contractErrors = map[string]contractError{\n"
+        + "\n".join(rows)
+        + "\n}\n\n"
+        "// contractTitle 返回该码对外展示的一句话结论；未知码返回空串，由调用方按契约兜底。\n"
+        "func contractTitle(code string) string {\n"
+        "\tif item, ok := contractErrors[code]; ok {\n"
+        "\t\treturn item.Title\n"
+        "\t}\n"
+        "\treturn \"\"\n"
+        "}\n"
+    )
+
+
 COMPONENT_CODE_PREFIX = {
     "hci": "LC-HCI-",
     "acli": "LC-ACLI-",
@@ -455,18 +623,52 @@ def validate_contract(contract: dict) -> None:
             problems.append(f"fault_matchers 引用了不存在的错误码：{matcher['code']}")
 
     for code, item in catalog.items():
+        kind = item.get("kind", "signal")
         for field in ("component", "stage", "problem", "action", "tone", "admin_detail", "evidence"):
             if not item.get(field):
                 problems.append(f"{code} 缺少字段：{field}")
-        prefix = COMPONENT_CODE_PREFIX.get(item["component"])
-        if prefix and not code.startswith(prefix):
-            problems.append(f"{code} 前缀与责任组件 {item['component']} 不一致，应为 {prefix}")
+        # runtime 码由 bridge 直接出码，前缀是层名（LC-ENV-…）而不是组件名；
+        # 「前缀绑定组件」只对 signal（证据派生归因码）成立，否则 71 个码全会被误拒。
+        if kind == "signal":
+            prefix = COMPONENT_CODE_PREFIX.get(item["component"])
+            if prefix and not code.startswith(prefix):
+                problems.append(f"{code} 前缀与责任组件 {item['component']} 不一致，应为 {prefix}")
+        else:
+            for field in ("layer", "scope", "title_zh", "check", "fix", "match_keywords"):
+                if not item.get(field):
+                    problems.append(f"{code} 缺少运行时字段：{field}")
         if item["component"] not in components:
             problems.append(f"{code}.component 非枚举组件：{item['component']}")
         if item["stage"] not in stages:
             problems.append(f"{code}.stage 不存在：{item['stage']}")
-        if code != attribution["default_code"] and code not in matcher_codes:
+        # runtime 码不需要关键词：谁失败谁出码。只有证据派生的 signal 码必须从文本归类。
+        if kind == "signal" and code != attribution["default_code"] and code not in matcher_codes:
             problems.append(f"{code} 没有匹配规则，界面永远无法归类到该错误")
+
+    # 别名必须指向存在的码、无自环；客户不许看到两个不同的码描述同一件事。
+    for alias in contract.get("aliases", []):
+        if alias["from"] == alias["to"]:
+            problems.append(f"别名自环：{alias['from']}")
+        if alias["to"] not in catalog:
+            problems.append(f"别名目标不存在：{alias['to']}")
+
+    # 呈现契约：原文/码/无数据提示在同一视图内不得重复；禁词不得进入任何文案。
+    ui = contract.get("ui") or {}
+    policy = ui.get("render_policy") or {}
+    for key, limit in (("error_message_max_per_view", 1), ("error_code_max_per_view", 1),
+                       ("bridge_outdated_max_per_view", 1)):
+        if policy.get(key, 0) != limit:
+            problems.append(f"ui.render_policy.{key} 必须为 {limit}")
+    forbidden = (contract.get("observability") or {}).get("forbidden_words", [])
+    text_blob = json.dumps({"ui": ui, "codes": catalog}, ensure_ascii=False)
+    for word in forbidden:
+        if word in text_blob:
+            problems.append(f"契约文案含禁词：{word}")
+    if not contract.get("attribution_rules"):
+        problems.append("attribution_rules 为空：无码历史任务将无法补码")
+    for rule in contract.get("attribution_rules", []):
+        if rule["code"] not in catalog:
+            problems.append(f"补码规则引用不存在的码：{rule['code']}")
 
     if problems:
         raise ValueError("契约校验失败：\n  - " + "\n  - ".join(problems))
@@ -486,6 +688,11 @@ def main() -> int:
     outputs = {
         PY_OUT: render_python(contract),
         TS_OUT: render_ts(contract),
+        CATALOG_OUT: render_error_catalog(contract),
+        HINTS_OUT: render_hints(contract),
+        UI_OUT: render_ui(contract),
+        RULES_OUT: render_rules(contract),
+        GO_OUT: render_go(contract),
     }
 
     drifted = []
