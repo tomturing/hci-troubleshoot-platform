@@ -383,6 +383,15 @@ export function canResumeDeliveryAfterReject(status?: string | null): boolean {
   return String(status ?? '').trim() === 'completed'
 }
 
+/** 按契约占位符渲染文案；占位符用 {name}，两端共用同一份模板。 */
+function fmt(template: string, vars: Record<string, string>): string {
+  // 用 split/join 而不是 replaceAll：当前 tsconfig 的 lib 还没到 ES2021。
+  return Object.entries(vars).reduce(
+    (text, [key, value]) => text.split(`{${key}}`).join(value),
+    template,
+  )
+}
+
 /** 结果态横幅的三态（success 只给"已交付"，采集完成未交付必须降级为 warning）。 */
 export interface ResultHeadline {
   type: 'success' | 'warning' | 'error' | 'info'
@@ -448,9 +457,9 @@ export function buildResultHeadline(args: {
       const traceId = String(display.trace_id || '').trim()
       return {
         type: tone,
-        title: `${display.conclusion_label}（${when}）`,
+        title: fmt(UI_TEXT.headline.conclusion_with_time, { conclusion: display.conclusion_label, when }),
         description: `${display.fault_attribution.customer_text}${
-          traceId ? `；调用链ID ${traceId}（截图反馈请一并带上）` : ''
+          traceId ? fmt(UI_TEXT.headline.trace_suffix, { trace: traceId }) : ''
         }。`,
       }
     }
@@ -459,24 +468,24 @@ export function buildResultHeadline(args: {
     const needDiagnosis = tone === 'error' || tone === 'warning'
     const diagnosis = needDiagnosis
       ? code
-        ? `错误码 ${code}${hint ? `（${hint}）` : ''}：先按下方「如何检查」确认，再按「如何处理」修复`
+        ? fmt(hint ? UI_TEXT.headline.diagnosis_with_hint : UI_TEXT.headline.diagnosis_without_hint, { code, hint })
         : UI_TEXT.fallback.no_code
       : ''
-    const facts = (display.conditions ?? []).map((item) => item.label).filter(Boolean)
+    // 观察事实由 LogCollectStatusCard 独立成行展示一次；横幅不再重复拼同一段，
+    // 否则「观察事实」会在同屏出现两遍（且 fault_attribution 分支根本走不到这里）。
     const evidence = artifact?.quality_label
-      ? `产物质量：${artifact.quality_label}（${artifact.reason_text ?? '—'}）`
+      ? fmt(UI_TEXT.headline.artifact_quality, { quality: artifact.quality_label, reason: artifact.reason_text ?? UI_TEXT.fallback.unknown })
       : ''
     const segments = [
-      display.phase_label ? `当前环节：${display.phase_label}` : '',
+      display.phase_label ? fmt(UI_TEXT.headline.current_stage, { phase: display.phase_label }) : '',
       evidence,
-      facts.length ? `观察事实：${facts.join('、')}` : '',
       diagnosis,
     ].filter(Boolean)
-    const retry = tone === 'error' && diagnosis ? '；确认原因消除后再点右下角「重新收集」' : ''
+    const retry = tone === 'error' && diagnosis ? UI_TEXT.headline.retry_after_confirm : ''
     return {
       type: tone,
-      title: `${display.conclusion_label}（${when}）`,
-      description: segments.length ? `${segments.join('；')}${retry}。` : '以下是平台记录的最近一次采集结果。',
+      title: fmt(UI_TEXT.headline.conclusion_with_time, { conclusion: display.conclusion_label, when }),
+      description: segments.length ? `${segments.join('；')}${retry}。` : UI_TEXT.headline.no_segments,
     }
   }
   if (status === 'failed') {
@@ -486,20 +495,19 @@ export function buildResultHeadline(args: {
     // 三次失败其实踩在不同阶段。横幅改成"先定位 → 再处理 → 确认后才重收"，
     // 且把错误码与结论直接摆到第一屏。
     const diagnosis = code
-      ? `错误码 ${code}${conclusion ? `（${conclusion}）` : ''}：先按下方「如何检查」确认，再按「如何处理」修复`
+      ? fmt(conclusion ? UI_TEXT.headline.diagnosis_with_hint : UI_TEXT.headline.diagnosis_without_hint, { code, hint: conclusion })
       : UI_TEXT.fallback.no_code
     return {
       type: 'error',
-      title: `该工单上次采集失败（${when}）`,
-      description: `${diagnosis}；确认原因消除后再点右下角「重新收集」。`,
+      title: fmt(UI_TEXT.headline.last_failed, { when }),
+      description: `${diagnosis}${UI_TEXT.headline.retry_after_confirm}。`,
     }
   }
   if (status === 'cancelled') {
     return {
       type: 'info',
-      title: `该工单上次采集已取消（${when}）`,
-      description:
-        '以下是平台记录的最近一次采集结果；若非本人取消，请先按下方「如何检查」确认原因，再决定是否重新收集。',
+      title: fmt(UI_TEXT.headline.last_cancelled, { when }),
+      description: UI_TEXT.headline.last_cancelled_desc,
     }
   }
   if (!delivered) {
@@ -508,19 +516,19 @@ export function buildResultHeadline(args: {
     // 而 P1 平台本就没有独立回执（Q2026111000243 上传成功后仍被写成"交付失败"）。
     const observed = describeArchiveCheck(archiveCheck)
     const next = canUpload
-      ? '可点「重新核验归档」再查一次；若确认没传上去，压缩包仍在节点时点「上传到平台」补交付（不会重新采集）。'
-      : '可点「重新核验归档」再查一次；上传可能仍在进行，包已不在节点时请到日志服务器人工核对归档件。'
+      ? UI_TEXT.headline.reverify_then_upload
+      : UI_TEXT.headline.reverify_only
     return {
       type: 'warning',
-      title: `该工单已完成日志收集，平台尚未核验到归档件（${when}）`,
-      description: `P1 由插件直传日志服务器，平台不留副本、也拿不到独立回执，只能按归档件回查。${
+      title: fmt(UI_TEXT.headline.not_delivered, { when }),
+      description: `${UI_TEXT.headline.p1_direct_note}${
         observed ? `${observed}。` : ''
       }${next}`,
     }
   }
   return {
     type: 'success',
-    title: `该工单已完成日志收集并已交付（${when}）`,
-    description: '以下是平台记录的最近一次收集结果；如需再次采集，点右下角「重新收集」。',
+    title: fmt(UI_TEXT.headline.last_success, { when }),
+    description: UI_TEXT.headline.last_success_desc,
   }
 }

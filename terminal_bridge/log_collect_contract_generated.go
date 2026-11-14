@@ -2,6 +2,8 @@
 // 源：contracts/log_collect_display.json；中文失败文案只在这张表里出现。
 package main
 
+import "strings"
+
 type contractError struct {
 	Title     string
 	Problem   string
@@ -588,4 +590,24 @@ func contractTitle(code string) string {
 		return item.Title
 	}
 	return ""
+}
+
+// contractText 存放桥侧所有对外文案模板，占位符由 contractFormat 替换。
+var contractText = map[string]string{}
+
+func init() {
+	contractText["spc_detail_join"] = "：{details}"
+	contractText["spc_host_detail"] = "{ip} — {title}"
+	contractText["spc_rejection_empty"] = "没有任何节点写入成功"
+	contractText["spc_rejection_head"] = "场景清单写入未通过（目标 {total} 台，成功 {written} 台）"
+	contractText["spc_restore_risk"] = "；回滚失败 {count} 台，这些节点可能残留平台清单（重试前须人工核对）"
+}
+
+// contractFormat 按契约占位符渲染文案，桥侧不再手写中文。
+func contractFormat(key string, vars map[string]string) string {
+	tpl := contractText[key]
+	for name, value := range vars {
+		tpl = strings.ReplaceAll(tpl, "{"+name+"}", value)
+	}
+	return tpl
 }

@@ -425,3 +425,51 @@ groups:
         annotations:
           summary: "网关自身返回 {{ $labels.code }}，未落到任何后端"
           description: "该 5xx 只出现在入口维度、service 维度没有这个 code 的序列，说明请求没走到后端 就失败了：常见成因是路由未匹配（host/path 写错）、Service 没有 endpoint（selector 不 匹配 Pod）、middleware 直接拒绝。这类故障此前完全不进告警，因为 service 维度结构性 地看不见它。排查看对应 Ingress 的 host/path 与 Service 的 endpoints 是否为空。"
+
+  # ────────────────────── 日志收集契约可观测性（PR #1510） ──────────────────────
+  # 全部指标来自 backend/shared/observability/metrics.py 的真实埋点；
+  # 不使用 node_* 等基础设施序列（node-exporter 缺失时这些序列恒为空，告警会长期静默）。
+  - name: log_collect_contract
+    rules:
+      - alert: LogCollectContractDrift
+        expr: increase(hci_log_collect_contract_drift_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "日志收集落库错误码绕过契约"
+          description: "有 error_code 不在 contracts/log_collect_display.json 的码表中，说明某个调用点又手写了一套码。按 trace_id 查 log_collect_task.detail.error_code_derivation 定位来源。"
+
+      - alert: LogCollectAttributionUnattributedHigh
+        expr: increase(hci_log_collect_attribution_total{source="unattributed"}[10m]) > 3
+        for: 2m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "日志收集失败持续无法归因"
+          description: "最近 10 分钟超过 3 次失败落为 LC-PLATFORM-011（未归因）：上游既没带规范码也没带可识别原因。按 trace_id 查 bridge_execution_logs 定位漏出点。"
+
+      - alert: LogCollectDerivedRatioHigh
+        expr: |
+          sum(rate(hci_log_collect_attribution_total{source=~"derived|unattributed"}[10m]))
+            / clamp_min(sum(rate(hci_log_collect_attribution_total[10m])), 0.001) > 0.5
+          and sum(rate(hci_log_collect_attribution_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "日志收集归因过度依赖文案推断"
+          description: "超过一半的失败码由平台按文案推断，说明上游普遍漏出规范码。应检查 bridge 与前端保存边界，而不是继续放宽关键词规则。"
+
+      - alert: LogCollectTraceMissing
+        expr: increase(hci_log_collect_trace_fallback_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "日志收集任务缺少唯一调用链"
+          description: "多个任务没有 trace_id，无法按一条链路复原 前端→网关→bridge→case-service→证据表→5888 的完整路径。查 detail.trace_backfill 与网关 X-Trace-ID 透传。"

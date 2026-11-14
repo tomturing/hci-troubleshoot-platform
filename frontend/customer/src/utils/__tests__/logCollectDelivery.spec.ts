@@ -547,7 +547,10 @@ describe('平台派生结论优先', () => {
     })
     expect(headline.type).toBe('error')
     expect(headline.title).toContain('未取到有效日志')
-    expect(headline.description).toContain('采集完成但未交付')
+    // 观察事实已移到 LogCollectStatusCard 独立成行，横幅不再重复拼同一段；
+    // 组件级用例负责断言「采集完成但未交付」仍在页面上可见。
+    expect(headline.description).not.toContain('观察事实')
+    expect(headline.description).toContain('当前环节：已结束')
     expect(headline.description).toContain('产物质量')
     expect(headline.title).not.toContain('已交付')
   })

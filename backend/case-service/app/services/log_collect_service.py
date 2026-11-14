@@ -26,7 +26,17 @@ from ..schemas.log_collect import (
     LogCollectTaskCreate,
     LogCollectTaskPatch,
 )
-from .log_collect_error_attribution import UNATTRIBUTED_CODE, derive_error_code
+from shared.observability.metrics import (
+    LOG_COLLECT_ATTRIBUTION_TOTAL,
+    LOG_COLLECT_CONTRACT_DRIFT_TOTAL,
+    LOG_COLLECT_TRACE_FALLBACK_TOTAL,
+)
+
+from .log_collect_error_attribution import (
+    UNATTRIBUTED_CODE,
+    derive_error_code,
+    is_contract_code,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -388,8 +398,12 @@ class LogCollectService:
                 task.relay_restarts = 0
                 task.cleanup_state = "none"
                 task.cleanup_reason = None
-                task.error_code = "corrected_by_node"
+                # error_code 只允许契约规范码：节点自报纠正是动作，不是失败类别。
+                # 把动作写进 detail 审计，历史哨兵值由迁移 067 统一订正。
+                task.error_code = None
                 task.error_message = audit
+                corrected_detail = task.detail if isinstance(task.detail, dict) else {}
+                task.detail = {**corrected_detail, "correction_action": "corrected_by_node"}
             else:
                 # 接管失败/取消的任务：清掉上次的失败痕迹，
                 # 否则界面会一边显示"采集中"一边显示旧错误原因。
@@ -420,6 +434,20 @@ class LogCollectService:
         return task
 
     @staticmethod
+    def _observe_attribution(task, *, source: str, code: str) -> None:
+        """在保存边界统一记录三类可观测事实：归因来源、契约漂移、调用链缺口。
+
+        指标只在这里产生，因此告警一定建立在真实埋点上；日志仍按 trace_id
+        串全链路，指标只承担「是否发生」与「发生多少」的低基数聚合。
+        """
+        LOG_COLLECT_ATTRIBUTION_TOTAL.labels(source=source, code=code).inc()
+        if not is_contract_code(code):
+            LOG_COLLECT_CONTRACT_DRIFT_TOTAL.labels(service="case-service").inc()
+        trace = getattr(task, "trace_id", None)
+        if not isinstance(trace, str) or not trace.strip():
+            LOG_COLLECT_TRACE_FALLBACK_TOTAL.labels(reason="task_missing").inc()
+
+    @staticmethod
     def attribute_failure(task) -> None:
         """失败终态兜底补码：只补空，不覆盖上游更精确的包装码。
 
@@ -429,6 +457,7 @@ class LogCollectService:
         「上游产生的码」与「平台按文案推导的码」——后者若是推导错了，能一眼看出来。
         """
         if task.error_code:
+            LogCollectService._observe_attribution(task, source="declared", code=str(task.error_code))
             return
         collect_failed = task.status == "failed"
         delivery_failed = task.delivery_status == "failed"
@@ -437,6 +466,8 @@ class LogCollectService:
         message = task.error_message if collect_failed else (task.delivery_error or task.error_message)
         code = derive_error_code(message)
         task.error_code = code
+        source = "unattributed" if code == UNATTRIBUTED_CODE else "derived"
+        LogCollectService._observe_attribution(task, source=source, code=code)
         detail = dict(task.detail or {})
         detail["error_code_derivation"] = {
             "code": code,
@@ -484,8 +515,12 @@ class LogCollectService:
         if task.status in TERMINAL_STATUSES:
             raise TaskConflictError(f"任务已结束（{task.status}），无法取消", code="LC-PLATFORM-003")
         task.status = "cancelled"
-        task.error_code = "cancelled_by_user"
+        # 取消是动作不是失败类别：error_code 保持 NULL，动作写进 detail 审计，
+        # 界面按「已取消」结论展示原因，不再弹出失败诊断卡。
+        task.error_code = None
         task.error_message = reason or "用户取消"
+        cancel_detail = task.detail if isinstance(task.detail, dict) else {}
+        task.detail = {**cancel_detail, "cancel_action": "cancelled_by_user"}
         task.finished_at = datetime.now(UTC)
         task.updated_at = datetime.now(UTC)
         await self.repository.flush()

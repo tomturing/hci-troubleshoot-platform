@@ -39,6 +39,17 @@ BRIDGE_CHANNEL_LOST_CODE = "LC-PLATFORM-010"
 _RULES = ATTRIBUTION_RULES
 
 
+def is_contract_code(code: str | None) -> bool:
+    """该码是否属于契约码表；用于检测「落库码绕过唯一出处」。
+
+    目录读取失败时降级为空表（与 derive_error_code 同一策略），
+    绝不因为字典文件不可读就让一次失败上报变成 500。
+    """
+    if not code:
+        return False
+    return code in load_error_catalog()
+
+
 def derive_error_code(message: str | None) -> str:
     """把失败文案确定性映射为规范错误码。
 

@@ -57,8 +57,7 @@ import {
 import { logCollectErrorHint } from '@/services/logCollectErrorHints'
 import { customerFaultText, showCustomerFault } from '@/utils/logCollectFault'
 import { UI_TEXT, MISSING_DATA_TEXT, RENDER_POLICY } from '@hci/shared'
-import LogCollectFaultCard from './LogCollectFaultCard.vue'
-import LogCollectDiagnosis from '@/components/LogCollectDiagnosis.vue'
+import LogCollectStatusCard from './LogCollectStatusCard.vue'
 import {
   EXTRA_PATH_MAX_COUNT,
   extraPathsLimitHint,
@@ -508,14 +507,12 @@ const failureReasonText = computed(() => {
   return local || failureTask.value?.error_message || ''
 })
 /**
- * 诊断卡的显示条件：本轮跑失败了（stage=failed），或展示的任务本身就是失败/取消终态。
- * 取消也要给原因：用户点了取消却看到"任务失败"，会以为是自己误操作导致的数据丢失。
+ * 诊断卡只给「失败」：取消是动作不是失败类别，error_code 为 NULL 时
+ * 弹出失败兜底文案会让用户以为平台丢了原因。取消原因由结果横幅与
+ * 字段表的「取消原因」行给出。
  */
 const showFailureDiagnosis = computed(
-  () =>
-    stage.value === 'failed' ||
-    failureTask.value?.status === 'failed' ||
-    failureTask.value?.status === 'cancelled',
+  () => stage.value === 'failed' || failureTask.value?.status === 'failed',
 )
 // 运行令牌：每次启动 / 取消都自增，后台轮询据此退出，避免取消后仍继续写状态
 let runToken = 0
@@ -5097,19 +5094,6 @@ onBeforeUnmount(() => {
           :title="resultHeadline.title"
           :description="resultHeadline.description"
         />
-        <!-- 一眼定界：三段五组件 + 首个异常点 + S1-S8 阶段条，与管理端同源 -->
-        <LogCollectFaultCard :display="resultTask.display" />
-        <!-- 观察事实单独成行：多值并存，不能被折叠进一条横幅描述里。 -->
-        <div v-if="resultTask.display?.conditions?.length" class="lc-evidence">
-          观察事实：
-          <el-tag
-            v-for="item in resultTask.display.conditions"
-            :key="item.key"
-            size="small"
-            type="warning"
-            effect="plain"
-          >{{ item.label }}</el-tag>
-        </div>
         <el-descriptions :column="descColumns" border size="small">
           <el-descriptions-item label="发起节点">{{ resultTask.origin_node_ip }}</el-descriptions-item>
           <el-descriptions-item label="交付路径">{{ resultDeliveryText }}</el-descriptions-item>
@@ -5142,22 +5126,25 @@ onBeforeUnmount(() => {
             </div>
           </el-descriptions-item>
           <!--
-            failed / cancelled 才出现：失败原因是采集结论的一部分，不是可选调试信息。
-            顶部提示条说"失败原因见下方错误信息"，就必须真的有这一行。
+            failed 的原文由下方状态卡里的诊断卡给出一次；cancelled 不是失败，
+            不弹诊断卡，所以取消原因在这里单独成行。
           -->
           <el-descriptions-item
-            v-if="resultTask.status === 'failed' || resultTask.status === 'cancelled'"
-            label="失败原因"
+            v-if="resultTask.status === 'cancelled'"
+            :label="UI_TEXT.labels.cancel_reason"
             :span="descColumns"
           >
             <span class="lc-error-text">{{ resultFailureText }}</span>
           </el-descriptions-item>
         </el-descriptions>
-        <!-- 结果态同样要有「怎么查、怎么处理」：隔天回来查看的场景主要走这里 -->
-        <LogCollectDiagnosis
-          v-if="showFailureDiagnosis"
+        <!-- 结果态与表单失败态共用同一张状态卡：定界 + 原文 + 怎么查怎么办，只出现一次 -->
+        <LogCollectStatusCard
+          variant="result"
+          :show-diagnosis="showFailureDiagnosis"
           :code="failureCode"
           :reason="failureReasonText"
+          :display="resultTask.display"
+          :conditions="resultTask.display?.conditions ?? []"
         />
         <p class="lc-hint">
           当前客户端在本工单下共 {{ historyTotal }} 条收集记录；已完成的任务不会被覆盖，重新收集会新建一条任务。
@@ -5251,20 +5238,19 @@ onBeforeUnmount(() => {
             </div>
             <!-- 无数据提示按判据合并成一条，不再把「没数据」直接说成「桥接端版本较旧」。 -->
             <div v-if="evidenceHint" class="lc-hint">{{ evidenceHint }}</div>
-            <div v-if="visibleConditions.length" class="lc-hint">
-              {{ UI_TEXT.labels.observed_facts }}：{{ visibleConditions.map(item => item.label).join('、') }}
-            </div>
           </div>
         </div>
 
         <!--
-          失败诊断：用户必须一眼看出「哪一步、什么原因、怎么确认、怎么处理」。
+          唯一状态卡：一眼看出「哪一步、什么原因、怎么确认、怎么处理」。
           只给一句"日志收集失败"会把人推回"再点一次"的碰运气循环（2026-11-12 现场）。
         -->
-        <LogCollectDiagnosis
-          v-if="showFailureDiagnosis"
+        <LogCollectStatusCard
+          variant="form"
+          :show-diagnosis="showFailureDiagnosis"
           :code="failureCode"
           :reason="failureReasonText"
+          :conditions="visibleConditions"
         />
 
         <!--

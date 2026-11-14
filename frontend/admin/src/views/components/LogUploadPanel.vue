@@ -21,6 +21,7 @@ import {
   MISSING_DATA_TEXT,
   MODE_TEXT,
   STATUS_TEXT,
+  UI_TEXT,
   formatLogCollectSize,
 } from '@hci/shared'
 import LogCollectAttribution from './LogCollectAttribution.vue'
@@ -241,6 +242,26 @@ function evidenceEmptyText(): string {
   }
   return MISSING_DATA_TEXT.genuinely_empty
 }
+
+/** 逐台明细：只在详情接口返回；没有上报就如实说没有，不拿 error_message 凑一行。 */
+const spcHostRows = computed<Record<string, unknown>[]>(() => {
+  const detail = detailTask.value?.detail
+  const hosts = detail?.spc_hosts
+  return Array.isArray(hosts) ? (hosts as Record<string, unknown>[]) : []
+})
+
+/**
+ * 可解释性：错误码是节点直报的，还是平台按文案推断的。
+ * 推断出来的码不能当成权威事实展示，管理员必须能一眼分辨。
+ */
+const attributionSource = computed<string>(() => {
+  const detail = detailTask.value?.detail
+  const derivation = detail?.error_code_derivation
+  if (derivation && typeof derivation === 'object') return UI_TEXT.admin.attribution_derived
+  return detailTask.value?.error_code
+    ? UI_TEXT.admin.attribution_declared
+    : UI_TEXT.admin.attribution_fallback
+})
 
 function formatTime(value: string | null): string {
   if (!value) return '—'
@@ -584,6 +605,7 @@ const summaryCells = computed(() => [
           <el-descriptions-item label="日志服务器进度">{{ progressText(detailTask) }}</el-descriptions-item>
           <el-descriptions-item label="错误码 / 原因">{{ detailTask.error_code || '—' }} {{ detailTask.error_message || '' }}</el-descriptions-item>
           <el-descriptions-item label="调用链 trace_id">{{ detailTask.trace_id || '—' }}</el-descriptions-item>
+          <el-descriptions-item :label="UI_TEXT.admin.attribution_source">{{ attributionSource }}</el-descriptions-item>
           <el-descriptions-item label="创建 / 完成 / 交付完成">
             {{ formatTime(detailTask.created_at) }} / {{ formatTime(detailTask.finished_at) }} /
             {{ formatTime(detailTask.delivery_finished_at) }}
@@ -624,6 +646,26 @@ const summaryCells = computed(() => [
           :error-code="detailTask?.error_code"
           :fallback-trace-id="detailTask?.trace_id"
         />
+
+        <!--
+          可解释性分区：逐台明细回答「哪台、哪一步、原始输出」，结构化原文
+          保留 detail jsonb 全貌。两者都只在详情接口返回，不影响列表查询。
+        -->
+        <el-collapse class="upload-structured">
+          <el-collapse-item :title="UI_TEXT.admin.per_host_section" name="hosts">
+            <div v-if="spcHostRows.length">
+              <div v-for="(host, index) in spcHostRows" :key="index" class="upload-host-row">
+                <code>{{ host.ip ?? host.host ?? '—' }}</code>
+                <span>{{ host.error ?? host.error_code ?? '—' }}</span>
+                <span v-if="host.error_detail" class="upload-sub">{{ host.error_detail }}</span>
+              </div>
+            </div>
+            <div v-else class="upload-sub">该任务未上报逐台明细。</div>
+          </el-collapse-item>
+          <el-collapse-item :title="UI_TEXT.admin.raw_section" name="raw">
+            <pre class="upload-raw">{{ JSON.stringify(detailTask.detail ?? {}, null, 2) }}</pre>
+          </el-collapse-item>
+        </el-collapse>
 
         <el-tabs v-model="detailTab" class="upload-tabs">
           <el-tab-pane label="链路定界" name="attribution">

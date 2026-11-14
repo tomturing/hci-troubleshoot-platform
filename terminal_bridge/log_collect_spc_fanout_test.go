@@ -242,7 +242,12 @@ func TestSpcRejectionMessage(t *testing.T) {
 	})
 	// 1 台成功 + 2 台失败 = 目标 3 台；口径必须写成「目标 N 台，成功 M 台」，
 	// 不能再写成「可用节点为 0」这种与集群可用节点数混淆的说法。
-	for _, must := range []string{"目标 3 台", "成功 1 台", "172.28.24.2 — 节点 SSH 认证失败", "172.28.24.3 — 场景清单目录缺失"} {
+	// 逐台标题来自契约生成码表，测试不再手写中文；只校验「IP — 标题」结构仍然存在。
+	for _, must := range []string{
+		"目标 3 台", "成功 1 台",
+		"172.28.24.2 — " + contractTitle(ErrSpcSSHAuthFailed),
+		"172.28.24.3 — " + contractTitle(ErrSpcDirMissing),
+	} {
 		if !strings.Contains(got, must) {
 			t.Fatalf("文案缺少 %q：%s", must, got)
 		}
