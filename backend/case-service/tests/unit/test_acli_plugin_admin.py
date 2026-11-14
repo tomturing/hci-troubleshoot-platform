@@ -154,6 +154,18 @@ def test_repeated_publish_is_idempotent():
     assert not any("INSERT" in sql for sql, _ in db.session.calls)
 
 
+def test_deployment_queries_never_expose_node_ip_or_lease_owner():
+    db = FakeDB([[], []])
+    store = AcliPluginAdminStore(db)
+    asyncio.run(store.list_deployments("hci_lmt_check"))
+    asyncio.run(store.get_deployment("htp-acli-test-0001"))
+    assert len(db.session.calls) == 2
+    for sql, _ in db.session.calls:
+        assert "SELECT *" not in sql
+        assert "node_ip" not in sql.lower()
+        assert "lease_owner" not in sql.lower()
+
+
 def test_environment_listing_never_exposes_addresses_or_credential_refs():
     db = FakeDB([[{"env_code": "24", "display_name": "24 环境", "enabled": True, "auth_type": "key"}]])
     rows = asyncio.run(AcliPluginAdminStore(db).list_environments())

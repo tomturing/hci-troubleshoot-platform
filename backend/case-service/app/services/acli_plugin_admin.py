@@ -64,6 +64,13 @@ def prepare_publication(
     }
 
 
+# 回显给管理端的列：刻意排除 node_ip / lease_owner 等服务端内部字段，
+# 保证页面既不能提交、也不会读到目标主机地址。
+_DEPLOYMENT_COLUMNS = """deploy_id, plugin_name, revision, spec_hash, env_code, status,
+    attempt, exec_id, trace_id, verification, bridge_result,
+    error_code, error_message, created_at, finished_at"""
+
+
 class AcliPluginAdminStore:
     """管理端持久化；所有 SQL 在同一事务内提交，避免「有规格没任务」。"""
 
@@ -228,8 +235,8 @@ class AcliPluginAdminStore:
         rows = await self._script(
             [
                 (
-                    """
-                    SELECT * FROM acli_plugin_deployment
+                    f"""
+                    SELECT {_DEPLOYMENT_COLUMNS} FROM acli_plugin_deployment
                      WHERE plugin_name = :plugin_name
                      ORDER BY created_at DESC
                      LIMIT :limit
@@ -242,7 +249,12 @@ class AcliPluginAdminStore:
 
     async def get_deployment(self, deploy_id: str) -> dict[str, Any] | None:
         rows = await self._script(
-            [("SELECT * FROM acli_plugin_deployment WHERE deploy_id = :deploy_id", {"deploy_id": deploy_id})]
+            [
+                (
+                    f"SELECT {_DEPLOYMENT_COLUMNS} FROM acli_plugin_deployment WHERE deploy_id = :deploy_id",
+                    {"deploy_id": deploy_id},
+                )
+            ]
         )
         return rows[0][0] if rows and rows[0] else None
 
