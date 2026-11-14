@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.37.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.36.0...v2.37.0) (2026-11-14)
+
+
+### ✨ 新功能
+
+* **admin:** acli 插件配置下发页面与全链路闭环 ([#1508](https://github.com/tomturing/hci-troubleshoot-platform/issues/1508)) ([e347942](https://github.com/tomturing/hci-troubleshoot-platform/commit/e3479428cc021929ece4948b798bc23036edd0bf))
+* **dsh:** 新增 DSH 离线诊断实例并接入管理台，合并工单多次采集包 ([#1501](https://github.com/tomturing/hci-troubleshoot-platform/issues/1501)) ([1677994](https://github.com/tomturing/hci-troubleshoot-platform/commit/16779941d7f834ef72bc2eb839d910646a312f2b))
+* **log-collect:** 三段五组件定界与首个异常点归因 ([#1499](https://github.com/tomturing/hci-troubleshoot-platform/issues/1499)) ([912982e](https://github.com/tomturing/hci-troubleshoot-platform/commit/912982e22c5a30fc6cf3ae515336e5d7428dfc34))
+* **log-collect:** 日志收集可观测性与显示口径统一（方案 D 一次性交付） ([#1490](https://github.com/tomturing/hci-troubleshoot-platform/issues/1490)) ([f96b0bf](https://github.com/tomturing/hci-troubleshoot-platform/commit/f96b0bfbc4a252f024065e909ed8841eb9b83ea1))
+* **obs:** 补 node-exporter 数据源并静态采集 ticket-sync，让磁盘告警真正能响 ([#1494](https://github.com/tomturing/hci-troubleshoot-platform/issues/1494)) ([6e679c4](https://github.com/tomturing/hci-troubleshoot-platform/commit/6e679c4ecb98ef0826f895032dfe77570dad57e8))
+* 日志收集全链路报错文案收敛到唯一契约（含遗留项一次收口） ([2dd1d13](https://github.com/tomturing/hci-troubleshoot-platform/commit/2dd1d13daed5fc1cde63adfdc3839427edc33a1e))
+
+
+### 🐛 Bug 修复
+
+* **customer:** 终端打开即让位中央，修正 1080/1366 屏开终端反而吞面板 ([#1505](https://github.com/tomturing/hci-troubleshoot-platform/issues/1505)) ([5ffe050](https://github.com/tomturing/hci-troubleshoot-platform/commit/5ffe0506d032ed72f466dfa9d5484f313cb37589))
+* **deploy:** 拉齐 dev 与 staging 能力面并根治 GitOps 漂移 ([#1495](https://github.com/tomturing/hci-troubleshoot-platform/issues/1495)) ([338591a](https://github.com/tomturing/hci-troubleshoot-platform/commit/338591ac83f21573d059d7e5426fd37ab8818a9d))
+* **dsh:** 为 dev 补齐绝对 publicUrl 消除主容器启动失败 ([#1496](https://github.com/tomturing/hci-troubleshoot-platform/issues/1496)) ([32c3a6f](https://github.com/tomturing/hci-troubleshoot-platform/commit/32c3a6f18846098b08dce44c04fdf2d8687395e6))
+* **dsh:** 关闭 dev 独立 Ingress 消除 IP host 导致的 SyncError ([#1497](https://github.com/tomturing/hci-troubleshoot-platform/issues/1497)) ([cec78f5](https://github.com/tomturing/hci-troubleshoot-platform/commit/cec78f5a31d4587d23e170580b3b63f230b67531))
+* **log-collect:** 传输中口径排除僵尸会话，失败一律可归因 ([#1486](https://github.com/tomturing/hci-troubleshoot-platform/issues/1486)) ([4766ddc](https://github.com/tomturing/hci-troubleshoot-platform/commit/4766ddc15ea71080362e765046deb0d16f279672))
+* **log-collect:** 壳工单可认领、数据按任务授权、补交付入口立即可见 ([#1502](https://github.com/tomturing/hci-troubleshoot-platform/issues/1502)) ([198fa92](https://github.com/tomturing/hci-troubleshoot-platform/commit/198fa929138bafd5c21eb33e1059d478cae53a41))
+* **log-collect:** 报错精确化，按 SPC/专项/未接单三段归因并给出检查与处理建议 ([#1488](https://github.com/tomturing/hci-troubleshoot-platform/issues/1488)) ([ff0db13](https://github.com/tomturing/hci-troubleshoot-platform/commit/ff0db1337065b1f394d22842017f6e72d898d7a8))
+* **log-collect:** 结果态横幅改为带错误码与结论，不再劝盲目重试 ([#1489](https://github.com/tomturing/hci-troubleshoot-platform/issues/1489)) ([68be227](https://github.com/tomturing/hci-troubleshoot-platform/commit/68be2271172cdaff0859c3fc29713d55a75ba4fa))
+* **obs:** 新增 ScrapeTargetDown 并修正可用性告警标签口径 ([0406662](https://github.com/tomturing/hci-troubleshoot-platform/commit/04066623b2d36cb373a3f4945dc9c8686ce7ef4f))
+* **ticket-sync:** 清理改为半分钟级并引入磁盘水位双阈值，消除写满盘导致的全栈中断 ([#1491](https://github.com/tomturing/hci-troubleshoot-platform/issues/1491)) ([7e9ff42](https://github.com/tomturing/hci-troubleshoot-platform/commit/7e9ff4210ead3958a32f21fab8528b7484ff6771))
+* **ticket-sync:** 清理流水接口字段统一为 camelCase，修复前端「工单/当时余量」列空白 ([#1493](https://github.com/tomturing/hci-troubleshoot-platform/issues/1493)) ([171f3f7](https://github.com/tomturing/hci-troubleshoot-platform/commit/171f3f7550f05fd80acea08aa002a04ec9b6c306))
+* 修复企微多确认项多卡片发送 ([d997e23](https://github.com/tomturing/hci-troubleshoot-platform/commit/d997e23ce8090f1bf4f5bddf194d6163c04d7aab))
+* 根治存量库 PreSync 数据迁移死锁与 /dsh 启动期 DNS 硬依赖 ([#1492](https://github.com/tomturing/hci-troubleshoot-platform/issues/1492)) ([db392d7](https://github.com/tomturing/hci-troubleshoot-platform/commit/db392d7639282ca438ad35bfa89b8770c84fe040))
+
+
+### ♻️ 代码重构
+
+* 自定义场景收敛冗余审核态与最后修改展示 ([72a6cde](https://github.com/tomturing/hci-troubleshoot-platform/commit/72a6cde263ee77d0f74544418fc54e0e3dc9e52e))
+* 默认场景合并为两级页签并收敛冗余配置 ([c3c09f3](https://github.com/tomturing/hci-troubleshoot-platform/commit/c3c09f36d5dd6773dbd58410163438334d232511))
+
 ## [2.36.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.35.0...v2.36.0) (2026-11-11)
 
 
