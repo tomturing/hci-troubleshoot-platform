@@ -106,10 +106,16 @@ const router = createRouter({
       meta: { title: 'SOP管理', icon: 'Notebook', order: 7 },
     },
     {
+      path: '/acli-plugins',
+      name: 'AcliPlugin',
+      component: () => import('@/views/AcliPluginView.vue'),
+      meta: { title: 'acli插件', icon: 'MagicStick', order: 7.5 },
+    },
+    {
       path: '/tools',
       name: 'ToolManage',
       component: () => import('@/views/ToolManageView.vue'),
-      meta: { title: '工具管理', icon: 'Setting', order: 8 },
+      meta: { title: 'agent工具', icon: 'Setting', order: 8 },
     },
     {
       path: '/skills',

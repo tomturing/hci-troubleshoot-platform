@@ -21,6 +21,7 @@ from shared.utils.exception_handlers import register_exception_handlers
 
 from app.config import settings
 from app.routes import (
+    acli_plugin,
     agent_exec,
     bridge_logs,
     conversations,
@@ -246,6 +247,8 @@ app.include_router(agent_exec.router)  # T-TOOL-05, T-TOOL-06
 app.include_router(bridge_logs.router)  # OBS-TERMINAL-BRIDGE-001 日志回采
 app.include_router(vm_console.router)  # qkv_vm_console 在线截图/制品/唤醒确认通道
 app.include_router(effect_verification.router)  # qkv_effect 结果卡与判定时间线
+# acli 插件路由前缀更具体（/api/v1/tools/acli-plugins），必须先于 /api/v1/tools/{tool_id} 注册。
+app.include_router(acli_plugin.router)
 app.include_router(tool_definition.router)
 app.include_router(system_prompt.router)
 app.include_router(skill_definition.router)
