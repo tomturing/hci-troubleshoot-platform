@@ -49,7 +49,7 @@ dsh_cockpit-rules/
 
 | 插件 | 版本 | 用途 |
 |---|---:|---|
-| `deepseek-harness-wecom` | `0.1.33` | 企业微信通道 |
+| `deepseek-harness-wecom` | `0.1.34` | 企业微信通道；多于三个确认项时拆分多张卡片并保持同一会话答案状态 |
 | `deepseek-harness-session-bi` | `0.1.21` | 会话运营台账与规则包 |
 | `hci-offline-diagnosis-bundle` | `0.4.2` | HCI 单 Agent 离线诊断 Preset；移除 DSH 0.2.1 未提供的执行器插件 |
 
