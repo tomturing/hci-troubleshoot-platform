@@ -533,14 +533,16 @@ def render_go(contract: dict) -> str:
     for code, item in sorted(contract["fault_catalog"].items()):
         if item.get("kind") != "runtime":
             continue
+        # gofmt 会把 struct 字面量字段按最长字段名对齐；生成器必须直接产出
+        # gofmt 格式，否则 CI 的 `test -z "$(gofmt -l .)"` 会红，而 CI 不保证装有 Go。
         rows.append(
             f"\t{json.dumps(code)}: {{\n"
-            f"\t\tTitle: {json.dumps(item['title_zh'], ensure_ascii=False)},\n"
-            f"\t\tProblem: {json.dumps(item['problem'], ensure_ascii=False)},\n"
-            f"\t\tAction: {json.dumps(item['action'], ensure_ascii=False)},\n"
-            f"\t\tLayer: {json.dumps(item['layer'])},\n"
+            f"\t\tTitle:     {json.dumps(item['title_zh'], ensure_ascii=False)},\n"
+            f"\t\tProblem:   {json.dumps(item['problem'], ensure_ascii=False)},\n"
+            f"\t\tAction:    {json.dumps(item['action'], ensure_ascii=False)},\n"
+            f"\t\tLayer:     {json.dumps(item['layer'])},\n"
             f"\t\tComponent: {json.dumps(item['component'])},\n"
-            f"\t\tStage: {json.dumps(item['stage'])},\n"
+            f"\t\tStage:     {json.dumps(item['stage'])},\n"
             f"\t}},"
         )
     return (
