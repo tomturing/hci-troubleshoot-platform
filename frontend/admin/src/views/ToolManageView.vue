@@ -641,8 +641,8 @@ onMounted(() => {
     <div class="page-header">
       <div class="header-row">
         <div>
-          <h2 class="page-title">agent工具</h2>
-          <p class="page-desc">管理 ReAct 引擎可调用的 HCI 诊断工具及 API 接口；设备侧 acli 插件请在左侧「acli插件」页面维护与下发。</p>
+          <h2 class="page-title">工具注册表</h2>
+          <p class="page-desc">管理 ReAct 引擎可调用的 HCI 诊断插件及 API 接口。</p>
         </div>
         <el-button type="primary" @click="openCreateDialog">
           <el-icon class="el-icon--left"><Plus /></el-icon> 新建工具定义
