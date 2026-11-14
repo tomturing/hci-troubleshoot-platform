@@ -11,12 +11,15 @@
     conclusion  业务结论，互斥，``pending`` 表示尚未终结
     conditions  并存的观察事实，多值
 
-conclusion 的三条硬规则（对抗性审查后收敛）：
-    1. 已结束但从未交付 → ``failed``；若按 ``pending`` 渲染，界面会重现
-       「已完成 100% + 交付未开始」，且交付可补、结论必须诚实。
-    2. 已交付但产物不可用/不可信 → ``partial``：字节确实到了，结论是
+conclusion 的四条硬规则（对抗性审查后收敛）：
+    1. 已结束且从未发起交付（``delivery_status=none``）→ ``failed``；若按 ``pending``
+       渲染，界面会重现「已完成 100% + 交付未开始」，且交付可补、结论必须诚实。
+    2. 已结束但交付已登记、只是没被拉走/传完（``delivery_status=queued``）→
+       ``unfinished``：这是可续传的中间态，判 ``failed`` 会让用户放弃一个仍能补交付
+       的包（Q2026111301229 就是这样被"失败"红条劝去重新收集的）。
+    3. 已交付但产物不可用/不可信 → ``partial``：字节确实到了，结论是
        「有疑点，建议重采」，既不宣称成功也不宣称什么都没到。
-    3. 只有「已交付 + 交付证据成立 + 包内容校验通过」才是 ``success``。
+    4. 只有「已交付 + 交付证据成立 + 包内容校验通过」才是 ``success``。
 """
 
 from __future__ import annotations
@@ -693,6 +696,10 @@ def _conclusion(
         return "pending"
     if delivered:
         return "success" if evidence_ok and quality == "ok" else "partial"
+    # 交付已登记但没被拉走/传完：可续传的中间态，不是失败
+    # （Q2026111301229：包在节点上、delivery_status=queued，被判「失败」自相矛盾）
+    if delivery_status == "queued":
+        return "unfinished"
     # 已结束但从未交付（Q2026111201130 的形态）：不能显示「进行中」。
     return "failed"
 
@@ -728,7 +735,9 @@ def _build_conditions(
     if verifying:
         # 等待窗口内只报「正在核验归档件」：说「采集完成但未交付」会让人误以为要重采。
         present.add("verifying_archive")
-    elif status == "completed" and delivery_status == "none":
+    elif status == "completed" and delivery_status in ("none", "queued"):
+        # queued 也要计入：交付已登记但平台零字节，"未交付"是事实而非终态失败，
+        # 与 conclusion=unfinished 必须同屏出现，否则结论与条件各说各话。
         present.add("handoff_pending")
     if delivered and not evidence_ok:
         present.add("delivered_unverified")

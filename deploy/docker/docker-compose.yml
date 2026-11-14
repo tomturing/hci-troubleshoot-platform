@@ -111,6 +111,8 @@ services:
       DIAGNOSIS_SERVICE_URL: ${DIAGNOSIS_SERVICE_URL:-http://diagnosis-service:8008}
       DSH_SERVICE_URL: ${DSH_SERVICE_URL:-http://dsh:8080}
       DSH_PUBLIC_PATH: ${DSH_PUBLIC_PATH:-/dsh/}
+      DSH_OFFLINE_SERVICE_URL: ${DSH_OFFLINE_SERVICE_URL:-http://dsh-offline:8080}
+      DSH_OFFLINE_PUBLIC_PATH: ${DSH_OFFLINE_PUBLIC_PATH:-/dsh-offline/}
       DIAGNOSIS_IDENTITY_MODE: ${DIAGNOSIS_IDENTITY_MODE:-internal}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001,http://localhost:3002}
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-hci-dev-internal-token}
@@ -446,10 +448,12 @@ services:
 
   # ============ DSH（DeepSeek Harness）====================================
   # dsh 仍只监听共享网络命名空间内的 127.0.0.1:3080；nginx sidecar 使用
-  # network_mode: service:dsh 共享该 loopback，外部只暴露 sidecar 的 8080。
+  # network_mode: service:dsh 共享该 loopback，admin-ui 通过 Compose 网络访问 sidecar。
   dsh:
     # 当前 DSH 0.2.1-rc.2 的 ARM64 原生 binding 不完整，生产目标固定 Linux x86。
     platform: linux/amd64
+    # 旧、新两个 DSH 服务共用同一份镜像；profile、插件、家目录和 token 仍由各自服务隔离。
+    image: docker-dsh:latest
     build:
       context: ../..
       dockerfile: dsh/Dockerfile
@@ -473,8 +477,6 @@ services:
       WECOM_BOT_ID: ${WECOM_BOT_ID:-}
       WECOM_BOT_SECRET: ${WECOM_BOT_SECRET:-}
       WECOM_WORKSPACE_ROOT: ${WECOM_WORKSPACE_ROOT:-/work/wecom}
-    ports:
-      - "3080:8080"
     volumes:
       - dsh_home:/home/dsh
       - dsh_workspace:/work
@@ -522,10 +524,77 @@ services:
     networks:
       - hci-troubleshoot-platform_default
 
+  # ============ HCI 单 Agent 离线诊断 DSH ================================
+  # 与旧 dsh 使用独立家目录、工作区、token 卷和网络别名；两套 profile 可同时运行。
+  dsh-offline:
+    platform: linux/amd64
+    # 与旧 dsh 共用已由 compose-build-services 构建的镜像，支持 dev-up 的 --no-build。
+    image: docker-dsh:latest
+    build:
+      context: ../..
+      dockerfile: dsh/Dockerfile
+      args:
+        DSH_VERSION: ${DSH_VERSION:-0.2.1-rc.2}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    container_name: hci-dsh-offline
+    entrypoint: ["/usr/local/bin/docker-compose-entrypoint.sh"]
+    environment:
+      # 容器内端口固定为 3080；由同网络的 dsh-offline-proxy 承载访问。
+      DSH_PORT: 3080
+      # 以下 DSH_* 变量由 DSH_OFFLINE_* 宿主机配置映射而来，避免与旧 dsh 共用配置。
+      DSH_PROFILE: ${DSH_OFFLINE_PROFILE:-web}
+      DSH_PUBLIC_URL: ${DSH_OFFLINE_PUBLIC_URL:-http://localhost:3002/dsh-offline/}
+      DSH_TRUSTED_HOST: ${DSH_OFFLINE_TRUSTED_HOST:-localhost}
+      DSH_QWEN_API_KEY: ${DSH_OFFLINE_QWEN_API_KEY:-}
+      DSH_LLM_PROVIDER_ID: ${DSH_OFFLINE_LLM_PROVIDER_ID:-aliyun-maas}
+      DSH_LLM_API: ${DSH_OFFLINE_LLM_API:-openai-completions}
+      DSH_LLM_BASE_URL: ${DSH_OFFLINE_LLM_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
+      DSH_LLM_MODEL: ${DSH_OFFLINE_LLM_MODEL:-qwen3.8-flash}
+      DSH_PLUGIN_PACKAGES: ${DSH_OFFLINE_PLUGIN_PACKAGES:-/opt/dsh-plugins/deepseek-harness-wecom-0.1.33.tgz /opt/dsh-plugins/deepseek-harness-session-bi-0.1.21.tgz /opt/dsh-plugins/hci-offline-diagnosis-bundle-0.4.1.tgz}
+      # 插件读取的容器内变量；值分别来自新实例独立的 DSH_OFFLINE_* 配置。
+      WECOM_BOT_ID: ${DSH_OFFLINE_WECOM_BOT_ID:-}
+      WECOM_BOT_SECRET: ${DSH_OFFLINE_WECOM_BOT_SECRET:-}
+      WECOM_WORKSPACE_ROOT: ${DSH_OFFLINE_WECOM_WORKSPACE_ROOT:-/data/tickets}
+      WECOM_RULE_WORKSPACE_ROOT: ${DSH_OFFLINE_WECOM_RULE_WORKSPACE_ROOT:-/home/dsh/.dsh/session-bi/work-ticket-rules}
+      WECOM_AGENT_PRESET: ${DSH_OFFLINE_WECOM_AGENT_PRESET:-hci-offline}
+      # HCI bundle 的知识根目录；支持包由 WECOM_WORKSPACE_ROOT 的会话工单目录绑定，
+      # Session BI 目录由独立 DSH_HOME 的插件默认值派生。
+      HCI_KNOWLEDGE_ROOT: ${DSH_OFFLINE_HCI_KNOWLEDGE_ROOT:-/data/tickets/knowledge}
+    volumes:
+      - dsh_offline_home:/home/dsh
+      - dsh_offline_workspace:/work
+      - dsh_offline_token:/run/dsh
+      # 插件制品只读挂载；路径必须与 DSH_OFFLINE_PLUGIN_PACKAGES 对应。
+      - ../../dsh/plugins:/opt/dsh-plugins:ro
+      # 客户日志是宿主机路径，容器内固定为只读 /data/customer-logs。
+      - ${DSH_OFFLINE_CUSTOMER_LOGS_PATH:-../../dsh/data/customer-logs}:/data/customer-logs:ro
+      # 工单宿主机路径挂载到 WECOM_WORKSPACE_ROOT；两者必须保持同一容器路径。
+      - ${DSH_OFFLINE_TICKETS_PATH:-../../dsh/data/tickets}:${DSH_OFFLINE_WECOM_WORKSPACE_ROOT:-/data/tickets}:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - hci-troubleshoot-platform_default
+
+  dsh-offline-proxy:
+    platform: linux/amd64
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: hci-dsh-offline-proxy
+    network_mode: service:dsh-offline
+    depends_on:
+      dsh-offline:
+        condition: service_started
+    volumes:
+      - ../../dsh/docker-compose-nginx-offline.conf:/etc/nginx/nginx.conf:ro
+      - dsh_offline_token:/run/dsh:ro
+
   admin-ui:
     environment:
       - DNS_RESOLVER=127.0.0.11
-      - DSH_UPSTREAM=${DSH_UPSTREAM:-http://host.docker.internal:3080}
+      # admin-ui 与两个 DSH sidecar 共用 Compose 网络，直接走服务名，避免经宿主机
+      # 发布端口回环导致 host.docker.internal 的 IPv6/IPv4 选择和端口转发差异。
+      - DSH_UPSTREAM=${DSH_UPSTREAM:-http://dsh:8080}
+      - DSH_OFFLINE_UPSTREAM=${DSH_OFFLINE_UPSTREAM:-http://dsh-offline:8080}
       # Admin 仿真页面固定使用同源 /terminal-bridge；Nginx 在本地转发到桌面 Bridge。
       - TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999
       # 本地管理入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。
@@ -540,6 +609,8 @@ services:
       - "3002:80"
     depends_on:
       - api-gateway
+      - dsh-proxy
+      - dsh-offline-proxy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
@@ -552,6 +623,9 @@ volumes:
   dsh_home:
   dsh_workspace:
   dsh_token:
+  dsh_offline_home:
+  dsh_offline_workspace:
+  dsh_offline_token:
 
 networks:
   hci-troubleshoot-platform_default:

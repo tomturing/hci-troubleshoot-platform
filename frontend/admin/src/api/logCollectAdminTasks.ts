@@ -32,6 +32,8 @@ export interface ConclusionBuckets {
   pending?: number
   success?: number
   partial?: number
+  /** 交付已登记但平台零字节：可续传的中间态，既不是失败也不是已交付 */
+  unfinished?: number
   failed?: number
   cancelled?: number
 }

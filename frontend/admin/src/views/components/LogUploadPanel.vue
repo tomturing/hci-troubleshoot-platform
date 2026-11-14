@@ -367,9 +367,11 @@ async function copyPath(value: string | null) {
   }
 }
 
-const bucketKeys = ['pending', 'success', 'partial', 'failed', 'cancelled'] as const
+const bucketKeys = ['pending', 'success', 'partial', 'unfinished', 'failed', 'cancelled'] as const
 const bucketLabels: Record<(typeof bucketKeys)[number], string> = {
-  pending: '进行中', success: '已交付', partial: '已交付 · 有疑点', failed: '失败', cancelled: '已取消',
+  pending: '进行中', success: '已交付', partial: '已交付 · 有疑点',
+  // 交付已登记但没被拉走/传完：补一次交付就能完成，不能并入「失败」劝退用户
+  unfinished: '未完成 · 待补交付', failed: '失败', cancelled: '已取消',
 }
 
 /** 统计条只展示后端五桶，且现场给出可对账数字；口径不一致时显式告警。 */
@@ -380,6 +382,7 @@ const conclusionBuckets = computed(() => {
     pending: s?.transferring ?? 0,
     success: s?.delivered ?? 0,
     partial: 0,
+    unfinished: 0,
     failed: s?.failed ?? 0,
     cancelled: 0,
   }

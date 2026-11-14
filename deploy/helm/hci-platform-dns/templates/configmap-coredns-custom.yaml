@@ -44,4 +44,19 @@ data:
         health_check {{ .Values.forward.healthCheck }}
         max_fails {{ .Values.forward.maxFails }}
     }
+  {{- if .Values.staticHosts }}
+  static-hosts.server: |
+    # 静态主机名使用独立 Server Block；不要把 hosts 再写入 .:53，
+    # K3s 内置 Corefile 已经加载 hosts /etc/coredns/NodeHosts。
+    {{- range .Values.staticHosts }}
+    {{ .hostname }}:53 {
+        errors
+        hosts {
+            {{ .address }} {{ .hostname }}
+            ttl {{ .ttl | default 60 }}
+            no_reverse
+        }
+    }
+    {{- end }}
+  {{- end }}
 {{- end }}

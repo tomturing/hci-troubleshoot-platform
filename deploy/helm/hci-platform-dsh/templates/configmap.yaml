@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: dsh-proxy
+  name: {{ include "dsh.proxyName" . }}
   namespace: {{ .Values.namespace }}
   labels:
     {{- include "hci.labels" . | nindent 4 }}
@@ -43,6 +43,7 @@ data:
         server {
             listen {{ .Values.proxy.port }};
             server_name _;
+            {{ $ingressPath := trimSuffix "/" .Values.ingress.path }}
 
             # ── 集群内接口（不对外暴露）────────────────────────────────
             # 这两个路径刻意不以 /dsh 开头，因此不会被 Ingress 的
@@ -62,22 +63,23 @@ data:
             }
 
             # ── 对外入口 ────────────────────────────────────────────
-            # 不带斜线的 /dsh 也必须落到 /dsh/：上游只在根路径接受 token 交换。
-            location = /dsh {
-                return 302 /dsh/;
+            # 不带斜线的实例路径也必须落到带斜线路径：上游只在根路径接受 token 交换。
+            location = {{ $ingressPath }} {
+                return 302 {{ $ingressPath }}/;
             }
 
-            location /dsh/ {
-                # 结尾的 / 使 /dsh/foo 被代理为 /foo —— 上游只认 origin-root 路由
+            # Ingress 不剥离前缀，由此处按当前实例路径剥离后再转发给 DSH。
+            location {{ $ingressPath }}/ {
+                # 结尾的 / 使实例路径下的请求被代理为 /foo —— 上游只认 origin-root 路由
                 proxy_pass http://127.0.0.1:{{ .Values.dsh.port }}/;
 
                 # 上游完成 token 交换后会 302 到自身根路径。
                 # Traefik 的 stripPrefix 无法反向补前缀，故必须在这里还原。
-                proxy_redirect / /dsh/;
+                proxy_redirect / {{ $ingressPath }}/;
 
-                # 上游签发的 cookie 为 Path=/，会让会话凭据被带到 /admin/、
-                # /api/ 等同域路径；此处收拢到 /dsh/，避免凭据串域。
-                proxy_cookie_path / /dsh/;
+                # 上游签发的 cookie 为 Path=/；按当前实例的 Ingress path 收拢，
+                # 旧实例得到 /dsh/，新实例得到 /dsh-offline/，保持两个 DSH 会话互不串用。
+                proxy_cookie_path / {{ $ingressPath }}/;
 
                 # 必须保留浏览器侧 Host：上游按它做 Host/Origin 白名单校验。
                 # 用 $http_host 而不是 $host：后者会丢掉端口，上游拼出的期望 Origin

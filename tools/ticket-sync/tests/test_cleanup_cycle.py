@@ -147,7 +147,14 @@ class CleanupCycleTest(unittest.TestCase):
         self.store.close()
         self._tmp.cleanup()
 
-    def _cycle(self, *, free: int = 900 * GIB, retention_days: int = 3, min_keep_days: int = 1):
+    def _cycle(
+        self,
+        *,
+        free: int = 900 * GIB,
+        retention_days: int = 3,
+        min_keep_days: int = 1,
+        active_ticket_ids: frozenset[str] = frozenset(),
+    ):
         with patch("app.maintenance.shutil.disk_usage") as usage:
             usage.return_value = SimpleNamespace(free=free, total=2 * 1024 * GIB, used=0)
             return run_cleanup_cycle(
@@ -161,7 +168,7 @@ class CleanupCycleTest(unittest.TestCase):
                 evict_free_bytes=400 * GIB,
                 min_free_bytes=250 * GIB,
                 stale_tmp_seconds=2 * 3600,
-                active_ticket_ids=frozenset(),
+                active_ticket_ids=active_ticket_ids,
                 store=self.store,
             )
 
@@ -259,6 +266,71 @@ class CleanupCycleTest(unittest.TestCase):
 
         self.assertEqual(report.trash_purged, 1)
         self.assertFalse(leftover.exists())
+
+    def test_active_workspace_is_not_purged_even_if_stale(self) -> None:
+        """正在同步的 `.tmp` 目录不能按年龄回收：它可能正在续传或解压。
+
+        回收判据是 mtime，而 rsync 卡在远端时 mtime 不会刷新。若不排除活跃工单，
+        清理会把正在使用的 65 GiB 半成品删掉，续传与当前合并树一起作废。
+        """
+        stale = self.tmp_root / "Q2026111200011"
+        stale.mkdir()
+        (stale / "archive.zip").write_bytes(b"x" * 1024)
+        old = (self.now - timedelta(hours=5)).timestamp()
+        os.utime(stale, (old, old))
+
+        report = self._cycle(
+            active_ticket_ids=frozenset({"Q2026111200011"}),
+        )
+        self.assertEqual(report.stale_tmp_removed, 0)
+        self.assertTrue(stale.exists())
+
+        # 不在活跃集合里时照常回收，避免"保护"变成永不回收的泄漏。
+        report = self._cycle()
+        self.assertEqual(report.stale_tmp_removed, 1)
+        self.assertFalse(stale.exists())
+
+    def test_stale_tmp_released_before_evicting_artifacts(self) -> None:
+        """盘压时先蒸发可再生的 `.tmp`，够用就不该删用户还要用的已发布产物。
+
+        这一步的顺序是本地分支的核心诉求：旧的每日检查只按总量淘汰，
+        `.tmp` 里几十 GiB 的解压残留不被计入，结果日志工单先被删掉。
+        """
+        victim = _publish_dir(self.root, "Q2026111000012", age_days=2, size=200 * GIB, now=self.now)
+        self.store.upsert_artifact(
+            "Q2026111000012", 200 * GIB, 1, True, (self.now - timedelta(days=2)).timestamp()
+        )
+        stale = self.tmp_root / "Q2026110900013"
+        stale.mkdir()
+        (stale / "archive.zip").write_bytes(b"x" * 1024)
+        old = (self.now - timedelta(hours=5)).timestamp()
+        os.utime(stale, (old, old))
+
+        def fake_disk_usage(_root):
+            # 回收 stale .tmp 之前余量 300 GiB（低于软阈值 400），之后回到 500 GiB。
+            free = 300 * GIB if stale.exists() else 500 * GIB
+            return SimpleNamespace(free=free, total=2048 * GIB, used=0)
+
+        with patch("app.maintenance.shutil.disk_usage", side_effect=fake_disk_usage):
+            report = run_cleanup_cycle(
+                root=self.root,
+                tmp_root=self.tmp_root,
+                trash_dir=self.trash,
+                now=self.now,
+                retention_days=3,
+                min_keep_days=1,
+                max_total_bytes=1024 * GIB,
+                evict_free_bytes=400 * GIB,
+                min_free_bytes=250 * GIB,
+                stale_tmp_seconds=2 * 3600,
+                active_ticket_ids=frozenset(),
+                store=self.store,
+            )
+
+        self.assertEqual(report.stale_tmp_removed, 1)
+        self.assertFalse(stale.exists())
+        self.assertEqual(report.capacity_removed, 0)
+        self.assertTrue(victim.exists())
 
     def test_cutoff_uses_completion_time_not_ticket_date(self) -> None:
         """保留期判据是同步完成时刻，不是工单号里的日期。

@@ -157,7 +157,63 @@ async def resolve_case(
     终端录像回放会被会话/会话服务按归属拒绝，前端据此提前提示用户。
     """
     case_id, created, owned = await service.resolve_case_for_log_collect(payload.case_id, client_id)
-    return {"case_id": case_id, "created": created, "owned": owned}
+    access = await service.describe_case_access(case_id, client_id)
+    return {
+        "case_id": case_id,
+        "created": created,
+        "owned": owned,
+        # 归属不同不等于无路可走：壳工单在满足门禁时允许显式认领
+        "claimable": access["claimable"],
+        "claim_blocked_reason": access["blocked_reason"],
+        "owner_active_seconds": access["owner_active_seconds"],
+    }
+
+
+@router.post("/{case_id}/claim")
+async def claim_case(
+    case_id: str,
+    client_id: str = Depends(get_client_id),
+    service: CaseService = Depends(get_case_service),
+):
+    """认领壳工单（日志收集入口自建、无会话无消息）及其名下采集任务。
+
+    设计取舍：不自动接管。归属是越权边界，只有用户显式确认"这是我自己的上一段
+    会话"才允许转移，并写入 case.metadata.claims 与任务 detail 审计。
+    """
+    try:
+        result = await service.claim_shell_case(case_id, client_id)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Case not found") from None
+
+    if result.get("blocked_reason") == "case_not_found":
+        raise HTTPException(status_code=404, detail="Case not found")
+    if not result["claimed"] and not result.get("already_owned"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "claim_rejected",
+                "reason": result["blocked_reason"],
+                "owner_active_seconds": result.get("owner_active_seconds"),
+            },
+        )
+    return result
+
+
+@router.get("/{case_id}/data-access")
+async def get_case_data_access(
+    case_id: str,
+    client_id: str = Depends(get_client_id),
+    service: CaseService = Depends(get_case_service),
+):
+    """内部：判定工单数据访问资格（供网关的终端录像回放/写入复用）。
+
+    放行口径只有两条：工单归属当前身份；或壳工单且当前身份在该工单下有采集任务。
+    真实业务工单（有会话）一律以工单归属为唯一准绳，避免任务作用域扩大成跨客户泄露。
+    """
+    access = await service.describe_case_access(case_id, client_id)
+    if access["blocked_reason"] == "case_not_found":
+        raise HTTPException(status_code=404, detail="Case not found")
+    return access
 
 
 @router.get("/{case_id}", response_model=CaseResponse)

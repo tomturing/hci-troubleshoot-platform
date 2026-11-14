@@ -1,15 +1,16 @@
 /**
- * chat store - 「日志收集打开 → 中央 Agent 让位」的联动契约。
+ * chat store - 「终端打开 ⇒ 中央让位」的联动契约。
  *
- * 背景（现场误解）：日志收集与排障 Agent **不联动**——采集是 SSH 会话里跑 acli，
- * Agent 完全不参与。两者并排时用户会以为可以“让 Agent 去收日志”，所以打开日志收集
- * 要自动把右栏切到 SSH 终端，并让中央会话收起，把像素给日志表格与终端。
+ * 背景（现场回归）：旧版右栏是 el-drawer 浮层，打开 SSH 终端会盖住中央排障窗口；
+ * 面板化成 flex 三栏后中央变成抢像素的邻居，1080 / 1366 屏上终端只剩 60 列左右。
+ * 现在的契约是「终端页签可见就让位」，并且让位态下左右两栏共占整屏。
  *
- * 这里锁的是“不能越界”的四条：
+ * 这里锁的是“不能越界”的五条：
  * 1. 只有 SSH 已连接才自动开终端：没连接时开出来是个空壳，用户还得再登录一次；
- * 2. 覆盖态（窄屏）绝不动右栏：openRightPanel 会反向把刚打开的日志面板关掉；
- * 3. 右栏正在文件下载时不抢页签：用户可能正在传文件；
- * 4. 关闭日志收集不关终端：那条 SSH 会话用户可能还在用。
+ * 2. 让位的条件是“终端可见”，不是“日志收集可见”——单开终端也必须让位；
+ * 3. 右栏正在文件下载时不让位：传文件不需要 xterm 列宽，藏了中央只剩空白；
+ * 4. 1024~1439（1080 / 1366 屏）双开是压缩布局，不许把用户的面板关掉；
+ * 5. 真·窄屏（<1024）仍是覆盖式“一次看一块”，打开终端会收掉另一侧。
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -89,7 +90,7 @@ async function openLogCollectForTask(store: any) {
   await nextTick()
 }
 
-describe('chat store - 日志收集与中央 Agent 让位', () => {
+describe('chat store - 终端打开后中央让位', () => {
   beforeEach(() => {
     localStorage.clear()
     setActivePinia(createPinia())
@@ -110,12 +111,12 @@ describe('chat store - 日志收集与中央 Agent 让位', () => {
     expect(store.isTerminalVisible).toBe(true)
   })
 
-  it('中央 Agent 在日志收集 + 终端同时可见时收起，布局把宽度让给两栏', async () => {
+  it('日志收集 + 终端同时可见：中央让位，两栏铺满视口', async () => {
     const store = await setup()
 
     await openLogCollectForTask(store)
 
-    expect(store.isAgentChatHidden).toBe(true)
+    expect(store.isCenterCollapsed).toBe(true)
     // 中央宽度记 0：这是 App 外壳收合主区的唯一依据
     expect(store.workspaceLayout.centerMaxWidth).toBe(0)
     // 两栏之和等于视口（双开无图标条占位）
@@ -125,28 +126,87 @@ describe('chat store - 日志收集与中央 Agent 让位', () => {
     expect(store.workspaceLayout.rightWidth).toBeGreaterThan(560)
   })
 
-  it('未连接 SSH 时不自动开终端，也不隐藏 Agent', async () => {
+  it('单开终端（没有日志收集）也让位：这是「终端覆盖中央」的等价行为', async () => {
+    const store = await setup({ viewport: 1080 })
+
+    await store.checkAndOpenTerminal()
+    await nextTick()
+
+    expect(store.logCollectVisible).toBe(false)
+    expect(store.isTerminalVisible).toBe(true)
+    expect(store.isCenterCollapsed).toBe(true)
+    expect(store.workspaceLayout.centerMaxWidth).toBe(0)
+    // 左栏收起成图标条，终端吃掉剩下的整屏
+    expect(store.workspaceLayout.leftWidth).toBe(48)
+    expect(store.workspaceLayout.rightWidth).toBe(1080 - 48)
+  })
+
+  it('未连接 SSH 时不自动开终端，也不让位', async () => {
     const store = await setup({ connectionState: 'disconnected' })
 
     await openLogCollectForTask(store)
 
     expect(store.logCollectVisible).toBe(true)
     expect(store.isRightPanelOpen).toBe(false)
-    expect(store.isAgentChatHidden).toBe(false)
+    expect(store.isCenterCollapsed).toBe(false)
     expect(store.workspaceLayout.centerMaxWidth).toBeGreaterThan(0)
   })
 
-  it('覆盖态（窄屏）不动右栏：否则 openRightPanel 会反向关掉日志面板', async () => {
+  it('真·窄屏（<1024）仍是覆盖式：打开日志收集不动右栏', async () => {
     const store = await setup({ viewport: 900 })
 
     await openLogCollectForTask(store)
 
     expect(store.logCollectVisible).toBe(true)
     expect(store.isRightPanelOpen).toBe(false)
-    expect(store.isAgentChatHidden).toBe(false)
+    expect(store.isCenterCollapsed).toBe(false)
   })
 
-  it('右栏正在文件下载时不抢页签', async () => {
+  it('1080 屏：打开日志收集自动并排终端，两栏共占整屏且日志面板不被关', async () => {
+    const store = await setup({ viewport: 1080 })
+
+    await openLogCollectForTask(store)
+
+    expect(store.logCollectVisible).toBe(true)
+    expect(store.isRightPanelOpen).toBe(true)
+    expect(store.isCenterCollapsed).toBe(true)
+    expect(store.workspaceLayout.centerMaxWidth).toBe(0)
+    expect(store.workspaceLayout.leftWidth).toBeGreaterThanOrEqual(420)
+    expect(store.workspaceLayout.rightWidth).toBeGreaterThanOrEqual(560)
+    expect(store.workspaceLayout.leftWidth + store.workspaceLayout.rightWidth).toBe(1080)
+  })
+
+  it('1080 屏：采集进行中点开终端，不会把正在采集的日志面板关掉', async () => {
+    const store = await setup({ viewport: 1080, connectionState: 'disconnected' })
+
+    await openLogCollectForTask(store)
+    expect(store.isRightPanelOpen).toBe(false)
+
+    // 用户随后在弹框里登录成功，再点顶栏「SSH终端」
+    store.sshConnectionState = 'connected'
+    await store.checkAndOpenTerminal()
+    await nextTick()
+
+    expect(store.logCollectVisible).toBe(true)
+    expect(store.isTerminalVisible).toBe(true)
+    expect(store.isCenterCollapsed).toBe(true)
+    expect(store.workspaceLayout.leftWidth + store.workspaceLayout.rightWidth).toBe(1080)
+  })
+
+  it('真·窄屏（<1024）手动点终端：覆盖式互斥仍然生效（一次看一块）', async () => {
+    const store = await setup({ viewport: 900, connectionState: 'disconnected' })
+
+    await openLogCollectForTask(store)
+    store.sshConnectionState = 'connected'
+    await store.checkAndOpenTerminal()
+    await nextTick()
+
+    expect(store.logCollectVisible).toBe(false)
+    expect(store.isTerminalVisible).toBe(true)
+    expect(store.workspaceLayout.mode).toBe('overlay')
+  })
+
+  it('右栏正在文件下载时不让位', async () => {
     const store = await setup()
     await store.openSftpPanel()
     expect(store.rightPanelTab).toBe('sftp')
@@ -154,11 +214,11 @@ describe('chat store - 日志收集与中央 Agent 让位', () => {
     await openLogCollectForTask(store)
 
     expect(store.rightPanelTab).toBe('sftp')
-    // 终端没出现在屏幕上，就不该把 Agent 藏起来（否则中间会空一块）
-    expect(store.isAgentChatHidden).toBe(false)
+    // 终端没出现在屏幕上，就不该把中央藏起来（否则中间会空一块）
+    expect(store.isCenterCollapsed).toBe(false)
   })
 
-  it('关闭日志收集不关终端，中央 Agent 恢复', async () => {
+  it('关闭日志收集不关终端：中央仍让位给还开着的终端', async () => {
     const store = await setup()
     await openLogCollectForTask(store)
 
@@ -169,19 +229,31 @@ describe('chat store - 日志收集与中央 Agent 让位', () => {
     // 用户可能还在终端里敲命令，关面板不能顺手把会话入口收掉
     expect(store.isRightPanelOpen).toBe(true)
     expect(store.isTerminalVisible).toBe(true)
-    expect(store.isAgentChatHidden).toBe(false)
+    // 终端还在屏幕上，中央继续让位（关掉终端才恢复）
+    expect(store.isCenterCollapsed).toBe(true)
+    expect(store.workspaceLayout.centerMaxWidth).toBe(0)
+  })
+
+  it('收起终端后中央恢复', async () => {
+    const store = await setup()
+    await openLogCollectForTask(store)
+
+    store.closeTerminalSidebar()
+    await nextTick()
+
+    expect(store.isCenterCollapsed).toBe(false)
     expect(store.workspaceLayout.centerMaxWidth).toBeGreaterThan(0)
   })
 
-  it('终端页签被切走后（用户主动看文件下载）Agent 立刻恢复', async () => {
+  it('终端页签被切走后（用户主动看文件下载）中央立刻恢复', async () => {
     const store = await setup()
     await openLogCollectForTask(store)
-    expect(store.isAgentChatHidden).toBe(true)
+    expect(store.isCenterCollapsed).toBe(true)
 
     store.openSftpPanel()
     await nextTick()
 
-    expect(store.isAgentChatHidden).toBe(false)
+    expect(store.isCenterCollapsed).toBe(false)
     // 日志面板此时仍在，切页签不该顺带把它关掉
     expect(store.logCollectVisible).toBe(true)
   })

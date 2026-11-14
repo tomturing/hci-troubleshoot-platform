@@ -72,7 +72,9 @@ class LogCollectDisplay(BaseModel):
 
     phase: str = Field(description="当前环节：queued/collecting/fetching/uploading/relaying/verifying/settled")
     phase_label: str
-    conclusion: str = Field(description="业务结论：pending/success/partial/failed/cancelled")
+    conclusion: str = Field(
+        description="业务结论：pending/success/partial/unfinished/failed/cancelled"
+    )
     conclusion_label: str
     conclusion_tone: str = Field(description="展示色板：success/warning/error/info")
     conditions: list[LogCollectCondition] = Field(default_factory=list)
