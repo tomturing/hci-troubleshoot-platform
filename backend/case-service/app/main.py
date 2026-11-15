@@ -19,6 +19,7 @@ from shared.utils.exception_handlers import register_exception_handlers
 
 from app.config import settings
 from app.routes import (
+    acli_plugins,
     case_insights,
     cases,
     environments,
@@ -29,6 +30,8 @@ from app.routes import (
     log_collect_evidence,
     log_collect_scenarios,
 )
+from app.services.acli_plugin_bridge import AcliPluginBridgeClient
+from app.services.acli_plugin_relay import AcliPluginDeployRelay, SqlAcliPluginStore
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -59,6 +62,8 @@ async def lifespan(app: FastAPI):
     # 「Database not initialized」（2026-11-02 staging 实测），故同时保留
     # get_session 里从 app.state 兜底的逻辑，双保险。
     case_insights.set_database_manager(database_manager)
+    # acli 插件管理端：保存配置 → 不可变 revision → pending 下发任务
+    acli_plugins.set_database_manager(database_manager)
 
     # 接管上一个进程遗留的代传（发布/重启/OOM 后不靠人工干预）：
     # 租约过期的 running 与优雅退出时交还的 pending 都会被重新拉起。
@@ -67,10 +72,33 @@ async def lifespan(app: FastAPI):
     # 根本看不到它（2026-11-04 Q2026110400024 因此卡在 228/723 共 43 分钟）。
     relay_reconcile = asyncio.create_task(log_collect.reconcile_relays_loop())
 
+    # acli 插件下发：管理员保存配置后由服务端主动连 terminal_bridge，
+    # 不依赖任何浏览器在线。凭据与 bridge 地址只在这里从设置/Secret 读取。
+    acli_plugin_reconcile = None
+    if settings.ACLI_PLUGIN_RELAY_ENABLED:
+        acli_plugin_relay = AcliPluginDeployRelay(
+            store=SqlAcliPluginStore(database_manager),
+            bridge_client=AcliPluginBridgeClient(),
+            default_bridge_url=settings.ACLI_PLUGIN_BRIDGE_URL,
+            credentials_json=settings.ACLI_PLUGIN_CREDENTIALS_JSON,
+            credentials_file=settings.ACLI_PLUGIN_CREDENTIALS_FILE,
+            lease_seconds=settings.ACLI_PLUGIN_LEASE_SECONDS,
+            max_attempts=settings.ACLI_PLUGIN_MAX_ATTEMPTS,
+            deploy_timeout=settings.ACLI_PLUGIN_DEPLOY_TIMEOUT_SECONDS,
+        )
+        acli_plugin_reconcile = asyncio.create_task(
+            acli_plugin_relay.reconcile_loop(interval=settings.ACLI_PLUGIN_RELAY_INTERVAL_SECONDS),
+            name="acli-plugin-reconcile",
+        )
+
     yield
 
     # 关闭
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
+    if acli_plugin_reconcile is not None:
+        acli_plugin_reconcile.cancel()
+        with suppress(asyncio.CancelledError):
+            await acli_plugin_reconcile
     relay_reconcile.cancel()
     with suppress(asyncio.CancelledError):
         await relay_reconcile
@@ -90,6 +118,7 @@ app.add_middleware(HTTPMetricsMiddleware)
 register_exception_handlers(app)
 
 # 注册路由
+app.include_router(acli_plugins.admin_router)
 app.include_router(cases.router)
 app.include_router(environments.router)
 app.include_router(log_collect.router)

@@ -39,6 +39,17 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.terminalBridge.port }}
+    {{- if .Values.terminalBridge.networkPolicy.caseServiceIngressEnabled }}
+    # 平台服务端下发：case-service 以空 Origin 的 WS 客户端直连 bridge，
+    # 不走 Traefik；鉴权由本策略的 Pod label 边界承担。
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: case-service
+      ports:
+        - protocol: TCP
+          port: {{ .Values.terminalBridge.port }}
+    {{- end }}
   egress:
     # 集群 DNS（hci-sim 的 Service 解析与 SSH 连接依赖）。
     - to:
@@ -75,4 +86,13 @@ spec:
       ports:
         - protocol: TCP
           port: 4318
+    {{- range .Values.terminalBridge.networkPolicy.hciSshCidrs }}
+    # 真实 HCI SSH 出站：只放行显式登记的 CIDR，默认空表示完全不放行任意外部网段。
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .port | default 22 }}
+    {{- end }}
 {{- end }}

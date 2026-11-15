@@ -53,3 +53,16 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  - it: "放行 case-service 服务端直连，默认不放行任何真实 HCI 网段"
+    set:
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.ingress[2].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: case-service
+      # hciSshCidrs 默认空：egress 仍只有 DNS / hci-sim / Tempo 三条，
+      # 真实 HCI 出站必须由环境专属 override 显式登记。
+      - lengthEqual:
+          path: spec.egress
+          count: 3
