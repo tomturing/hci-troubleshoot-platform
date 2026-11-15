@@ -53,3 +53,19 @@ tests:
     asserts:
       - hasDocuments:
           count: 0
+
+  - it: "放行 case-service 服务端直连，并按白名单放行真实 HCI SSH 出站"
+    set:
+      terminalBridge.enabled: true
+      terminalBridge.networkPolicy.hciSshCidrs[0].cidr: 172.28.24.1/32
+      terminalBridge.networkPolicy.hciSshCidrs[0].port: 22
+    asserts:
+      - equal:
+          path: spec.ingress[2].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: case-service
+      - equal:
+          path: spec.egress[3].to[0].ipBlock.cidr
+          value: 172.28.24.1/32
+      - equal:
+          path: spec.egress[3].ports[0].port
+          value: 22

@@ -94,6 +94,29 @@ spec:
               # 页面因此能区分「没开启」与「没有诊断记录」——条件渲染会让两者都表现为
               # 一个空标签页，运维无从判断。
               value: {{ .Values.caseService.dshSessions.mountPath | quote }}
+            # acli 插件下发：服务端编排参数。凭据只从预建 Secret 注入，
+            # 明文不进 values.yaml / ConfigMap / 镜像。
+            - name: ACLI_PLUGIN_RELAY_ENABLED
+              value: {{ .Values.caseService.acliPlugin.relayEnabled | quote }}
+            - name: ACLI_PLUGIN_BRIDGE_URL
+              value: {{ .Values.caseService.acliPlugin.bridgeUrl | quote }}
+            - name: ACLI_PLUGIN_DEPLOY_TIMEOUT_SECONDS
+              value: {{ .Values.caseService.acliPlugin.deployTimeoutSeconds | int | quote }}
+            - name: ACLI_PLUGIN_RELAY_INTERVAL_SECONDS
+              value: {{ .Values.caseService.acliPlugin.relayIntervalSeconds | quote }}
+            - name: ACLI_PLUGIN_LEASE_SECONDS
+              value: {{ .Values.caseService.acliPlugin.leaseSeconds | int | quote }}
+            - name: ACLI_PLUGIN_MAX_ATTEMPTS
+              value: {{ .Values.caseService.acliPlugin.maxAttempts | int | quote }}
+            - name: ACLI_PLUGIN_CREDENTIALS_FILE
+              value: {{ .Values.caseService.acliPlugin.credentialsFile | quote }}
+            {{- if .Values.caseService.acliPlugin.credentialsSecret }}
+            - name: ACLI_PLUGIN_CREDENTIALS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.caseService.acliPlugin.credentialsSecret | quote }}
+                  key: {{ .Values.caseService.acliPlugin.credentialsSecretKey | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
