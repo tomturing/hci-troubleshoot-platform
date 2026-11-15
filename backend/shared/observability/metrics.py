@@ -400,3 +400,31 @@ POD_POOL_ACTIVE = Gauge(
     "Pod 池活跃数量",
     labelnames=["assistant_type"],
 )
+
+# ──────────────────────────────────────────────
+#  日志收集契约可观测性（PR #1510）
+#  只登记有真实埋点的指标：没有埋点的指标会产生空序列，告警永远不 firing
+#  （node-exporter 缺失时磁盘/内存告警长期静默就是这么来的）。
+# ──────────────────────────────────────────────
+
+# 归因来源：declared=节点直报规范码 / derived=平台按文案推断 / unattributed=未归因。
+# code 是契约里的有限枚举（91 个），不是任意文本，基数可控。
+LOG_COLLECT_ATTRIBUTION_TOTAL = Counter(
+    "hci_log_collect_attribution_total",
+    "日志收集错误归因来源计数（declared 节点直报 / derived 文案推断 / unattributed 未归因）",
+    labelnames=["source", "code"],
+)
+
+# 落库码不在契约中：契约唯一出处被绕过的直接证据，正常应长期为 0。
+LOG_COLLECT_CONTRACT_DRIFT_TOTAL = Counter(
+    "hci_log_collect_contract_drift_total",
+    "日志收集落库 error_code 不在契约码表中的次数（应为 0）",
+    labelnames=["service"],
+)
+
+# 调用链缺口：任务缺少 trace_id，无法按一条链路复原全路径。
+LOG_COLLECT_TRACE_FALLBACK_TOTAL = Counter(
+    "hci_log_collect_trace_fallback_total",
+    "日志收集任务缺少唯一调用链的次数",
+    labelnames=["reason"],
+)

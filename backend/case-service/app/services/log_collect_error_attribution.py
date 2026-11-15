@@ -24,6 +24,7 @@ staging 近 30 天 118 个失败任务里 **76 个（64.4%）error_code 为空**
 from __future__ import annotations
 
 from ..schemas.log_collect_errors import load_error_catalog
+from .log_collect_attribution_rules_generated import ATTRIBUTION_RULES
 
 # 未归因兜底码：失败事实已确认，但没有可识别的根因文本。
 # 它本身就是一个信号——出现量上升说明某个上游在失败时没带原因，需要补码。
@@ -35,112 +36,18 @@ BRIDGE_CHANNEL_LOST_CODE = "LC-PLATFORM-010"
 
 # 有序规则表：(子串, 错误码)。**顺序即优先级**，新增规则必须想清楚会不会
 # 抢走下面更具体的语义（例如「上传会话大小不一致」必须先于「大小不一致」）。
-_RULES: tuple[tuple[str, str], ...] = (
-    # ── 场景清单分发（SPC）：必须先于 ENV/EXEC 的泛化规则 ─────────────
-    # 「节点 SSH 认证失败」若排在 ENV 的「SSH 认证失败」之后，会被抢成 ENV-007，
-    # 用户就会去查节点环境而不是场景清单扇出；所以 SPC 整体放最前。
-    ("场景清单目录缺失", "LC-SPC-001"),
-    ("场景清单目录不唯一", "LC-SPC-002"),
-    ("场景清单备份回读不一致", "LC-SPC-003"),
-    ("场景清单备份失败", "LC-SPC-003"),
-    ("场景清单写入后校验不一致", "LC-SPC-004"),
-    ("场景清单写入被拒绝", "LC-SPC-004"),
-    ("场景清单写入失败", "LC-SPC-004"),
-    ("场景清单文件缺失", "LC-SPC-009"),
-    ("场景清单回滚失败", "LC-SPC-005"),
-    ("节点 SSH 认证失败", "LC-SPC-007"),
-    ("节点命令执行超时", "LC-SPC-008"),
-    ("节点 SSH 连接失败", "LC-SPC-006"),
-    ("场景清单写入未通过", "LC-SPC-010"),
-    # 2026-11-12 之前的历史文案：只保留归因，不再产生。
-    ("场景未能写入全部目标节点", "LC-SPC-010"),
-    ("收集专项", "LC-PLUGIN-016"),
-    ("节点上没有所选专项", "LC-PLUGIN-016"),
-    ("未建立采集任务", "LC-PLUGIN-015"),
-    # ── 平台存储（本层自身产生的故障，最具体）────────────────────────
-    ("存储目录不可写", "LC-PLATFORM-007"),
-    ("不可写", "LC-PLATFORM-007"),
-    ("存储空间不足", "LC-PLATFORM-008"),
-    # ── 平台内部错误：有归因（是平台 500）就不该落「未归因」──────────
-    ("判定为僵尸会话已清理", "LC-PLATFORM-013"),
-    ("平台收尾失败", "LC-PLATFORM-012"),
-    ("INTERNAL_ERROR", "LC-PLATFORM-012"),
-    ("服务内部错误", "LC-PLATFORM-012"),
-    ("status code 5", "LC-PLATFORM-012"),
-    # ── 与 bridge 的通道断开：节点操作未送达 ─────────────────────────
-    ("与 terminal_bridge 的连接已断开", BRIDGE_CHANNEL_LOST_CODE),
-    ("bridge 连接已断开", BRIDGE_CHANNEL_LOST_CODE),
-    # ── 客户机侧容量（必须早于泛化的「磁盘空间不足」）───────────────
-    ("客户机还有其它交付任务", "LC-TRANSFER-009"),
-    ("并发容量不足", "LC-TRANSFER-009"),
-    ("客户机磁盘空间不足", "LC-TRANSFER-008"),
-    ("临时目录空间不足", "LC-TRANSFER-008"),
-    ("写入本地文件失败", "LC-TRANSFER-008"),
-    ("%TEMP%", "LC-TRANSFER-008"),
-    # ── 节点侧前置条件 ──────────────────────────────────────────────
-    ("/sf/data/local", "LC-ENV-004"),
-    ("磁盘空间不足", "LC-ENV-004"),
-    ("可用空间", "LC-ENV-004"),
-    ("SSH 会话不存在", "LC-ENV-006"),
-    ("ssh_connect", "LC-ENV-006"),
-    ("需重新连接节点", "LC-ENV-006"),
-    ("重新连接 SSH", "LC-ENV-006"),
-    ("交付需要重新认证", "LC-ENV-006"),
-    ("SSH 认证失败", "LC-ENV-007"),
-    ("节点离线", "LC-ENV-008"),
-    ("host offline", "LC-ENV-008"),
-    ("日志服务器不可达", "LC-ENV-005"),
-    # ── acli 缺失 / 命令层 ─────────────────────────────────────────
-    ("acli: command not found", "LC-EXEC-003"),
-    ("未知的命令或者命名空间", "LC-EXEC-003"),
-    ("plugin: no such file", "LC-EXEC-003"),
-    ("命令返回非零", "LC-EXEC-003"),
-    ("命令执行超时", "LC-EXEC-002"),
-    ("SSH 等待结果失败", "LC-EXEC-005"),
-    # ── 安装 ───────────────────────────────────────────────────────
-    ("下载安装包失败", "LC-INSTALL-002"),
-    ("安装包上传到 HCI 失败", "LC-INSTALL-004"),
-    ("acli 安装命令失败", "LC-INSTALL-005"),
-    ("安装后版本验证失败", "LC-INSTALL-006"),
-    ("落盘校验失败", "LC-INSTALL-007"),
-    # ── 插件语义 ───────────────────────────────────────────────────
-    ("已有进行中的任务", "LC-PLUGIN-007"),
-    ("正在执行", "LC-PLUGIN-007"),
-    ("已有采集在跑", "LC-PLUGIN-007"),
-    ("节点上已无任务", "LC-PLUGIN-008"),
-    ("任务不存在", "LC-PLUGIN-008"),
-    ("未找到对应的日志收集任务", "LC-PLUGIN-008"),
-    ("采集未完成", "LC-PLUGIN-010"),
-    ("日志采集执行失败", "LC-PLUGIN-010"),
-    ("取消采集失败", "LC-PLUGIN-011"),
-    ("部分主机采集失败", "LC-PLUGIN-012"),
-    # ── 制品/交付（「源包仍在写入」必须先于泛化的分片失败）──────────
-    ("源包已变化", "LC-TRANSFER-010"),
-    ("源包仍在写入", "LC-TRANSFER-010"),
-    ("仍未写完", "LC-TRANSFER-010"),
-    ("会话已被新代替代", "LC-TRANSFER-010"),
-    ("上传会话大小不一致", "LC-TRANSFER-010"),
-    ("按新基线重建", "LC-TRANSFER-010"),
-    ("压缩包不存在", "LC-TRANSFER-001"),
-    ("源包可能已被清理", "LC-TRANSFER-001"),
-    ("本地副本不存在", "LC-TRANSFER-001"),
-    ("未找到采集产物", "LC-TRANSFER-001"),
-    ("校验和不一致", "LC-TRANSFER-002"),
-    ("上传中断", "LC-TRANSFER-003"),
-    ("分块上传失败", "LC-TRANSFER-003"),
-    ("片）", "LC-TRANSFER-003"),
-    ("无法确认日志包", "LC-TRANSFER-006"),
-    ("归档核验未通过", "LC-TRANSFER-007"),
-    ("直传归档核验", "LC-TRANSFER-007"),
-    # 代传通用失败文案（relay 兜底文本）：属于分片上传阶段的失败。
-    ("归档到日志服务器失败", "LC-TRANSFER-003"),
-    # ── 泛化症状词（必须排在所有具体规则之后）────────────────────────
-    # 「超时」任何阶段都会出现，是无信息量的症状词。放在前面会把
-    # 「超时；归档核验未通过」抢成 LC-EXEC-002（命令执行超时），
-    # 把用户引去查命令，而真正该查的是归档核验。只有所有具体规则
-    # 都未命中时才允许退回这一条。
-    ("超时", "LC-EXEC-002"),
-)
+_RULES = ATTRIBUTION_RULES
+
+
+def is_contract_code(code: str | None) -> bool:
+    """该码是否属于契约码表；用于检测「落库码绕过唯一出处」。
+
+    目录读取失败时降级为空表（与 derive_error_code 同一策略），
+    绝不因为字典文件不可读就让一次失败上报变成 500。
+    """
+    if not code:
+        return False
+    return code in load_error_catalog()
 
 
 def derive_error_code(message: str | None) -> str:

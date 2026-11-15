@@ -717,7 +717,7 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 		if restoreFailed > 0 {
 			// 主因码保持不变：回滚失败是叠加风险，覆盖主因会让用户按错误的码排查。
 			rejection.Message = truncateString(rejection.Message+
-				fmt.Sprintf("；回滚失败 %d 台，这些节点可能残留平台清单（重试前须人工核对）", restoreFailed), 560)
+				contractFormat("spc_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
 		}
 		blog("ERROR", "log_collect.spc_fanout_failed", "场景写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 			"task_id": taskID, "slot": slot, "written": written,
@@ -783,17 +783,24 @@ func spcRejectionCode(failed []spcHostState) (string, string) {
 func spcRejectionMessage(written int, failed []spcHostState) string {
 	total := written + len(failed)
 	if total == 0 {
-		return "没有任何节点写入成功"
+		return contractText["spc_rejection_empty"]
 	}
-	head := fmt.Sprintf("场景清单写入未通过（目标 %d 台，成功 %d 台）", total, written)
+	head := contractFormat("spc_rejection_head", map[string]string{
+		"total":   fmt.Sprint(total),
+		"written": fmt.Sprint(written),
+	})
 	if len(failed) == 0 {
 		return head
 	}
 	details := make([]string, 0, len(failed))
 	for _, host := range failed {
-		details = append(details, fmt.Sprintf("%s — %s", host.IP, spcErrorTitle(firstNonEmpty(host.ErrorCode, spcErrWrite))))
+		details = append(details, contractFormat("spc_host_detail", map[string]string{
+			"ip":    host.IP,
+			"title": spcErrorTitle(firstNonEmpty(host.ErrorCode, spcErrWrite)),
+		}))
 	}
-	return truncateString(head+"："+strings.Join(details, "；"), 500)
+	joined := contractFormat("spc_detail_join", map[string]string{"details": strings.Join(details, "；")})
+	return truncateString(head+joined, 500)
 }
 
 // spcHostAuditTrail 把逐台结果压成可入库的短结构：路径与备份名是排查恢复问题的唯一线索。

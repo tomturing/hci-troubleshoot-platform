@@ -4394,3 +4394,26 @@ CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_status ON acli_plugin_depl
 CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_hash ON acli_plugin_deployment (spec_hash, env_code);
 CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_plugin ON acli_plugin_deployment (plugin_name, created_at DESC);
 
+-- ------------------------------------------------------------
+-- 日志收集唯一调用链索引（2026-11-14，PR #1510）
+-- 说明：五张日志收集表此前都已有 trace_id 列，但只有 bridge_execution_logs 建了索引，
+--       「按一条调用链复原全路径」在证据表上会全表扫描。这里补齐索引；任务表另加
+--       error_code 索引，便于按码给出可对账数字（口径层与展示层共用一份契约）。
+-- ------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_log_collect_task_trace
+    ON log_collect_task (trace_id);
+
+CREATE INDEX IF NOT EXISTS idx_log_collect_task_error_code
+    ON log_collect_task (error_code);
+
+CREATE INDEX IF NOT EXISTS idx_lcam_trace
+    ON log_collect_artifact_manifest (trace_id);
+
+CREATE INDEX IF NOT EXISTS idx_lcnp_trace
+    ON log_collect_network_probe (trace_id);
+
+CREATE INDEX IF NOT EXISTS idx_lctm_trace
+    ON log_collect_transfer_metric (trace_id);
+
+CREATE INDEX IF NOT EXISTS idx_lcpl_trace
+    ON log_collect_process_log (trace_id);

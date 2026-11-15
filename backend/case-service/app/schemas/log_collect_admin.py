@@ -118,6 +118,9 @@ class DestinationProgressResponse(BaseModel):
 class AdminLogCollectTaskDetail(AdminLogCollectTaskItem):
     """单任务详情：列表字段 + 最新传输样本 + 网络探测结论。"""
 
+    # 结构化原文（逐台明细、归因来源、写审计）只在详情接口返回；
+    # 列表按页拖 spc_hosts 会把慢查询随时间放大，因此不放进列表模型。
+    detail: dict = Field(default_factory=dict)
     transfer: LogCollectTransferInfo | None = None
     network: LogCollectNetworkInfo | None = None
     archive_path: str | None = None

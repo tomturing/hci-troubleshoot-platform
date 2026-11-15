@@ -317,39 +317,15 @@ func logCollectErrorFields(code string) (layer, owner, retryable string) {
 }
 
 // spcErrorTitle 给出可直接展示的中文短语。
-// 与「节点不可达」的差别：认证失败要说"认证失败"，超时要说明"超时"，
-// 否则用户按网络故障排查却在改免密，拿不到结论（2026-11-12 现场）。
+//
+// 标题一律取自契约生成码表（唯一出处）：短名 → 规范码由 validationErrorCode 负责，
+// 未知短名回退到聚合码。原先这里手写 13 条中文，与平台诊断卡、管理端归因各写一份，
+// 是「同码不同说法」的根源；删掉后桥侧不再维护任何展示文案。
 func spcErrorTitle(errType string) string {
-	switch errType {
-	case "spc_dir_missing":
-		return "场景清单目录缺失"
-	case "spc_dir_ambiguous":
-		return "场景清单目录不唯一"
-	case "backup_failed":
-		return "场景清单备份失败"
-	case "backup_mismatch":
-		return "场景清单备份回读不一致"
-	case "write_failed":
-		return "场景清单写入失败"
-	case "write_rejected":
-		return "场景清单写入被拒绝"
-	case "verify_mismatch":
-		return "场景清单写入后校验不一致"
-	case "spc_file_missing":
-		return "场景清单文件缺失"
-	case "host_auth_failed":
-		return "节点 SSH 认证失败"
-	case "host_timeout":
-		return "节点命令执行超时"
-	case "host_unreachable":
-		return "节点 SSH 连接失败"
-	case "spc_restore_failed":
-		return "场景清单回滚失败"
-	case "spc_module_missing":
-		return "节点上没有所选专项"
-	default:
-		return "场景清单写入未通过"
+	if title := contractTitle(validationErrorCode(errType)); title != "" {
+		return title
 	}
+	return contractTitle(ErrSpcAggregate)
 }
 
 // SPC 执行步骤：决定「没有传输层特征」的失败该归到哪一步。

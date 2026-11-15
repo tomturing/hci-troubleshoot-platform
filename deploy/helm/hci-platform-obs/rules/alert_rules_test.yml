@@ -254,3 +254,41 @@ tests:
               summary: "KB Service 不可用，RAG 功能已降级"
               description: "kb-service 已有 1 分钟不可达，所有 AI 回答将无法检索知识库，请立即处理。"
 
+  # ── 日志收集契约告警（PR #1510）───────────────────────────────────────
+  # 正例：落库码绕过契约，序列从 0 跳到 1，必须 firing。
+  - interval: 1m
+    input_series:
+      - series: 'hci_log_collect_contract_drift_total{service="case-service"}'
+        values: '0x10 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LogCollectContractDrift
+        exp_alerts:
+          - exp_labels:
+              # 指标按 service 打标签，告警会把它带进 labels；漏写会让正例恒红。
+              service: "case-service"
+              severity: critical
+              team: platform
+            exp_annotations:
+              summary: "日志收集落库错误码绕过契约"
+              description: "有 error_code 不在 contracts/log_collect_display.json 的码表中，说明某个调用点又手写了一套码。按 trace_id 查 log_collect_task.detail.error_code_derivation 定位来源。"
+
+  # 反例：指标恒为 0（有序列、无漂移），不得 firing。
+  - interval: 1m
+    input_series:
+      - series: 'hci_log_collect_contract_drift_total{service="case-service"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LogCollectContractDrift
+        exp_alerts: []
+
+  # 反例：指标序列完全不存在时，未归因告警不得凭空 firing（空序列静默陷阱）。
+  - interval: 1m
+    input_series:
+      - series: 'hci_log_collect_attribution_total{source="declared",code="LC-SPC-001"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LogCollectAttributionUnattributedHigh
+        exp_alerts: []

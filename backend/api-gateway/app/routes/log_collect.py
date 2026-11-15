@@ -39,6 +39,9 @@ FORWARDED_REQUEST_HEADERS = (
     "traceparent",
     "tracestate",
     "idempotency-key",
+    # 日志收集的唯一调用链：前端生成的 X-Trace-ID 必须原样透到 case-service，
+    # 否则 PATCH / evidence / relay 三段会各自生成新 ID，事后无法按一条链复原。
+    "x-trace-id",
 )
 FORWARDED_RESPONSE_HEADERS = ("content-type", "cache-control", "etag")
 
