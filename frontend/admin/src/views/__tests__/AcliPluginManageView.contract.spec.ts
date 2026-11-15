@@ -6,17 +6,24 @@
  * 构造部署命令或连 bridge；下发只能经管理端 API 交给服务端编排。
  */
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const viewSource = readFileSync(
-  fileURLToPath(new URL('../AcliPluginManageView.vue', import.meta.url)),
-  'utf8',
-)
-const apiSource = readFileSync(
-  fileURLToPath(new URL('../../api/acliPlugin.ts', import.meta.url)),
-  'utf8',
-)
+// vitest 的 happy-dom 环境里 import.meta.url 不是 file:// scheme，
+// 不能用 fileURLToPath；pnpm 从包目录或 workspace 根启动时 cwd 不同，故两种都兼容。
+function readSource(relativePath: string): string {
+  for (const base of [process.cwd(), resolve(process.cwd(), 'frontend/admin')]) {
+    try {
+      return readFileSync(resolve(base, relativePath), 'utf8')
+    } catch {
+      // 尝试下一个候选根目录
+    }
+  }
+  throw new Error(`找不到契约源文件: ${relativePath}`)
+}
+
+const viewSource = readSource('src/views/AcliPluginManageView.vue')
+const apiSource = readSource('src/api/acliPlugin.ts')
 const templateSource = viewSource.split('<template>')[1] ?? ''
 
 const FORBIDDEN = [
