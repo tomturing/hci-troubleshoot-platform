@@ -359,10 +359,14 @@ FAULT_CATALOG = {   'LC-HCI-001': {   'component': 'hci',
                          'action': '日志包已到日志服务器，请联系管理员补传证据，不要重新收集',
                          'tone': 'warning',
                          'admin_detail': 'artifact_manifest 缺行使 quality=unknown，结论只能是 partial「已交付 '
-                                         '· 有疑点」；引入方是 S7 证据回传（x509 或旧桥），不是采集失败，也不是平台损坏。先查四张证据表与 '
-                                         '*_failed 事件，别让用户重采。',
+                                         '· 有疑点」；引入方是 S7 证据上报链路，不是采集失败也不是平台损坏。按优先级查：① '
+                                         'bridge_execution_logs 的 *_failed.error 是否 HTTP 404（若是，查 '
+                                         'ingress 是否把 /api/direct/log-collect/ 直连 '
+                                         'case-service，缺规则会被 /api 泛前缀送网关 404）；② '
+                                         'evidence_tls_relaxed 是否出现（自签 x509）；③ acli 版本是否过旧。别让用户重采。',
                          'evidence': 'artifact.quality=unknown、log_collect_artifact_manifest '
-                                     '行数、log_collect.node_manifest_failed.error',
+                                     '行数、bridge_execution_logs 的 *_failed.error HTTP 状态码、ingress 中 '
+                                     '/api/direct/log-collect/ 路由',
                          'kind': 'signal',
                          'check': [],
                          'fix': [],

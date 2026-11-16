@@ -1,0 +1,36 @@
+# 日志收集证据数据面路由门禁（管理域名）
+# 管理域名的 /api 在 internal 模式下会被 admin-ui Nginx 代理，
+# 证据数据面若落到该路由会拿到注入身份或 404，必须显式直连 case-service。
+suite: "日志收集证据数据面 Ingress（管理域名）"
+templates:
+  - admin-ui/ingress.yaml
+tests:
+  - it: "管理域名（有 host）证据数据面直达 case-service"
+    set:
+      global.routingMode: "path"
+      ingress.enabled: true
+      adminUI.ingress.enabled: true
+      adminUI.ingress.host: "admin.example.com"
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[5].path
+          value: /api/direct/log-collect/
+      - equal:
+          path: spec.rules[0].http.paths[5].backend.service.name
+          value: case-service
+
+  - it: "管理域名（无 host）证据数据面直达 case-service"
+    set:
+      global.routingMode: "path"
+      ingress.enabled: true
+      adminUI.ingress.enabled: true
+      adminUI.ingress.host: ""
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[5].path
+          value: /api/direct/log-collect/
+      - equal:
+          path: spec.rules[0].http.paths[5].backend.service.name
+          value: case-service
