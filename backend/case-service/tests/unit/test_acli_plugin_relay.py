@@ -12,7 +12,47 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.domain.acli_plugin_spec import TEMPLATE_SPEC, build_descriptor, normalize_spec
-from app.services.acli_plugin_relay import AcliPluginDeployRelay
+from app.services.acli_plugin_relay import AcliPluginDeployRelay, SqlAcliPluginStore
+
+
+class NoRowsCursor:
+    """不带 RETURNING 的 UPDATE 没有结果集；读取 mappings() 属于契约破坏。"""
+
+    returns_rows = False
+
+    def mappings(self):
+        raise AssertionError("无 RETURNING 的 UPDATE 不应读取结果集")
+
+
+class NoRowsSession:
+    def __init__(self):
+        self.committed = False
+
+    async def execute(self, _sql, _params):
+        return NoRowsCursor()
+
+    async def commit(self):
+        self.committed = True
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+class NoRowsDB:
+    def __init__(self):
+        self.session = NoRowsSession()
+
+    def async_session_factory(self):
+        return self.session
+
+
+def test_sql_store_does_not_read_rows_from_update_without_returning():
+    db = NoRowsDB()
+    asyncio.run(SqlAcliPluginStore(db).mark_succeeded_plugin("hci_lmt_check", SPEC_HASH, NOW))
+    assert db.session.committed
 
 NOW = datetime(2026, 11, 14, 6, 0, 0, tzinfo=UTC)
 DEPLOY_ID = "htp-acli-test-0001"
