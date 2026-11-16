@@ -109,7 +109,6 @@ export interface PublishResult {
   spec_hash: string
   status: string
   idempotent: boolean
-  env_code: string
 }
 
 export async function getTemplate(): Promise<AcliPluginTemplateResponse> {
