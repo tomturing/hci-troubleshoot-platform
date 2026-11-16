@@ -30,6 +30,7 @@ import {
   getAdminTask,
   getArtifactManifest,
   getDestinationProgress,
+  getHostResults,
   getNetworkProbe,
   getProcessLogContent,
   getProcessLogs,
@@ -41,6 +42,7 @@ import {
   type AdminTaskSummary,
   type ArtifactManifestItem,
   type DestinationProgress,
+  type HostResultItem,
   type NetworkInfo,
   type ProcessLogItem,
   type TransferInfo,
@@ -66,6 +68,7 @@ const detailTab = ref('transfer')
 const evidenceLoading = ref(false)
 const evidenceError = ref('')
 const transferMetrics = ref<TransferMetricsResponse | null>(null)
+const hostResults = ref<HostResultItem[]>([])
 const networkInfo = ref<NetworkInfo | null>(null)
 const networkLoaded = ref(false)
 const artifactManifests = ref<ArtifactManifestItem[]>([])
@@ -251,12 +254,11 @@ function evidenceEmptyText(): string {
   return MISSING_DATA_TEXT.genuinely_empty
 }
 
-/** 逐台明细：只在详情接口返回；没有上报就如实说没有，不拿 error_message 凑一行。 */
-const spcHostRows = computed<Record<string, unknown>[]>(() => {
-  const detail = detailTask.value?.detail
-  const hosts = detail?.spc_hosts
-  return Array.isArray(hosts) ? (hosts as Record<string, unknown>[]) : []
-})
+/**
+ * 逐台明细：新桥把 acli 进度原文解析成 hosts 落到桥日志，平台只读最新一份；
+ * 老桥没有该证据时留空，不拿 hosts_count 或 error_message 拼一行假数据。
+ */
+const hostRows = computed<HostResultItem[]>(() => hostResults.value)
 
 /** 结构化原文：列表只带证据白名单，完整 detail 必须来自单任务详情接口。 */
 const structuredDetail = computed<Record<string, unknown>>(() => {
@@ -380,6 +382,7 @@ function openDetail(task: AdminLogCollectTask) {
   detailData.value = null
   detailTab.value = 'transfer'
   transferMetrics.value = null
+  hostResults.value = []
   networkInfo.value = null
   artifactManifests.value = []
   processLogs.value = []
@@ -389,8 +392,15 @@ function openDetail(task: AdminLogCollectTask) {
   evidenceError.value = ''
   detailVisible.value = true
   void loadEvidence('transfer')
-  // 单任务详情带最新传输样本与网络结论；接口不可用时其它页签仍能独立展示。
   const openedTaskId = task.task_id
+  // 逐台明细由桥端在采集完成时上报；查询失败按「无证据」处理，不推断逐台结果。
+  void getHostResults(openedTaskId)
+    .then((data) => {
+      if (!detailVisible.value || detailTask.value?.task_id !== openedTaskId) return
+      hostResults.value = data.items
+    })
+    .catch(() => { hostResults.value = [] })
+  // 单任务详情带最新传输样本与网络结论；接口不可用时其它页签仍能独立展示。
   void getAdminTask(openedTaskId)
     .then((data) => {
       // 切单或关抽屉后旧请求不得覆盖新任务，否则管理员会看到别人的 detail。
@@ -672,20 +682,22 @@ const summaryCells = computed(() => [
         <LogCollectAttribution variant="panel" :display="detailTask?.display" />
 
         <!--
-          可解释性分区：逐台明细回答「哪台、哪一步、原始输出」，结构化原文
-          保留 detail jsonb 全貌。两者都只在详情接口返回，不影响列表查询。
+          可解释性分区：逐台明细来自桥端解析后的 acli 进度原文（节点 IP / 状态 / 百分比），
+          结构化原文保留 detail jsonb 全貌。两者都不参与结论判定。
         -->
         <el-collapse class="upload-structured">
           <el-collapse-item :title="UI_TEXT.admin.per_host_section" name="hosts">
-            <div v-if="spcHostRows.length">
-              <div v-for="(host, index) in spcHostRows" :key="index" class="upload-host-row">
-                <code>{{ host.ip ?? host.host ?? '—' }}</code>
-                <span>{{ host.error ?? host.error_code ?? '—' }}</span>
-                <span v-if="host.error_detail" class="upload-sub">{{ host.error_detail }}</span>
+            <div v-if="hostRows.length">
+              <div v-for="host in hostRows" :key="host.ip" class="upload-host-row">
+                <code>{{ host.ip }}</code>
+                <span>{{ host.status }}</span>
+                <span v-if="host.percent" class="upload-sub">进度 {{ host.percent }}</span>
+                <span v-if="host.error" class="upload-sub">{{ host.error }}</span>
               </div>
             </div>
             <div v-else class="upload-sub">
-              该任务未上报逐台明细：节点没有回传每台机器的采集输出，日志包交付不依赖此项。
+              该任务未上报逐台明细：需新版本 terminal_bridge 重新采集；旧版桥只回传聚合的
+              hosts_count，不会产生该证据。日志包交付不依赖此项。
             </div>
           </el-collapse-item>
           <el-collapse-item :title="UI_TEXT.admin.raw_section" name="raw">

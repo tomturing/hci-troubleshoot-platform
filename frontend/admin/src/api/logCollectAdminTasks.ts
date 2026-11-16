@@ -234,6 +234,21 @@ export interface DestinationProgress {
   reason: string | null
 }
 
+export interface HostResultItem {
+  ip: string
+  status: string
+  percent: string | null
+  error: string | null
+}
+
+/** 逐台明细来自桥端解析的 acli 进度原文；老桥未上报时 items 为空。 */
+export interface HostResultResponse {
+  task_id: string
+  items: HostResultItem[]
+  reported_at: string | null
+  source: string
+}
+
 export interface TransferMetricsResponse {
   task_id: string
   items: TransferInfo[]
@@ -321,6 +336,11 @@ export async function getDestinationProgress(taskId: string): Promise<Destinatio
 
 export async function getAdminTask(taskId: string): Promise<AdminTaskDetail> {
   const { data } = await client.get(taskPath(taskId))
+  return data
+}
+
+export async function getHostResults(taskId: string): Promise<HostResultResponse> {
+  const { data } = await client.get(taskPath(taskId, '/host-results'))
   return data
 }
 

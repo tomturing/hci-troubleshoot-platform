@@ -345,8 +345,8 @@ async def put_artifact_manifest(
                  quality, reason, evidence)
             VALUES
                 (:task_id, :case_id, :trace_id, :source, :archive_path, :archive_size,
-                 :archive_sha256, :entry_count, :entry_total_bytes, :entries::jsonb,
-                 :has_encrypted, :quality, :reason, :evidence::jsonb)
+                 :archive_sha256, :entry_count, :entry_total_bytes, CAST(:entries AS jsonb),
+                 :has_encrypted, :quality, :reason, CAST(:evidence AS jsonb))
             ON CONFLICT DO NOTHING
             RETURNING manifest_id
             """
@@ -360,9 +360,9 @@ async def put_artifact_manifest(
             """
             UPDATE log_collect_artifact_manifest
             SET archive_size = :archive_size, entry_count = :entry_count,
-                entry_total_bytes = :entry_total_bytes, entries = :entries::jsonb,
+                entry_total_bytes = :entry_total_bytes, entries = CAST(:entries AS jsonb),
                 has_encrypted = :has_encrypted, quality = :quality, reason = :reason,
-                evidence = :evidence::jsonb, inspected_at = CURRENT_TIMESTAMP
+                evidence = CAST(:evidence AS jsonb), inspected_at = CURRENT_TIMESTAMP
             WHERE task_id = :task_id AND source = :source
               AND COALESCE(archive_sha256, '') = COALESCE(:archive_sha256, '')
             """
@@ -376,7 +376,7 @@ async def put_artifact_manifest(
             SET detail = COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
                     'artifact_quality', :quality,
                     'artifact_reason', :reason,
-                    'artifact_evidence', :evidence::jsonb),
+                    'artifact_evidence', CAST(:evidence AS jsonb)),
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_id = :task_id
               AND (detail ->> 'artifact_quality' IS DISTINCT FROM 'ok' OR :quality = 'ok')

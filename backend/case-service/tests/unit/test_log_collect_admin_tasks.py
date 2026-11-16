@@ -476,3 +476,32 @@ def test_list_detail_whitelist_keeps_stage_signals():
     assert stages["S2"] == "success"
     # 探针只影响阶段状态，不改变交付结论与统计分桶。
     assert with_probe["display"]["conclusion"] == without["display"]["conclusion"]
+
+
+@pytest.mark.asyncio
+async def test_host_results_reads_bridge_payload_without_fabrication(monkeypatch):
+    """逐台明细只回读桥端结构化事实：空 IP 过滤，不拿 hosts_count 造行。"""
+    task_id = uuid4()
+
+    async def fake_task_row(_task_id):
+        return {"task_id": _task_id}
+
+    async def fake_fetch(sql, params):
+        assert "log_collect.host_results" in sql
+        assert params == {"task_id": str(task_id)}
+        return [
+            {
+                "hosts": [
+                    {"ip": "10.0.0.1", "status": "成功", "percent": "100%"},
+                    {"ip": "", "status": "脏数据"},
+                ],
+                "created_at": _now(),
+            }
+        ]
+
+    monkeypatch.setattr(routes, "_task_row", fake_task_row)
+    monkeypatch.setattr(routes, "_fetch", fake_fetch)
+    response = await routes.host_results(task_id)
+    assert [item.ip for item in response.items] == ["10.0.0.1"]
+    assert response.items[0].status == "成功"
+    assert response.items[0].percent == "100%"

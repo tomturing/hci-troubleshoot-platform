@@ -1902,6 +1902,12 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 		progress.ArchiveExists = archiveProbeResult.Exists
 		// 采集终态只补采一次证据：节点侧 zip 中央目录 + 采集进程日志。
 		// 异步 + 独立超时：证据链路的任何失败都不允许拖慢/改变进度回包。
+		// 逐台明细是 acli 进度原文里已解析好的事实，只落桥日志即可供管理端回读；
+		// 无需证据票据，也不依赖数据面端点（那类端点只承载需要票据的四类证据）。
+		if progress.NodeState == "completed" && len(progress.Hosts) > 0 && markHostResultsReported(msg.ExecID) {
+			blog("INFO", "log_collect.host_results", "日志收集逐台明细", traceID, msg.CaseID, msg.NodeIP, cui,
+				logCollectHostResultExtra(progress.Hosts))
+		}
 		if progress.NodeState == "completed" {
 			if evidenceCfg, ok := evidenceFor(msg.ExecID); ok {
 				session, evidencePath, evidenceSize := s, probePath, progress.ArchiveSize
