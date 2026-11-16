@@ -32,7 +32,6 @@ from app.domain.acli_plugin_spec import (
 )
 from app.services.acli_plugin_bridge import (
     BridgeDeployError,
-    load_credentials,
     resolve_bridge_url,
 )
 

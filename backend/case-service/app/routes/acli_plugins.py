@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from shared.database.postgres import DatabaseManager
 
+from ..config import settings
 from ..domain.acli_plugin_spec import (
     BUILTIN_PLUGINS,
     FORBIDDEN_SPEC_FIELDS,
@@ -20,7 +21,6 @@ from ..domain.acli_plugin_spec import (
     TEMPLATE_SPEC,
     SpecValidationError,
 )
-from ..config import settings
 from ..security.auth import require_admin_token
 from ..services.acli_plugin_admin import (
     AcliPluginAdminStore,
