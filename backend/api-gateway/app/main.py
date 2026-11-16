@@ -142,6 +142,9 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
     EXEMPT_PATHS = [
         "/api/conversations/",
         "/api/terminal/",
+        # acli 插件规格含完整脚本与附加文件（如 netdoctor 近 1MB 脚本），
+        # 保存并下发是管理员操作，走管理端 JWT；放行到 10MB 上限。
+        "/api/v1/acli-plugins/plugins",
     ]
 
     async def dispatch(self, request: Request, call_next):
