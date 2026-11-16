@@ -1,7 +1,7 @@
 {
-  "version": "v2.36.0-35-g1bc82b2c",
-  "commit": "1bc82b2ca829",
-  "build_time": "2026-11-16T08:22:36Z",
+  "version": "v2.36.0-41-g7e189ad8",
+  "commit": "7e189ad8a373",
+  "build_time": "2026-11-16T11:12:37Z",
   "goos": "windows",
   "goarch": "amd64"
 }
