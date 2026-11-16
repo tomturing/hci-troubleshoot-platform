@@ -500,23 +500,25 @@ type OutMessage struct {
 	ExecID  string `json:"exec_id,omitempty"` // 用于 exec_result
 	// exec_result 必须始终携带 exit_code；0 是成功值，不能因 omitempty 被省略，
 	// 否则浏览器会把缺失字段解析成 NaN，误判已成功的命令为失败。
-	ExitCode        int    `json:"exit_code"`           // 用于 exec_result
-	Stdout          string `json:"stdout,omitempty"`    // 双通道物理隔离输出 (Scheme B)
-	Stderr          string `json:"stderr,omitempty"`    // 双通道物理隔离输出 (Scheme B)
-	TraceID         string `json:"trace_id,omitempty"`  // 回显端到端 trace_id
-	CustomUI        string `json:"custom_ui,omitempty"` // 来源 Custom-UI（自动按 Origin 关联）
-	Traceparent     string `json:"traceparent,omitempty"`
-	ArtifactID      string `json:"artifact_id,omitempty"`
-	StdoutBytes     int64  `json:"stdout_bytes,omitempty"`
-	StderrBytes     int64  `json:"stderr_bytes,omitempty"`
-	StdoutSHA256    string `json:"stdout_sha256,omitempty"`
-	StderrSHA256    string `json:"stderr_sha256,omitempty"`
-	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
-	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
-	DurationMS      int64  `json:"duration_ms,omitempty"`
-	TimedOut        bool   `json:"timed_out,omitempty"`
-	Cancelled       bool   `json:"cancelled,omitempty"`
-	ErrorType       string `json:"error_type,omitempty"`
+	ExitCode    int    `json:"exit_code"`           // 用于 exec_result
+	Stdout      string `json:"stdout,omitempty"`    // 双通道物理隔离输出 (Scheme B)
+	Stderr      string `json:"stderr,omitempty"`    // 双通道物理隔离输出 (Scheme B)
+	TraceID     string `json:"trace_id,omitempty"`  // 回显端到端 trace_id
+	CustomUI    string `json:"custom_ui,omitempty"` // 来源 Custom-UI（自动按 Origin 关联）
+	Traceparent string `json:"traceparent,omitempty"`
+	ArtifactID  string `json:"artifact_id,omitempty"`
+	// Sessions 仅用于 list_sessions_result：当前已登录的 SSH 会话摘要，不含凭据。
+	Sessions        []bridgeSessionInfo `json:"sessions,omitempty"`
+	StdoutBytes     int64               `json:"stdout_bytes,omitempty"`
+	StderrBytes     int64               `json:"stderr_bytes,omitempty"`
+	StdoutSHA256    string              `json:"stdout_sha256,omitempty"`
+	StderrSHA256    string              `json:"stderr_sha256,omitempty"`
+	StdoutTruncated bool                `json:"stdout_truncated,omitempty"`
+	StderrTruncated bool                `json:"stderr_truncated,omitempty"`
+	DurationMS      int64               `json:"duration_ms,omitempty"`
+	TimedOut        bool                `json:"timed_out,omitempty"`
+	Cancelled       bool                `json:"cancelled,omitempty"`
+	ErrorType       string              `json:"error_type,omitempty"`
 	// PtyMode 声明本次执行的终端语义：pipe（默认，stdout/stderr 双通道）或 pty
 	// （伪终端，stderr 合并进 stdout）。下游不得把 pty 模式下"stderr 为空"解释为无错误。
 	PtyMode         string `json:"pty_mode,omitempty"`
@@ -4821,6 +4823,42 @@ func (b *Bridge) sessionKeyList(limit int) []string {
 	return keys
 }
 
+// bridgeSessionInfo 是「当前已登录、可下发」的环境摘要。
+// 只暴露会话键与连接地址，不含用户名、口令、私钥等任何凭据字段。
+type bridgeSessionInfo struct {
+	CaseID string `json:"case_id"`
+	NodeIP string `json:"node_ip"`
+	Host   string `json:"host"`
+	Key    string `json:"key"`
+}
+
+// listSessions 返回当前所有活跃 SSH 会话，供管理端枚举「custom-ui + bridge 已登录」的环境。
+func (b *Bridge) listSessions() []bridgeSessionInfo {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	items := make([]bridgeSessionInfo, 0, len(b.sessions))
+	for key, s := range b.sessions {
+		if s == nil {
+			continue
+		}
+		caseID, nodeIP := key, ""
+		if idx := strings.Index(key, "@"); idx >= 0 {
+			caseID, nodeIP = key[:idx], key[idx+1:]
+		}
+		if nodeIP == "" {
+			if h, _, err := net.SplitHostPort(s.address); err == nil {
+				nodeIP = h
+			} else {
+				nodeIP = s.address
+			}
+		}
+		items = append(items, bridgeSessionInfo{
+			CaseID: caseID, NodeIP: nodeIP, Host: s.address, Key: key,
+		})
+	}
+	return items
+}
+
 type bridgeStatus struct {
 	ActiveSessions  int `json:"active_sessions"`
 	CachedAuthCases int `json:"cached_auth_cases"`
@@ -5538,8 +5576,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}()
 
 		case "ssh_exec_process":
-			// 根据 nodeIP 路由到正确的 SSH 会话
-			s, key := b.resolveSession(msg)
+			// 会话路由与 log_collect/acli_sync 对齐：custom-ui 登录建会话时用的
+			// case_id 可能是工单号或 terminal-only，管理端下发只需要按 node_ip
+			// 复用同一 bridge 进程里已存在的 SSH 会话，不再新建连接。
+			s, key, _ := b.resolveLogCollectSession(msg)
 			if s == nil && msg.NodeIP != "" {
 				s = b.autoConnectNode(ws, msg, ownedSessions, connID, role)
 				key = sessionKey(msg.CaseID, msg.NodeIP)
@@ -5673,6 +5713,14 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 
 		case "acli_sync":
 			go b.handleAcliSync(ws, msg, cui)
+
+		case "list_sessions":
+			// 管理端枚举「custom-ui + bridge 已登录」的环境；只回会话摘要，不回凭据。
+			blog("INFO", "session.list", "管理端查询已登录 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{})
+			sendMsg(ws, OutMessage{
+				Type: "list_sessions_result", CaseID: msg.CaseID,
+				Sessions: b.listSessions(), TraceID: msg.TraceID, CustomUI: cui,
+			})
 
 		case "bridge_log_token":
 			// 前端下发的直传凭据：拿到即启动后台 worker，此后桥侧日志不再依赖浏览器。

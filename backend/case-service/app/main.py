@@ -72,16 +72,14 @@ async def lifespan(app: FastAPI):
     # 根本看不到它（2026-11-04 Q2026110400024 因此卡在 228/723 共 43 分钟）。
     relay_reconcile = asyncio.create_task(log_collect.reconcile_relays_loop())
 
-    # acli 插件下发：管理员保存配置后由服务端主动连 terminal_bridge，
-    # 不依赖任何浏览器在线。凭据与 bridge 地址只在这里从设置/Secret 读取。
+    # acli 插件下发：目标为 custom-ui + terminal_bridge 已登录会话，
+    # 服务端不持有 SSH 凭据、不新建 SSH 连接，只复用已存在会话执行。
     acli_plugin_reconcile = None
     if settings.ACLI_PLUGIN_RELAY_ENABLED:
         acli_plugin_relay = AcliPluginDeployRelay(
             store=SqlAcliPluginStore(database_manager),
             bridge_client=AcliPluginBridgeClient(),
             default_bridge_url=settings.ACLI_PLUGIN_BRIDGE_URL,
-            credentials_json=settings.ACLI_PLUGIN_CREDENTIALS_JSON,
-            credentials_file=settings.ACLI_PLUGIN_CREDENTIALS_FILE,
             lease_seconds=settings.ACLI_PLUGIN_LEASE_SECONDS,
             max_attempts=settings.ACLI_PLUGIN_MAX_ATTEMPTS,
             deploy_timeout=settings.ACLI_PLUGIN_DEPLOY_TIMEOUT_SECONDS,

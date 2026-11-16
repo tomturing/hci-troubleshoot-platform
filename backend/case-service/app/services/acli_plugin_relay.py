@@ -32,7 +32,6 @@ from app.domain.acli_plugin_spec import (
 )
 from app.services.acli_plugin_bridge import (
     BridgeDeployError,
-    load_credentials,
     resolve_bridge_url,
 )
 
@@ -259,8 +258,6 @@ class AcliPluginDeployRelay:
         store: AcliPluginStore,
         bridge_client: Any,
         default_bridge_url: str,
-        credentials_json: str = "",
-        credentials_file: str = "",
         lease_seconds: int = 180,
         max_attempts: int = 3,
         deploy_timeout: int = 180,
@@ -271,8 +268,6 @@ class AcliPluginDeployRelay:
         self._store = store
         self._bridge = bridge_client
         self._default_bridge_url = default_bridge_url
-        self._credentials_json = credentials_json
-        self._credentials_file = credentials_file
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
         self._deploy_timeout = deploy_timeout
@@ -363,9 +358,11 @@ class AcliPluginDeployRelay:
         context = await self._store.get_context(deploy_id)
         if context is None:
             raise RelayDeployError("context_missing", "下发任务缺少规格或环境")
-        node_ip = str(context.get("node_ip") or "")
-        if not node_ip or context.get("enabled") is False:
-            raise RelayDeployError("environment_missing", "目标环境未登记或已停用")
+        # 目标来自页面选择的 bridge 已登录会话：env_code 列存 case_id，node_ip 列存会话 IP。
+        case_id = str(deployment.get("env_code") or context.get("env_code") or "")
+        node_ip = str(deployment.get("node_ip") or context.get("node_ip") or "")
+        if not case_id or not node_ip:
+            raise RelayDeployError("session_missing", "目标会话无效（缺少 case_id 或 node_ip）")
 
         spec = normalize_spec(_as_mapping(context.get("spec_json")))
         validation = validate_spec(spec)
@@ -376,20 +373,13 @@ class AcliPluginDeployRelay:
         if not descriptor_check["ok"]:
             raise RelayDeployError("descriptor_invalid", "; ".join(descriptor_check["errors"]))
 
-        credential = load_credentials(
-            self._credentials_json,
-            credential_ref=str(context.get("credential_ref") or ""),
-            env_code=str(deployment.get("env_code") or ""),
-            credentials_file=self._credentials_file,
-        )
-        bridge_url = resolve_bridge_url(str(context.get("bridge_url") or ""), self._default_bridge_url)
+        # 复用 custom-ui 已登录 SSH 会话：不下发凭据、不新建连接。
+        bridge_url = resolve_bridge_url("", self._default_bridge_url)
         result = await self._bridge.deploy(
             bridge_url=bridge_url,
+            case_id=case_id,
             node_ip=node_ip,
-            ssh_port=int(context.get("ssh_port") or 22),
-            credential=credential,
             command=descriptor["deploy_command"],
-            case_id=f"htp-acli-{deploy_id}",
             exec_id=str(deployment.get("exec_id") or ""),
             trace_id=str(deployment.get("trace_id") or ""),
             timeout=self._deploy_timeout,

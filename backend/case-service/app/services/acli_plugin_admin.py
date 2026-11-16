@@ -94,24 +94,15 @@ class AcliPluginAdminStore:
             return results
 
     async def save_and_publish(self, prepared: dict[str, Any]) -> dict[str, Any]:
-        env_code = prepared["env_code"]
+        # 目标来自 custom-ui + terminal_bridge 当前已登录会话，不查静态环境白名单。
+        env_code = str(prepared.get("target_case_id") or prepared["env_code"])
+        target_node_ip = str(prepared.get("target_node_ip") or "")
+        if not env_code or not target_node_ip:
+            raise AdminValidationError(["目标会话无效：请先从 bridge 已登录会话列表选择"])
         spec_hash = prepared["spec_hash"]
         plugin_name = prepared["plugin_name"]
 
-        env_rows = await self._script(
-            [
-                (
-                    """
-                    SELECT env_code, node_ip FROM acli_plugin_environment
-                     WHERE env_code = :env_code AND enabled = true
-                    """,
-                    {"env_code": env_code},
-                )
-            ]
-        )
-        env = env_rows[0][0] if env_rows and env_rows[0] else None
-        if env is None:
-            raise AdminValidationError([f"环境 {env_code} 未登记或已停用"])
+        env = {"node_ip": target_node_ip}
 
         existing = await self._script(
             [
@@ -273,20 +264,8 @@ class AcliPluginAdminStore:
         return rows[0][0] if rows and rows[0] else None
 
     async def list_environments(self) -> list[dict[str, Any]]:
-        """只返回页面需要的字段；node_ip / credential_ref / bridge_url 不下发给页面。"""
-        rows = await self._script(
-            [
-                (
-                    """
-                    SELECT env_code, display_name, enabled, auth_type
-                      FROM acli_plugin_environment
-                     ORDER BY env_code
-                    """,
-                    {},
-                )
-            ]
-        )
-        return rows[0]
+        """兼容旧调用：静态环境白名单已不再是下发目标事实源，返回空列表。"""
+        return []
 
 
 __all__ = ["AcliPluginAdminStore", "AdminValidationError", "prepare_publication"]

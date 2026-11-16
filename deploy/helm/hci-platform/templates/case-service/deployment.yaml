@@ -108,15 +108,6 @@ spec:
               value: {{ .Values.caseService.acliPlugin.leaseSeconds | int | quote }}
             - name: ACLI_PLUGIN_MAX_ATTEMPTS
               value: {{ .Values.caseService.acliPlugin.maxAttempts | int | quote }}
-            - name: ACLI_PLUGIN_CREDENTIALS_FILE
-              value: {{ .Values.caseService.acliPlugin.credentialsFile | quote }}
-            {{- if .Values.caseService.acliPlugin.credentialsSecret }}
-            - name: ACLI_PLUGIN_CREDENTIALS_JSON
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.caseService.acliPlugin.credentialsSecret | quote }}
-                  key: {{ .Values.caseService.acliPlugin.credentialsSecretKey | quote }}
-            {{- end }}
           livenessProbe:
             httpGet:
               path: /health

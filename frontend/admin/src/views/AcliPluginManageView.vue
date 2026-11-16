@@ -14,11 +14,11 @@ import {
   getDeployment,
   getTemplate,
   listDeployments,
-  listEnvironments,
+  listSessions,
   listPlugins,
   publishPlugin,
   type AcliPluginDeployment,
-  type AcliPluginEnvironment,
+  type AcliPluginSession,
   type AcliPluginItem,
   type AcliPluginSpec,
   type AcliPluginTemplateResponse,
@@ -28,7 +28,6 @@ type TagType = 'success' | 'warning' | 'danger' | 'info'
 
 function blankSpec(): AcliPluginSpec {
   return {
-    env_code: '24',
     update_mode: 'third_party',
     plugin_name: '',
     plugin_uuid: '',
@@ -61,7 +60,7 @@ function blankSpec(): AcliPluginSpec {
 }
 
 const plugins = ref<AcliPluginItem[]>([])
-const environments = ref<AcliPluginEnvironment[]>([])
+const sessions = ref<AcliPluginSession[]>([])
 const templateInfo = ref<AcliPluginTemplateResponse | null>(null)
 const loading = ref(false)
 const publishing = ref(false)
@@ -70,7 +69,7 @@ const progressVisible = ref(false)
 const historyVisible = ref(false)
 const activeTab = ref('basic')
 const isEditing = ref(false)
-const envCode = ref('24')
+const selectedSessionKey = ref('')
 const form = ref<AcliPluginSpec>(blankSpec())
 const deployments = ref<AcliPluginDeployment[]>([])
 const selectedDeployment = ref<AcliPluginDeployment | null>(null)
@@ -80,7 +79,7 @@ const idempotent = ref(false)
 const historyPluginName = ref('')
 let polling = false
 
-const activeEnvironments = computed(() => environments.value.filter(item => item.enabled))
+const selectedSession = computed(() => sessions.value.find(item => item.key === selectedSessionKey.value) || null)
 const smokeHint = computed(() =>
   form.value.smoke_args
     ? `设备侧将真实执行：/sf/bin/acli --timeout 60 ${form.value.plugin_name || '<插件名>'} ${form.value.smoke_args}`
@@ -127,11 +126,11 @@ async function loadPlugins() {
 
 async function loadMeta() {
   try {
-    const [envData, templateData] = await Promise.all([listEnvironments(), getTemplate()])
-    environments.value = envData
+    const [sessionData, templateData] = await Promise.all([listSessions(), getTemplate()])
+    sessions.value = sessionData
     templateInfo.value = templateData
-    if (!environments.value.some(item => item.env_code === envCode.value) && activeEnvironments.value.length) {
-      envCode.value = activeEnvironments.value[0].env_code
+    if (!sessions.value.some(item => item.key === selectedSessionKey.value) && sessions.value.length) {
+      selectedSessionKey.value = sessions.value[0].key
     }
   } catch {
     ElMessage.warning('模板或环境列表加载失败，可稍后重试')
@@ -224,7 +223,14 @@ async function handlePublish() {
   }
   publishing.value = true
   try {
-    const result = await publishPlugin(form.value, envCode.value)
+    if (!selectedSession.value) {
+      ElMessage.warning('请先在 custom-ui 登录目标 HCI，使 terminal_bridge 存在已连接的 SSH 会话')
+      return
+    }
+    const result = await publishPlugin(form.value, {
+      caseId: selectedSession.value.case_id,
+      nodeIp: selectedSession.value.node_ip,
+    })
     currentDeployId.value = result.deploy_id
     idempotent.value = result.idempotent
     currentDeployment.value = null
@@ -490,13 +496,13 @@ onBeforeUnmount(() => {
 
       <template #footer>
         <div class="drawer-footer">
-          <span class="env-label">目标环境</span>
-          <el-select v-model="envCode" style="width: 180px">
+          <span class="env-label">目标会话</span>
+          <el-select v-model="selectedSessionKey" style="width: 260px" placeholder="custom-ui 已登录的 HCI">
             <el-option
-              v-for="item in activeEnvironments"
-              :key="item.env_code"
-              :label="item.display_name || item.env_code"
-              :value="item.env_code"
+              v-for="item in sessions"
+              :key="item.key"
+              :label="`${item.case_id} · ${item.node_ip}`"
+              :value="item.key"
             />
           </el-select>
           <span class="footer-spacer" />
