@@ -17,6 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const api = vi.hoisted(() => ({
   listAdminTasks: vi.fn(),
   getDestinationProgress: vi.fn(),
+  getHostResults: vi.fn(),
   getAdminTask: vi.fn(),
   getTransferMetrics: vi.fn(),
   getNetworkProbe: vi.fn(),
@@ -77,6 +78,7 @@ const summary = {
 beforeEach(() => {
   for (const mock of Object.values(api)) mock.mockReset()
   api.getAdminTask.mockResolvedValue({ ...doneTask, transfer: null, network: null })
+  api.getHostResults.mockResolvedValue({ task_id: 'task-done', items: [], reported_at: null, source: 'bridge_execution_logs' })
   api.getTransferMetrics.mockResolvedValue({ task_id: 'task-done', items: [], latest: null })
   api.getNetworkProbe.mockResolvedValue({ task_id: 'task-done', network: null })
   api.getArtifactManifest.mockResolvedValue({ task_id: 'task-done', items: [] })
@@ -343,12 +345,18 @@ describe('LogUploadPanel', () => {
     wrapper.unmount()
   })
 
-  it('单任务详情的完整 detail 回写抽屉，逐台明细与结构化原文可读', async () => {
+  it('单任务详情的完整 detail 回写抽屉，逐台明细来自桥端上报而非无人写入的 detail 键', async () => {
     api.getAdminTask.mockResolvedValue({
       ...doneTask,
-      detail: { probe: { hosts_count: 4 }, spc_hosts: [{ ip: '10.0.0.9', error: '' }] },
+      detail: { probe: { hosts_count: 4 } },
       transfer: null,
       network: null,
+    })
+    api.getHostResults.mockResolvedValue({
+      task_id: 'task-done',
+      items: [{ ip: '10.0.0.9', status: '成功', percent: '100%', error: null }],
+      reported_at: '2026-11-16T08:00:00Z',
+      source: 'bridge_execution_logs',
     })
     const wrapper = await mountPanel()
     const buttons = wrapper.findAll('button').filter((item) => item.text() === '详情')
@@ -363,7 +371,9 @@ describe('LogUploadPanel', () => {
       await flushPromises()
     }
     const text = wrapper.text()
+    expect(api.getHostResults).toHaveBeenCalledWith('task-done')
     expect(text).toContain('10.0.0.9')
+    expect(text).toContain('100%')
     expect(text).toContain('hosts_count')
     expect(text).not.toContain('该任务未上报逐台明细')
     wrapper.unmount()

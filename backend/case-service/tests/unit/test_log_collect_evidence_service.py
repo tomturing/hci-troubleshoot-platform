@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -180,6 +181,37 @@ class TestEvidenceRoutes:
         assert inserts[0]["reason"] == "too_small"
         detail_updates = [params for sql, params in session.calls if "artifact_quality" in sql]
         assert detail_updates and detail_updates[0]["quality"] == "invalid"
+
+    def test_network_probe_accepts_bridge_rtt_samples(self, client):
+        """bridge 发整型 RTT（失败为 -1），不能再被 dict 契约 422 掉。"""
+        test_client, session = client
+        response = test_client.post(
+            f"/api/direct/log-collect/tasks/{TASK_ID}/network-probe",
+            json={
+                "target": "log_server",
+                "reachable": True,
+                "sample_count": 5,
+                "loss_rate": 0.0,
+                "rtt_avg_ms": 12,
+                "samples": [12, -1, 15, 11, 13],
+            },
+            headers={"X-Evidence-Ticket": routes.tickets.issue(TASK_ID)},
+        )
+        assert response.status_code == 200
+        inserts = [params for sql, params in session.calls if "INSERT INTO log_collect_network_probe" in sql]
+        assert inserts and json.loads(inserts[0]["samples"]) == [12, -1, 15, 11, 13]
+
+    def test_artifact_manifest_sql_uses_cast_not_named_bind_cast(self, client):
+        """命名绑定后跟 ::jsonb 会被原样发给 asyncpg 报语法错误。"""
+        test_client, session = client
+        response = test_client.post(
+            f"/api/direct/log-collect/tasks/{TASK_ID}/artifact-manifest",
+            json={"source": "node_zip", "entry_count": 1, "entry_total_bytes": 1024, "entries": [{"name": "a.log"}]},
+            headers={"X-Evidence-Ticket": routes.tickets.issue(TASK_ID)},
+        )
+        assert response.status_code == 200
+        assert any("CAST(:entries AS jsonb)" in sql for sql, _ in session.calls)
+        assert all(":entries::jsonb" not in sql and ":evidence::jsonb" not in sql for sql, _ in session.calls)
 
     def test_process_log_rejects_path_outside_whitelist(self, client):
         test_client, _ = client

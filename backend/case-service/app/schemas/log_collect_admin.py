@@ -165,6 +165,22 @@ class ProcessLogListResponse(BaseModel):
     items: list[ProcessLogItem] = Field(default_factory=list)
 
 
+class HostResultItem(BaseModel):
+    """逐台采集明细：桥端从 acli 进度原文解析后结构化上报，不由平台推断。"""
+
+    ip: str
+    status: str
+    percent: str | None = None
+    error: str | None = None
+
+
+class HostResultResponse(BaseModel):
+    task_id: UUID
+    items: list[HostResultItem] = Field(default_factory=list)
+    reported_at: datetime | None = None
+    source: str = "bridge_execution_logs"
+
+
 class ProcessLogContentResponse(BaseModel):
     """进程日志原文（只允许节点自己上报过的绝对路径）。"""
 

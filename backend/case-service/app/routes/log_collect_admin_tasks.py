@@ -53,6 +53,8 @@ from ..schemas.log_collect_admin import (
     ArtifactManifestItem,
     ArtifactManifestResponse,
     DestinationProgressResponse,
+    HostResultItem,
+    HostResultResponse,
     NetworkProbeResponse,
     ProcessLogContentResponse,
     ProcessLogItem,
@@ -661,6 +663,47 @@ async def admin_task_detail(task_id: UUID) -> AdminLogCollectTaskDetail:
     item.transfer = payload.transfer
     item.network = payload.network
     return item
+
+
+@admin_router.get("/{task_id}/host-results", response_model=HostResultResponse)
+async def host_results(task_id: UUID) -> HostResultResponse:
+    """逐台采集明细：桥端解析 acli 进度原文后写入桥日志，平台只读最新一份。
+
+    不写新表：桥日志本身带 trace_id 与节点 IP，是这类节点自报事实的现有证据通道；
+    没有上报就返回空列表，绝不用 error_message 或 hosts_count 伪造逐台行。
+    """
+    await _task_row(task_id)
+    rows = await _fetch(
+        """
+        SELECT extra -> 'hosts' AS hosts, created_at
+        FROM bridge_execution_logs
+        WHERE event = 'log_collect.host_results'
+          AND extra ->> 'task_id' = :task_id
+        ORDER BY created_at DESC, seq DESC
+        LIMIT 1
+        """,
+        {"task_id": str(task_id)},
+    )
+    if not rows:
+        return HostResultResponse(task_id=task_id)
+    hosts = _coerce_json(rows[0].get("hosts"))
+    items = [
+        HostResultItem.model_validate(
+            {
+                "ip": str(entry.get("ip") or ""),
+                "status": str(entry.get("status") or "未知"),
+                "percent": entry.get("percent"),
+                "error": entry.get("error"),
+            }
+        )
+        for entry in hosts
+        if isinstance(entry, Mapping) and str(entry.get("ip") or "")
+    ]
+    return HostResultResponse(
+        task_id=task_id,
+        items=items,
+        reported_at=rows[0].get("created_at"),
+    )
 
 
 @admin_router.get("/{task_id}/transfer-metrics", response_model=TransferMetricsResponse)

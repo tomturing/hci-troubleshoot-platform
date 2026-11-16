@@ -46,7 +46,9 @@ class NetworkProbeIn(BaseModel):
     up_bps: int | None = Field(default=None, ge=0)
     down_bps: int | None = Field(default=None, ge=0)
     advice: str | None = Field(default=None, max_length=512)
-    samples: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
+    # bridge 上报的是每次 TCP 拨测的 RTT 毫秒（失败为 -1），不是对象数组。
+    # 契约跟随生产者：旧版把 int 当 dict 校验，导致 network-probe 全部 422。
+    samples: list[int] = Field(default_factory=list, max_length=64)
     bridge_version: str | None = Field(default=None, max_length=32)
 
 
