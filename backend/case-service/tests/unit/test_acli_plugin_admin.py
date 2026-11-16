@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -131,6 +132,17 @@ def test_save_and_publish_creates_pending_task_in_one_transaction():
         params for sql, params in db.session.calls if "INSERT INTO acli_plugin_deployment" in sql
     )
     assert deployment_params["node_ip"] == "172.28.24.1"
+
+    # asyncpg 会为同一绑定参数在不同位置推断出不同类型（INSERT 值位置 varchar、
+    # WHERE 比较位置 text），因此写入 SQL 不允许复用参数名，revision 子查询
+    # 必须使用独立参数；纯 WHERE 比较里复用同名参数是安全的。
+    for sql, _ in db.session.calls:
+        if "INSERT INTO" not in sql:
+            continue
+        names = re.findall(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)", sql)
+        assert len(names) == len(set(names)), sql
+    assert spec_params["revision_plugin_name"] == "hci_lmt_check"
+    assert deployment_params["revision_spec_hash"] == result["spec_hash"]
 
 
 def test_missing_environment_is_rejected_before_any_write():
