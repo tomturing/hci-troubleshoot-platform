@@ -10,6 +10,7 @@
  *   - 失败原文与建议只在诊断卡出现一次。
  * 所有标签取自契约生成物，组件自身不写展示文案。
  */
+import { computed } from 'vue'
 import { UI_TEXT } from '@hci/shared'
 import LogCollectDiagnosis from '@/components/LogCollectDiagnosis.vue'
 import LogCollectFaultCard from './LogCollectFaultCard.vue'
@@ -32,12 +33,22 @@ const props = withDefaults(
     conditions: () => [],
   },
 )
+
+// 2026-11-16：已交付（success / partial）不再向客户呈现 fault 归因卡，
+// 只保留阶段条；真正的失败结论不受影响，仍完整显示错误定位。
+const showFault = computed(
+  () => !['success', 'partial'].includes(String(props.display?.conclusion ?? '')),
+)
 </script>
 
 <template>
   <div class="lc-status-card">
-    <!-- 结果态：三段五组件 + 首个异常点 + S1-S8 阶段条，与管理端同源 -->
-    <LogCollectFaultCard v-if="variant === 'result' && props.display" :display="props.display" />
+    <!-- 结果态：三段五组件 + S1-S8 阶段条；已交付时隐藏 fault 卡 -->
+    <LogCollectFaultCard
+      v-if="variant === 'result' && props.display"
+      :display="props.display"
+      :show-fault="showFault"
+    />
 
     <!-- 观察事实：两个视图态都在这里给出一次；横幅不再重复拼这一段。
          横幅在 fault_attribution 存在时会提前返回，指望它兜底会漏掉多值条件。 -->

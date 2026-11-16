@@ -451,6 +451,19 @@ export function buildResultHeadline(args: {
       success: 'success', warning: 'warning', error: 'error', info: 'info',
     }
     const tone = toneMap[display.conclusion_tone] ?? 'info'
+    // 2026-11-16 收敛（Q2026111600624）：字节已交付且平台结论为 success / partial 时，
+    // 探测快照（如 5888 不可达）与证据回传缺口都不是客户需要决策的事；
+    // 结果态只保留「已归档 + 路径」一条提示。
+    // 硬门槛：必须同时满足 delivered 与结论分档——delivered=true 但结论为 failed
+    // （如空壳包）仍要完整展示诊断，绝不能把真实失败信息裁掉。
+    const settledOk = delivered && ['success', 'partial'].includes(String(display.conclusion || ''))
+    if (settledOk) {
+      return {
+        type: tone,
+        title: fmt(UI_TEXT.headline.conclusion_with_time, { conclusion: display.conclusion_label, when }),
+        description: '',
+      }
+    }
     // 客户侧只回答三件事：哪里出了问题、什么问题、下一步做什么。
     // 阶段判据、证据表与管理员判据留在 admin-ui，不把客户淹没在诊断细节里。
     if (display.fault_attribution?.customer_text) {

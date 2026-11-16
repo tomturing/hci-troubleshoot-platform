@@ -11,7 +11,8 @@
  * 2. **路径必须来自节点侧证据并逐字校验**。拿不准就不给路径，绝不给错路径——
  *    给错路径比不给路径危险得多。
  *
- * 因此本模块的输出只有两种形态：一条经过核对的绝对路径，或一句"不提供路径"。
+ * 2026-11-16 起输出只保留一种形态：命中白名单的绝对路径提示；无可信路径时返回空串，
+ * 界面据此完全不渲染这条提示——已交付任务不需要「平台不提供路径」这类无决策价值的告警。
  */
 
 /** 必须与后端 `log_collect_node_path.NODE_ARCHIVE_DIR` 保持一致。 */
@@ -39,14 +40,13 @@ export function trustedNodeArchivePath(
   return candidate === expected ? candidate : null
 }
 
-/** 没有可信路径时的兜底文案：明确不提供路径，也不提供任何命令。 */
-export const UNVERIFIED_CLEANUP_TIP =
-  '平台不自动删除 HCI 上的采集包；当前无法确认节点上的准确路径，为避免误导，平台不提供路径。' +
-  '请在 HCI 节点上核实后再自行处理（请勿触碰 /sf/data/local/acli/plugins 与 tasks 目录）。'
-
 /**
- * 生成清理路径提示。候选按可信度从高到低传入（实时节点对账 > 服务端桥日志证据）。
- * 命中可信绝对路径时**只展示路径**；不命中则明确说明不提供路径。
+ * 生成清理路径提示。候选按可信度从高到低传入
+ * （实时节点对账 > 服务端桥日志核对的字段 > 任务 archive_path）。
+ *
+ * 2026-11-16 收敛（Q2026111600624）：结果态只显示正确且有价值的内容。
+ * 命中白名单才给出路径；无可信路径时返回空串，界面据此完全不渲染这条提示。
+ * 原「平台不提供路径」是一条对已交付用户毫无决策价值的告警，已移除。
  */
 export function buildNodeCleanupTip(
   caseId: string | null | undefined,
@@ -55,10 +55,9 @@ export function buildNodeCleanupTip(
   const path = candidates
     .map((candidate) => trustedNodeArchivePath(caseId, candidate))
     .find((value): value is string => value !== null)
-  if (!path) return UNVERIFIED_CLEANUP_TIP
+  if (!path) return ''
   return (
     '平台保留副本供回看；HCI 节点上的采集包路径如下，请确认归属后自行处理：\n' +
-    `${path}\n` +
-    '请勿触碰 /sf/data/local/acli/plugins 与 tasks 目录。'
+    `${path}`
   )
 }

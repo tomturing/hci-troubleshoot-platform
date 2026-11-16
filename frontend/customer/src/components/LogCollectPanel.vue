@@ -1477,26 +1477,17 @@ const resultCleanupTip = computed(() => {
   // 顶部提示条已经在说"包仍在节点、可点上传到平台"：再说一遍只会在固定区占两行，
   // 而且两条的措辞还会互相冲突（一条说仍在、一条说已删）。
   if (canUploadFromNode.value) return ''
-  if (resultMode.value === 'acli_direct') {
-    if (!resultDelivered.value) {
-      // 未交付时只说**清理**这一件事，不再顺带复述交付结论：横幅与归档状态已经在说
-      // "未核验到归档件"，第三条"平台尚未收到交付结论"只会叠加同一件事、
-      // 却让人误读出"平台完全没收到任何东西"（Q2026111000243）。
-      // 有产物位置就是有 stat 证据；没有证据时不能断言"包仍在节点"。
-      return task.archive_path
-        ? '压缩包仍在节点上（见「产物位置」）；P1 发送成功后插件会自动删除，无需人工清理。'
-        : '无需人工清理：P1 发送成功后插件会自动删除节点上的压缩包。'
-    }
-    return 'P1 由插件直传日志服务器，上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
-  }
-  if (resultMode.value === 'bridge_relay' && task.archive_path) {
-    // 绝不能把 task.archive_path 当成节点路径展示：P2 下它是平台对象 key。
-    // 平台只提供准确路径，不提供任何删除命令，由用户自行确认处理。
-    // 只认节点侧证据：先本次对账拿到的实时路径，再服务端从桥日志核对过的路径；
-    // 两者都不可信时 buildNodeCleanupTip 会明确「不提供路径」。
+  // 2026-11-16 收敛：P1 成功由插件自动删除节点包，无需用户决策，不显示纯告知型清理提示。
+  if (resultMode.value === 'acli_direct') return ''
+  if (resultMode.value === 'bridge_relay') {
+    // 候选按可信度排序，最终仍由 buildNodeCleanupTip 白名单逐字校验：
+    // 对象 key、路径穿越、别的工单包一律不会展示（Q2026110600940 硬约束）。
+    // archive_path 是当前 P2 任务落库保存的节点绝对路径，作为 node_archive_path
+    // 缺失时的兜底，修复「一条给路径、一条说不给路径」的自相矛盾（Q2026111600624）。
     return buildNodeCleanupTip(task.case_id || props.caseId, [
       nodeArchivePath.value,
       task.node_archive_path,
+      task.archive_path,
     ])
   }
   return ''
@@ -4164,7 +4155,8 @@ async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null)
   stage.value = 'done'
   if (recorded) {
     deliveryWaitStartedAt = 0
-    cleanupTip.value = 'P1 由插件直传日志服务器；上传成功后插件会自动删除 HCI 上的压缩包，无需人工清理。'
+    // P1 交付成功由插件自动清理节点包，无需用户决策，不再显示告知型提示。
+    cleanupTip.value = ''
     ElMessage.success('日志已归档到日志服务器')
     logDeliveryDecision('delivered', { evidence, upload_state: uploadState, wait_ms: 0 }, task)
   } else {
@@ -4368,9 +4360,10 @@ async function runP2(
   stage.value = 'done'
   // 同样不能无条件展示：archivePath 来自节点报告，但仍要过一遍白名单，
   // 否则某个异常桥版本回传相对路径/对象 key 时就会给用户一条错误路径。
+  const pathTip = buildNodeCleanupTip(task.case_id, [archivePath])
   cleanupTip.value =
-    `日志包已归档到日志服务器（${totalSize} 字节）。\n` +
-    buildNodeCleanupTip(task.case_id, [archivePath])
+    `日志包已归档到日志服务器（${totalSize} 字节）。` +
+    (pathTip ? `\n${pathTip}` : '')
   ElMessage.success('日志已上传平台并归档到日志服务器')
 }
 

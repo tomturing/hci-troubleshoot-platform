@@ -30,11 +30,15 @@ import {
   type StageKey,
 } from '@hci/shared'
 import LogCollectFaultCard from '../src/components/LogCollectFaultCard.vue'
+import LogCollectStatusCard from '../src/components/LogCollectStatusCard.vue'
 import { buildResultHeadline } from '../src/utils/logCollectDelivery'
 import { showCustomerFault } from '../src/utils/logCollectFault'
+import { buildNodeCleanupTip } from '../src/services/logCollectCleanup'
 import type { LogCollectDisplayView, LogCollectStageView } from '../src/api/logCollect'
 
-const requested = new URLSearchParams(window.location.search).get('code') ?? ''
+const params = new URLSearchParams(window.location.search)
+const isDeliveredScenario = params.get('scenario') === 'delivered'
+const requested = params.get('code') ?? ''
 const code: FaultCode = (requested in FAULT_CATALOG ? requested : 'LC-HCI-001') as FaultCode
 const traceId = `trace-${code}-Q2026111300155`
 const stageOrder = FAULT_ATTRIBUTION.stage_order as string[]
@@ -113,8 +117,41 @@ const catalogRows = computed(() =>
   }),
 )
 
+// 已交付回归场景（Q2026111600624）：走产品组件 LogCollectStatusCard 的真实 showFault 门控，
+// 验证横幅不再堆 fault 归因、定界卡不渲染、只保留阶段条与一条归档路径提示。
+const deliveredCode: FaultCode = 'LC-BRIDGE-005'
+const deliveredTrace = 'lc-Q2026111600624-1794810950528'
+const deliveredDisplay: LogCollectDisplayView = {
+  ...display,
+  conclusion: 'partial',
+  conclusion_label: CONCLUSION_LABELS.partial,
+  conclusion_tone: 'warning',
+  conditions: [{ key: 'delivered_unverified', label: CONDITION_LABELS.delivered_unverified }],
+  stages: stagesFor(deliveredCode),
+  fault_attribution: faultDetail(deliveredCode, deliveredTrace),
+  trace_id: deliveredTrace,
+}
+const deliveredHeadline = buildResultHeadline({
+  status: 'completed',
+  delivered: true,
+  when: '2026-11-16 14:57',
+  display: {
+    conclusion: deliveredDisplay.conclusion,
+    conclusion_label: deliveredDisplay.conclusion_label,
+    conclusion_tone: deliveredDisplay.conclusion_tone,
+    phase_label: deliveredDisplay.phase_label,
+    conditions: deliveredDisplay.conditions,
+    fault_attribution: { customer_text: deliveredDisplay.fault_attribution?.customer_text ?? '' },
+    trace_id: deliveredDisplay.trace_id,
+  },
+})
+const deliveredCleanupTip = buildNodeCleanupTip(
+  'Q2026111600624',
+  ['/sf/data/local/acli/tmp/data/log_collect/Q2026111600624.zip'],
+)
+
 function triggerFault(): void {
-  showCustomerFault('', code)
+  if (!isDeliveredScenario) showCustomerFault('', code)
 }
 
 onMounted(triggerFault)
@@ -159,8 +196,33 @@ onMounted(triggerFault)
       </div>
     </section>
 
+    <section v-if="isDeliveredScenario" class="verify-section">
+      <h2>3. 已交付场景回归（Q2026111600624）：只剩一条归档+路径提示</h2>
+      <p class="verify-note">
+        产品横幅 <code>buildResultHeadline</code> + 产品组件 <code>LogCollectStatusCard</code>：
+        已交付时横幅无 description、定界卡不渲染、阶段条保留、清理提示唯一且无「请勿触碰」。
+      </p>
+      <div class="verify-customer">
+        <el-alert
+          :type="deliveredHeadline.type"
+          :closable="false"
+          show-icon
+          :title="deliveredHeadline.title"
+          :description="deliveredHeadline.description"
+        />
+        <LogCollectStatusCard variant="result" :display="deliveredDisplay" />
+        <el-alert
+          v-if="deliveredCleanupTip"
+          :title="`日志包已归档到日志服务器（1284061124 字节）。\n${deliveredCleanupTip}`"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+      </div>
+    </section>
+
     <section class="verify-section">
-      <h2>3. 错误字典全量（{{ catalogRows.length }} 条，客户与管理端同源）</h2>
+      <h2>{{ isDeliveredScenario ? '4' : '3' }}. 错误字典全量（{{ catalogRows.length }} 条，客户与管理端同源）</h2>
       <el-table :data="catalogRows" size="small" border>
         <el-table-column prop="code" label="错误码" width="140" />
         <el-table-column prop="scope" label="大段" width="80" />
