@@ -13,6 +13,7 @@ import pytest
 from app.services.acli_plugin_bridge import (
     AcliPluginBridgeClient,
     BridgeDeployError,
+    bridge_origin,
     build_exec_message,
     build_ssh_connect_message,
     load_credentials,
@@ -145,6 +146,32 @@ def test_connect_failure_becomes_structured_code():
     with pytest.raises(BridgeDeployError) as exc:
         _deploy(client)
     assert exc.value.code == "bridge_connect_failed"
+
+
+def test_bridge_origin_is_same_origin_and_keeps_port():
+    assert bridge_origin("ws://terminal-bridge:9999") == "http://terminal-bridge:9999"
+    assert bridge_origin("wss://bridge.example.com") == "https://bridge.example.com"
+    with pytest.raises(BridgeDeployError):
+        resolve_bridge_url("", "ws://")
+
+
+def test_deploy_connects_with_same_origin():
+    captured = {}
+    fake = FakeWS(
+        [
+            {"type": "ssh_connected"},
+            {"type": "exec_result", "exec_id": "exec-0001", "stdout": "ok", "exit_code": 0},
+        ]
+    )
+
+    async def connector(url: str, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return fake
+
+    _deploy(AcliPluginBridgeClient(connector=connector))
+    assert captured["url"] == "ws://terminal-bridge:9999"
+    assert captured["origin"] == "http://terminal-bridge:9999"
 
 
 def test_load_credentials_key_and_password_prefix():

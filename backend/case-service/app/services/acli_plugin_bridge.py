@@ -6,7 +6,9 @@ bridge 地址、不持有 SSH 凭据、不构造部署命令。凭据只在本�
 
 协议与 ``terminal_bridge/main.go`` 的 ``InMessage`` 对齐：
 ``ssh_connect`` → ``ssh_connected`` → ``ssh_exec_process`` → ``exec_result``。
-cluster 模式的 ``originAllowed()`` 对空 Origin 放行，服务端无需伪造浏览器。
+cluster bridge 的 ``originAllowed()`` 虽然放行空 Origin，但底层
+``x/net/websocket`` 仍要求握手带 Origin 且必须 same-origin，否则返回 403；
+因此服务端连接要按 bridge 地址推导出同源 Origin（不伪造浏览器身份）。
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 Connector = Callable[..., Awaitable[Any]]
 
@@ -91,7 +94,20 @@ def resolve_bridge_url(env_bridge_url: str, default_url: str) -> str:
     url = str(env_bridge_url or "").strip() or str(default_url or "").strip()
     if not url.startswith(("ws://", "wss://")):
         raise BridgeDeployError("bridge_url_invalid", "bridge 地址必须是 ws:// 或 wss://")
+    if not urlsplit(url).netloc:
+        raise BridgeDeployError("bridge_url_invalid", "bridge 地址缺少主机")
     return url
+
+
+def bridge_origin(bridge_url: str) -> str:
+    """由 ws/wss 地址推导与请求 Host 一致的 Origin。
+
+    cluster bridge 的 same-origin 策略比较 ``Origin.Host`` 与 ``r.Host``，
+    因此这里必须保留端口；wss 对应 https，ws 对应 http。
+    """
+    parts = urlsplit(bridge_url)
+    scheme = "https" if parts.scheme == "wss" else "http"
+    return f"{scheme}://{parts.netloc}"
 
 
 def build_ssh_connect_message(
@@ -179,6 +195,7 @@ class AcliPluginBridgeClient:
         try:
             ws = await self._connector(
                 bridge_url,
+                origin=bridge_origin(bridge_url),
                 open_timeout=self._connect_timeout,
                 close_timeout=self._connect_timeout,
             )
