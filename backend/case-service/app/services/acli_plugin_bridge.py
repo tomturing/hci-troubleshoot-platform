@@ -1,14 +1,12 @@
 """服务端 → terminal_bridge 的 WebSocket 下发客户端。
 
-与已回滚的 PR #1508 的本质差别：连接由 **case-service 发起**，admin-ui 不知道
-bridge 地址、不持有 SSH 凭据、不构造部署命令。凭据只在本模块内存中组装成
-``ssh_connect`` 报文，不落库、不写日志、不出现在任何异常文本或返回值里。
-
-协议与 ``terminal_bridge/main.go`` 的 ``InMessage`` 对齐：
-``ssh_connect`` → ``ssh_connected`` → ``ssh_exec_process`` → ``exec_result``。
-cluster bridge 的 ``originAllowed()`` 虽然放行空 Origin，但底层
-``x/net/websocket`` 仍要求握手带 Origin 且必须 same-origin，否则返回 403；
-因此服务端连接要按 bridge 地址推导出同源 Origin（不伪造浏览器身份）。
+边界（2026-11-16 按用户口径订正）：
+- 下发目标不是静态环境表，而是 **custom-ui + terminal_bridge 已登录的 SSH 会话**；
+  服务端不持有凭据、不发 ``ssh_connect``、不新建 SSH 连接。
+- ``list_sessions`` 枚举当前 bridge 进程内已登录会话（case_id + node_ip）；
+  ``deploy`` 直接在该会话上发 ``ssh_exec_process``，等 ``exec_result``。
+- admin-ui 只提交规格与目标会话，不填 node_ip、口令、私钥、bridge 地址。
+- 服务端 WS 握手仍须带同源 Origin（x/net/websocket 的 same-origin 要求）。
 """
 
 from __future__ import annotations
@@ -172,28 +170,15 @@ def _as_int(value: Any, default: int = -1) -> int:
 
 
 class AcliPluginBridgeClient:
-    """一次部署一条独立 WS 连接；不复用浏览器中继、不共享 SSH 会话。"""
+    """一次部署一条独立 WS 连接；复用 bridge 进程内 custom-ui 已建立的 SSH 会话。"""
 
     def __init__(self, *, connector: Connector | None = None, connect_timeout: float = 15.0):
         self._connector: Connector = connector or _default_connector
         self._connect_timeout = connect_timeout
 
-    async def deploy(
-        self,
-        *,
-        bridge_url: str,
-        node_ip: str,
-        ssh_port: int,
-        credential: Mapping[str, str],
-        command: str,
-        case_id: str,
-        exec_id: str,
-        trace_id: str,
-        timeout: int,
-    ) -> dict[str, Any]:
-        """返回 bridge 的 exec_result（已规范化），不返回任何凭据。"""
+    async def _connect(self, bridge_url: str) -> Any:
         try:
-            ws = await self._connector(
+            return await self._connector(
                 bridge_url,
                 origin=bridge_origin(bridge_url),
                 open_timeout=self._connect_timeout,
@@ -204,15 +189,47 @@ class AcliPluginBridgeClient:
         except Exception as exc:  # noqa: BLE001 — 网络层异常统一收敛成结构化错误码
             raise BridgeDeployError("bridge_connect_failed", type(exc).__name__) from exc
 
+    async def list_sessions(self, *, bridge_url: str, trace_id: str) -> list[dict[str, str]]:
+        """返回当前 bridge 上已登录的会话摘要；不返回任何凭据。"""
+        ws = await self._connect(bridge_url)
         try:
-            await self._send(ws, build_ssh_connect_message(
-                case_id=case_id,
-                node_ip=node_ip,
-                ssh_port=ssh_port,
-                credential=credential,
-                trace_id=trace_id,
-            ))
-            await self._recv_until(ws, expected="ssh_connected", exec_id="", timeout=self._connect_timeout)
+            await self._send(ws, {"type": "list_sessions", "trace_id": trace_id})
+            result = await self._recv_until(ws, expected="list_sessions_result", exec_id="", timeout=self._connect_timeout)
+            rows = result.get("sessions") or []
+            return [
+                {
+                    "case_id": str(item.get("case_id") or ""),
+                    "node_ip": str(item.get("node_ip") or ""),
+                    "host": str(item.get("host") or ""),
+                    "key": str(item.get("key") or ""),
+                }
+                for item in rows
+                if isinstance(item, dict)
+            ]
+        except TimeoutError as exc:
+            raise BridgeDeployError("bridge_timeout", "等待会话列表超时") from exc
+        except OSError as exc:
+            raise BridgeDeployError("bridge_disconnected", type(exc).__name__) from exc
+        finally:
+            with suppress(Exception):
+                await ws.close()
+
+    async def deploy(
+        self,
+        *,
+        bridge_url: str,
+        case_id: str,
+        node_ip: str,
+        command: str,
+        exec_id: str,
+        trace_id: str,
+        timeout: int,
+    ) -> dict[str, Any]:
+        """在 custom-ui 已登录会话上执行部署命令，返回规范化 exec_result。"""
+        if not case_id or not node_ip:
+            raise BridgeDeployError("session_missing", "目标会话缺少 case_id 或 node_ip")
+        ws = await self._connect(bridge_url)
+        try:
             await self._send(ws, build_exec_message(
                 case_id=case_id,
                 node_ip=node_ip,
@@ -236,7 +253,8 @@ class AcliPluginBridgeClient:
         except OSError as exc:
             raise BridgeDeployError("bridge_disconnected", type(exc).__name__) from exc
         finally:
-            await self._close(ws, case_id)
+            with suppress(Exception):
+                await ws.close()
 
     async def _send(self, ws: Any, payload: Mapping[str, Any]) -> None:
         await ws.send(json.dumps(dict(payload), ensure_ascii=False))
@@ -260,9 +278,3 @@ class AcliPluginBridgeClient:
                 raise BridgeDeployError("ssh_connect_failed", str(message.get("message") or ""))
             if message_type == expected and (not exec_id or message.get("exec_id") == exec_id):
                 return message
-
-    async def _close(self, ws: Any, case_id: str) -> None:
-        with suppress(Exception):
-            await self._send(ws, {"type": "ssh_disconnect", "case_id": case_id})
-        with suppress(Exception):
-            await ws.close()

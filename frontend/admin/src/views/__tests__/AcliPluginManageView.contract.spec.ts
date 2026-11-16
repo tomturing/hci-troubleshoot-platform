@@ -29,7 +29,6 @@ const templateSource = viewSource.split('<template>')[1] ?? ''
 const FORBIDDEN = [
   'password',
   'private_key',
-  'node_ip',
   'bridge_url',
   'ws://',
   'wss://',
@@ -45,16 +44,18 @@ describe('acli 插件管理页架构契约', () => {
     }
   })
 
-  it('API 封装只提交插件规格与环境代号', () => {
+  it('API 封装只提交插件规格与已登录会话，不含任何凭据', () => {
     for (const token of FORBIDDEN) {
       expect(apiSource.toLowerCase()).not.toContain(token)
     }
-    expect(apiSource).toContain('publishPlugin(spec: AcliPluginSpec, envCode: string)')
-    expect(apiSource).toContain("client.post(`${BASE}/plugins`, { spec, env_code: envCode })")
+    expect(apiSource).toContain('publishPlugin(spec: AcliPluginSpec, session: { caseId: string; nodeIp: string })')
+    expect(apiSource).toContain('case_id: session.caseId')
+    expect(apiSource).toContain('node_ip: session.nodeIp')
+    expect(apiSource).not.toContain('env_code')
   })
 
   it('保存后通过任务状态接口轮询，由服务端收敛回执', () => {
-    expect(viewSource).toContain('publishPlugin(form.value, envCode.value)')
+    expect(viewSource).toContain('publishPlugin(form.value, {')
     expect(viewSource).toContain('getDeployment(deployId)')
     expect(viewSource).toContain('downloadTemplate')
   })
