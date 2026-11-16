@@ -568,6 +568,30 @@ describe('平台派生结论优先', () => {
     })
     expect(headline.type).toBe('warning')
     expect(headline.title).toContain('已交付 · 有疑点')
+    // 2026-11-16 收敛：已交付任务横幅不再堆诊断细节，
+    // 唯一提示由结果态的「已归档 + 路径」给出。
+    expect(headline.description).toBe('')
+  })
+
+  // 回归（2026-11-16 Q2026111600624）：P2 已交付但探测快照显示 5888 不可达，
+  // 平台派生 fault_attribution 仍存在；已交付时横幅必须忽略它，不得重复告警。
+  it('已交付时 fault 归因不再进入横幅', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: true,
+      display: {
+        conclusion: 'partial',
+        conclusion_label: '已交付 · 有疑点',
+        conclusion_tone: 'warning',
+        conditions: [],
+        fault_attribution: {
+          customer_text: '日志服务器5888：日志服务器不可达；请检查节点到5888的网络，或改用P2平台中转',
+        },
+        trace_id: 'lc-Q2026111600624-1794810950528',
+      },
+    })
+    expect(headline.description).toBe('')
+    expect(headline.description).not.toContain('日志服务器5888')
   })
 
   it('平台结论与错误码同时存在时，第一屏两者都可见', () => {

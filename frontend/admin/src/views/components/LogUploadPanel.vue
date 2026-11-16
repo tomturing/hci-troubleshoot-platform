@@ -229,16 +229,24 @@ function toneToTag(tone: string | undefined): 'success' | 'warning' | 'danger' |
 
 /**
  * 没有证据时说清楚「为什么没有」，而不是拿 0/100 或绿色成功顶替。
- * 判据与 custom-ui 共用同一份契约：未进入该环节 ≠ 桥接端版本较旧。
+ * 判据与 custom-ui 共用同一份契约：未进入该环节 ≠ 桥接端版本较旧 ≠ 上报失败。
+ * 证据上报 404 与「任务没走到这一步」是两回事，管理员要能凭调用链查前者。
  */
 function evidenceEmptyText(): string {
   const display = detailTask.value?.display
   if (!display) return MISSING_DATA_TEXT.genuinely_empty
-  if (display.conclusion === 'failed' && !transferMetrics.value?.items?.length) {
-    return MISSING_DATA_TEXT.not_reached
-  }
   if (display.conditions?.some(item => item.key === 'bridge_outdated')) {
     return MISSING_DATA_TEXT.bridge_outdated
+  }
+  const s7 = display.stages?.find(item => item.key === 'S7')
+  if (display.fault_attribution?.code === 'LC-BRIDGE-005' || s7?.status === 'failed') {
+    const trace = display.trace_id ?? detailTask.value?.trace_id
+    return trace
+      ? `${MISSING_DATA_TEXT.report_failed}（${UI_TEXT.labels.trace_id} ${trace}）`
+      : MISSING_DATA_TEXT.report_failed
+  }
+  if (display.conclusion === 'failed' && !transferMetrics.value?.items?.length) {
+    return MISSING_DATA_TEXT.not_reached
   }
   return MISSING_DATA_TEXT.genuinely_empty
 }
@@ -249,6 +257,14 @@ const spcHostRows = computed<Record<string, unknown>[]>(() => {
   const hosts = detail?.spc_hosts
   return Array.isArray(hosts) ? (hosts as Record<string, unknown>[]) : []
 })
+
+/** 结构化原文：列表只带证据白名单，完整 detail 必须来自单任务详情接口。 */
+const structuredDetail = computed<Record<string, unknown>>(() => {
+  const detail = detailTask.value?.detail
+  return detail && typeof detail === 'object' && !Array.isArray(detail) ? detail : {}
+})
+const structuredKeys = computed(() => Object.keys(structuredDetail.value))
+const structuredJson = computed(() => JSON.stringify(structuredDetail.value, null, 2))
 
 /**
  * 可解释性：错误码是节点直报的，还是平台按文案推断的。
@@ -374,15 +390,20 @@ function openDetail(task: AdminLogCollectTask) {
   detailVisible.value = true
   void loadEvidence('transfer')
   // 单任务详情带最新传输样本与网络结论；接口不可用时其它页签仍能独立展示。
-  void getAdminTask(task.task_id)
+  const openedTaskId = task.task_id
+  void getAdminTask(openedTaskId)
     .then((data) => {
+      // 切单或关抽屉后旧请求不得覆盖新任务，否则管理员会看到别人的 detail。
+      if (!detailVisible.value || detailTask.value?.task_id !== openedTaskId) return
+      // 列表行只带 6 个证据键；完整 detail 回写后，逐台明细与结构化原文才有数据可读。
+      detailTask.value = { ...detailTask.value!, ...data }
       detailData.value = data
       if (data.network) {
         networkInfo.value = data.network
         networkLoaded.value = true
       }
       if (data.transfer && !transferMetrics.value) {
-        transferMetrics.value = { task_id: task.task_id, items: [], latest: data.transfer }
+        transferMetrics.value = { task_id: openedTaskId, items: [], latest: data.transfer }
       }
     })
     .catch(() => { detailData.value = null })
@@ -647,6 +668,9 @@ const summaryCells = computed(() => [
           :fallback-trace-id="detailTask?.trace_id"
         />
 
+        <!-- S1-S8 是工单派生结果，常驻展示；固定设计说明收进标题旁的感叹号弹框。 -->
+        <LogCollectAttribution variant="panel" :display="detailTask?.display" />
+
         <!--
           可解释性分区：逐台明细回答「哪台、哪一步、原始输出」，结构化原文
           保留 detail jsonb 全貌。两者都只在详情接口返回，不影响列表查询。
@@ -660,18 +684,21 @@ const summaryCells = computed(() => [
                 <span v-if="host.error_detail" class="upload-sub">{{ host.error_detail }}</span>
               </div>
             </div>
-            <div v-else class="upload-sub">该任务未上报逐台明细。</div>
+            <div v-else class="upload-sub">
+              该任务未上报逐台明细：节点没有回传每台机器的采集输出，日志包交付不依赖此项。
+            </div>
           </el-collapse-item>
           <el-collapse-item :title="UI_TEXT.admin.raw_section" name="raw">
-            <pre class="upload-raw">{{ JSON.stringify(detailTask.detail ?? {}, null, 2) }}</pre>
+            <div class="upload-sub">以下为详情接口返回的 detail 原文（只读）。</div>
+            <div v-if="!structuredKeys.length" class="upload-sub">
+              详情接口未返回结构化字段；如需核对请按调用链
+              {{ detailTask.trace_id || '—' }} 查询桥日志。
+            </div>
+            <pre v-else class="upload-raw">{{ structuredJson }}</pre>
           </el-collapse-item>
         </el-collapse>
 
         <el-tabs v-model="detailTab" class="upload-tabs">
-          <el-tab-pane label="链路定界" name="attribution">
-            <LogCollectAttribution variant="panel" :display="detailTask?.display" />
-          </el-tab-pane>
-
           <el-tab-pane label="传输时间线" name="transfer">
             <div v-if="evidenceError" class="upload-error">{{ evidenceError }}</div>
             <div v-if="!transferMetrics?.items?.length" class="upload-sub">{{ evidenceEmptyText() }}</div>

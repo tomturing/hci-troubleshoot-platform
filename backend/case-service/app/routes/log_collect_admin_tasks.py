@@ -162,7 +162,13 @@ _EVIDENCE_DETAIL = """jsonb_strip_nulls(jsonb_build_object(
                'p1_archive_check', t.detail -> 'p1_archive_check',
                'delivery_evidence', t.detail -> 'delivery_evidence',
                'integrity_mismatch', t.detail -> 'integrity_mismatch',
-               'bridge_outdated', t.detail -> 'bridge_outdated'
+               'bridge_outdated', t.detail -> 'bridge_outdated',
+               -- S1/S2/S3/S7 的客观信号原先被裁掉，derive() 只能降级为 unknown。
+               -- 这些键体积小，列表与详情共用，避免出现「列表未知、详情成功」的二次分叉。
+               'probe', t.detail -> 'probe',
+               'create_ack', t.detail -> 'create_ack',
+               'evidence_enabled', t.detail -> 'evidence_enabled',
+               'capabilities', t.detail -> 'capabilities'
            ))"""
 
 _SELECT = f"""

@@ -322,7 +322,7 @@ describe('LogUploadPanel', () => {
     wrapper.unmount()
   })
 
-  it('打开详情按页签懒加载证据，四页签齐全且全只读', async () => {
+  it('打开详情按页签懒加载证据，固定设计说明不再占常驻页签', async () => {
     const wrapper = await mountPanel()
     const button = wrapper.findAll('button').find((item) => item.text() === '详情')
     expect(button).toBeDefined()
@@ -336,7 +336,61 @@ describe('LogUploadPanel', () => {
     expect(text).toContain('产物证据')
     expect(text).toContain('网络探测')
     expect(text).toContain('进程日志')
+    expect(text).toContain('S1-S8 阶段时间线')
+    expect(text).not.toContain('链路定界')
+    expect(wrapper.find('[data-testid="attribution-help"]').exists()).toBe(true)
     expect(text).not.toContain('rm -')
+    wrapper.unmount()
+  })
+
+  it('单任务详情的完整 detail 回写抽屉，逐台明细与结构化原文可读', async () => {
+    api.getAdminTask.mockResolvedValue({
+      ...doneTask,
+      detail: { probe: { hosts_count: 4 }, spc_hosts: [{ ip: '10.0.0.9', error: '' }] },
+      transfer: null,
+      network: null,
+    })
+    const wrapper = await mountPanel()
+    const buttons = wrapper.findAll('button').filter((item) => item.text() === '详情')
+    await buttons[buttons.length - 1]!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    const headers = wrapper.findAll('.el-collapse-item__header')
+    for (const title of ['逐台明细', '结构化原文']) {
+      const header = headers.find((item) => item.text().includes(title))
+      await header!.trigger('click')
+      await flushPromises()
+    }
+    const text = wrapper.text()
+    expect(text).toContain('10.0.0.9')
+    expect(text).toContain('hosts_count')
+    expect(text).not.toContain('该任务未上报逐台明细')
+    wrapper.unmount()
+  })
+
+  it('S7 证据上报失败时空态给出原因与调用链，不混同于未进入环节', async () => {
+    api.listAdminTasks.mockResolvedValue({
+      items: [{
+        ...doneTask,
+        display: {
+          ...partialDisplay,
+          trace_id: 'trace-s7-404',
+          fault_attribution: { code: 'LC-BRIDGE-005' },
+          stages: [{ key: 'S7', status: 'failed', status_label: '失败' }],
+        },
+      }],
+      total: 1, page: 1, page_size: 20, summary,
+    })
+    const wrapper = await mountPanel()
+    const button = wrapper.findAll('button').find((item) => item.text() === '详情')
+    await button!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+    const text = wrapper.text()
+    expect(text).toContain('证据上报失败，请按调用链查看上报错误')
+    expect(text).toContain('trace-s7-404')
+    expect(text).not.toContain('本次任务未进入该环节')
     wrapper.unmount()
   })
 })
