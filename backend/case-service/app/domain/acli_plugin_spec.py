@@ -86,7 +86,6 @@ FORBIDDEN_SPEC_FIELDS = frozenset(
 
 ALLOWED_SPEC_FIELDS = frozenset(
     {
-        "env_code",
         "update_mode",
         "plugin_name",
         "plugin_uuid",
@@ -130,7 +129,6 @@ BUILTIN_PLUGINS = {
 }
 
 _DEFAULTS: dict[str, Any] = {
-    "env_code": "24",
     "update_mode": "third_party",
     "plugin_name": "",
     "plugin_uuid": "",
@@ -164,7 +162,6 @@ _DEFAULTS: dict[str, Any] = {
 # 新增插件信息模板：与 docs/solution/admin-ui/acli插件新增信息收集模板.md §9 同源。
 # 工具名口径是 lmt（小写字母 L），不是数字 1。
 TEMPLATE_SPEC: dict[str, Any] = {
-    "env_code": "24",
     "update_mode": "third_party",
     "plugin_name": "hci_lmt_check",
     "plugin_uuid": "",
@@ -254,7 +251,6 @@ def normalize_spec(raw: Mapping[str, Any]) -> dict[str, Any]:
     spec["script_filename"] = str(spec["script_filename"]).strip()
     spec["smoke_args"] = str(spec["smoke_args"]).strip()
     spec["update_mode"] = str(spec["update_mode"]).strip()
-    spec["env_code"] = str(spec["env_code"]).strip()
 
     if spec["update_mode"] == "builtin_override":
         spec["source"] = 1
@@ -547,12 +543,33 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
         '  if [ -d "$BASE/$NAME" ]; then cp -a "$BASE/$NAME" "$TMP/backup/" || fail \'plugin_backup_failed\'; fi',
         "fi",
     ]
+    # 覆盖内置插件：从原目录复制完整文件树（含二进制 .mo），只覆盖 spec 明确变更的
+    # 脚本文件，其余文件保持不变；随后由设备侧重算 manifest.hash 保证一致。
+    lines += [
+        'if [ "$BUILTIN" = "1" ]; then',
+        '  cp -a "$BASE/$NAME/." "$TMP/stage/$NAME/" || fail \'builtin_stage_copy_failed\'',
+        "fi",
+    ]
     for item in descriptor["files"]:
         rel = str(item["path"])[len(name) + 1 :]
+        if builtin and rel in {"plugin", "manifest.json"}:
+            continue
         lines += [
             f'mkdir -p "$(dirname "$TMP/stage/$NAME/{rel}")" || fail \'stage_mkdir_failed\'',
             f"printf '%b' {_printf_arg(str(item['content']))} > \"$TMP/stage/$NAME/{rel}\" || fail 'file_write_failed'",
             f"printf '%s  %s\\n' {q(str(item['sha256']))} \"$TMP/stage/$NAME/{rel}\" | sha256sum -c - >/dev/null || fail 'hash_mismatch'",
+        ]
+    if builtin:
+        lines += [
+            'cd "$TMP/stage/$NAME" || fail \'stage_cd_failed\'',
+            'HASH_JSON=$(find . -type f ! -name manifest.json -print0 | sort -z | while IFS= read -r -d \'\' f; do',
+            '  sum=$(sha256sum "$f" | cut -d\' \' -f1); rel=${f#./};',
+            '  printf \'"%s":"%s",\' "$rel" "$sum";',
+            'done)',
+            'HASH_JSON="{${HASH_JSON%,}}"',
+            'jq --argjson h "$HASH_JSON" \'.hash = $h\' manifest.json > manifest.new || fail \'manifest_hash_rebuild_failed\'',
+            'mv manifest.new manifest.json || fail \'manifest_replace_failed\'',
+            'cd - >/dev/null || true',
         ]
     lines += [
         'chmod 0755 "$TMP/stage/$NAME/plugin" || fail \'chmod_failed\'',
@@ -632,9 +649,17 @@ def build_descriptor(
     script_path = f"{TMP_BASE}/{did}.sh"
     descriptor["deploy_script"] = script
     descriptor["deploy_script_path"] = script_path
+    # 大脚本（如 netdoctor 近 1MB）不能塞进单条 shell argv：Linux 单参数上限
+    # 通常 128KB。按 48KB 分片写入再执行，规避 MAX_ARG_STRLEN。
+    chunk_size = 48 * 1024
+    chunks = [script[i:i + chunk_size] for i in range(0, len(script), chunk_size)] or [""]
+    parts = [
+        f"printf '%b' {_printf_arg(chunk)} {'>' if index == 0 else '>>'} {script_path}"
+        for index, chunk in enumerate(chunks)
+    ]
     descriptor["deploy_command"] = (
-        f"printf '%b' {_printf_arg(script)} > {script_path} && bash {script_path}; "
-        f"rc=$?; rm -f {script_path}; exit $rc"
+        " && ".join(parts)
+        + f" && bash {script_path}; rc=$?; rm -f {script_path}; exit $rc"
     )
     return descriptor
 

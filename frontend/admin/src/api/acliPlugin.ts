@@ -1,7 +1,7 @@
 /**
  * acli 插件管理端 API。
  *
- * 契约边界：页面只提交「插件规格 spec + 环境代号 env_code」。
+ * 契约边界：页面只提交「插件规格 spec + 已登录 SSH 会话」。
  * 目标节点、SSH 凭据、bridge 地址与部署命令全部由平台服务端托管，
  * 这里不定义、不发送、不接收这些字段（服务端白名单会直接拒绝）。
  *
@@ -28,7 +28,6 @@ export interface AcliPluginExtraFile {
 
 /** 新增插件所需补齐的全部信息（与服务端 TEMPLATE_SPEC 同源）。 */
 export interface AcliPluginSpec {
-  env_code: string
   update_mode: 'third_party' | 'builtin_override'
   plugin_name: string
   plugin_uuid: string
@@ -66,11 +65,12 @@ export interface AcliPluginTemplateResponse {
   forbidden_fields: string[]
 }
 
-export interface AcliPluginEnvironment {
-  env_code: string
-  display_name: string
-  enabled: boolean
-  auth_type: string
+/** custom-ui + terminal_bridge 当前已登录的 SSH 会话（可下发目标）。 */
+export interface AcliPluginSession {
+  case_id: string
+  node_ip: string
+  host: string
+  key: string
 }
 
 export interface AcliPluginItem {
@@ -92,7 +92,6 @@ export interface AcliPluginDeployment {
   plugin_name: string
   revision: number
   spec_hash: string
-  env_code: string
   status: 'pending' | 'claimed' | 'running' | 'succeeded' | 'failed'
   attempt: number
   exec_id: string
@@ -118,9 +117,9 @@ export async function getTemplate(): Promise<AcliPluginTemplateResponse> {
   return data as AcliPluginTemplateResponse
 }
 
-export async function listEnvironments(): Promise<AcliPluginEnvironment[]> {
-  const { data } = await client.get(`${BASE}/environments`)
-  return (data?.environments ?? []) as AcliPluginEnvironment[]
+export async function listSessions(): Promise<AcliPluginSession[]> {
+  const { data } = await client.get(`${BASE}/sessions`)
+  return (data?.sessions ?? []) as AcliPluginSession[]
 }
 
 export async function listPlugins(): Promise<AcliPluginItem[]> {
@@ -129,8 +128,12 @@ export async function listPlugins(): Promise<AcliPluginItem[]> {
 }
 
 /** 保存配置并自动下发；返回 deploy_id 用于页面轮询状态。 */
-export async function publishPlugin(spec: AcliPluginSpec, envCode: string): Promise<PublishResult> {
-  const { data } = await client.post(`${BASE}/plugins`, { spec, env_code: envCode })
+export async function publishPlugin(spec: AcliPluginSpec, session: { caseId: string; nodeIp: string }): Promise<PublishResult> {
+  const { data } = await client.post(`${BASE}/plugins`, {
+    spec,
+    case_id: session.caseId,
+    node_ip: session.nodeIp,
+  })
   return data as PublishResult
 }
 

@@ -20,6 +20,7 @@ from ..domain.acli_plugin_spec import (
     TEMPLATE_SPEC,
     SpecValidationError,
 )
+from ..config import settings
 from ..security.auth import require_admin_token
 from ..services.acli_plugin_admin import (
     AcliPluginAdminStore,
@@ -49,10 +50,15 @@ def _store() -> AcliPluginAdminStore:
 
 
 class PublishRequest(BaseModel):
-    """页面提交体：只有插件规格 + 环境代号。"""
+    """页面提交体：插件规格 + 已登录 SSH 会话（由 bridge 会话列表选择）。
+
+    目标不是静态环境表：case_id + node_ip 必须来自 custom-ui + terminal_bridge
+    当前已登录的会话；服务端不接收也不保存任何 SSH 凭据。
+    """
 
     spec: dict[str, Any]
-    env_code: str = Field(default="24", max_length=32)
+    case_id: str = Field(default="", max_length=128)
+    node_ip: str = Field(default="", max_length=64)
 
 
 def _bad_request(errors: list[str]) -> HTTPException:
@@ -72,8 +78,26 @@ async def get_templates() -> dict[str, Any]:
 
 @admin_router.get("/environments")
 async def list_environments() -> dict[str, Any]:
-    """只返回环境代号/名称/启用状态/认证方式，不返回地址与凭据引用。"""
+    """兼容旧端点：静态环境白名单已废弃，恒为空；请用 /sessions。"""
     return {"environments": await _store().list_environments()}
+
+
+@admin_router.get("/sessions")
+async def list_bridge_sessions() -> dict[str, Any]:
+    """当前 custom-ui + terminal_bridge 已登录的 SSH 会话（可下发目标）。
+
+    只回 case_id / node_ip / host 摘要，不含任何凭据；服务端从 bridge 实时读取。
+    """
+    import uuid
+
+    from ..services.acli_plugin_bridge import AcliPluginBridgeClient
+
+    client = AcliPluginBridgeClient()
+    sessions = await client.list_sessions(
+        bridge_url=settings.ACLI_PLUGIN_BRIDGE_URL,
+        trace_id=uuid.uuid4().hex,
+    )
+    return {"sessions": sessions}
 
 
 @admin_router.get("/plugins")
@@ -88,7 +112,15 @@ async def publish_plugin(
 ) -> dict[str, Any]:
     """保存配置并自动下发；重复保存同一规格幂等返回原 deploy_id。"""
     try:
-        prepared = prepare_publication(body.spec, env_code=body.env_code, actor=x_admin_user or "")
+        if not body.case_id.strip() or not body.node_ip.strip():
+            raise _bad_request(["请先从 bridge 已登录会话列表选择目标环境"])
+        prepared = prepare_publication(
+            body.spec,
+            env_code=body.case_id.strip(),
+            actor=x_admin_user or "",
+        )
+        prepared["target_case_id"] = body.case_id.strip()
+        prepared["target_node_ip"] = body.node_ip.strip()
     except SpecValidationError as exc:
         raise _bad_request(exc.errors) from exc
     except AdminValidationError as exc:

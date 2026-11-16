@@ -1,6 +1,6 @@
-"""acli 插件下发状态机单测：只有设备侧真成功才推进 current_spec_hash。
+"""acli 插件下发状态机单测：复用 bridge 已登录会话，只有设备侧真成功才推进 spec_hash。
 
-用内存 store + fake bridge，断言租约、回执、重试冷却与「页面无法伪造成功」。
+同步测试 + asyncio.run；内存 store + fake bridge，不依赖 pytest-asyncio / 真实 WS。
 """
 
 from __future__ import annotations
@@ -11,8 +11,17 @@ from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
 from app.domain.acli_plugin_spec import TEMPLATE_SPEC, build_descriptor, normalize_spec
 from app.services.acli_plugin_relay import AcliPluginDeployRelay, SqlAcliPluginStore
+
+NOW = datetime(2026, 11, 14, 6, 0, 0, tzinfo=UTC)
+DEPLOY_ID = "htp-acli-test-0001"
+CASE_ID = "case-0042"      # 存在 deployment.env_code 列里，语义是 bridge 会话 case_id
+NODE_IP = "172.28.24.1"
+SPEC_HASH = build_descriptor(normalize_spec(TEMPLATE_SPEC), deploy_id=DEPLOY_ID, now=NOW)["spec_hash"]
+
+BRIDGE_CALL_KEYS = {"bridge_url", "case_id", "node_ip", "command", "exec_id", "trace_id", "timeout"}
 
 
 class NoRowsCursor:
@@ -54,26 +63,15 @@ def test_sql_store_does_not_read_rows_from_update_without_returning():
     asyncio.run(SqlAcliPluginStore(db).mark_succeeded_plugin("hci_lmt_check", SPEC_HASH, NOW))
     assert db.session.committed
 
-NOW = datetime(2026, 11, 14, 6, 0, 0, tzinfo=UTC)
-DEPLOY_ID = "htp-acli-test-0001"
-CREDENTIALS = json.dumps({"24": {"auth_type": "key", "username": "root", "private_key": "TESTKEY"}})
-SPEC_HASH = build_descriptor(normalize_spec(TEMPLATE_SPEC), deploy_id=DEPLOY_ID, now=NOW)["spec_hash"]
-
 
 def _context(**overrides) -> dict[str, Any]:
     base: dict[str, Any] = {
         "deploy_id": DEPLOY_ID,
         "plugin_name": "hci_lmt_check",
         "spec_hash": SPEC_HASH,
-        "env_code": "24",
-        "snapshot_node_ip": "172.28.24.1",
+        "env_code": CASE_ID,
+        "node_ip": NODE_IP,
         "spec_json": normalize_spec(TEMPLATE_SPEC),
-        "node_ip": "172.28.24.1",
-        "ssh_port": 22,
-        "auth_type": "key",
-        "credential_ref": "24",
-        "bridge_url": "",
-        "enabled": True,
     }
     base.update(overrides)
     return base
@@ -86,8 +84,8 @@ class InMemoryStore:
             "deploy_id": DEPLOY_ID,
             "plugin_name": "hci_lmt_check",
             "spec_hash": SPEC_HASH,
-            "env_code": "24",
-            "node_ip": "172.28.24.1",
+            "env_code": CASE_ID,
+            "node_ip": NODE_IP,
             "status": status,
             "attempt": 0,
             "exec_id": "",
@@ -176,12 +174,19 @@ class FakeBridge:
         }
 
 
+class SlowBridge(FakeBridge):
+    """让心跳循环有机会在 deploy 期间真正跑起来。"""
+
+    async def deploy(self, **kwargs) -> dict[str, Any]:
+        await asyncio.sleep(0.04)
+        return await super().deploy(**kwargs)
+
+
 def _relay(store: InMemoryStore, bridge: FakeBridge, **overrides):
     options = {
         "store": store,
         "bridge_client": bridge,
         "default_bridge_url": "ws://terminal-bridge:9999",
-        "credentials_json": CREDENTIALS,
         "heartbeat_interval": 0.01,
         "owner": "test-owner",
         "now_fn": lambda: NOW,
@@ -203,13 +208,17 @@ def test_success_advances_current_spec_hash_and_keeps_trace():
     assert store.plugin_updates[0]["spec_hash"] == verification["spec_hash"]
 
     call = bridge.calls[0]
+    assert set(call) == BRIDGE_CALL_KEYS  # 不含 credential/ssh_port/credential_ref 等任何凭据字段
     assert call["bridge_url"] == "ws://terminal-bridge:9999"
-    assert call["node_ip"] == "172.28.24.1"
+    assert call["case_id"] == CASE_ID
+    assert call["node_ip"] == NODE_IP
     assert call["exec_id"] == store.deployment["exec_id"]
     assert call["trace_id"] == store.deployment["trace_id"]
-    assert call["case_id"] == f"htp-acli-{DEPLOY_ID}"
     assert DEPLOY_ID in call["command"]
-    assert "TESTKEY" not in call["command"]
+    serialized = json.dumps(call)
+    assert "TESTKEY" not in serialized
+    assert "private_key" not in serialized
+    assert "password" not in serialized
 
 
 def test_device_rollback_never_marks_success():
@@ -239,19 +248,28 @@ def test_invalid_spec_never_calls_bridge():
     assert store.finishes[-1]["error_code"] == "spec_invalid"
 
 
-def test_missing_environment_is_structured():
-    store, bridge = InMemoryStore(context=_context(node_ip="")), FakeBridge()
+@pytest.mark.parametrize("missing", ["case_id", "node_ip"])
+def test_missing_target_session_is_structured(missing):
+    if missing == "case_id":
+        store = InMemoryStore(context=_context(env_code=""))
+        store.deployment["env_code"] = ""
+    else:
+        store = InMemoryStore(context=_context(node_ip=""))
+        store.deployment["node_ip"] = ""
+    bridge = FakeBridge()
     asyncio.run(_relay(store, bridge).reconcile_once())
+
     assert bridge.calls == []
-    assert store.finishes[-1]["error_code"] == "environment_missing"
+    assert store.finishes[-1]["error_code"] == "session_missing"
+    assert store.finishes[-1]["lease_until"] > NOW
 
 
-def test_missing_credentials_is_structured():
+def test_credentials_json_is_never_forwarded_to_bridge():
     store, bridge = InMemoryStore(), FakeBridge()
-    relay = _relay(store, bridge, credentials_json="")
+    relay = _relay(store, bridge, credentials_json="TESTKEY-placeholder")
     asyncio.run(relay.reconcile_once())
-    assert bridge.calls == []
-    assert store.finishes[-1]["error_code"] == "credential_missing"
+    assert store.finishes[-1]["status"] == "succeeded"
+    assert "TESTKEY" not in json.dumps(bridge.calls[0])
 
 
 def test_lost_lease_stops_before_bridge():
@@ -261,17 +279,24 @@ def test_lost_lease_stops_before_bridge():
     assert store.finishes[-1]["error_code"] == "lease_lost"
 
 
-def test_environment_bridge_url_override_is_used():
+def test_bridge_url_always_uses_default_even_if_context_has_override():
     store = InMemoryStore(context=_context(bridge_url="ws://windows-host:9999"))
     bridge = FakeBridge()
     asyncio.run(_relay(store, bridge).reconcile_once())
-    assert bridge.calls[0]["bridge_url"] == "ws://windows-host:9999"
+    assert bridge.calls[0]["bridge_url"] == "ws://terminal-bridge:9999"
 
 
 def test_no_claimable_task_returns_false():
     store, bridge = InMemoryStore(status="succeeded"), FakeBridge()
     assert asyncio.run(_relay(store, bridge).reconcile_once()) is False
     assert bridge.calls == []
+
+
+def test_heartbeat_runs_during_deploy():
+    store, bridge = InMemoryStore(), SlowBridge()
+    asyncio.run(_relay(store, bridge, heartbeat_interval=0.01).reconcile_once())
+    assert store.heartbeats >= 1
+    assert store.finishes[-1]["status"] == "succeeded"
 
 
 def test_reconcile_loop_is_cancellable():

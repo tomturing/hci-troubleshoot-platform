@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 import pytest
 from app.domain.acli_plugin_spec import (
+    ALLOWED_SPEC_FIELDS,
     BUILTIN_PLUGINS,
     FORBIDDEN_SPEC_FIELDS,
     MANIFEST_REQUIRED_FIELDS,
@@ -59,6 +60,18 @@ def test_unknown_fields_are_dropped_from_fact_source():
     spec = normalize_spec({**TEMPLATE_SPEC, "debug_panel_open": True, "admin_note": "keep?"})
     assert "debug_panel_open" not in spec
     assert "admin_note" not in spec
+
+
+def test_env_code_is_dropped_not_rejected():
+    """env_code 已移出规格白名单：作为未知键静默丢弃，不进入 spec_hash。"""
+    assert "env_code" not in ALLOWED_SPEC_FIELDS
+    assert "env_code" not in FORBIDDEN_SPEC_FIELDS
+    spec = normalize_spec({**TEMPLATE_SPEC, "env_code": "24"})
+    assert "env_code" not in spec
+    assert validate_spec(spec)["ok"]
+    with_env = build_descriptor(spec, deploy_id="htp-acli-test-0001", now=datetime(2026, 11, 14, 6, tzinfo=UTC))
+    without_env = build_descriptor(normalize_spec(TEMPLATE_SPEC), deploy_id="htp-acli-test-0001", now=datetime(2026, 11, 14, 6, tzinfo=UTC))
+    assert with_env["spec_hash"] == without_env["spec_hash"]
 
 
 @pytest.mark.parametrize(
