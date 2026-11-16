@@ -653,13 +653,15 @@ def build_descriptor(
     # 通常 128KB。按 48KB 分片写入再执行，规避 MAX_ARG_STRLEN。
     chunk_size = 48 * 1024
     chunks = [script[i:i + chunk_size] for i in range(0, len(script), chunk_size)] or [""]
-    parts = [
+    # 每条命令只写一个分片，避免把整份脚本拼成一条超长 WS 消息 / SSH 命令
+    # （实测 1MB 命令在 bridge exec 通道会卡住且无 exec_result）。
+    descriptor["deploy_commands"] = [
         f"printf '%b' {_printf_arg(chunk)} {'>' if index == 0 else '>>'} {script_path}"
         for index, chunk in enumerate(chunks)
-    ]
-    descriptor["deploy_command"] = (
-        " && ".join(parts)
-        + f" && bash {script_path}; rc=$?; rm -f {script_path}; exit $rc"
+    ] + [f"bash {script_path}; rc=$?; rm -f {script_path}; exit $rc"]
+    # 兼容旧调用方：小脚本仍可用单条命令。
+    descriptor["deploy_command"] = " && ".join(descriptor["deploy_commands"][:-1]) + (
+        f" && {descriptor['deploy_commands'][-1]}"
     )
     return descriptor
 

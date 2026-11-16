@@ -220,25 +220,38 @@ class AcliPluginBridgeClient:
         bridge_url: str,
         case_id: str,
         node_ip: str,
-        command: str,
+        command: str = "",
+        commands: list[str] | None = None,
         exec_id: str,
         trace_id: str,
         timeout: int,
     ) -> dict[str, Any]:
-        """在 custom-ui 已登录会话上执行部署命令，返回规范化 exec_result。"""
+        """在已登录会话上逐条执行部署命令，返回最后一条（执行脚本）的 exec_result。
+
+        大脚本按分片写成多条命令，每条是一条独立 WS 消息，避免 1MB 单条命令
+        在 bridge exec 通道卡死且没有 exec_result。
+        """
         if not case_id or not node_ip:
             raise BridgeDeployError("session_missing", "目标会话缺少 case_id 或 node_ip")
+        steps = list(commands) if commands else [command]
+        if not steps or not all(steps):
+            raise BridgeDeployError("empty_command", "部署命令为空")
         ws = await self._connect(bridge_url)
         try:
-            await self._send(ws, build_exec_message(
-                case_id=case_id,
-                node_ip=node_ip,
-                exec_id=exec_id,
-                command=command,
-                trace_id=trace_id,
-                timeout=timeout,
-            ))
-            result = await self._recv_until(ws, expected="exec_result", exec_id=exec_id, timeout=timeout + 30)
+            result: dict[str, Any] = {}
+            for index, step in enumerate(steps):
+                step_exec_id = f"{exec_id}-{index}" if len(steps) > 1 else exec_id
+                await self._send(ws, build_exec_message(
+                    case_id=case_id,
+                    node_ip=node_ip,
+                    exec_id=step_exec_id,
+                    command=step,
+                    trace_id=trace_id,
+                    timeout=timeout,
+                ))
+                result = await self._recv_until(
+                    ws, expected="exec_result", exec_id=step_exec_id, timeout=timeout + 30,
+                )
             return {
                 "exec_id": str(result.get("exec_id") or exec_id),
                 "stdout": str(result.get("stdout") or ""),
