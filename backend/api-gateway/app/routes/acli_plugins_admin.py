@@ -77,6 +77,12 @@ async def list_environments(request: Request) -> Response:
     return await _proxy("GET", "/environments", request)
 
 
+@router.get("/sessions")
+async def list_bridge_sessions(request: Request) -> Response:
+    """代理 bridge 已登录 SSH 会话列表（管理端可选下发目标）。"""
+    return await _proxy("GET", "/sessions", request)
+
+
 @router.get("/plugins")
 async def list_plugins(request: Request) -> Response:
     return await _proxy("GET", "/plugins", request)
