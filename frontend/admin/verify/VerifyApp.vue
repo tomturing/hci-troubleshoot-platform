@@ -33,8 +33,8 @@ const detail = fixture.detail
     </section>
 
     <section class="card">
-      <h2>2. 「链路定界」页签：段/组件表（含问题描述、建议动作）+ S1-S8 时间线</h2>
-      <p class="note">问题描述与建议动作直接读错误字典，与客户弹框同源；阶段状态查不到即 unknown，不伪造。</p>
+      <h2>2. S1-S8 阶段时间线（感叹号里是固定设计说明弹框）</h2>
+      <p class="note">阶段状态查不到即 unknown，不伪造；段/组件说明来自同一错误字典，按需弹框查看。</p>
       <LogCollectAttribution variant="panel" :display="detail.display" />
     </section>
   </main>
