@@ -264,12 +264,12 @@ def test_missing_target_session_is_structured(missing):
     assert store.finishes[-1]["lease_until"] > NOW
 
 
-def test_credentials_json_is_never_forwarded_to_bridge():
+def test_no_credential_field_is_forwarded_to_bridge():
+    """relay 不再持有凭据，bridge 调用只含会话与命令字段。"""
     store, bridge = InMemoryStore(), FakeBridge()
-    relay = _relay(store, bridge, credentials_json="TESTKEY-placeholder")
-    asyncio.run(relay.reconcile_once())
+    asyncio.run(_relay(store, bridge).reconcile_once())
     assert store.finishes[-1]["status"] == "succeeded"
-    assert "TESTKEY" not in json.dumps(bridge.calls[0])
+    assert set(bridge.calls[0]) == BRIDGE_CALL_KEYS
 
 
 def test_lost_lease_stops_before_bridge():

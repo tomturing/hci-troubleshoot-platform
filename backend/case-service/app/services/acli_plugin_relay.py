@@ -259,8 +259,6 @@ class AcliPluginDeployRelay:
         store: AcliPluginStore,
         bridge_client: Any,
         default_bridge_url: str,
-        credentials_json: str = "",
-        credentials_file: str = "",
         lease_seconds: int = 180,
         max_attempts: int = 3,
         deploy_timeout: int = 180,
@@ -271,8 +269,6 @@ class AcliPluginDeployRelay:
         self._store = store
         self._bridge = bridge_client
         self._default_bridge_url = default_bridge_url
-        self._credentials_json = credentials_json
-        self._credentials_file = credentials_file
         self._lease_seconds = lease_seconds
         self._max_attempts = max_attempts
         self._deploy_timeout = deploy_timeout
