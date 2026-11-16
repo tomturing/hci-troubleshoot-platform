@@ -21,7 +21,7 @@ CASE_ID = "case-0042"      # 存在 deployment.env_code 列里，语义是 bridg
 NODE_IP = "172.28.24.1"
 SPEC_HASH = build_descriptor(normalize_spec(TEMPLATE_SPEC), deploy_id=DEPLOY_ID, now=NOW)["spec_hash"]
 
-BRIDGE_CALL_KEYS = {"bridge_url", "case_id", "node_ip", "command", "exec_id", "trace_id", "timeout"}
+BRIDGE_CALL_KEYS = {"bridge_url", "case_id", "node_ip", "commands", "exec_id", "trace_id", "timeout"}
 
 
 class NoRowsCursor:
@@ -214,7 +214,7 @@ def test_success_advances_current_spec_hash_and_keeps_trace():
     assert call["node_ip"] == NODE_IP
     assert call["exec_id"] == store.deployment["exec_id"]
     assert call["trace_id"] == store.deployment["trace_id"]
-    assert DEPLOY_ID in call["command"]
+    assert DEPLOY_ID in " ".join(call["commands"])
     serialized = json.dumps(call)
     assert "TESTKEY" not in serialized
     assert "private_key" not in serialized
