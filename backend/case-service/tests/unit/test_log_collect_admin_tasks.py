@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from app.domain.log_collect_display import derive
 from app.routes import log_collect_admin_tasks as routes
 from fastapi import HTTPException
 
@@ -443,3 +444,35 @@ async def test_progress_cache_prevents_repeated_5888_calls(monkeypatch):
     await routes.destination_progress(row["task_id"])
     await routes.destination_progress(row["task_id"])
     assert fake.calls == ["upload_progress"]
+
+
+def test_list_detail_whitelist_keeps_stage_signals():
+    """S1/S2 曾因白名单裁掉 probe 恒显 unknown：锁住派生输入，不改结论口径。"""
+    for key in ("'probe'", "'create_ack'", "'evidence_enabled'", "'capabilities'"):
+        assert key in routes._EVIDENCE_DETAIL
+    assert routes._EVIDENCE_DETAIL in routes._SELECT
+
+    row = {
+        "upload_mode": "acli_direct",
+        "status": "completed",
+        "delivery_status": "delivered",
+        "relay_status": "none",
+        "archive_size": 2 * 1024**2,
+        "archive_path": "/sf/log/Q.zip",
+        "progress": 100,
+        "error_code": None,
+        "error_message": None,
+        "trace_id": "trace-1",
+        "detail": {
+            "probe": {"hosts_count": 4, "acli_installed": True, "acli_version": "1.0.0"},
+            "p1_archive_check": {"verified": True},
+        },
+    }
+    without_probe = {**row, "detail": {"p1_archive_check": {"verified": True}}}
+    with_probe = derive(row)
+    without = derive(without_probe)
+    stages = {item["key"]: item["status"] for item in with_probe["display"]["stages"]}
+    assert stages["S1"] == "success"
+    assert stages["S2"] == "success"
+    # 探针只影响阶段状态，不改变交付结论与统计分桶。
+    assert with_probe["display"]["conclusion"] == without["display"]["conclusion"]
