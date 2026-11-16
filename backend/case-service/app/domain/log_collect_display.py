@@ -566,7 +566,10 @@ def _build_stages(
             item.get("target") == "log_server" and item.get("reachable") is False
             for item in network.get("targets", [])
         )
-    if log_server_down:
+    # 日志服务器可达性只决定 P1 直传是否可选：P2 中转拓扑下节点直连 5888 不通
+    # 是设计预期（Q2026111600624）。字节已交付后这条探测快照既过期又误导，
+    # 不再作为异常信号；S5 阶段状态仍由 delivery_status / relay_status 独立判定。
+    if log_server_down and not delivered:
         signals.append(("S5", "LC-5888-002", True))
     if probe.get("acli_installed") is False:
         signals.append(("S2", "LC-ACLI-002", True))

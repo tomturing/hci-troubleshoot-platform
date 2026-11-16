@@ -8,13 +8,20 @@
  */
 import type { LogCollectDisplayView } from '@/api/logCollect'
 
-defineProps<{ display?: LogCollectDisplayView | null }>()
+const props = withDefaults(
+  defineProps<{
+    display?: LogCollectDisplayView | null
+    /** 已交付任务只保留阶段条，不显示 fault 归因卡（Q2026111600624） */
+    showFault?: boolean
+  }>(),
+  { display: null, showFault: true },
+)
 </script>
 
 <template>
   <!-- 客户只需读「哪一段 / 哪个组件 / 什么问题 / 下一步做什么」；
        调用链ID随卡给出，截图反馈后管理员可还原整条链路。 -->
-  <div v-if="display?.fault_attribution" class="lc-fault-card">
+  <div v-if="props.showFault && display?.fault_attribution" class="lc-fault-card">
     <div class="lc-fault-head">
       <el-tag size="small" effect="dark" type="warning">
         {{ display?.fault_attribution?.component_tag }}
