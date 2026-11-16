@@ -139,6 +139,9 @@ class AcliPluginAdminStore:
 
         spec_json = json.dumps(prepared["spec"], ensure_ascii=False, sort_keys=True)
         validation_json = json.dumps(prepared["validation"], ensure_ascii=False)
+        # asyncpg 会为同一绑定参数在不同位置推断出不同类型（INSERT 值位置是
+        # varchar，WHERE 比较位置是 text），复用同名参数会触发
+        # AmbiguousParameterError。子查询一律用独立参数并显式 CAST 收敛类型。
         await self._script(
             [
                 (
@@ -146,14 +149,17 @@ class AcliPluginAdminStore:
                     INSERT INTO acli_plugin_spec
                         (plugin_name, revision, spec_json, spec_hash, validation, created_by)
                     VALUES (
-                        :plugin_name,
-                        (SELECT COALESCE(MAX(revision), 0) + 1 FROM acli_plugin_spec WHERE plugin_name = :plugin_name),
-                        CAST(:spec_json AS jsonb), :spec_hash, CAST(:validation AS jsonb), :actor
+                        CAST(:plugin_name AS varchar),
+                        (SELECT COALESCE(MAX(revision), 0) + 1 FROM acli_plugin_spec
+                          WHERE plugin_name = CAST(:revision_plugin_name AS varchar)),
+                        CAST(:spec_json AS jsonb), CAST(:spec_hash AS varchar),
+                        CAST(:validation AS jsonb), CAST(:actor AS varchar)
                     )
                     ON CONFLICT (spec_hash) DO NOTHING
                     """,
                     {
                         "plugin_name": plugin_name,
+                        "revision_plugin_name": plugin_name,
                         "spec_json": spec_json,
                         "spec_hash": spec_hash,
                         "validation": validation_json,
@@ -183,14 +189,17 @@ class AcliPluginAdminStore:
                     """
                     INSERT INTO acli_plugin_deployment
                         (deploy_id, plugin_name, revision, spec_hash, env_code, node_ip, status)
-                    SELECT :deploy_id, :plugin_name,
-                           COALESCE((SELECT MAX(revision) FROM acli_plugin_spec WHERE spec_hash = :spec_hash), 1),
-                           :spec_hash, :env_code, :node_ip, 'pending'
+                    SELECT CAST(:deploy_id AS varchar), CAST(:plugin_name AS varchar),
+                           COALESCE((SELECT MAX(revision) FROM acli_plugin_spec
+                                      WHERE spec_hash = CAST(:revision_spec_hash AS varchar)), 1),
+                           CAST(:spec_hash AS varchar), CAST(:env_code AS varchar),
+                           CAST(:node_ip AS varchar), 'pending'
                     RETURNING deploy_id, status
                     """,
                     {
                         "deploy_id": prepared["deploy_id"],
                         "plugin_name": plugin_name,
+                        "revision_spec_hash": spec_hash,
                         "spec_hash": spec_hash,
                         "env_code": env_code,
                         "node_ip": env["node_ip"],
