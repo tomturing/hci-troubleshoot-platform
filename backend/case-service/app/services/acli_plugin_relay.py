@@ -379,7 +379,7 @@ class AcliPluginDeployRelay:
             bridge_url=bridge_url,
             case_id=case_id,
             node_ip=node_ip,
-            command=descriptor["deploy_command"],
+            commands=descriptor.get("deploy_commands") or [descriptor["deploy_command"]],
             exec_id=str(deployment.get("exec_id") or ""),
             trace_id=str(deployment.get("trace_id") or ""),
             timeout=self._deploy_timeout,
