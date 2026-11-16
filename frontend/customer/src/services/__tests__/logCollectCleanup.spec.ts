@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   NODE_ARCHIVE_DIR,
-  UNVERIFIED_CLEANUP_TIP,
   buildNodeCleanupTip,
   expectedNodeArchivePath,
   trustedNodeArchivePath,
@@ -15,7 +14,8 @@ const OBJECT_KEY = `${CASE}/dea7ccec-e402-43fd-997b-c6f59859c509.zip`
  * 回归（2026-11-06 Q2026110600940）：结果态曾拿 P2 的平台对象 key 拼删除命令。
  * 用户要求两条硬契约：
  * 1. **只给准确路径，任何情况下都不出现 rm / del 等删除命令**；
- * 2. 路径必须逐字命中节点绝对路径，拿不准就明确「不提供路径」。
+ * 2. 路径必须逐字命中节点绝对路径，拿不准就一条提示都不显示。
+ * 2026-11-16 追加：移除「不提供路径」告警与「请勿触碰」尾巴（Q2026111600624）。
  */
 describe('expectedNodeArchivePath / trustedNodeArchivePath', () => {
   it('按工单号推导绝对路径', () => {
@@ -51,25 +51,25 @@ describe('expectedNodeArchivePath / trustedNodeArchivePath', () => {
 })
 
 describe('buildNodeCleanupTip', () => {
-  it('有可信绝对路径时只展示路径，不输出任何删除命令', () => {
+  it('有可信绝对路径时只展示路径，不输出删除命令或多余尾巴', () => {
     const tip = buildNodeCleanupTip(CASE, [TRUSTED])
     expect(tip).toContain(TRUSTED)
     expect(tip).toContain('自行处理')
     expect(tip).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
     expect(tip).not.toContain(OBJECT_KEY)
+    expect(tip).not.toContain('请勿触碰')
   })
 
-  it('只有平台对象 key 时不提供路径', () => {
+  it('只有平台对象 key 时完全不显示提示', () => {
     const tip = buildNodeCleanupTip(CASE, [OBJECT_KEY])
-    expect(tip).toBe(UNVERIFIED_CLEANUP_TIP)
-    expect(tip).toContain('不提供路径')
+    expect(tip).toBe('')
     expect(tip).not.toContain(NODE_ARCHIVE_DIR)
     expect(tip).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
   })
 
-  it('没有任何证据时不提供路径', () => {
+  it('没有任何证据时完全不显示提示', () => {
     const tip = buildNodeCleanupTip(CASE, [null, undefined, ''])
-    expect(tip).toContain('不提供路径')
+    expect(tip).toBe('')
     expect(tip).not.toContain(NODE_ARCHIVE_DIR)
     expect(tip).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
   })
@@ -80,9 +80,9 @@ describe('buildNodeCleanupTip', () => {
     expect(tip).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
   })
 
-  it('工单号非法时，即使候选看起来像路径也不给路径', () => {
+  it('工单号非法时，即使候选看起来像路径也完全不显示', () => {
     const tip = buildNodeCleanupTip('Q123', [`${NODE_ARCHIVE_DIR}/Q123.zip`])
-    expect(tip).toContain('不提供路径')
+    expect(tip).toBe('')
     expect(tip).not.toContain(NODE_ARCHIVE_DIR)
   })
 

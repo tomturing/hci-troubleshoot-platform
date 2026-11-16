@@ -1483,7 +1483,7 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     wrapper.unmount()
   })
 
-  it('P2 结果态没有可信节点路径时不给路径，也不出现删除命令', async () => {
+  it('P2 结果态没有可信节点路径时不显示清理提示，也不出现删除命令', async () => {
     vi.mocked(logCollectApi.listTasks).mockResolvedValue({
       total: 1,
       items: [
@@ -1500,8 +1500,30 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     await flushPromises()
 
     const text = wrapper.text()
-    expect(text).toContain('不提供路径')
+    expect(text).not.toContain('不提供路径')
+    expect(text).not.toContain('平台保留副本供回看')
     expect(text).not.toContain('/sf/data/local/acli/tmp/data/log_collect/')
+    expect(text).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
+    wrapper.unmount()
+  })
+
+  // 回归（2026-11-16 Q2026111600624）：node_archive_path 缺失很常见，
+  // 但 task.archive_path 落的就是节点绝对路径，必须作为兜底来源展示。
+  it('P2 结果态 archive_path 是节点绝对路径时也能展示清理提示', async () => {
+    const nodePath = '/sf/data/local/acli/tmp/data/log_collect/Q2026102300001.zip'
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({
+      total: 1,
+      items: [taskFixture({ archive_path: nodePath, node_archive_path: null })],
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain(nodePath)
+    expect(text).toContain('自行处理')
+    expect(text).not.toContain('请勿触碰')
     expect(text).not.toMatch(/\brm\b|\bdel\b|\bremove\b/i)
     wrapper.unmount()
   })
