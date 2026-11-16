@@ -19,10 +19,13 @@ NOW = datetime(2026, 11, 14, 6, 0, 0, tzinfo=UTC)
 
 
 class FakeCursor:
-    def __init__(self, rows):
+    def __init__(self, rows, *, returns_rows: bool = True):
         self._rows = rows
+        self.returns_rows = returns_rows
 
     def mappings(self):
+        if not self.returns_rows:
+            raise AssertionError("无 RETURNING 的写语句不应读取结果集")
         return self
 
     def all(self):
@@ -37,7 +40,8 @@ class FakeSession:
 
     async def execute(self, sql, params):
         self.calls.append((str(sql), dict(params)))
-        return FakeCursor(self._results.pop(0) if self._results else [])
+        result = self._results.pop(0) if self._results else []
+        return result if isinstance(result, FakeCursor) else FakeCursor(result)
 
     async def commit(self):
         self.committed = True
@@ -143,6 +147,21 @@ def test_save_and_publish_creates_pending_task_in_one_transaction():
         assert len(names) == len(set(names)), sql
     assert spec_params["revision_plugin_name"] == "hci_lmt_check"
     assert deployment_params["revision_spec_hash"] == result["spec_hash"]
+
+
+def test_write_statements_without_returning_are_not_read_as_rows():
+    db = FakeDB(
+        [
+            [{"env_code": "24", "node_ip": "172.28.24.1"}],
+            [],
+            FakeCursor([], returns_rows=False),
+            FakeCursor([], returns_rows=False),
+            FakeCursor([], returns_rows=False),
+        ]
+    )
+    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_prepared()))
+    assert result["status"] == "pending"
+    assert db.session.committed
 
 
 def test_missing_environment_is_rejected_before_any_write():

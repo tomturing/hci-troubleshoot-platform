@@ -96,7 +96,8 @@ class SqlAcliPluginStore:
 
         async with self._db.async_session_factory() as session:
             result = await session.execute(text(sql), params)
-            rows = [dict(row) for row in result.mappings().all()]
+            # 不带 RETURNING 的 UPDATE 没有结果集；只有 SELECT/RETURNING 才读行。
+            rows = [dict(row) for row in result.mappings().all()] if result.returns_rows else []
             await session.commit()
             return rows
 

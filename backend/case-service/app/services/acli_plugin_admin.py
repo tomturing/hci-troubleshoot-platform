@@ -84,7 +84,12 @@ class AcliPluginAdminStore:
             results: list[list[dict[str, Any]]] = []
             for sql, params in statements:
                 cursor = await session.execute(text(sql), params)
-                results.append([dict(row) for row in cursor.mappings().all()])
+                # 不带 RETURNING 的 INSERT/UPDATE 没有结果集，读取 mappings()
+                # 会抛 ResourceClosedError；只有查询类语句才需要收集行。
+                if cursor.returns_rows:
+                    results.append([dict(row) for row in cursor.mappings().all()])
+                else:
+                    results.append([])
             await session.commit()
             return results
 
