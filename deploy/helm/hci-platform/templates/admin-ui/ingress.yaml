@@ -98,6 +98,16 @@ spec:
                 name: case-service
                 port:
                   number: {{ .Values.caseService.port }}
+          # 日志收集证据数据面：必须绕过网关直连 case-service，否则被 /api
+          # 泛前缀送到网关后返回 404（网关只注册了 /api/log-collect/tasks...）。
+          # 带尾斜杠与 /api/direct/log-collect-uploads 零重叠；追加在末尾保持索引。
+          - path: /api/direct/log-collect/
+            pathType: Prefix
+            backend:
+              service:
+                name: case-service
+                port:
+                  number: {{ .Values.caseService.port }}
     {{- else }}
     # 无 host 时直接匹配所有请求（适用于端口隔离场景）
     - http:
@@ -155,6 +165,16 @@ spec:
           # 日志收集分片数据面：32 MiB 分片超出网关 1 MiB 限制，直连 case-service。
           # 放在末尾不影响匹配（Ingress 按最长前缀优先），并保持既有 paths[i] 索引不变。
           - path: /api/direct/log-collect-uploads
+            pathType: Prefix
+            backend:
+              service:
+                name: case-service
+                port:
+                  number: {{ .Values.caseService.port }}
+          # 日志收集证据数据面：必须绕过网关直连 case-service，否则被 /api
+          # 泛前缀送到网关后返回 404（网关只注册了 /api/log-collect/tasks...）。
+          # 带尾斜杠与 /api/direct/log-collect-uploads 零重叠；追加在末尾保持索引。
+          - path: /api/direct/log-collect/
             pathType: Prefix
             backend:
               service:

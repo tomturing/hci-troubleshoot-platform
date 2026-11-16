@@ -147,6 +147,18 @@ spec:
                 name: case-service
                 port:
                   number: {{ .Values.caseService.port }}
+          # 日志收集证据数据面：network-probe / metrics / process-logs /
+          # artifact-manifest / 测速端点由 bridge 直报 case-service（#1490 引入）。
+          # 缺这条规则时会被 /api 泛前缀吃掉，网关没有对应路由 → 404 Not Found，
+          # 四张证据表全空、S7 恒判 failed（2026-11-16 全量工单确认）。
+          # 带尾斜杠确保与 /api/direct/log-collect-uploads 零重叠。
+          - path: /api/direct/log-collect/
+            pathType: Prefix
+            backend:
+              service:
+                name: case-service
+                port:
+                  number: {{ .Values.caseService.port }}
     {{- end }}
   {{- if .Values.ingress.tls }}
   tls:

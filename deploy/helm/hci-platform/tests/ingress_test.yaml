@@ -32,3 +32,22 @@ tests:
       - equal:
           path: spec.rules[0].http.paths[3].path
           value: /
+
+  - it: "日志收集证据数据面必须直连 case-service（否则被 /api 泛前缀送网关拿 404）"
+    set:
+      global.routingMode: "path"
+      ingress.enabled: true
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[5].path
+          value: /api/direct/log-collect/
+      - equal:
+          path: spec.rules[0].http.paths[5].pathType
+          value: Prefix
+      - equal:
+          path: spec.rules[0].http.paths[5].backend.service.name
+          value: case-service
+      - equal:
+          path: spec.rules[0].http.paths[4].path
+          value: /api/direct/log-collect-uploads

@@ -1,0 +1,26 @@
+# 日志收集证据数据面路由门禁（客户域名）
+# 背景：#1490 在 case-service 注册了 /api/direct/log-collect/tasks/...，
+# 但 ingress 只补了 /api/direct/log-collect-uploads。证据请求被 /api 泛前缀
+# 送到 api-gateway，网关没有该路由 → 404，四张证据表全空、S7 恒判 failed。
+suite: "日志收集证据数据面 Ingress（客户域名）"
+templates:
+  - ingress.yaml
+tests:
+  - it: "证据数据面与分片数据面都直连 case-service"
+    set:
+      global.routingMode: "path"
+      ingress.enabled: true
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths[4].path
+          value: /api/direct/log-collect-uploads
+      - equal:
+          path: spec.rules[0].http.paths[4].backend.service.name
+          value: case-service
+      - equal:
+          path: spec.rules[0].http.paths[5].path
+          value: /api/direct/log-collect/
+      - equal:
+          path: spec.rules[0].http.paths[5].backend.service.name
+          value: case-service
