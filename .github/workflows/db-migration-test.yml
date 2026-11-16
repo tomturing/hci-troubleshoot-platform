@@ -190,6 +190,8 @@ jobs:
             "fact" "claim_evidence_link"
             # 2026-10-29（数据库设计 v7.54）：日志收集「故障场景」字典，客户面板勾选项文案来源
             "log_collect_scenario"
+            # 2026-11-14：acli 插件管理（服务端编排）四张表
+            "acli_plugin_environment" "acli_plugin" "acli_plugin_spec" "acli_plugin_deployment"
           )
           DEPRECATED_TABLES=(
             "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"

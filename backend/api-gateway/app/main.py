@@ -27,6 +27,7 @@ from app.config import settings
 from app.middleware.error_handler import SecureErrorHandlerMiddleware  # 安全异常处理中间件
 from app.middleware.identity import IdentityMiddleware  # P0 修复：服务端身份 Cookie
 from app.routes import (
+    acli_plugins_admin,
     assistants,
     audit,
     auth,
@@ -222,6 +223,7 @@ app.include_router(kb.signal_assets_router)
 app.include_router(terminal.router)
 app.include_router(audit.router)
 app.include_router(health.router)
+app.include_router(acli_plugins_admin.router)
 app.include_router(capabilities.router)
 app.include_router(bridge_logs.router)
 app.include_router(simulations.router)
