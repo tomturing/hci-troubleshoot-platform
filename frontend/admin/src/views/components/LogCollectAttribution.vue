@@ -42,19 +42,22 @@ function statusHint(status: string): string {
   return status === 'unknown' ? '客观证据未上报，未知不等于失败；请先按证据入口核对。' : ''
 }
 
-/** 段与组件固定枚举；问题描述与建议动作取自错误字典，管理端不另写一份。 */
+/**
+ * 段与组件固定枚举；问题描述与建议动作取自错误字典，管理端不另写一份。
+ * 同一错误码的 problem/action 绑定成一个 pair：配对关系在数据层成立，
+ * 渲染层不依赖两个平行数组的索引对齐，也不依赖任何滚动联动。
+ */
 const componentRows = computed(() =>
   COMPONENT_ORDER.map((key) => {
     const item = COMPONENTS[key]
-    const cases = Object.values(FAULT_CATALOG).filter((entry) => entry.component === key)
+    const cases = Object.entries(FAULT_CATALOG).filter(([, entry]) => entry.component === key)
     return {
       key,
       scopeLabel: SCOPE_LABELS[item.scope as ScopeKey] ?? item.scope,
       label: item.label,
       tag: item.tag,
       duty: item.duty,
-      problems: cases.map((entry) => entry.problem),
-      actions: cases.map((entry) => entry.action),
+      pairs: cases.map(([code, entry]) => ({ code, problem: entry.problem, action: entry.action })),
     }
   }),
 )
@@ -133,7 +136,7 @@ const detailTraceId = computed(() => props.display?.trace_id ?? props.fallbackTr
     <el-dialog
       v-model="referenceVisible"
       title="三段五组件设计说明（固定契约，与当前工单无关）"
-      width="min(92vw, 860px)"
+      width="min(94vw, 1180px)"
       append-to-body
       class="attribution-reference"
       data-testid="attribution-reference"
@@ -149,18 +152,17 @@ const detailTraceId = computed(() => props.display?.trace_id ?? props.fallbackTr
           <code>{{ row.tag }}</code>
         </div>
         <div class="ref-line"><span class="ref-label">职责范围</span><span>{{ row.duty }}</span></div>
+        <!-- 一行一对：错误码 + 问题描述 + 建议动作共享同一行，滚动统一交给弹框正文。 -->
         <div class="ref-columns">
-          <div class="ref-line">
-            <span class="ref-label">问题描述</span>
-            <span class="ref-items">
-              <span v-for="(text, index) in row.problems" :key="index" class="ref-item">{{ text }}</span>
-            </span>
+          <div class="ref-pair-head">
+            <span>错误码</span>
+            <span>问题描述</span>
+            <span>建议动作</span>
           </div>
-          <div class="ref-line">
-            <span class="ref-label">建议动作</span>
-            <span class="ref-items">
-              <span v-for="(text, index) in row.actions" :key="index" class="ref-item">{{ text }}</span>
-            </span>
+          <div v-for="pair in row.pairs" :key="pair.code" class="ref-pair" data-testid="reference-pair">
+            <code class="ref-code">{{ pair.code }}</code>
+            <span class="ref-cell" data-label="问题描述">{{ pair.problem }}</span>
+            <span class="ref-cell" data-label="建议动作">{{ pair.action }}</span>
           </div>
         </div>
       </div>
@@ -214,8 +216,15 @@ const detailTraceId = computed(() => props.display?.trace_id ?? props.fallbackTr
   line-height: 1.6;
   color: #303133;
 }
-.section-help {
+/* 帮助按钮贴合标题字号：默认 circle 按钮直径远大于 13px 标题，视觉上像「大一号」。 */
+.section-help.el-button {
   flex: none;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  font-size: 12px;
+  line-height: 16px;
   font-weight: 700;
 }
 .dialog-intro {
@@ -259,35 +268,56 @@ const detailTraceId = computed(() => props.display?.trace_id ?? props.fallbackTr
   color: var(--el-text-color-secondary);
 }
 .ref-columns {
+  margin-top: 6px;
+}
+.ref-pair-head,
+.ref-pair {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 118px repeat(2, minmax(0, 1fr));
   gap: 12px;
+  align-items: start;
+  padding: 5px 0;
 }
-.ref-columns .ref-line {
-  grid-template-columns: 60px minmax(0, 1fr);
+.ref-pair-head {
+  border-top: 1px solid var(--el-border-color-lighter);
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
-.ref-items {
-  display: block;
-  max-height: 168px;
-  overflow-y: auto;
-  scrollbar-width: thin;
+.ref-pair {
+  border-top: 1px dashed var(--el-border-color-lighter);
+  font-size: 13px;
+  line-height: 1.6;
 }
-.ref-item {
-  display: block;
+.ref-code {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  word-break: break-all;
 }
-.ref-item + .ref-item {
-  margin-top: 2px;
+.ref-cell {
+  word-break: break-word;
+}
+.ref-cell::before {
+  display: none;
+  color: var(--el-text-color-secondary);
+  content: attr(data-label) '：';
 }
 @media (max-width: 760px) {
-  .ref-columns {
+  .ref-pair-head {
+    display: none;
+  }
+  .ref-pair {
     grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .ref-cell::before {
+    display: inline;
   }
 }
 </style>
 <style>
-/* el-dialog 挂在 body 上：限定弹框正文高度，避免五张卡片把页面拉到几千像素。 */
+/* el-dialog 挂在 body 上：整体滚动取代列内滚动，配对行不会被两个滚动条拆散。 */
 .attribution-reference .el-dialog__body {
-  max-height: 68vh;
+  max-height: 80vh;
   overflow-y: auto;
 }
 </style>
