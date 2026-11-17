@@ -22,6 +22,10 @@ const (
 	logCollectSpcSlot = "core"
 	// 场景体上限：11 份官方清单最大约 6.5KB，512KB 足够且能挡住误传大文件。
 	logCollectSpcMaxBytes = 512 * 1024
+	// spcDeployDir 是日志收集唯一使用的场景清单目录：acli 插件自部署，平台负责写入/恢复。
+	// 2026-11-17 现场确认节点上另有 aDeploy 下的同名 spc 目录，属正常现象，日志收集不关心。
+	// 固定路径由平台自己部署，探测（find）只增加误判面，不产生任何新信息，故直接使用。
+	spcDeployDir = "/sf/data/local/acli/plugins/log_collect/tools/lmt_collect_info/support_bundle_cluster/spc"
 )
 
 var (
@@ -30,14 +34,16 @@ var (
 	spcDirRe    = regexp.MustCompile("^/[A-Za-z0-9_./-]+$")
 )
 
-// buildSpcFindCommand 探测 spc 目录：部署路径由 ABSOLUTE_DEPLOY_PATH 决定，
-// 不同集群可能不同，硬编码等于赌某个版本的目录布局。
+// buildSpcDirProbe 输出固定路径存在性检查脚本：存在则回显路径，不存在则无输出。
+// 2026-11-17：目录由 acli 插件自部署，日志收集固定使用 spcDeployDir，
+// 不再用 find 探测（多目录 + exit 1 曾导致 LC-SPC-001 误报）。
+func buildSpcDirProbe() string {
+	return fmt.Sprintf("[ -d %s ] && printf '%%s\\n' %s", shellQuote(spcDeployDir), shellQuote(spcDeployDir))
+}
+
+// buildSpcFindCommand 保留旧函数名仅为兼容存量测试，语义已改为固定路径检查。
 func buildSpcFindCommand() string {
-	// 现场导出的目录是 /sf/data/local 下第 7 层（acli/plugins/log_collect/tools/
-	// lmt_collect_info/support_bundle_cluster/spc），原来的 maxdepth 6 遍历不到它，
-	// 会误判成"节点未安装插件"。留 3 层余量兼容部署路径更深/更浅的集群，
-	// 仍用 -path 过滤与命中数判定防止写错版本。
-	return "find /sf/data/local -maxdepth 10 -type d -name spc -path '*support_bundle_cluster*' 2>/dev/null"
+	return buildSpcDirProbe()
 }
 
 // parseSpcDirs 归一化目录探测输出：去空行、去重、只留绝对路径、排序。
@@ -56,31 +62,26 @@ func parseSpcDirs(output string) []string {
 	return dirs
 }
 
-// pickSpcDir 解析探测结果：0 个视为未安装，多个视为无法确定，都不猜。
+// pickSpcDir 解析探测结果：只认固定路径 spcDeployDir，其余一律视为不存在。
+// 现场 2026-11-17 确认节点上另有 aDeploy 下同名 spc 目录属正常现象，日志收集不关心，
+// 因此不再做"多目录择一"判断——固定路径命中即用，未命中即缺失。
 func pickSpcDir(output string) (string, error) {
-	dirs := parseSpcDirs(output)
-	switch len(dirs) {
-	case 0:
-		return "", fmt.Errorf("未找到 spc 目录（该节点可能未安装日志收集插件）")
-	case 1:
-		return dirs[0], nil
-	default:
-		return "", fmt.Errorf("找到多个 spc 目录，拒绝猜测：%s", strings.Join(dirs, ", "))
+	for _, dir := range parseSpcDirs(output) {
+		if dir == spcDeployDir {
+			return dir, nil
+		}
 	}
+	return "", fmt.Errorf("固定 spc 目录不存在（%s），该节点可能未安装日志收集插件", spcDeployDir)
 }
 
-// spcResolveDir 是 pickSpcDir 的"错误码版"：扇出逐台失败要按稳定码归类，
-// 而不是把自由文本拼进回执（前端与平台都要按码做提示与统计）。
+// spcResolveDir 是 pickSpcDir 的"错误码版"：扇出逐台失败要按稳定码归类。
+// 固定路径方案下不再产生 spc_dir_ambiguous：命中固定路径即成功，否则一律 spc_dir_missing。
 func spcResolveDir(output string) (string, string) {
-	dirs := parseSpcDirs(output)
-	switch len(dirs) {
-	case 0:
+	dir, err := pickSpcDir(output)
+	if err != nil {
 		return "", spcErrDirMissing
-	case 1:
-		return dirs[0], ""
-	default:
-		return "", spcErrDirAmbiguous
 	}
+	return dir, ""
 }
 
 // spcFilePath 拼出目标文件路径；槽位会进 shell 命令，必须先过白名单。
