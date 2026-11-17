@@ -24,6 +24,7 @@ conclusion 的四条硬规则（对抗性审查后收敛）：
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -48,6 +49,7 @@ from .log_collect_display_generated import (
     STAGE_STATUS_LABELS,
     STAGES,
     STALL_SECONDS,
+    THRESHOLDS,
     TRANSFER_STAGE_LABELS,
     UPLOAD_MODE_LABELS,
     classify_fault,
@@ -77,6 +79,8 @@ _CONDITION_ORDER: tuple[str, ...] = (
     "delivered_unverified",
     "network_degraded",
     "stalled",
+    "task_stalled",
+    "synthetic_test",
     "bridge_outdated",
 )
 
@@ -97,6 +101,37 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 def _detail(task: Any) -> dict[str, Any]:
     raw = _get(task, "detail")
     return dict(raw) if isinstance(raw, Mapping) else {}
+
+
+# 只认原始错误文本里的测试标记：按工单号猜测会误伤真实工单，宁可漏标不可错标。
+# 与契约 LC-HTP-004 的匹配关键词保持同一组事实，SQL 过滤复用此正则。
+SYNTHETIC_MARKER_PATTERN = r"(pentest-cleanup|test[_-]?cleanup|ssrf[_-]?(test|probe))"
+_SYNTHETIC_RE = re.compile(SYNTHETIC_MARKER_PATTERN, re.IGNORECASE)
+
+
+def is_synthetic_task(task: Any) -> bool:
+    """验证/压测任务：运营看板默认过滤，但归因不按失败处理。"""
+    return bool(_SYNTHETIC_RE.search(str(_get(task, "error_message") or "")))
+
+
+def is_task_stalled(task: Any, *, now: datetime | None = None) -> bool:
+    """任务级停滞：未终结且创建超过契约阈值，与 60s 传输停滞是两个不同事实。"""
+    now = now or datetime.now(UTC)
+    if derive_phase(task, now=now) == "settled":
+        return False
+    created = _get(task, "created_at")
+    if isinstance(created, datetime):
+        created_at = created
+    elif isinstance(created, str):
+        try:
+            created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    else:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    return (now - created_at).total_seconds() >= THRESHOLDS["task_stall_hours"] * 3600
 
 
 def _as_int(value: Any) -> int | None:
@@ -227,9 +262,7 @@ def derive_phase(task: Any, *, now: datetime | None = None) -> str:
     return "settled"
 
 
-def _progress_percent(
-    phase: str, task: Any, transfer: Mapping[str, Any] | None, *, delivered: bool
-) -> int | None:
+def _progress_percent(phase: str, task: Any, transfer: Mapping[str, Any] | None, *, delivered: bool) -> int | None:
     """合成进度（0-100）。None 表示未知，界面必须显示 —，不许显示 0。
 
     分段权重来自契约 ``bands``：采集 0-60、交付 60-90、终结 100。这样
@@ -563,8 +596,7 @@ def _build_stages(
     log_server_down = probe.get("log_server_reachable") is False
     if not log_server_down and isinstance(network, Mapping):
         log_server_down = any(
-            item.get("target") == "log_server" and item.get("reachable") is False
-            for item in network.get("targets", [])
+            item.get("target") == "log_server" and item.get("reachable") is False for item in network.get("targets", [])
         )
     # 日志服务器可达性只决定 P1 直传是否可选：P2 中转拓扑下节点直连 5888 不通
     # 是设计预期（Q2026111600624）。字节已交付后这条探测快照既过期又误导，
@@ -718,6 +750,8 @@ def _build_conditions(
     detail: Mapping[str, Any],
     transfer: Mapping[str, Any] | None,
     network: Mapping[str, Any] | None,
+    task: Any,
+    now: datetime,
     verifying: bool = False,
 ) -> list[dict[str, str]]:
     present: set[str] = set()
@@ -748,6 +782,11 @@ def _build_conditions(
         present.add("network_degraded")
     if isinstance(transfer, Mapping) and transfer.get("stalled"):
         present.add("stalled")
+    if is_task_stalled(task, now=now):
+        # 任务级停滞与 60s 传输停滞并存但语义不同：前者说明整单没有被推进。
+        present.add("task_stalled")
+    if is_synthetic_task(task):
+        present.add("synthetic_test")
     if detail.get("bridge_outdated"):
         present.add("bridge_outdated")
 
@@ -827,6 +866,8 @@ def derive(
                 detail=detail,
                 transfer=transfer,
                 network=network,
+                task=task,
+                now=now,
                 verifying=verifying,
             ),
             "progress_percent": _progress_percent(phase, task, transfer, delivered=delivered),

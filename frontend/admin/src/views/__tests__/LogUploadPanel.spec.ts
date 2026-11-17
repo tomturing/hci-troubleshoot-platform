@@ -420,4 +420,58 @@ describe('LogUploadPanel', () => {
     expect(api.listAdminTasks.mock.calls[0][0]).toMatchObject({ days: 0, page: 1 })
     wrapper.unmount()
   })
+
+  it('六个筛选项与压测开关全部进入请求，默认不含压测任务', async () => {
+    const wrapper = await mountPanel()
+    const firstCall = api.listAdminTasks.mock.calls[0][0]
+    expect(firstCall.include_synthetic).toBeUndefined()
+
+    api.listAdminTasks.mockClear()
+    const inputs = wrapper.findAll('input')
+    const caseInput = inputs.find((item) => item.attributes('placeholder') === '工单号')
+    const ipInput = inputs.find((item) => item.attributes('placeholder') === '发起节点 IP')
+    await caseInput!.setValue('Q123')
+    await ipInput!.setValue('10.10.10.1')
+
+    const selects = wrapper.findAllComponents({ name: 'ElSelect' })
+    // 顺序：周期 / 交付路径 / 采集状态 / 交付结论
+    await selects[1].vm.$emit('update:modelValue', 'bridge_relay')
+    await selects[1].vm.$emit('change', 'bridge_relay')
+    await selects[2].vm.$emit('update:modelValue', 'creating')
+    await selects[2].vm.$emit('change', 'creating')
+    await selects[3].vm.$emit('update:modelValue', 'queued')
+    await selects[3].vm.$emit('change', 'queued')
+
+    const checkbox = wrapper.findComponent({ name: 'ElCheckbox' })
+    await checkbox.vm.$emit('update:modelValue', true)
+    await checkbox.vm.$emit('change', true)
+    await flushPromises()
+
+    const lastCall = api.listAdminTasks.mock.calls.at(-1)?.[0]
+    expect(lastCall).toMatchObject({
+      case_id: 'Q123',
+      node_ip: '10.10.10.1',
+      upload_mode: 'bridge_relay',
+      status: 'creating',
+      delivery_status: 'queued',
+      include_synthetic: true,
+    })
+    wrapper.unmount()
+  })
+
+  it('查询失败时清空旧表格与统计，不让旧结果冒充筛选结果', async () => {
+    const wrapper = await mountPanel()
+    expect(wrapper.text()).toContain('Q2026111000243')
+
+    api.listAdminTasks.mockRejectedValueOnce(new Error('非法交付结论：hacked'))
+    const button = wrapper.findAll('button').find((item) => item.text() === '查询')
+    await button!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('加载失败')
+    expect(wrapper.text()).not.toContain('Q2026111000243')
+    expect(wrapper.text()).not.toContain('= 2 = 总数 2')
+    wrapper.unmount()
+  })
 })

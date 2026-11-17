@@ -25,6 +25,7 @@ export interface AdminTaskFilters {
   upload_mode?: string
   status?: string
   delivery_status?: string
+  include_synthetic?: boolean
 }
 
 /** 五桶之和必须等于 total（后端模型校验器已强制）；未知口径时桶为空对象。 */

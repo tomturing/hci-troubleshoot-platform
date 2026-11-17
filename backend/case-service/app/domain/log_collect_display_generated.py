@@ -38,6 +38,8 @@ CONDITION_LABELS = {   'artifact_verified': '产物已校验',
     'delivered_unverified': '已交付未核验',
     'network_degraded': '网络质量不佳',
     'stalled': '传输已停滞',
+    'task_stalled': '任务长时间无进展',
+    'synthetic_test': '验证 / 压测任务',
     'bridge_outdated': '桥接端版本较旧'}
 
 ARTIFACT_QUALITY_LABELS = {'ok': '有效', 'suspect': '可疑', 'invalid': '无效', 'unknown': '未知'}
@@ -70,6 +72,7 @@ THRESHOLDS = {   'min_archive_bytes': 1048576,
     'max_process_log_file_bytes': 2097152,
     'max_process_log_task_bytes': 20971520,
     'stall_seconds': 60,
+    'task_stall_hours': 24,
     'archive_verify_wait_minutes': 10}
 
 PROGRESS_BANDS = {'collect_end': 60, 'delivery_end': 90}
@@ -1833,9 +1836,34 @@ FAULT_CATALOG = {   'LC-HCI-001': {   'component': 'hci',
                            'owner': 'platform',
                            'retryable': True,
                            'http_status': 409,
-                           'match_keywords': ['交付会话未被执行']}}
+                           'match_keywords': ['交付会话未被执行']},
+    'LC-HTP-004': {   'component': 'htp',
+                      'stage': 'S8',
+                      'problem': '该任务由验证或压测清理产生',
+                      'action': '无需处理；运营看板默认隐藏此类任务',
+                      'tone': 'info',
+                      'admin_detail': 'error_message 命中 pentest-cleanup / test_cleanup / '
+                                      'ssrf_test_cleanup / ssrf_probe_cleanup '
+                                      '等验证标记；这是测试清理动作，不是采集失败。需要核对时打开「包含验证/压测」开关，并按 trace_id '
+                                      '串联原始记录。',
+                      'evidence': 'log_collect_task.error_message、detail.cancel_action、trace_id',
+                      'kind': 'signal',
+                      'check': [],
+                      'fix': [],
+                      'match_keywords': [   'pentest-cleanup',
+                                            'test_cleanup',
+                                            'ssrf_test_cleanup',
+                                            'ssrf_probe_cleanup'],
+                      'title_zh': '验证 / 压测清理',
+                      'layer': 'ATTRIBUTION',
+                      'owner': 'platform',
+                      'retryable': 'manual',
+                      'http_status': 200,
+                      'scope': 'cloud'}}
 
-FAULT_MATCHERS = [   {   'code': 'LC-BRIDGE-002',
+FAULT_MATCHERS = [   {   'code': 'LC-HTP-004',
+        'keywords': ['pentest-cleanup', 'test_cleanup', 'ssrf_test_cleanup', 'ssrf_probe_cleanup']},
+    {   'code': 'LC-BRIDGE-002',
         'keywords': [   'x509',
                         'certificate signed by unknown authority',
                         '证书不受信',
