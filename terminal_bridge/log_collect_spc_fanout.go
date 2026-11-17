@@ -53,13 +53,13 @@ const (
 )
 
 // 逐台失败根因码（内部码，不是 LC-* 业务码）。
+// 固定路径方案下不再产生 spc_dir_ambiguous：目录唯一，不存在"择一"场景。
 const (
-	spcErrUnreachable  = "host_unreachable"
-	spcErrDirMissing   = "spc_dir_missing"
-	spcErrDirAmbiguous = "spc_dir_ambiguous"
-	spcErrFileMissing  = "spc_file_missing"
-	spcErrBackup       = "backup_failed"
-	spcErrWrite        = "write_failed"
+	spcErrUnreachable = "host_unreachable"
+	spcErrDirMissing  = "spc_dir_missing"
+	spcErrFileMissing = "spc_file_missing"
+	spcErrBackup      = "backup_failed"
+	spcErrWrite       = "write_failed"
 )
 
 // spcHostState 是一台目标主机的写入 / 恢复结果。
@@ -424,12 +424,11 @@ func buildSpcLocalAddressCommand() string {
 	return "hostname -I 2>/dev/null; ip -4 -o addr show 2>/dev/null | awk '{print $4}'"
 }
 
-// buildSpcDirCommand 探测 spc 目录；已知目录时先做存在性校验，避免复用一个已失效的缓存。
-func buildSpcDirCommand(hint string) string {
-	if strings.TrimSpace(hint) == "" {
-		return buildSpcFindCommand()
-	}
-	return fmt.Sprintf("[ -d %s ] && printf '%%s\\n' %s || %s", shellQuote(hint), shellQuote(hint), buildSpcFindCommand())
+// buildSpcDirCommand 返回固定路径存在性检查脚本。
+// 2026-11-17：hint 参数保留仅为兼容旧签名，固定路径方案下忽略；
+// 不再用 find 探测（多目录 + exit 1 曾导致 LC-SPC-001 误报）。
+func buildSpcDirCommand(_ string) string {
+	return buildSpcDirProbe()
 }
 
 // buildSpcSSHCommand 拼出"从发起节点跳到目标节点"的命令。
@@ -1012,19 +1011,9 @@ func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *SSHSession, plan spcRe
 	local := plan.LocalIPs[ip]
 	dir := plan.Dirs[ip]
 	if dir == "" {
-		output, errOut, _, err := s.runSpcOnHostStreams(ctx, ip, local, buildSpcDirCommand(""))
-		if err != nil {
-			state.RestoreState = "failed"
-			state.RestoreError, state.ErrorDetail = classifySpcCommandError(err, spcJoinDiag(output, errOut), spcStepRestore)
-			return state
-		}
-		resolved, code := spcResolveDir(output)
-		if code != "" {
-			state.RestoreState = "failed"
-			state.RestoreError = code
-			return state
-		}
-		dir = resolved
+		// 固定路径方案：目录由 acli 插件自部署，直接用常量，不再重跑 find 探测。
+		// 旧实现在此重探测，双目录 + exit 1 会失败并追加"回滚失败 N 台"假告警（2026-11-17 现场）。
+		dir = spcDeployDir
 	}
 	state.Dir = dir
 

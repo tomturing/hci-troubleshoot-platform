@@ -8,24 +8,40 @@ import (
 	"testing"
 )
 
-// 现场导出的 spc 目录在 /sf/data/local 下第 7 层，旧命令 maxdepth 6 会漏掉。
-func TestBuildSpcFindCommandDepth(t *testing.T) {
+// 固定路径方案：探测脚本只检查 spcDeployDir 是否存在，不得再用 find。
+func TestBuildSpcDirProbeUsesFixedPath(t *testing.T) {
 	command := buildSpcFindCommand()
-	if !strings.Contains(command, "-maxdepth 10") {
-		t.Fatalf("目录探测深度不足：%s", command)
+	if strings.Contains(command, "find ") {
+		t.Fatalf("固定路径方案下不应再 find 探测：%s", command)
 	}
-	if !strings.Contains(command, "-path '*support_bundle_cluster*'") {
-		t.Fatalf("目录探测缺少版本过滤：%s", command)
+	if !strings.Contains(command, spcDeployDir) {
+		t.Fatalf("探测脚本缺少固定路径：%s", command)
+	}
+	if !strings.Contains(command, "[ -d ") {
+		t.Fatalf("探测脚本缺少存在性检查：%s", command)
 	}
 }
 
 func TestParseSpcDirsRealDeployPath(t *testing.T) {
-	const real = "/sf/data/local/acli/plugins/log_collect/tools/lmt_collect_info/support_bundle_cluster/spc"
+	const real = spcDeployDir
 	if got := parseSpcDirs(real + "\n"); len(got) != 1 || got[0] != real {
 		t.Fatalf("真实部署路径解析失败：%v", got)
 	}
 	if got, err := pickSpcDir(real + "\n"); err != nil || got != real {
-		t.Fatalf("真实部署路径应唯一命中：got=%s err=%v", got, err)
+		t.Fatalf("真实部署路径应命中：got=%s err=%v", got, err)
+	}
+}
+
+// 现场双目录并存属正常现象：即使探测输出混入 aDeploy 下的同名 spc，
+// 也必须只返回 acli 插件目录下的固定路径，不得再报"目录不唯一"。
+func TestPickSpcDirIgnoresOtherSpcDirs(t *testing.T) {
+	const other = "/sf/data/local/aDeploy/aDeploy/atools/log/support_bundle_cluster/spc"
+	got, err := pickSpcDir(other + "\n" + spcDeployDir + "\n")
+	if err != nil || got != spcDeployDir {
+		t.Fatalf("双目录应只取固定路径：got=%q err=%v", got, err)
+	}
+	if dir, code := spcResolveDir(other + "\n" + spcDeployDir + "\n"); code != "" || dir != spcDeployDir {
+		t.Fatalf("spcResolveDir 应只取固定路径且无歧义码：dir=%q code=%q", dir, code)
 	}
 }
 

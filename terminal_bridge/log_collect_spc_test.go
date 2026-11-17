@@ -5,16 +5,21 @@ import (
 	"testing"
 )
 
-func TestPickSpcDirRejectsAmbiguity(t *testing.T) {
+func TestPickSpcDirFixedPathSemantics(t *testing.T) {
 	if _, err := pickSpcDir(""); err == nil {
 		t.Fatal("空输出必须报错")
 	}
+	// 固定路径方案下多目录不再报歧义，只认 acli 插件目录下的那一个。
 	if _, err := pickSpcDir("/sf/a/support_bundle_cluster/spc\n/sf/b/support_bundle_cluster/spc\n"); err == nil {
-		t.Fatal("多个目录必须拒绝猜测")
+		t.Fatal("不含固定路径的输出必须报错")
 	}
-	got, err := pickSpcDir("  /sf/data/local/x/support_bundle_cluster/spc  \n")
-	if err != nil || got != "/sf/data/local/x/support_bundle_cluster/spc" {
-		t.Fatalf("单目录解析失败：%q %v", got, err)
+	got, err := pickSpcDir("  " + spcDeployDir + "  \n")
+	if err != nil || got != spcDeployDir {
+		t.Fatalf("固定路径解析失败：%q %v", got, err)
+	}
+	// 目录真实不存在时返回稳定错误码，不再有 ambiguous。
+	if dir, code := spcResolveDir(""); code != spcErrDirMissing || dir != "" {
+		t.Fatalf("空输出应给目录缺失码：dir=%q code=%q", dir, code)
 	}
 }
 
