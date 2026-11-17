@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import hmac
 import json
 import uuid
 from datetime import datetime
@@ -623,6 +624,71 @@ async def issue_bridge_log_direct_token(
     }
 
 
+async def _ingest_direct_internal(body: BridgeLogBatch, instance_header: str) -> dict[str, Any]:
+    """集群内部桥直传：按条目自带的 case_id 归档，不绑单、不做归属校验。
+
+    为什么需要这条分支：生产环境的桥跑在云端 Pod 里，既没有浏览器给它下发
+    `bridge_log_token`，插件下发又由 case-service 直连发起。若只保留"令牌绑单"
+    通道，云端桥的日志（尤其是 `exec.*` / `acli_sync.*`）永远进不了库。
+
+    边界：
+      - 令牌是部署期注入的 INTERNAL_API_TOKEN，只在集群 Secret 中，不出集群；
+      - 实例号以请求头为准，条目自带实例号时必须一致（防止同一令牌被复制到别的桥）；
+      - 缺 case_id 的条目（bridge.startup / bridge.connected 等平台生命周期事件）
+        落到 `bridge-<实例前8位>` 哨兵号：不与真实工单混淆，但保证"桥起不来"
+        这类最关键的证据不会因为"没有工单"被丢弃。
+    """
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    instance_id = instance_header
+    accepted = duplicates = skipped = forbidden = 0
+    async for session in _db_manager.get_session():
+        for entry in body.logs:
+            if not instance_id and entry.bridge_instance_id:
+                instance_id = entry.bridge_instance_id
+            # 实例绑定：条目自带实例号时必须与请求头一致，否则视为串用丢弃。
+            if entry.bridge_instance_id and instance_id and entry.bridge_instance_id != instance_id:
+                forbidden += 1
+                continue
+            if not entry.bridge_instance_id and instance_id:
+                entry.bridge_instance_id = instance_id
+
+            case_id = (entry.case_id or "").strip()
+            if not case_id:
+                # 平台生命周期日志没有工单上下文：用实例哨兵号兜底归档。
+                suffix = (instance_id or "unknown")[:8]
+                case_id = f"bridge-{suffix}"
+                entry.case_id = case_id
+            user_id = f"bridge:{instance_id[:12]}" if instance_id else "bridge:cluster"
+
+            outcome = await _insert_entry(session, entry, user_id, fallback_case_id=case_id)
+            if outcome == "accepted":
+                accepted += 1
+            elif outcome == "duplicate":
+                duplicates += 1
+            else:
+                skipped += 1
+        await session.commit()
+
+    logger.info(
+        event="bridge_log_direct_internal_ingest",
+        bridge_instance_id=instance_id,
+        accepted=accepted,
+        duplicates=duplicates,
+        skipped=skipped,
+        forbidden=forbidden,
+    )
+    return {
+        "ok": True,
+        "accepted": accepted,
+        "duplicates": duplicates,
+        "skipped": skipped,
+        "forbidden": forbidden,
+        "mode": "internal",
+    }
+
+
 @router.post("/api/bridge-logs/direct")
 async def ingest_bridge_logs_direct(
     request: Request,
@@ -651,11 +717,20 @@ async def ingest_bridge_logs_direct(
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
     secret = settings.BRIDGE_LOG_TOKEN_SECRET or settings.INTERNAL_API_TOKEN
+    if _db_manager is None:
+        raise HTTPException(status_code=503, detail="数据库未就绪")
+
+    # 云端/集群桥的身份：部署期注入的 INTERNAL_API_TOKEN（只在集群 Secret 里）。
+    # 它没有"绑定工单"的语义，因为一个桥会同时服务多个工单，插件下发更是由
+    # case-service 直连发起、根本没有浏览器。这类日志属于平台自身运行证据，
+    # 不做工单归属校验，但每条仍按自己的 case_id 归档，绝不串单。
+    internal_token = (settings.INTERNAL_API_TOKEN or "").strip()
+    if internal_token and x_bridge_upload_token and hmac.compare_digest(x_bridge_upload_token.strip(), internal_token):
+        return await _ingest_direct_internal(body, (request.headers.get("x-bridge-instance-id") or "").strip())
+
     payload = verify_bridge_log_token(x_bridge_upload_token or "", secret)
     if payload is None:
         raise HTTPException(status_code=401, detail="bridge 日志令牌无效或已过期")
-    if _db_manager is None:
-        raise HTTPException(status_code=503, detail="数据库未就绪")
 
     client_id = str(payload["cid"])
     case_id = str(payload["case"])

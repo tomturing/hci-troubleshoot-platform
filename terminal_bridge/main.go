@@ -6228,6 +6228,15 @@ func main() {
 	// stderr 重定向必须晚于 applyRuntimeMode：cluster 模式的日志目录由 Helm 注入，
 	// 提前重定向会把 panic 栈写到 desktop 默认目录。
 	redirectStderrToFile()
+	// 云端/集群桥没有浏览器给它下发直传令牌：部署期注入了端点与令牌就自行建通道，
+	// 并把"进程崩溃前只落在本地文件、还没确认上传"的区间补传（按实例水位过滤）。
+	// 必须早于 bridge.startup 日志，否则启动事件本身不会进队列。
+	if logUpload.bootstrapFromEnv() {
+		logUpload.seedFromLocalLogs(
+			envIntOrDefault("HCI_BRIDGE_LOG_SEED_FILES", defaultSeedMaxFiles),
+			envIntOrDefault("HCI_BRIDGE_LOG_SEED_ENTRIES", defaultSeedMaxEntries),
+		)
+	}
 	// 5 分钟一条资源采样：Atom 级机器上采样本身也必须廉价（一天约 58KB）。
 	startResourceSampler(5 * time.Minute)
 	// 空闲会话回收器：WS 关闭只 release 不销毁，超时无人复用的会话由 reaper 兜底回收，

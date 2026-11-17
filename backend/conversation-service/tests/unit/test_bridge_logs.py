@@ -71,13 +71,17 @@ class TestAssertCaseOwned:
         """构造 access 判定所需的 5 列行（shared.security.case_access 的查询契约）。"""
         session = AsyncMock()
         res = MagicMock()
-        res.mappings.return_value.first.return_value = None if owner is None else {
-            "client_id": owner,
-            "source": source,
-            "conversations": conversations,
-            "messages": messages,
-            "own_task": own_task,
-        }
+        res.mappings.return_value.first.return_value = (
+            None
+            if owner is None
+            else {
+                "client_id": owner,
+                "source": source,
+                "conversations": conversations,
+                "messages": messages,
+                "own_task": own_task,
+            }
+        )
         session.execute.return_value = res
         return session
 
@@ -100,9 +104,7 @@ class TestAssertCaseOwned:
     @pytest.mark.asyncio
     async def test_passes_for_shell_case_with_own_task(self):
         """同一人换浏览器后采完仍能回采：壳工单 + 本人采集任务放行。"""
-        await _assert_case_owned(
-            self._session("cust-B", source="log_collect", own_task=True), "Q001", "cust-A"
-        )
+        await _assert_case_owned(self._session("cust-B", source="log_collect", own_task=True), "Q001", "cust-A")
 
     @pytest.mark.asyncio
     async def test_forbidden_for_business_case_with_task(self):
@@ -136,13 +138,17 @@ class TestVerifyBatchOwnership:
         async def _execute(_stmt, params):
             result = MagicMock()
             owner = owners.get(params["case_id"])
-            result.mappings.return_value.first.return_value = None if not owner else {
-                "client_id": owner,
-                "source": "chat",
-                "conversations": 1,
-                "messages": 1,
-                "own_task": False,
-            }
+            result.mappings.return_value.first.return_value = (
+                None
+                if not owner
+                else {
+                    "client_id": owner,
+                    "source": "chat",
+                    "conversations": 1,
+                    "messages": 1,
+                    "own_task": False,
+                }
+            )
             return result
 
         session.execute = AsyncMock(side_effect=_execute)
@@ -701,9 +707,7 @@ class TestDirectIngestCompressedBody:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
             mock_settings.INTERNAL_API_TOKEN = "internal"
-            result = await ingest_bridge_logs_direct(
-                request=request, x_bridge_upload_token=self._token()
-            )
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self._token())
 
         assert result["accepted"] == 1
         assert result["forbidden"] == 0
@@ -722,9 +726,7 @@ class TestDirectIngestCompressedBody:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
             mock_settings.INTERNAL_API_TOKEN = "internal"
-            result = await ingest_bridge_logs_direct(
-                request=request, x_bridge_upload_token=self._token()
-            )
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self._token())
 
         assert result["accepted"] == 1
 
@@ -740,7 +742,164 @@ class TestDirectIngestCompressedBody:
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
             mock_settings.INTERNAL_API_TOKEN = "internal"
             with pytest.raises(HTTPException) as exc:
-                await ingest_bridge_logs_direct(
-                    request=request, x_bridge_upload_token=self._token()
-                )
+                await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self._token())
         assert exc.value.status_code == 400
+
+
+class TestDirectInternalBridgeUpload:
+    """云端桥用集群内部令牌直传：不绑单、按条目自带 case_id 归档。
+
+    为什么单独守护：生产环境的桥跑在云端 Pod 里，没有浏览器下发 bridge_log_token；
+    插件下发又由 case-service 直连发起。若这条通道退化成"必须绑单"，
+    云端桥的 exec.* / acli_sync.* 会重新变成永远进不了库。
+    """
+
+    INTERNAL = "hci-dev-internal-token"
+    INSTANCE = "7f3c9a1e-1111-2222-3333-444455556666"
+
+    @staticmethod
+    def _request(body: bytes, headers: dict[str, str]):
+        from starlette.requests import Request
+
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        raw_headers = [(name.lower().encode(), value.encode()) for name, value in headers.items()]
+        return Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/bridge-logs/direct",
+                "headers": raw_headers,
+            },
+            receive,
+        )
+
+    @staticmethod
+    def _db_manager():
+        session = AsyncMock()
+        manager = MagicMock()
+
+        async def _gen():
+            yield session
+
+        manager.get_session.return_value = _gen()
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_entries_are_archived_by_their_own_case_id(self):
+        import json
+
+        from app.routes.bridge_logs import ingest_bridge_logs_direct
+
+        body = json.dumps(
+            {
+                "logs": [
+                    {
+                        "case_id": "Q2026101409999",
+                        "level": "INFO",
+                        "event": "exec.request",
+                        "message": "收到命令执行请求",
+                    },
+                    {"case_id": "Q2026101409999", "level": "INFO", "event": "exec.done", "message": "命令执行完成"},
+                ]
+            }
+        ).encode()
+        request = self._request(
+            body,
+            {"x-bridge-instance-id": self.INSTANCE, "content-type": "application/json"},
+        )
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager()),
+            patch("app.routes.bridge_logs._insert_entry", new=AsyncMock(return_value="accepted")) as insert,
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
+            mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self.INTERNAL)
+
+        assert result["mode"] == "internal"
+        assert result["accepted"] == 2
+        assert result["forbidden"] == 0
+        # 不绑单：两条都落在条目自带的工单上，且 user_id 标记为桥实例。
+        for call in insert.await_args_list:
+            assert call.args[1].case_id == "Q2026101409999"
+            assert call.args[2].startswith("bridge:")
+
+    @pytest.mark.asyncio
+    async def test_missing_case_id_falls_back_to_instance_sentinel(self):
+        """bridge.startup 这类生命周期事件没有工单：必须仍然落库，否则"桥起不来"零证据。"""
+        import json
+
+        from app.routes.bridge_logs import ingest_bridge_logs_direct
+
+        body = json.dumps(
+            {"logs": [{"level": "INFO", "event": "bridge.startup", "message": "terminal_bridge 已启动"}]}
+        ).encode()
+        request = self._request(body, {"x-bridge-instance-id": self.INSTANCE})
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager()),
+            patch("app.routes.bridge_logs._insert_entry", new=AsyncMock(return_value="accepted")) as insert,
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
+            mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self.INTERNAL)
+
+        assert result["accepted"] == 1
+        stored = insert.await_args_list[0].args[1]
+        assert stored.case_id == "bridge-7f3c9a1e"
+        assert stored.bridge_instance_id == self.INSTANCE
+
+    @pytest.mark.asyncio
+    async def test_foreign_instance_entries_are_rejected(self):
+        """同一令牌被复制到别的桥：条目实例号与请求头不一致时必须丢弃。"""
+        import json
+
+        from app.routes.bridge_logs import ingest_bridge_logs_direct
+
+        body = json.dumps(
+            {
+                "logs": [
+                    {
+                        "case_id": "Q2026101409999",
+                        "level": "INFO",
+                        "event": "exec.done",
+                        "message": "命令执行完成",
+                        "bridge_instance_id": "another-instance",
+                    }
+                ]
+            }
+        ).encode()
+        request = self._request(body, {"x-bridge-instance-id": self.INSTANCE})
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager()),
+            patch("app.routes.bridge_logs._insert_entry", new=AsyncMock(return_value="accepted")) as insert,
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
+            mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self.INTERNAL)
+
+        assert result["forbidden"] == 1
+        assert result["accepted"] == 0
+        insert.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_wrong_token_is_still_rejected(self):
+        """内部通道不能成为后门：令牌不等时仍走 HMAC 校验并 401。"""
+        import json
+
+        from app.routes.bridge_logs import ingest_bridge_logs_direct
+
+        body = json.dumps({"logs": [{"case_id": "Q1", "level": "INFO", "event": "x", "message": "占位"}]}).encode()
+        request = self._request(body, {})
+        with (
+            patch("app.routes.bridge_logs._db_manager", self._db_manager()),
+            patch("app.routes.bridge_logs.settings") as mock_settings,
+        ):
+            mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
+            mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
+            with pytest.raises(HTTPException) as exc:
+                await ingest_bridge_logs_direct(request=request, x_bridge_upload_token="not-the-internal-token")
+        assert exc.value.status_code == 401

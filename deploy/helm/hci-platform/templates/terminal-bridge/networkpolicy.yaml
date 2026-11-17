@@ -86,6 +86,17 @@ spec:
       ports:
         - protocol: TCP
           port: 4318
+    {{- if .Values.terminalBridge.logUpload.enabled }}
+    # 日志直传：桥自己把结构化日志 POST 到集群内网关注入的直传端点。
+    # 缺这一条时直传在 netpol 层被静默丢弃，表现为队列只涨不降、库里零桥日志。
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api-gateway
+      ports:
+        - protocol: TCP
+          port: {{ .Values.apiGateway.port }}
+    {{- end }}
     {{- range .Values.terminalBridge.networkPolicy.hciSshCidrs }}
     # 真实 HCI SSH 出站：只放行显式登记的 CIDR，默认空表示完全不放行任意外部网段。
     - to:
