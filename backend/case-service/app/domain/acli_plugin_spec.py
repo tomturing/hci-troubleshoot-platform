@@ -406,7 +406,10 @@ def build_files(spec: Mapping[str, Any], wrapper: str) -> list[dict[str, str]]:
     """生成 HCI 侧插件目录的全部文件（manifest 由 hash 回填后再加入）。"""
     name = str(spec["plugin_name"])
     interpreter = str(spec["interpreter"])
-    files: list[dict[str, str]] = [
+    # 内置覆盖只替换 extra_files 声明的脚本：原 wrapper、bin 与其他出厂资产
+    # 原样保留，目录结构与出厂完全一致（不写 stub、不创建空 bin 目录）。
+    builtin = str(spec.get("update_mode") or "") == "builtin_override"
+    files: list[dict[str, str]] = [] if builtin else [
         {"path": f"{name}/plugin", "mode": "0755", "content": wrapper},
         {
             "path": f"{name}/bin/{spec['script_filename']}",
@@ -530,7 +533,8 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
         '  STATUS="rolled_back"',
         "  finish",
         "}",
-        'mkdir -p "$TMP/backup" "$TMP/stage/$NAME/bin" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }',
+        ('mkdir -p "$TMP/backup" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }' if builtin
+         else 'mkdir -p "$TMP/backup" "$TMP/stage/$NAME/bin" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }'),
         'exec 9>"$BASE/plugin_register.lock" || fail "lock_open_failed"',
         'flock -w 30 9 || fail "lock_timeout"',
         'cp -a "$REG" "$TMP/backup/plugin_register.json" || fail \'register_backup_failed\'',
@@ -552,7 +556,7 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
     ]
     for item in descriptor["files"]:
         rel = str(item["path"])[len(name) + 1 :]
-        if builtin and rel in {"plugin", "manifest.json"}:
+        if builtin and rel == "plugin":
             continue
         lines += [
             f'mkdir -p "$(dirname "$TMP/stage/$NAME/{rel}")" || fail \'stage_mkdir_failed\'',
@@ -688,16 +692,17 @@ def validate_descriptor(descriptor: Mapping[str, Any]) -> dict[str, Any]:
     if expected_hashes != manifest.get("hash"):
         errors.append("manifest.hash 与文件 SHA-256 不一致")
 
-    wrapper = str(descriptor.get("wrapper") or "")
-    if not wrapper.startswith("#!/bin/bash"):
-        errors.append("wrapper 缺少 shebang")
-    if '"$SCRIPT_DIR/bin/' not in wrapper:
-        errors.append("wrapper 的 SCRIPT_DIR 必须原样展开，不能被单引号包住")
-    if '"$@"' not in wrapper:
-        errors.append("wrapper 必须原样透传 \"$@\"")
-    plugin_file = next((item for item in files if item["path"] == f"{name}/plugin"), None)
-    if not plugin_file or plugin_file["mode"] != "0755":
-        errors.append(f"{name}/plugin 权限必须是 0755")
+    if not descriptor.get("built_in"):
+        wrapper = str(descriptor.get("wrapper") or "")
+        if not wrapper.startswith("#!/bin/bash"):
+            errors.append("wrapper 缺少 shebang")
+        if '"$SCRIPT_DIR/bin/' not in wrapper:
+            errors.append("wrapper 的 SCRIPT_DIR 必须原样展开，不能被单引号包住")
+        if '"$@"' not in wrapper:
+            errors.append("wrapper 必须原样透传 \"$@\"")
+        plugin_file = next((item for item in files if item["path"] == f"{name}/plugin"), None)
+        if not plugin_file or plugin_file["mode"] != "0755":
+            errors.append(f"{name}/plugin 权限必须是 0755")
 
     script = str(descriptor.get("deploy_script") or "")
     for token in ("base64", "python3"):

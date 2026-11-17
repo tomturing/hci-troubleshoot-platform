@@ -31,10 +31,26 @@ function onLogout() {
         text-color="#bfcbd9"
         active-text-color="#409eff"
       >
-        <el-menu-item v-for="item in menuItems" :key="item.path" :index="item.path">
-          <el-icon><component :is="resolveMenuIcon(item.icon)" /></el-icon>
-          <span>{{ item.title }}</span>
-        </el-menu-item>
+        <template v-for="item in menuItems" :key="item.path">
+          <el-sub-menu v-if="item.children?.length" :index="item.path">
+            <template #title>
+              <el-icon><component :is="resolveMenuIcon(item.icon)" /></el-icon>
+              <span>{{ item.title }}</span>
+            </template>
+            <el-menu-item
+              v-for="child in item.children"
+              :key="child.path"
+              :index="child.path"
+            >
+              <el-icon><component :is="resolveMenuIcon(child.icon)" /></el-icon>
+              <span>{{ child.title }}</span>
+            </el-menu-item>
+          </el-sub-menu>
+          <el-menu-item v-else :index="item.path">
+            <el-icon><component :is="resolveMenuIcon(item.icon)" /></el-icon>
+            <span>{{ item.title }}</span>
+          </el-menu-item>
+        </template>
       </el-menu>
     </el-aside>
 

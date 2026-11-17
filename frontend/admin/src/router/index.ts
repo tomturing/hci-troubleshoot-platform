@@ -109,15 +109,14 @@ const router = createRouter({
       path: '/tools',
       name: 'ToolManage',
       component: () => import('@/views/ToolManageView.vue'),
-      meta: { title: 'agent工具', icon: 'Setting', order: 8 },
+      meta: { title: 'agent工具', icon: 'Setting', order: 8, parent: 'tools' },
     },
     {
       path: '/acli-plugins',
       name: 'AcliPluginManage',
       component: () => import('@/views/AcliPluginManageView.vue'),
-      // 独立一级菜单：order 7.5 落在 SOP管理(7) 与 agent工具(8) 之间，
-      // 不作为工具管理的子页面；acli 插件与 Agent 工具是两套不同注册表。
-      meta: { title: 'acli插件', icon: 'Tools', order: 7.5 },
+      // 与 agent工具 同属「工具管理」父菜单下的子页面。
+      meta: { title: 'acli插件', icon: 'Tools', order: 8.5, parent: 'tools' },
     },
     {
       path: '/skills',
