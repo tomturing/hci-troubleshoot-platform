@@ -100,3 +100,79 @@ func TestFormatOutputPreviewKeepsTail(t *testing.T) {
 		t.Fatalf("短输出被改写: %q", short)
 	}
 }
+
+// 包名解析只认现行命名约定 acli_<版本>_<架构>_<YYYYMMDDHHMMSS>.acli。
+// 旧格式（acli-installer_<架构>_YYYY-MM-DD_HH-MM-SS.acli）已随发布侧改名退役：
+// 解析落空必须返回空串交调用方留痕+保守跳过，而不是猜一个时间戳进判序
+// （Q2026101401677：旧正则对新包名落空 → 静默"已是最新"，1.0.3 发布后节点仍 1.0.0）。
+func TestParseAcliRemoteName(t *testing.T) {
+	cases := []struct {
+		name, filename, wantVersion, wantBuild string
+	}{
+		{"现行 x86/c86 合包名", "acli_1.0.3_x86-c86_64_20261029170012.acli", "1.0.3", "2026-10-29 17:00:12"},
+		{"现行 aarch64 包名", "acli_1.0.3_aarch64_20261029165837.acli", "1.0.3", "2026-10-29 16:58:37"},
+		{"旧格式退役不落兜底", "acli-installer_x86_64_2026-05-20_17-33-24.acli", "", ""},
+		{"无时间戳不猜", "acli_1.0.3_x86_64.acli", "1.0.3", ""},
+		{"乱码名全落空", "evil../../passwd.acli", "", ""},
+		{"空名", "", "", ""},
+	}
+	for _, c := range cases {
+		version, build := parseAcliRemoteName(c.filename)
+		if version != c.wantVersion || build != c.wantBuild {
+			t.Fatalf("%s: parseAcliRemoteName(%q)=(%q,%q) want (%q,%q)",
+				c.name, c.filename, version, build, c.wantVersion, c.wantBuild)
+		}
+	}
+}
+
+// 版本判序必须逐段数值比较：字符串序会把 1.0.10 判得比 1.0.9 旧。
+func TestCompareAcliVersions(t *testing.T) {
+	cases := []struct {
+		name, a, b string
+		want       int
+	}{
+		{"升级", "1.0.0", "1.0.3", -1},
+		{"降级", "1.0.3", "1.0.0", 1},
+		{"双位段数值序", "1.0.9", "1.0.10", -1},
+		{"相等", "1.0.3", "1.0.3", 0},
+		{"段数不齐补零", "1.0", "1.0.0", 0},
+		{"非数字不做部分比较", "1.x.0", "1.0.3", 0},
+	}
+	for _, c := range cases {
+		if got := compareAcliVersions(c.a, c.b); got != c.want {
+			t.Fatalf("%s: compareAcliVersions(%q,%q)=%d want %d", c.name, c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// 安装判定：版本优先、日期兜底、强制信号先行、降级永不自动发生。
+// 关键回归：旧版本用新日期重打包上架（1.0.0 + 今天日期 vs 本地 1.0.3）——
+// 纯日期判据会判"远端更新"再次降级（Q2026111700614 同形），版本优先必须拦住。
+func TestAcliInstallDecision(t *testing.T) {
+	cases := []struct {
+		name                                             string
+		currentVer, currentBuild, remoteVer, remoteBuild string
+		force                                            bool
+		retryStage                                       string
+		wantInstall                                      bool
+		wantEvent                                        string
+	}{
+		{"未安装强制装", "", "", "1.0.3", "2026-10-29 17:00:12", false, "all", true, "not_installed"},
+		{"force 先行", "1.0.3", "2026-10-29 17:00:12", "1.0.0", "2026-05-20 17:33:24", true, "all", true, "force_install"},
+		{"显式重试先行", "1.0.3", "2026-10-29 17:00:12", "1.0.3", "2026-10-29 17:00:12", false, "upload", true, "retry_requested"},
+		{"版本升级", "1.0.0", "2026-05-20 17:22:16", "1.0.3", "2026-10-29 17:00:12", false, "all", true, "version_outdated"},
+		{"旧版本新日期重打包不降级", "1.0.3", "2026-10-29 17:00:12", "1.0.0", "2026-11-17 12:00:00", false, "all", false, "downgrade_blocked"},
+		{"同版本跨天重打包升级", "1.0.3", "2026-10-29 17:00:12", "1.0.3", "2026-10-30 09:00:00", false, "all", true, "version_outdated"},
+		{"同版本同日不升级", "1.0.3", "2026-10-29 17:00:12", "1.0.3", "2026-10-29 19:00:00", false, "all", false, ""},
+		{"同版本旧日期不降级", "1.0.3", "2026-10-29 17:00:12", "1.0.3", "2026-10-28 09:00:00", false, "all", false, "downgrade_blocked"},
+		{"解析全落空保守跳过", "1.0.0", "2026-05-20 17:22:16", "", "", false, "all", false, ""},
+		{"版本落空日期兜底升级", "1.0.0", "2026-05-20 17:22:16", "", "2026-10-29 17:00:12", false, "all", true, "version_outdated"},
+	}
+	for _, c := range cases {
+		install, event := acliInstallDecision(c.currentVer, c.currentBuild, c.remoteVer, c.remoteBuild, c.force, c.retryStage)
+		if install != c.wantInstall || event != c.wantEvent {
+			t.Fatalf("%s: acliInstallDecision(...)=(%v,%q) want (%v,%q)",
+				c.name, install, event, c.wantInstall, c.wantEvent)
+		}
+	}
+}

@@ -3277,7 +3277,7 @@ func parseAcliVersion(output string) (version string, buildTime string) {
 	return version, buildTime
 }
 
-func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filename string, buildTime string, downloadURL string, err error) {
+func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filename string, buildTime string, version string, downloadURL string, err error) {
 	downloadURL = customURL
 	if downloadURL == "" {
 		if targetArch == "aarch64" {
@@ -3289,19 +3289,19 @@ func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filenam
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return "", "", downloadURL, err
+		return "", "", "", downloadURL, err
 	}
 	req.Header.Set("Range", "bytes=0-0")
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", downloadURL, err
+		return "", "", "", downloadURL, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return "", "", downloadURL, fmt.Errorf("下载源返回 HTTP %d", resp.StatusCode)
+		return "", "", "", downloadURL, fmt.Errorf("下载源返回 HTTP %d", resp.StatusCode)
 	}
 
 	cd := resp.Header.Get("Content-Disposition")
@@ -3310,13 +3310,8 @@ func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filenam
 		filename = val
 	}
 
-	re := regexp.MustCompile(`_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})\.acli`)
-	match := re.FindStringSubmatch(filename)
-	if len(match) == 5 {
-		buildTime = fmt.Sprintf("%s %s:%s:%s", match[1], match[2], match[3], match[4])
-	}
-
-	return filename, buildTime, downloadURL, nil
+	version, buildTime = parseAcliRemoteName(filename)
+	return filename, buildTime, version, downloadURL, nil
 }
 
 func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
@@ -3411,49 +3406,50 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	currentBinary := parseAcliBinary(verOut)
 
 	// 3. 探测最新官方包元数据
-	remoteFilename, remoteBuild, downloadURL, probeErr := probeAcliLatest(ctx, targetArch, msg.AcliURL)
+	remoteFilename, remoteBuild, remoteVersion, downloadURL, probeErr := probeAcliLatest(ctx, targetArch, msg.AcliURL)
 	if probeErr != nil {
 		log.Printf("[Bridge] acli 官方源探测失败: %v", probeErr)
 	}
+	// 命名约定再次变更时解析会落空：HTTP 探测本身成功（probeErr=nil），
+	// 失败只发生在文件名解析层。不留痕就会重演 Q2026101401677 的静默失效——
+	// 判定层把"解析不出"保守跳过，界面却显示"已是最新"，无人察觉。
+	if probeErr == nil && remoteFilename != "" && remoteVersion == "" && remoteBuild == "" {
+		blog("WARN", "acli_sync.build_parse_failed", "远端包名不符合已知命名约定，无法判序，保守跳过升级（可 force）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"remote_filename": remoteFilename,
+		})
+	}
 
-	// 4. 版本判定
-	//
-	// 只比日期，不比时分秒：current_build 来自 `acli --version` 的编译时间，
-	// remote_build 来自安装包文件名 `_YYYY-MM-DD_HH-MM-SS` 的打包时间，两者不同源
-	// （实测同一版本相差 1h45m）。逐秒比较会让 need_install 恒为 true——每次登录都重下
-	// 20MB 并向集群所有节点分发安装一次。代价：同一天发两个包不会自动升级，需要 force。
-	needInstall := false
-	switch {
-	case currentVer == "":
-		needInstall = true
+	// 4. 版本判定（纯函数，见 acliInstallDecision）
+	needInstall, decision := acliInstallDecision(currentVer, currentBuild, remoteVersion, remoteBuild, msg.Force, retryStage)
+	switch decision {
+	case "not_installed":
 		blog("INFO", "acli_sync.not_installed", "HCI 未安装 acli，需要安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch,
 		})
-	case msg.Force:
-		needInstall = true
+	case "force_install":
 		blog("INFO", "acli_sync.force_install", "收到 force 标记，强制重新安装 acli", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch,
 		})
-	case retryStage != "all":
+	case "retry_requested":
 		// 对抗性审查：若这里不显式置位，用户点「重试上传」很可能直接落到
 		// 「acli 已是最新」分支——按钮点了却什么都不发生，与“报错不管”等价。
 		// 用户的显式重试意图本身就是强制信号。
-		needInstall = true
 		blog("INFO", "acli_sync.retry_requested", "收到重试请求，强制执行对应阶段", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"retry_stage": retryStage, "current_version": currentVer, "current_build": currentBuild,
 		})
-	case remoteBuild != "" && currentBuild != "" && remoteBuildNewer(currentBuild, remoteBuild):
-		needInstall = true
+	case "version_outdated":
 		blog("INFO", "acli_sync.version_outdated", "acli 远端包更新，需要升级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"current_version": currentVer, "remote_version": remoteVersion,
 			"current_build": currentBuild, "remote_build": remoteBuild,
 			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
 		})
-	case remoteBuild != "" && currentBuild != "" && !sameBuildDate(currentBuild, remoteBuild):
-		// 日期不同但远端并非更新：本地版本更新，禁止降级。
+	case "downgrade_blocked":
+		// 远端更旧（版本更低，或同版本但打包日期更早）：禁止降级。
 		// 历史 bug：sameBuildDate 只判"是否相等"，预装的新包会被旧官方包误判"落后"
 		// 触发 --install --force 降级重装（Q2026111700614：1.0.3 被降到 1.0.0，
 		// 连带清掉插件目录与 core 专项）。这里显式跳过并留痕，降级永不自动发生。
 		blog("INFO", "acli_sync.downgrade_blocked", "远端包更旧，禁止降级，跳过安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"current_version": currentVer, "remote_version": remoteVersion,
 			"current_build": currentBuild, "remote_build": remoteBuild,
 			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
 		})
@@ -3462,7 +3458,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	blog("INFO", "acli_sync.version_check", "acli 版本判定完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"architecture": targetArch, "current_version": currentVer, "current_build": currentBuild,
 		"current_binary":  currentBinary,
-		"remote_filename": remoteFilename, "remote_build": remoteBuild,
+		"remote_filename": remoteFilename, "remote_build": remoteBuild, "remote_version": remoteVersion,
 		"need_install": needInstall, "force": msg.Force, "probe_error": errString(probeErr),
 	})
 
@@ -3470,6 +3466,11 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		blog("INFO", "acli_sync.up_to_date", "acli 已就绪且为最新", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"version": currentVer, "build": currentBuild,
 		})
+		upToDateMessage := "acli 工具已就绪且为最新版本"
+		if remoteFilename != "" && remoteVersion == "" && remoteBuild == "" {
+			// 解析落空时"已是最新"是假结论：如实告知未做升级判定，避免静默失效。
+			upToDateMessage = "acli 已安装；远端包名无法解析，未做升级判定（可强制更新）"
+		}
 		sendMsg(ws, OutMessage{
 			Type:           "acli_sync_result",
 			CaseID:         msg.CaseID,
@@ -3479,7 +3480,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			LatestVersion:  remoteBuild,
 			TraceID:        traceID,
 			Detail:         fmt.Sprintf("%s (build %s)", currentVer, currentBuild),
-			Message:        "acli 工具已就绪且为最新版本",
+			Message:        upToDateMessage,
 		})
 		blog("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": currentVer, "build": currentBuild,
@@ -6126,6 +6127,94 @@ func remoteBuildNewer(current, remote string) bool {
 		return false
 	}
 	return rem > cur
+}
+
+// 官方包命名约定（单一）：acli_<版本>_<架构>_<YYYYMMDDHHMMSS>.acli，
+// 如 acli_1.0.3_x86-c86_64_20261029170012.acli。架构段可为合包形态 x86-c86_64：
+// 一个包同时兼容 x86_64 与海光 C86_64（两者 uname -m 均报 x86_64），不是笔误。
+// 旧格式 acli-installer_<架构>_YYYY-MM-DD_HH-MM-SS.acli
+// 已随发布侧改名退役：latest 端点只发最新包，节点历史残包走重试安装兜底（不解析时间戳），
+// 自定义源无活体调用方——保留旧格式分支等于维护一份没有对手方的契约（Q2026101401677 审查结论）。
+var (
+	acliRemoteVersionRe = regexp.MustCompile(`^acli_(\d+\.\d+\.\d+)_`)
+	acliRemoteBuildRe   = regexp.MustCompile(`_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.acli$`)
+)
+
+// parseAcliRemoteName 从官方包名解析版本号与打包时间。
+// 任一 segment 不符合约定即返回空串，由调用方决定留痕与保守跳过；
+// 这里不做兜底猜测——猜出来的时间戳会直接进判序，比解析失败更危险。
+func parseAcliRemoteName(filename string) (version string, buildTime string) {
+	if m := acliRemoteVersionRe.FindStringSubmatch(filename); len(m) == 2 {
+		version = m[1]
+	}
+	if m := acliRemoteBuildRe.FindStringSubmatch(filename); len(m) == 7 {
+		buildTime = fmt.Sprintf("%s-%s-%s %s:%s:%s", m[1], m[2], m[3], m[4], m[5], m[6])
+	}
+	return version, buildTime
+}
+
+// compareAcliVersions 逐段数值比较版本号（a<b 返回 -1，相等 0，a>b 返回 1）。
+// 必须数值比较：字符串序会把 1.0.10 判得比 1.0.9 旧。段数不齐补 0（1.0 == 1.0.0）。
+// 任一侧含非数字段返回 0（视为同版本，交日期判序兜底），不做部分比较。
+func compareAcliVersions(a, b string) int {
+	as, bs := strings.Split(strings.TrimSpace(a), "."), strings.Split(strings.TrimSpace(b), ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		var av, bv int
+		if i < len(as) {
+			v, err := strconv.Atoi(as[i])
+			if err != nil {
+				return 0
+			}
+			av = v
+		}
+		if i < len(bs) {
+			v, err := strconv.Atoi(bs[i])
+			if err != nil {
+				return 0
+			}
+			bv = v
+		}
+		if av != bv {
+			if av < bv {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
+}
+
+// acliInstallDecision 判定是否需要安装/升级，返回 (needInstall, 留痕事件名)。
+// 事件名空串表示"无结论性事件"（已最新或解析落空保守跳过）。
+//
+// 判序优先级（第一性原理：用最直接的权威信号，代理信号只做兜底）：
+//  1. 版本号：新包名携带 semver，本地 `acli --version` 同源可比。版本不同直接定序——
+//     旧版本用新日期重打包上架也不会触发降级（纯日期判据在同形场景下会再次降级，
+//     与 Q2026111700614 事故同形）；
+//  2. 打包日期：仅同版本（或任一侧版本解析落空但日期可得）时比日期，沿用
+//     remoteBuildNewer/sameBuildDate 的既定语义——编译时间与打包时间不同源，
+//     同日视为同一版本，同日重打包不自动升级（可 force）；
+//  3. 都解析不出：保守跳过（降级安全方向），调用方负责 WARN 留痕。
+//
+// 未安装 / force / 显式重试是强制信号，先于一切判序。
+func acliInstallDecision(currentVer, currentBuild, remoteVersion, remoteBuild string, force bool, retryStage string) (bool, string) {
+	switch {
+	case currentVer == "":
+		return true, "not_installed"
+	case force:
+		return true, "force_install"
+	case retryStage != "all":
+		return true, "retry_requested"
+	case remoteVersion != "" && compareAcliVersions(currentVer, remoteVersion) < 0:
+		return true, "version_outdated"
+	case remoteVersion != "" && compareAcliVersions(currentVer, remoteVersion) > 0:
+		return false, "downgrade_blocked"
+	case remoteBuild != "" && currentBuild != "" && remoteBuildNewer(currentBuild, remoteBuild):
+		return true, "version_outdated"
+	case remoteBuild != "" && currentBuild != "" && !sameBuildDate(currentBuild, remoteBuild):
+		return false, "downgrade_blocked"
+	}
+	return false, ""
 }
 
 // normalizeOutputText 把命令输出规整为合法 UTF-8。
