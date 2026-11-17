@@ -311,7 +311,7 @@ export function describeArchiveCheck(check: ArchiveCheckView | null | undefined)
     case 'size_mismatch':
       return `${head}：归档件体积 ${formatCheckSize(check.archived_size)}，小于平台记录的 ${formatCheckSize(check.expected_size)}`
     case 'stale_archive':
-      return `${head}：日志服务器上只有采集之前就存在的同名包，不能算本次结果`
+      return `${head}：日志服务器上只有采集之前就存在的同名包，不能算本次结果（新包可能仍在上传）`
     case 'archive_size_invalid':
       return `${head}：归档件体积异常，无法确认`
     default:

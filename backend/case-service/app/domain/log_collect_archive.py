@@ -25,8 +25,13 @@ def judge_archive(
 
     - ``archive_missing``：5888 明确回 found=false；
     - ``archive_size_invalid``：落盘体积缺失或非法；
-    - ``size_mismatch``：落盘体积小于任务记录值（截断只可能变小）；
-    - ``stale_archive``：包 mtime 早于任务创建太久，是上一轮的同名历史包；
+    - ``stale_archive``：包 mtime 早于任务创建太久，规范名下挂的还是上一轮的历史包。
+      **瞬态**：5888 收完整包才把规范名切到新包，新包上传期间规范名仍指向旧包，
+      所以"旧包 + 体积不够"首先说明的是"新包还没发布"，不是"本次包被截断"
+      （2026-11-17 Q2026111700614：4.95 GB 新包上传中，核验读到 14:31 的 314 MB
+      旧包，被旧顺序误判 size_mismatch，客户看到红卡时包正在落地）；
+    - ``size_mismatch``：包在任务窗口内发布但体积小于记录值（截断只可能变小），
+      确定性否定；
     - ``verified``：存在、体积够、时间对得上。
 
     体积不要求相等：expected_size 可能是插件自删前的峰值观测，强求相等会把完整包
@@ -38,19 +43,22 @@ def judge_archive(
     archived_size = archive.get("size")
     if not isinstance(archived_size, int) or archived_size <= 0:
         return False, "archive_size_invalid", None, None
-    if expected_size is not None and archived_size < expected_size:
-        return False, "size_mismatch", archived_size, None
 
     mtime = archive.get("mtime")
     archived_at: datetime | None = None
     if isinstance(mtime, (int, float)):
         archived_at = datetime.fromtimestamp(int(mtime), tz=UTC)
 
+    # 时间判定必须先于体积判定：历史包几乎必然也更小，先查体积会把
+    # "新包还没发布"误报成"本次包被截断"，两类结论的处置完全不同。
     created_at = getattr(task, "created_at", None)
     if created_at is not None:
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=UTC)
         if archived_at is not None and archived_at < created_at - timedelta(seconds=ARCHIVE_LOOKBACK_SECONDS):
             return False, "stale_archive", archived_size, archived_at
+
+    if expected_size is not None and archived_size < expected_size:
+        return False, "size_mismatch", archived_size, archived_at
 
     return True, "verified", archived_size, archived_at

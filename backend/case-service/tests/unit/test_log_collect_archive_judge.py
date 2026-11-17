@@ -41,3 +41,28 @@ def test_historical_same_name_archive_is_rejected():
         90,
     )
     assert (ok, reason) == (False, "stale_archive")
+
+
+def test_previous_archive_smaller_than_record_is_stale_not_truncated():
+    """Q2026111700614 回归：新包（4.95 GB）上传中，规范名仍挂 14:31 的旧包（314 MB）。
+
+    旧包同样"小于记录值"，旧顺序先查体积会把它误报成 size_mismatch 红卡；
+    时间判定必须先于体积判定——历史包说明的是"新包还没发布"，走等待口径。
+    """
+    ok, reason, size, archived_at = judge_archive(
+        task_with_created(),
+        {"found": True, "size": 314_820_302, "mtime": (NOW - timedelta(hours=3)).timestamp()},
+        4_952_749_247,
+    )
+    assert (ok, reason, size) == (False, "stale_archive", 314_820_302)
+    assert archived_at is not None
+
+
+def test_fresh_archive_smaller_than_record_is_truncation():
+    """mtime 落在任务窗口内却体积不足：确定性截断，不能被等待口径洗白。"""
+    ok, reason, _, _ = judge_archive(
+        task_with_created(),
+        {"found": True, "size": 50, "mtime": (NOW - timedelta(minutes=1)).timestamp()},
+        90,
+    )
+    assert (ok, reason) == (False, "size_mismatch")

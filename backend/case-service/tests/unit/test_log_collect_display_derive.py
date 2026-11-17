@@ -331,7 +331,7 @@ class TestWriteSide:
 class TestScopeComponentAttribution:
     """三段五组件 + S1-S8 + 首个异常点：用户「一眼定界」的可回归验收。"""
 
-    def waiting_task(self, minutes_ago: int = 0, **overrides) -> dict:
+    def waiting_task(self, minutes_ago: int = 0, reason: str = "archive_missing", **overrides) -> dict:
         checked_at = (NOW - timedelta(minutes=minutes_ago)).isoformat().replace("+00:00", "Z")
         data = {
             "status": "completed",
@@ -342,7 +342,7 @@ class TestScopeComponentAttribution:
             "detail": {
                 "p1_archive_check": {
                     "verified": False,
-                    "reason": "archive_missing",
+                    "reason": reason,
                     "checked_at": checked_at,
                 }
             },
@@ -377,6 +377,33 @@ class TestScopeComponentAttribution:
         # P1 平台不留副本、节点包自删：体积缺失不能被写成「未取到有效日志」。
         assert "artifact_missing" not in key_list(payload)
         assert "handoff_pending" in key_list(payload)
+
+    def test_stale_previous_archive_waits_instead_of_mismatch_card(self):
+        """Q2026111700614：大包上传中规范名仍挂旧包（stale_archive）是窗口内竞态。
+
+        旧实现把它渲成「归档件大小或时间不一致」红卡，客户在包正在落地时
+        被劝去找管理员；现在与 archive_missing 同走有界等待口径。
+        """
+        display = derive(self.waiting_task(reason="stale_archive"), now=NOW)["display"]
+
+        assert display["phase"] == "verifying"
+        assert display["conclusion"] == "pending"
+        assert display["fault_attribution"]["code"] == "LC-HTP-001"
+        assert next(s for s in display["stages"] if s["key"] == "S6")["status"] == "waiting"
+
+    def test_stale_previous_archive_expires_to_log_server(self):
+        """等满窗口规范名仍是旧包：归因 5888 未发布新归档件，而不是大小不一致。"""
+        display = derive(self.waiting_task(minutes_ago=11, reason="stale_archive"), now=NOW)["display"]
+
+        assert display["conclusion"] == "failed"
+        assert display["fault_attribution"]["code"] == "LC-5888-004"
+
+    def test_size_mismatch_is_not_washed_into_waiting(self):
+        """size_mismatch（任务窗口内发布却偏小=疑似截断）不受窗口豁免，仍归 LC-5888-003。"""
+        display = derive(self.waiting_task(reason="size_mismatch"), now=NOW)["display"]
+
+        assert display["fault_attribution"]["code"] == "LC-5888-003"
+        assert next(s for s in display["stages"] if s["key"] == "S6")["status"] == "failed"
 
     def test_delivered_flips_waiting_to_delivered_conclusion(self):
         """核验通过后同一任务必须自动刷新结论，不能停在等待态。"""

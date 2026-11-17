@@ -1307,6 +1307,43 @@ async def test_run_keeps_unconfirmed_delivery_queued(storage, monkeypatch):
     assert finished["confirmation"]["attempts"] == 3
 
 
+async def test_run_retries_stale_archive_publish_race(storage, monkeypatch):
+    """链尾确认撞上"规范名还挂旧包"（stale_archive）与 archive_missing 同属发布竞态。
+
+    5888 收完整包才切换规范名（Q2026111700614），窗口内读到旧包不重试就会把
+    一次瞬态观测钉成"未核验"；size_mismatch（窗口内发布却偏小）才不重试。
+    """
+    from app.services import log_collect_relay_service as module
+
+    monkeypatch.setattr(module, "ARCHIVE_CONFIRM_DELAYS", (0.0, 0.0, 0.0))
+    case_id = "Q2026111700003"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    task.object_size = 8
+    task.created_at = datetime.now(UTC) - timedelta(minutes=2)
+    captured: dict = {}
+    old_mtime = (datetime.now(UTC) - timedelta(hours=3)).timestamp()
+
+    _patch_http_transport(
+        monkeypatch,
+        _run_handler({"found": True, "size": 8, "mtime": old_mtime, "stored_name": f"{case_id}.zip"}, captured),
+    )
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    finished: dict = {}
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, confirmation=archive_confirmation)
+        )
+    )
+
+    await service.run(task.task_id)
+
+    assert finished["confirmation"]["verified"] is False
+    assert finished["confirmation"]["reason"] == "stale_archive"
+    assert finished["confirmation"]["attempts"] == 3  # 与 archive_missing 同样重试满 3 次
+
+
 async def test_finish_unconfirmed_marks_queued_and_merges_detail(monkeypatch):
     from app.services import log_collect_relay_service as module
 
