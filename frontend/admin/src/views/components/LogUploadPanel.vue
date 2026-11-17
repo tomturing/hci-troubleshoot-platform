@@ -84,6 +84,8 @@ const filters = reactive({
   upload_mode: '',
   status: '',
   delivery_status: '',
+  // 运营看板默认隐藏验证/压测任务；需要核对时显式打开。
+  includeSynthetic: false,
 })
 
 let listTimer: ReturnType<typeof setInterval> | undefined
@@ -128,10 +130,11 @@ function buildQuery(): AdminTaskFilters {
     upload_mode: filters.upload_mode || undefined,
     status: filters.status || undefined,
     delivery_status: filters.delivery_status || undefined,
+    include_synthetic: filters.includeSynthetic || undefined,
   }
 }
 
-async function load() {
+async function load(opts: { clearOnError?: boolean } = {}) {
   loading.value = true
   try {
     const result = await listAdminTasks(buildQuery())
@@ -141,7 +144,17 @@ async function load() {
     summary.value = result.summary
     errorText.value = ''
   } catch (error: any) {
-    if (!destroyed) errorText.value = `加载失败：${error?.response?.data?.detail ?? error?.message ?? error}`
+    if (destroyed) return
+    // 查询失败时旧表格不能冒充新条件的结果：这正是「过滤没反应」错觉的来源。
+    const message = `加载失败：${error?.response?.data?.detail ?? error?.message ?? error}`
+    errorText.value = message
+    ElMessage.error(message)
+    if (opts.clearOnError) {
+      rows.value = []
+      total.value = 0
+      summary.value = null
+      progressMap.value = {}
+    }
   } finally {
     loading.value = false
   }
@@ -174,12 +187,13 @@ async function pollProgress(includeDelivered = false) {
 function search() {
   page.value = 1
   progressSeq += 1
-  void load().then(() => pollProgress(true))
+  void load({ clearOnError: true }).then(() => pollProgress(true))
 }
 
 function resetFilters() {
   Object.assign(filters, {
     days: 7, case_id: '', node_ip: '', upload_mode: '', status: '', delivery_status: '',
+    includeSynthetic: false,
   })
   search()
 }
@@ -497,18 +511,49 @@ const summaryCells = computed(() => [
           <el-option :value="30" label="近 30 天" />
           <el-option :value="0" label="全部" />
         </el-select>
-        <el-input v-model="filters.case_id" placeholder="工单号" clearable style="width: 170px" />
-        <el-input v-model="filters.node_ip" placeholder="发起节点 IP" clearable style="width: 160px" />
-        <el-select v-model="filters.upload_mode" clearable placeholder="交付路径" style="width: 140px">
+        <el-input
+          v-model="filters.case_id"
+          placeholder="工单号"
+          clearable
+          style="width: 170px"
+          @keyup.enter="search"
+        />
+        <el-input
+          v-model="filters.node_ip"
+          placeholder="发起节点 IP"
+          clearable
+          style="width: 160px"
+          @keyup.enter="search"
+        />
+        <el-select
+          v-model="filters.upload_mode"
+          clearable
+          placeholder="交付路径"
+          style="width: 140px"
+          @change="search"
+        >
           <el-option value="acli_direct" label="P1 直传" />
           <el-option value="bridge_relay" label="P2 中转" />
         </el-select>
-        <el-select v-model="filters.status" clearable placeholder="采集状态" style="width: 140px">
+        <el-select
+          v-model="filters.status"
+          clearable
+          placeholder="采集状态"
+          style="width: 140px"
+          @change="search"
+        >
           <el-option v-for="(text, value) in STATUS_TEXT" :key="value" :value="value" :label="text" />
         </el-select>
-        <el-select v-model="filters.delivery_status" clearable placeholder="交付结论" style="width: 140px">
+        <el-select
+          v-model="filters.delivery_status"
+          clearable
+          placeholder="交付结论"
+          style="width: 140px"
+          @change="search"
+        >
           <el-option v-for="(text, value) in DELIVERY_TEXT" :key="value" :value="value" :label="text" />
         </el-select>
+        <el-checkbox v-model="filters.includeSynthetic" @change="search">包含验证/压测</el-checkbox>
         <el-button type="primary" @click="search">查询</el-button>
         <el-button @click="resetFilters">重置</el-button>
         <div class="upload-toolbar-right">

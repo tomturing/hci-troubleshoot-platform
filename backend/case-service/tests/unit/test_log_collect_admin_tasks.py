@@ -48,6 +48,32 @@ def test_filters_are_parameterized():
     assert "Q123" not in where
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("status", "creating"),
+        ("status", "relaying"),
+        ("delivery_status", "cancelled"),
+        ("delivery_status", "queued"),
+    ],
+)
+def test_filters_accept_every_value_offered_by_the_ui(field, value):
+    """下拉里能看到的值必须全部合法，否则 400 会被旧表格伪装成「过滤失效」。"""
+    kwargs = {
+        "since": None,
+        "until": None,
+        "case_id": None,
+        "node_ip": None,
+        "upload_mode": None,
+        "status": None,
+        "delivery_status": None,
+    }
+    kwargs[field] = value
+    where, params = routes._build_filters(**kwargs)
+    assert ":synthetic_marker" in where
+    assert params[field] == value
+
+
 def test_filters_all_time_has_no_time_boundary_and_valid_sql():
     """days=0 的「全部」不能退化为更大天数，也不能拼出空 WHERE。"""
     where, params = routes._build_filters(
@@ -58,9 +84,30 @@ def test_filters_all_time_has_no_time_boundary_and_valid_sql():
         upload_mode=None,
         status=None,
         delivery_status=None,
+        include_synthetic=True,
     )
     assert where == "TRUE"
     assert params == {}
+
+
+def test_synthetic_tasks_excluded_unless_explicitly_included():
+    """运营看板默认排除压测任务；NULL error_message 不能被正则误伤。"""
+    kwargs = {
+        "since": None,
+        "until": None,
+        "case_id": None,
+        "node_ip": None,
+        "upload_mode": None,
+        "status": None,
+        "delivery_status": None,
+    }
+    excluded, excluded_params = routes._build_filters(**kwargs)
+    assert "COALESCE(t.error_message, '') !~* :synthetic_marker" in excluded
+    assert excluded_params["synthetic_marker"]
+
+    included, included_params = routes._build_filters(**kwargs, include_synthetic=True)
+    assert "synthetic_marker" not in included
+    assert "synthetic_marker" not in included_params
 
 
 @pytest.mark.parametrize(
@@ -267,11 +314,36 @@ async def test_list_days_zero_drops_time_window(monkeypatch):
         upload_mode=None,
         status=None,
         delivery_status=None,
+        include_synthetic=True,
     )
     # 空列表时本页证据的批量查询直接跳过，只剩列表/总数/汇总三条。
     assert len(fetched) == 3
     assert all("created_at >=" not in sql and "created_at <=" not in sql for sql in fetched)
     assert all("WHERE TRUE" in sql for sql in fetched)
+
+
+@pytest.mark.asyncio
+async def test_list_default_excludes_synthetic_from_all_three_queries(monkeypatch):
+    """列表/总数/汇总必须共用同一个压测过滤，否则统计与表格对不上。"""
+    captured: list[dict] = []
+
+    async def fake_fetch(sql, params):
+        captured.append(params)
+        return []
+
+    monkeypatch.setattr(routes, "_fetch", fake_fetch)
+    await routes.list_admin_tasks(
+        page=1,
+        page_size=20,
+        days=7,
+        case_id=None,
+        node_ip=None,
+        upload_mode=None,
+        status=None,
+        delivery_status=None,
+    )
+    assert len(captured) == 3
+    assert all("synthetic_marker" in params for params in captured[:3])
 
 
 @pytest.mark.asyncio

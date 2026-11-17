@@ -34,6 +34,7 @@ from sqlalchemy import text
 
 from ..config import settings
 from ..domain.log_collect_display import (
+    SYNTHETIC_MARKER_PATTERN,
     build_network_view,
     build_transfer_view,
     delivery_evidence_ok,
@@ -83,18 +84,31 @@ PROGRESS_CACHE_TTL_SECONDS = 10
 PROGRESS_CACHE_MAX = 512
 _progress_cache: dict[str, tuple[datetime, DestinationProgressResponse]] = {}
 
+# 必须与前端下拉的 STATUS_TEXT / DELIVERY_TEXT 闭合：可选却不在白名单会直接 400，
+# 前端旧逻辑保留旧表格，用户看到的就是「过滤完全没反应」。
 VALID_STATUSES = {
     "pending",
     "probing",
     "installing",
     "collecting",
+    "creating",
+    "relaying",
     "packaging",
     "uploading",
     "completed",
     "failed",
     "cancelled",
 }
-VALID_DELIVERY = {"none", "queued", "pulling", "uploading", "relaying", "delivered", "failed"}
+VALID_DELIVERY = {
+    "none",
+    "queued",
+    "pulling",
+    "uploading",
+    "relaying",
+    "delivered",
+    "failed",
+    "cancelled",
+}
 VALID_MODES = {"acli_direct", "bridge_relay", "none"}
 
 
@@ -121,10 +135,12 @@ def _build_filters(
     upload_mode: str | None,
     status: str | None,
     delivery_status: str | None,
+    include_synthetic: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """所有用户输入都走 bind params；枚举字段额外白名单，避免脏值静默返回空列表。
 
     since/until 为 None 表示「全部」：不追加时间边界，避免把哨兵值当成更大的天数。
+    include_synthetic=false 时按 error_message 原始标记排除验证/压测任务。
     """
     if status and status not in VALID_STATUSES:
         raise HTTPException(status_code=400, detail=f"非法采集状态：{status}")
@@ -153,6 +169,10 @@ def _build_filters(
     if delivery_status:
         clauses.append("t.delivery_status = :delivery_status")
         params["delivery_status"] = delivery_status
+    if not include_synthetic:
+        # COALESCE 不能省：NULL 与正则比较结果是 NULL，会把正常任务一起过滤掉。
+        clauses.append("COALESCE(t.error_message, '') !~* :synthetic_marker")
+        params["synthetic_marker"] = SYNTHETIC_MARKER_PATTERN
     # 「全部」且无其它条件时不能拼出空 WHERE，否则 SQL 语法错误。
     return " AND ".join(clauses) or "TRUE", params
 
@@ -335,6 +355,9 @@ async def list_admin_tasks(
     upload_mode: str | None = Query(None, description="acli_direct / bridge_relay / none"),
     status: str | None = None,
     delivery_status: str | None = None,
+    # 不用 Query(...) 对象作默认值：单测直接调用 handler 时它不会被解析成 bool，
+    # 会把「默认排除压测」悄悄变成「包含压测」；FastAPI 对 bool 普通默认值同样生成 query。
+    include_synthetic: bool = False,
 ) -> AdminLogCollectTaskListResponse:
     """跨工单分页列表 + 汇总计数（只读，不查日志服务器）。
 
@@ -352,6 +375,7 @@ async def list_admin_tasks(
         upload_mode=upload_mode,
         status=status,
         delivery_status=delivery_status,
+        include_synthetic=include_synthetic,
     )
 
     rows = await _fetch(
@@ -386,6 +410,7 @@ async def list_admin_tasks(
         page=page,
         page_size=page_size,
         days=days,  # 周期筛选（0=全部）必须可追踪，便于对账不同口径的查询量
+        include_synthetic=include_synthetic,
         total=int(count_rows[0]["total"]) if count_rows else 0,
         elapsed_ms=round((time.monotonic() - started) * 1000, 1),
         trace_id=get_current_trace_id(),

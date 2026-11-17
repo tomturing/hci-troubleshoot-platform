@@ -44,6 +44,8 @@ export const CONDITION_LABELS = {
   "integrity_mismatch": "完整性不一致",
   "network_degraded": "网络质量不佳",
   "stalled": "传输已停滞",
+  "synthetic_test": "验证 / 压测任务",
+  "task_stalled": "任务长时间无进展",
   "verifying_archive": "正在核验归档件"
 } as const
 
@@ -106,7 +108,8 @@ export const THRESHOLDS = {
   "max_process_log_file_bytes": 2097152,
   "max_process_log_task_bytes": 20971520,
   "min_archive_bytes": 1048576,
-  "stall_seconds": 60
+  "stall_seconds": 60,
+  "task_stall_hours": 24
 } as const
 
 export const PROGRESS_BANDS = {
@@ -992,6 +995,30 @@ export const FAULT_CATALOG = {
     "stage": "S8",
     "title_zh": "任务状态或进度查询失败",
     "tone": "error"
+  },
+  "LC-HTP-004": {
+    "action": "无需处理；运营看板默认隐藏此类任务",
+    "admin_detail": "error_message 命中 pentest-cleanup / test_cleanup / ssrf_test_cleanup / ssrf_probe_cleanup 等验证标记；这是测试清理动作，不是采集失败。需要核对时打开「包含验证/压测」开关，并按 trace_id 串联原始记录。",
+    "check": [],
+    "component": "htp",
+    "evidence": "log_collect_task.error_message、detail.cancel_action、trace_id",
+    "fix": [],
+    "http_status": 200,
+    "kind": "signal",
+    "layer": "ATTRIBUTION",
+    "match_keywords": [
+      "pentest-cleanup",
+      "test_cleanup",
+      "ssrf_test_cleanup",
+      "ssrf_probe_cleanup"
+    ],
+    "owner": "platform",
+    "problem": "该任务由验证或压测清理产生",
+    "retryable": "manual",
+    "scope": "cloud",
+    "stage": "S8",
+    "title_zh": "验证 / 压测清理",
+    "tone": "info"
   },
   "LC-INSTALL-001": {
     "action": "安装包下载请求构造失败，请重试或使用离线安装包。",
@@ -2530,6 +2557,15 @@ export const FAULT_CATALOG = {
 } as const
 
 export const FAULT_MATCHERS = [
+  {
+    "code": "LC-HTP-004",
+    "keywords": [
+      "pentest-cleanup",
+      "test_cleanup",
+      "ssrf_test_cleanup",
+      "ssrf_probe_cleanup"
+    ]
+  },
   {
     "code": "LC-BRIDGE-002",
     "keywords": [

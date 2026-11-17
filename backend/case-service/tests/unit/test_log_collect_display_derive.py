@@ -360,8 +360,7 @@ class TestScopeComponentAttribution:
         assert key_list({"display": display}) == ["verifying_archive"]
         assert display["fault_attribution"]["code"] == "LC-HTP-001"
         assert display["fault_attribution"]["customer_text"] == (
-            "htp平台：归档核验未完成，正在等待日志服务器发布归档名；"
-            "请等待最多10分钟或点「重新核验归档」，不要重新收集"
+            "htp平台：归档核验未完成，正在等待日志服务器发布归档名；请等待最多10分钟或点「重新核验归档」，不要重新收集"
         )
         assert display["trace_id"] == "trace-Q2026111300155"
         assert next(s for s in display["stages"] if s["key"] == "S6")["status"] == "waiting"
@@ -422,8 +421,7 @@ class TestScopeComponentAttribution:
 
         acli = derive(make_task(error_message="未知的命令或者命名空间(log collect create)"), now=NOW)["display"]
         assert acli["fault_attribution"]["customer_text"] == (
-            "acli工具：未知的命令或者命名空间(log collect create)；"
-            "请在HCI后台执行acli --version确认acli版本"
+            "acli工具：未知的命令或者命名空间(log collect create)；请在HCI后台执行acli --version确认acli版本"
         )
 
     def test_specific_error_beats_generic_component_name(self):
@@ -441,3 +439,44 @@ class TestScopeComponentAttribution:
         assert payload.display.fault_attribution is not None
         assert payload.display.stages[5].status == "waiting"
         assert payload.display.trace_id == "trace-Q2026111300155"
+
+
+class TestOperationalSignals:
+    """把「停滞」与「压测清理」还原成可观测事实，而不是失败标签。"""
+
+    def test_stale_unsettled_task_gets_task_stalled_condition(self):
+        task = make_task(
+            status="collecting",
+            progress=10,
+            delivery_status="none",
+            created_at=NOW - timedelta(hours=30),
+        )
+        display = derive(task, now=NOW)["display"]
+        assert display["phase"] != "settled"
+        assert "task_stalled" in key_list({"display": display})
+
+    def test_fresh_unsettled_task_has_no_stalled_condition(self):
+        task = make_task(
+            status="collecting",
+            progress=10,
+            delivery_status="none",
+            created_at=NOW - timedelta(hours=2),
+        )
+        assert "task_stalled" not in key_list(derive(task, now=NOW))
+
+    @pytest.mark.parametrize(
+        "marker",
+        ["pentest-cleanup", "test_cleanup", "ssrf_test_cleanup", "ssrf_probe_cleanup"],
+    )
+    def test_pentest_cleanup_maps_to_info_attribution(self, marker):
+        task = make_task(
+            status="cancelled",
+            error_message=marker,
+            detail={"cancel_action": "cancelled_by_user"},
+            created_at=NOW - timedelta(hours=1),
+        )
+        display = derive(task, now=NOW)["display"]
+        assert display["conclusion"] == "cancelled"
+        assert "synthetic_test" in key_list({"display": display})
+        assert display["fault_attribution"]["code"] == "LC-HTP-004"
+        assert "无需处理" in display["fault_attribution"]["customer_text"]
