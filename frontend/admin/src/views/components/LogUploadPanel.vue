@@ -490,10 +490,12 @@ const summaryCells = computed(() => [
 
     <el-card shadow="never">
       <div class="upload-toolbar">
-        <el-select v-model="filters.days" style="width: 120px">
+        <!-- 周期切换即查询：选择后直接走与「查询」同一函数，避免用户忘记点按钮看到旧数据。 -->
+        <el-select v-model="filters.days" style="width: 120px" @change="search">
           <el-option :value="7" label="近 7 天" />
           <el-option :value="14" label="近 14 天" />
           <el-option :value="30" label="近 30 天" />
+          <el-option :value="0" label="全部" />
         </el-select>
         <el-input v-model="filters.case_id" placeholder="工单号" clearable style="width: 170px" />
         <el-input v-model="filters.node_ip" placeholder="发起节点 IP" clearable style="width: 160px" />
