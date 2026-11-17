@@ -115,7 +115,7 @@ func verifyConfigSHA256(raw, expected string) error {
 // 在单引号内不展开，等价于安全的字面量写入；宿主机没有 base64，不能依赖它。
 //
 // 校验优先 sha256sum；受限 shell 可能没有该命令（stat 就没有），
-// 此时降级为 cat 回读原文逐字节比对——**不做"探测不了就跳过"**，
+// 此时降级为 printf 重传原文 + cmp 逐字节比对——**不做"探测不了就跳过"**，
 // 否则一次写坏的配置会以"任务成功但少收"收场。
 func writeLogCollectConfig(
 	ctx context.Context,
@@ -146,16 +146,11 @@ func writeLogCollectConfig(
 		return path, nil
 	}
 
-	// 降级：改用 cat 回读原文逐字节比对。宿主机没有 base64，不能再用它兜底；
-	// 回读文本可能带末尾换行，剥掉首尾空白后与原文比较。
-	readCmd := fmt.Sprintf(`cat %s`, shellQuote(path))
-	readOut, code, err := s.runQuickCommand(ctx, readCmd)
-	onDisk := strings.TrimSpace(readOut)
-	if err != nil || code != 0 {
-		return "", fmt.Errorf("配置文件回读失败（exit=%d）：%v", code, err)
-	}
-	if onDisk != strings.TrimSpace(raw) {
-		return "", fmt.Errorf("配置文件内容与平台签发内容不一致")
+	// 降级：原文经 printf 再传一遍、用 cmp 逐字节比对。宿主机没有 base64，不能再用它兜底；
+	// cat 回读再剥空白不是字节级自洽——原文带首尾空白时写坏也会被放行。
+	cmpCmd := fmt.Sprintf(`printf '%%s' %s | cmp -s - %s`, shellQuote(raw), shellQuote(path))
+	if _, code, err := s.runQuickCommand(ctx, cmpCmd); err != nil || code != 0 {
+		return "", fmt.Errorf("配置文件回读校验失败（exit=%d）：%v", code, err)
 	}
 	return path, nil
 }

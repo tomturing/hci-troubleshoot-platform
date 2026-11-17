@@ -468,13 +468,14 @@ func buildSpcPrepareCommand(target, backup string) string {
 
 // buildSpcWriteVerifyCommand 写入并回读校验，任一步失败立刻用备份回滚。
 //
-// 校验用 cat 回读后与原文比较：HCI 宿主机是极简系统，可能既没有 base64
-// 也没有 sha256sum（2026-11-17 Q2026110302166 现场 base64 缺失导致写入 exit 127）。
-// cat 是基础命令，必定可用；printf '%s' 写入不带末尾换行，
-// $(cat) 剥掉末尾换行后可直接与原文比较，字节一致才放行。
+// 校验把原文经 printf 再传一遍、用 cmp 与盘上文件逐字节比对：HCI 宿主机是极简
+// 系统，base64 可能缺失（2026-11-17 Q2026110302166 现场 base64 缺失致写入 exit 127），
+// sha256sum 也可能缺失；cmp 已是 prepare 阶段（备份保真校验）的硬依赖，不新增工具假设。
+// 不能用 $(cat) 回读进变量再比较：命令替换会剥掉末尾换行，清单原文若以换行结尾
+// （合法 JSON 空白）会被误判 verify_mismatch，写对了也回滚。
 func buildSpcWriteVerifyCommand(target, backup, content string) string {
 	write := buildSpcWriteCommand(target, content)
-	verify := fmt.Sprintf("__spc_now=$(cat %s 2>/dev/null); [ \"$__spc_now\" = %s ]", shellQuote(target), shellQuote(content))
+	verify := fmt.Sprintf("printf '%%s' %s | cmp -s - %s", shellQuote(content), shellQuote(target))
 	rollback := buildSpcRestoreCommand(backup, target)
 	return fmt.Sprintf("%s || { %s 2>/dev/null; printf 'SPC_WRITE_FAIL reason=write_rejected\\n'; exit 0; }; "+
 		"%s || { %s 2>/dev/null; printf 'SPC_WRITE_FAIL reason=verify_mismatch\\n'; exit 0; }; "+
@@ -1097,7 +1098,9 @@ func (b *Bridge) restoreSpcSlotOnHost(ctx context.Context, s *SSHSession, ip str
 	default:
 		state.RestoreState = "failed"
 		state.RestoreError = firstNonEmpty(spcMarkerField(output, "reason"), spcErrWrite)
-		state.ErrorDetail = spcOutputTail(output, 2, 200)
+		// 合并 stderr：只读挂载、权限不足等真实原因只在 stderr 里，
+		// 只取 stdout 会只剩一个 copy_failed，与 prepare/write 分支同一教训。
+		state.ErrorDetail = spcOutputTail(spcJoinDiag(output, errOut), 2, 200)
 	}
 	return state
 }
