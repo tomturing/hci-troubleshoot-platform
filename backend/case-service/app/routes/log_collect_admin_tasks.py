@@ -189,6 +189,7 @@ _EVIDENCE_DETAIL = """jsonb_strip_nulls(jsonb_build_object(
                'artifact_quality', t.detail -> 'artifact_quality',
                'artifact_reason', t.detail -> 'artifact_reason',
                'p1_archive_check', t.detail -> 'p1_archive_check',
+               'archive_confirmation', t.detail -> 'archive_confirmation',
                'delivery_evidence', t.detail -> 'delivery_evidence',
                'integrity_mismatch', t.detail -> 'integrity_mismatch',
                'bridge_outdated', t.detail -> 'bridge_outdated',

@@ -77,6 +77,7 @@ _CONDITION_ORDER: tuple[str, ...] = (
     "handoff_pending",
     "verifying_archive",
     "delivered_unverified",
+    "archive_unconfirmed",
     "network_degraded",
     "stalled",
     "task_stalled",
@@ -224,12 +225,18 @@ def assess_artifact(
 def delivery_evidence_ok(task: Any) -> bool:
     """交付证据是否达到平台可核验等级。
 
-    P2：平台合并并代传 5888 成功（``relay_status=success``）；
+    P2：relay success **且** 链尾 ``/archive_status`` 确认落盘；
     P1：平台回查过归档件（``p1_archive_check.verified``）。仅 acli 自报不算。
+
+    历史任务没有 ``archive_confirmation`` 快照，保持原有 relay_status 口径，
+    避免 5888 正常清理旧包后把历史已交付工单批量改写成「未核验」。
     """
+    detail = _detail(task)
+    confirmation = detail.get("archive_confirmation")
+    if isinstance(confirmation, Mapping) and "verified" in confirmation:
+        return confirmation.get("verified") is True
     if str(_get(task, "relay_status") or "") == "success":
         return True
-    detail = _detail(task)
     check = detail.get("p1_archive_check")
     if isinstance(check, Mapping) and check.get("verified") is True:
         return True
@@ -787,6 +794,10 @@ def _build_conditions(
         present.add("task_stalled")
     if is_synthetic_task(task):
         present.add("synthetic_test")
+    confirmation = detail.get("archive_confirmation")
+    if isinstance(confirmation, Mapping) and confirmation.get("verified") is False:
+        # relay success 不等于落盘；未确认的 P2 必须显式可见，但结论仍是「待补交付」。
+        present.add("archive_unconfirmed")
     if detail.get("bridge_outdated"):
         present.add("bridge_outdated")
 

@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from app.domain.log_collect_display import (
     assess_artifact,
+    delivery_evidence_ok,
     derive,
     derive_phase,
     snapshot_artifact_evidence,
@@ -480,3 +481,29 @@ class TestOperationalSignals:
         assert "synthetic_test" in key_list({"display": display})
         assert display["fault_attribution"]["code"] == "LC-HTP-004"
         assert "无需处理" in display["fault_attribution"]["customer_text"]
+
+
+class TestArchiveTailDisplay:
+    """链尾确认只约束新任务；历史任务不因旧包被清理而批量翻转。"""
+
+    def test_unconfirmed_tail_is_visible_and_not_evidence(self):
+        task = make_task(
+            status="completed",
+            delivery_status="queued",
+            relay_status="success",
+            detail={
+                "archive_confirmation": {
+                    "verified": False,
+                    "reason": "archive_missing",
+                }
+            },
+        )
+        payload = derive(task, now=NOW)
+        assert "archive_unconfirmed" in key_list(payload)
+        assert delivery_evidence_ok(task) is False
+        assert payload["display"]["conclusion"] != "success"
+
+    def test_history_without_snapshot_keeps_relay_evidence(self):
+        task = make_task(delivery_status="delivered", relay_status="success")
+        assert delivery_evidence_ok(task) is True
+        assert "archive_unconfirmed" not in key_list(derive(task, now=NOW))

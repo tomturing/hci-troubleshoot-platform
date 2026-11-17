@@ -215,8 +215,8 @@ async def test_run_marks_failed_when_archive_missing(storage):
         make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
     )
     service._finish = AsyncMock(
-        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
-            status=status, error=error, error_code=error_code
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, error=error, error_code=error_code)
         )
     )
 
@@ -288,7 +288,9 @@ async def test_run_uses_ticket_number_as_archive_filename(storage, monkeypatch):
     )
     finished = {}
     service._finish = AsyncMock(
-        side_effect=lambda task_id, status, error=None: finished.update(status=status, error=error)
+        side_effect=lambda task_id, status, error=None, archive_confirmation=None: finished.update(
+            status=status, error=error
+        )
     )
 
     await service.run(task.task_id)
@@ -440,7 +442,9 @@ async def test_run_reinitializes_session_when_server_reported_failed(storage, mo
     )
     finished = {}
     service._finish = AsyncMock(
-        side_effect=lambda task_id, status, error=None: finished.update(status=status, error=error)
+        side_effect=lambda task_id, status, error=None, archive_confirmation=None: finished.update(
+            status=status, error=error
+        )
     )
 
     await service.run(task.task_id)
@@ -640,8 +644,8 @@ async def test_run_retries_transient_then_succeeds(storage):
     )
     service._run = flaky_run  # type: ignore[method-assign]
     service._finish = AsyncMock(
-        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
-            status=status, error=error, error_code=error_code
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, error=error, error_code=error_code)
         )
     )
     await service.run(task.task_id)
@@ -694,8 +698,8 @@ async def test_run_transient_exhausted_marks_failed(storage):
     )
     service._run = AsyncMock(side_effect=SangforRelayError("5888 无响应", "LC-TRANSFER-003"))
     service._finish = AsyncMock(
-        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
-            status=status, error=error, error_code=error_code
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, error=error, error_code=error_code)
         )
     )
     with pytest.raises(SangforRelayError):
@@ -717,8 +721,8 @@ async def test_run_permanent_error_not_retried(storage):
     )
     service._run = AsyncMock(side_effect=SangforRelayError("平台尚无制品，无法代传", "LC-TRANSFER-001"))
     service._finish = AsyncMock(
-        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003": finished.update(
-            status=status, error=error, error_code=error_code
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, error=error, error_code=error_code)
         )
     )
     with pytest.raises(SangforRelayError):
@@ -1212,3 +1216,141 @@ async def test_relay_gate_releases_slot_on_failure(monkeypatch):
         ),
         timeout=1.0,
     )
+
+
+# ── P2 链尾归档确认（5888 /archive_status）──────────────────────────────────
+
+
+def _run_handler(archive_payload: dict, captured: dict):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/init_upload":
+            return httpx.Response(200, json={"upload_id": "u-1", "chunk_size": CHUNK})
+        if request.url.path == "/upload_chunk":
+            return httpx.Response(200, json={"status": "complete"})
+        if request.url.path.startswith("/upload_status/"):
+            return httpx.Response(404, json={"error": "Invalid or expired upload ID"})
+        if request.url.path == "/archive_status":
+            captured["archive_query"] = dict(request.url.params)
+            return httpx.Response(200, json=archive_payload)
+        return httpx.Response(500)
+
+    return handler
+
+
+async def test_run_confirms_archive_before_success(storage, monkeypatch):
+    case_id = "Q2026111700001"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    task.object_size = 8
+    task.created_at = datetime.now(UTC) - timedelta(minutes=2)
+    captured: dict = {}
+
+    _patch_http_transport(
+        monkeypatch,
+        _run_handler(
+            {
+                "found": True,
+                "size": 8,
+                "mtime": datetime.now(UTC).timestamp(),
+                "stored_name": f"{case_id}.zip",
+            },
+            captured,
+        ),
+    )
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    finished: dict = {}
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, confirmation=archive_confirmation)
+        )
+    )
+
+    await service.run(task.task_id)
+
+    assert finished["status"] == "success"
+    assert captured["archive_query"]["filename"] == f"{case_id}.zip"
+    assert finished["confirmation"]["verified"] is True
+    assert finished["confirmation"]["source"] == "archive_status"
+    assert finished["confirmation"]["attempts"] == 1
+
+
+async def test_run_keeps_unconfirmed_delivery_queued(storage, monkeypatch):
+    from app.services import log_collect_relay_service as module
+
+    monkeypatch.setattr(module, "ARCHIVE_CONFIRM_DELAYS", (0.0, 0.0, 0.0))
+    case_id = "Q2026111700002"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    task.object_size = 8
+    task.created_at = datetime.now(UTC) - timedelta(minutes=2)
+    captured: dict = {}
+
+    _patch_http_transport(
+        monkeypatch,
+        _run_handler({"found": False, "size": 0, "mtime": None}, captured),
+    )
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    finished: dict = {}
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, confirmation=archive_confirmation)
+        )
+    )
+
+    await service.run(task.task_id)
+
+    assert finished["status"] == "success"  # relay 本身成功
+    assert finished["confirmation"]["verified"] is False
+    assert finished["confirmation"]["reason"] == "archive_missing"
+    assert finished["confirmation"]["attempts"] == 3
+
+
+async def test_finish_unconfirmed_marks_queued_and_merges_detail(monkeypatch):
+    from app.services import log_collect_relay_service as module
+
+    captured: dict = {}
+
+    class _Statement:
+        def where(self, *args, **kwargs):
+            return self
+
+        def values(self, **kwargs):
+            captured.update(kwargs)
+            return self
+
+    monkeypatch.setattr(module, "update", lambda model: _Statement())
+
+    class _Session:
+        def __init__(self):
+            self.calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, statement):
+            self.calls += 1
+            return _FakeResult(scalar="trace-x" if self.calls == 1 else {"baseline_report_hash": "abc"})
+
+        async def commit(self):
+            return None
+
+    service = LogCollectRelayService(lambda: _Session(), None, SangforRelayClient("http://relay"))
+    confirmation = {
+        "verified": False,
+        "reason": "archive_missing",
+        "checked_at": "2026-11-17T03:00:00+00:00",
+    }
+
+    await service._finish(uuid4(), "success", archive_confirmation=confirmation)
+
+    assert captured["delivery_status"] == "queued"
+    assert captured["relay_status"] == "success"
+    assert captured["delivery_finished_at"] is None
+    assert "archive_missing" in captured["delivery_error"]
+    assert captured["detail"]["baseline_report_hash"] == "abc"
+    assert captured["detail"]["archive_confirmation"] == confirmation
