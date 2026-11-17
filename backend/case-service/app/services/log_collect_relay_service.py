@@ -29,6 +29,7 @@ import httpx
 from sqlalchemy import and_, func, or_, select, update
 
 from ..config import settings
+from ..domain.log_collect_archive import judge_archive
 from ..models.log_collect import LogCollectTask
 from .log_collect_storage import LocalLogCollectStorage
 
@@ -40,6 +41,10 @@ RELAY_STATUS_VALUES = ("none", "pending", "running", "success", "failed")
 # Invalid filename），不是平台的命名偏好；缺了它代传在 init_upload 就失败。
 # 注意与归档目录一致：`/sf/log/<工单号>/<工单号>.zip`。
 SANGFOR_ARCHIVE_NAME_RE = re.compile(r"Q\d{13}")
+
+# 链尾归档确认：只在 relay success 前做一次有界探测，确认成功永不重复探测。
+# archive_missing 可能是 5888 异步合片的短暂竞态，给 3 次退避；其余否定是确定性结论。
+ARCHIVE_CONFIRM_DELAYS = (0.0, 2.0, 6.0)
 
 
 class SangforRelayError(Exception):
@@ -141,9 +146,7 @@ class SangforRelayClient:
         response.raise_for_status()
         return response.json()
 
-    async def upload_progress(
-        self, client: httpx.AsyncClient, filename: str
-    ) -> tuple[str, dict[str, Any] | None]:
+    async def upload_progress(self, client: httpx.AsyncClient, filename: str) -> tuple[str, dict[str, Any] | None]:
         """按产物名查 P1 直传的真实进度（5888 新增的只读端点）。
 
         返回 ``(state, data)``：``unsupported`` 表示旧版 5888 还没部署这个端点。
@@ -552,7 +555,9 @@ class LogCollectRelayService:
                     break
 
             await self._await_archive(client, upload_id, expected_digest)
-            await self._finish(task_id, "success")
+            # 链尾判据必须是 5888 的落盘事实，不能只信 relay success / 会话 done。
+            confirmation = await self._confirm_archive(task, client, archive_name)
+            await self._finish(task_id, "success", archive_confirmation=confirmation)
 
     @staticmethod
     def archive_filename(case_id: str | None) -> str:
@@ -638,6 +643,69 @@ class LogCollectRelayService:
             )
         logger.info("链尾摘要校验通过：%s", server_digest)
 
+    async def _confirm_archive(
+        self,
+        task: LogCollectTask,
+        client: httpx.AsyncClient,
+        archive_name: str,
+    ) -> dict[str, Any]:
+        """用 5888 的权威 /archive_status 做链尾确认，返回可落库的快照。
+
+        探测策略（第一性原理：清理是正常设计，不能让历史清理反转已确认结论）：
+        - 只在本次 relay 成功写终态前探测，单任务、有界 3 次；
+        - 已确认成功的任务不会进入这里——relay success + delivered 已被 reconcile 排除；
+        - 只有 archive_missing 才重试（异步合片竞态）；size_mismatch / stale_archive
+          是确定性否定，重试不会改变结论；
+        - 探测异常只记快照，不抛错打断 relay 终态，由快照的 verified=false 如实呈现。
+        """
+        expected_size = getattr(task, "object_size", None) or getattr(task, "archive_size", None)
+        snapshot: dict[str, Any] = {
+            "verified": False,
+            "reason": "probe_error",
+            "filename": archive_name,
+            "expected_size": expected_size,
+            "checked_at": datetime.now(UTC).isoformat(),
+            "source": "archive_status",
+            "attempts": 0,
+        }
+        for attempt, delay in enumerate(ARCHIVE_CONFIRM_DELAYS, start=1):
+            if delay:
+                await asyncio.sleep(delay)
+            snapshot["attempts"] = attempt
+            try:
+                archive = await self.client.archive_status(client, archive_name)
+            except Exception as exc:  # noqa: BLE001 - 探测不可靠不能改写 relay 结果
+                snapshot["reason"] = "probe_error"
+                snapshot["error"] = str(exc)[:300]
+                # 探测异常不是"包不存在"的结论；重试同一故障端点无意义，
+                # 外层 relay 重试或用户补交付会重新核验。
+                break
+
+            verified, reason, archived_size, archived_at = judge_archive(task, archive, expected_size)
+            snapshot.update(
+                {
+                    "verified": verified,
+                    "reason": reason,
+                    "stored_name": archive.get("stored_name"),
+                    "target_path": archive.get("target_path"),
+                    "archived_size": archived_size,
+                    "archived_at": archived_at.isoformat() if archived_at else None,
+                    "checked_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            if verified or reason != "archive_missing":
+                break
+
+        logger.info(
+            "archive_tail_confirm task_id=%s filename=%s verified=%s reason=%s attempts=%s",
+            task.task_id,
+            archive_name,
+            snapshot["verified"],
+            snapshot["reason"],
+            snapshot["attempts"],
+        )
+        return snapshot
+
     # ── 持久化 ──────────────────────────────────────────────────────────────
 
     async def _load(self, task_id: UUID) -> LogCollectTask | None:
@@ -675,15 +743,22 @@ class LogCollectRelayService:
         *,
         error: str | None = None,
         error_code: str = "LC-TRANSFER-003",
+        archive_confirmation: dict[str, Any] | None = None,
     ) -> None:
         payload: dict[str, Any] = {"relay_status": status, "relay_updated_at": func.now()}
-        # 交付状态必须随代传终态一起收敛：它是"产物是否真到了日志服务器"的唯一权威字段。
-        # 只写 relay_status 的话，delivery_status 会永远停在 begin_delivery 写的 queued，
-        # 前端据此判断"是否已交付"时永远拿不到 delivered——补交付入口会一直亮着。
-        payload["delivery_finished_at"] = func.now()
+        # delivery_status 是"链尾核验后的交付结论"，不再等同于 relay 回执：
+        # relay success 只证明平台把字节发完，5888 /archive_status 才是落盘事实。
+        # 未确认时保持 queued（待补交付），由既有补交付入口处理，不伪造 delivered。
         if status == "success":
-            payload["delivery_status"] = "delivered"
-            payload["delivery_error"] = None
+            chain_verified = archive_confirmation is None or bool(archive_confirmation.get("verified"))
+            payload["delivery_finished_at"] = func.now() if chain_verified else None
+            if chain_verified:
+                payload["delivery_status"] = "delivered"
+                payload["delivery_error"] = None
+            else:
+                reason = str(archive_confirmation.get("reason") or "unknown")
+                payload["delivery_status"] = "queued"
+                payload["delivery_error"] = f"链尾归档核验未通过（{reason}）"[:2000]
             # 成功即清掉"最近一次失败"：留着只会让已交付的任务在界面上挂着一条历史错误，
             # 现场第一反应是"是不是又坏了"。失败任务则保留，供重试前判断。
             payload["relay_last_error"] = None
@@ -698,6 +773,7 @@ class LogCollectRelayService:
             payload["error_code"] = None
             payload["error_message"] = None
         else:
+            payload["delivery_finished_at"] = func.now()
             payload["delivery_status"] = "failed"
             payload["delivery_error"] = (error or "归档到日志服务器失败")[:2000]
         if error:
@@ -714,13 +790,22 @@ class LogCollectRelayService:
             stmt = stmt.where(LogCollectTask.delivery_status != "delivered")
         async with self.session_factory() as session:
             trace_id = (
-                await session.execute(
-                    select(LogCollectTask.trace_id).where(LogCollectTask.task_id == task_id)
-                )
+                await session.execute(select(LogCollectTask.trace_id).where(LogCollectTask.task_id == task_id))
             ).scalar_one_or_none()
+            if archive_confirmation is not None:
+                # detail 是证据容器，不能整块覆盖（会冲掉 baseline_report_hash 等）。
+                current_detail = (
+                    await session.execute(select(LogCollectTask.detail).where(LogCollectTask.task_id == task_id))
+                ).scalar_one_or_none()
+                merged_detail = dict(current_detail or {})
+                merged_detail["archive_confirmation"] = archive_confirmation
+                payload["detail"] = merged_detail
             logger.info(
-                "task.terminal_converged task_id=%s trace_id=%s status=%s",
-                task_id, trace_id, status,
+                "task.terminal_converged task_id=%s trace_id=%s status=%s chain_verified=%s",
+                task_id,
+                trace_id,
+                status,
+                archive_confirmation is None or bool(archive_confirmation.get("verified")),
             )
             await session.execute(stmt.values(**payload))
             await session.commit()

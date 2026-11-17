@@ -34,6 +34,7 @@ export const PHASE_LABELS = {
 } as const
 
 export const CONDITION_LABELS = {
+  "archive_unconfirmed": "归档链尾未确认",
   "artifact_missing": "未取到有效日志",
   "artifact_suspect": "产物可疑",
   "artifact_uninspected": "包内容未探测",

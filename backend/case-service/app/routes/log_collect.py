@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from uuid import UUID
 
 import httpx
@@ -18,6 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from ..config import settings
+from ..domain.log_collect_archive import judge_archive
 from ..repositories.log_collect_repo import LogCollectTaskRepository
 from ..schemas.log_collect import (
     DeliverRequest,
@@ -525,52 +526,17 @@ def _attach_p1_ticket(response: LogCollectTaskResponse, tickets: P1TicketService
         response.p1_ticket_expires_at = None
 
 
-# 归档件的 mtime 允许比任务创建时间早多久：5888 与平台未必严格对时，
-# 而"包在任务创建之前就存在"才是要拦的错配（历史同名包被当成本次结果）。
-P1_ARCHIVE_LOOKBACK_SECONDS = 300
-
-
 def _judge_p1_archive(
     task,
     archive: dict,
     expected_size: int | None,
 ) -> tuple[bool, str, int | None, datetime | None]:
-    """判定 P1 归档是否可信，返回 (是否通过, 原因, 实际大小, 归档时间)。
+    """P1 归档判据；与 P2 共用 domain 层，禁止两套口径漂移。
 
-    判据刻意只用 O(1) 可得的落盘事实：P1 链路上平台没有源包副本，重算 sha256
-    既拿不到源端基准、又会让 5888 在读大包时卡住别的上传。因此用
-    「存在 + 体积不小于记录值 + 不是历史遗留」三条，足以拦住截断上传与错包；
-    更弱的完整性只能靠 P2（或重新采集）。
-
-    为什么不是「大小必须相等」：expected_size 是**平台侧观测到的峰值**（P1 成功后
-    插件会自删压缩包，落盘后就没有可信的源包体积了），它可能停在 zip 收尾前一刻。
-    用这个估计值去要求字节级相等，会把一份完整归档判成 size_mismatch——2026-11-10
-    Q2026111000243 现场就是这样把已上传成功的包记成了「交付失败」。
-    截断只会让体积**变小**，因此只拦"比记录值小"，并在核验快照里同时留下两个数，
-    让人工可以直接对照。
+    判据细节与"为什么体积不要求相等"的理由见
+    :func:`app.domain.log_collect_archive.judge_archive`。
     """
-    if not archive.get("found"):
-        return False, "archive_missing", None, None
-
-    archived_size = archive.get("size")
-    if not isinstance(archived_size, int) or archived_size <= 0:
-        return False, "archive_size_invalid", None, None
-    if expected_size is not None and archived_size < expected_size:
-        return False, "size_mismatch", archived_size, None
-
-    mtime = archive.get("mtime")
-    archived_at: datetime | None = None
-    if isinstance(mtime, (int, float)):
-        archived_at = datetime.fromtimestamp(int(mtime), tz=UTC)
-
-    created_at = task.created_at
-    if created_at is not None:
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=UTC)
-        if archived_at is not None and archived_at < created_at - timedelta(seconds=P1_ARCHIVE_LOOKBACK_SECONDS):
-            return False, "stale_archive", archived_size, archived_at
-
-    return True, "verified", archived_size, archived_at
+    return judge_archive(task, archive, expected_size)
 
 
 def _p1_verify_patch(

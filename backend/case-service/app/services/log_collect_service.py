@@ -63,6 +63,7 @@ _PUBLIC_DETAIL_RESERVED_KEYS = frozenset(
         "delivery_evidence",
         "delivery_evidence_note",
         "p1_archive_check",
+        "archive_confirmation",
         "error_code_derivation",
         "baseline_report_hash",
         "write_audit",
