@@ -70,7 +70,7 @@ type logUploader struct {
 	caseID   string
 	instance string
 	// source 记录令牌来源（env / ws），排障时先看它判断"直传到底有没有被启用"。
-	source string
+	source   string
 	queue    []logEntry
 	outbox   *os.File
 	outboxAt string
