@@ -56,6 +56,22 @@ spec:
               value: {{ .Values.terminalBridge.logFileMaxBytes | quote }}
             - name: HCI_BRIDGE_LOG_LEVEL
               value: {{ .Values.terminalBridge.logLevel | default "INFO" | quote }}
+            # 云端桥的自建直传通道：不依赖任何浏览器在线，进程启动即开始上报。
+            # 令牌是集群内部令牌（Internal API Token），只在 Secret 里、不出集群；
+            # 服务端据此按条目自带 case_id 归档，并对无工单的生命周期日志用实例哨兵号。
+            {{- if .Values.terminalBridge.logUpload.enabled }}
+            - name: HCI_BRIDGE_LOG_UPLOAD_ENDPOINT
+              value: {{ default (printf "http://api-gateway:%s/api/bridge-logs/direct" (.Values.apiGateway.port | toString)) .Values.terminalBridge.logUpload.endpoint | quote }}
+            - name: HCI_BRIDGE_LOG_UPLOAD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hci-secrets
+                  key: INTERNAL_API_TOKEN
+            - name: HCI_BRIDGE_LOG_SEED_FILES
+              value: {{ .Values.terminalBridge.logUpload.seedMaxFiles | quote }}
+            - name: HCI_BRIDGE_LOG_SEED_ENTRIES
+              value: {{ .Values.terminalBridge.logUpload.seedMaxEntries | quote }}
+            {{- end }}
             - name: HCI_BRIDGE_EXEC_TIMEOUT_SECONDS
               value: {{ .Values.terminalBridge.execTimeoutSeconds | quote }}
             - name: HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES

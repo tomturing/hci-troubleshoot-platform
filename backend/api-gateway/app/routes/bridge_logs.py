@@ -189,6 +189,10 @@ async def proxy_bridge_logs_direct(request: Request):
     headers: dict[str, str] = {}
     if token := request.headers.get("X-Bridge-Upload-Token"):
         headers["X-Bridge-Upload-Token"] = token
+    # 实例号必须透传：云端桥用部署期令牌直传时，conversation-service 靠它
+    # 把批次绑定到具体实例，并给没有工单上下文的生命周期日志分配实例哨兵号。
+    if instance := request.headers.get("X-Bridge-Instance-Id"):
+        headers["X-Bridge-Instance-Id"] = instance
     if traceparent := request.headers.get("traceparent"):
         headers["traceparent"] = traceparent
 

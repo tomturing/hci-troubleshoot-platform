@@ -61,8 +61,28 @@ tests:
       - equal:
           path: spec.ingress[2].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
           value: case-service
-      # hciSshCidrs 默认空：egress 仍只有 DNS / hci-sim / Tempo 三条，
+      # hciSshCidrs 默认空：egress 只有 DNS / hci-sim / Tempo / api-gateway 四条，
       # 真实 HCI 出站必须由环境专属 override 显式登记。
+      - lengthEqual:
+          path: spec.egress
+          count: 4
+
+  - it: "日志直传放行到 api-gateway（缺这条时直传被 netpol 静默丢弃）"
+    set:
+      terminalBridge.enabled: true
+    asserts:
+      - equal:
+          path: spec.egress[3].to[0].podSelector.matchLabels["app.kubernetes.io/name"]
+          value: api-gateway
+      - equal:
+          path: spec.egress[3].ports[0].port
+          value: 8000
+
+  - it: "关闭日志直传时不渲染 api-gateway 出站"
+    set:
+      terminalBridge.enabled: true
+      terminalBridge.logUpload.enabled: false
+    asserts:
       - lengthEqual:
           path: spec.egress
           count: 3

@@ -554,6 +554,16 @@ terminalBridge:
   logFileMaxBytes: "67108864"
   # 日志级别阈值：DEBUG/INFO/WARN/ERROR。桌面排障需要细节时可临时调为 DEBUG。
   logLevel: "INFO"
+  # 日志直传（不依赖浏览器）：云端桥没有浏览器给它下发 bridge_log_token，
+  # 只能靠部署期注入端点与令牌。默认走集群内网关，令牌复用 INTERNAL_API_TOKEN，
+  # 只有部署期注入生效时 /status 的 log_upload.source 才是 env。
+  logUpload:
+    enabled: true
+    # 留空时自动拼 http://api-gateway:<apiGateway.port>/api/bridge-logs/direct
+    endpoint: ""
+    # 进程崩溃/Pod 重建后，从最近 N 个日志文件回灌水位之后的条目。
+    seedMaxFiles: 2
+    seedMaxEntries: 5000
   execTimeoutSeconds: 120
   execMaxOutputBytes: 4194304
   artifactRetentionDays: 30

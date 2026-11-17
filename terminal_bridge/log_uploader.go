@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,6 +46,14 @@ const (
 	defaultLogOutboxMaxBytes = 8 << 20
 	// 单次 POST 超时：平台内网 30 秒足够；超时即整批重试，不拆批。
 	logUploadTimeout = 30 * time.Second
+
+	// 自举配置：云端（cluster）桥没有浏览器下发令牌，只能靠部署期注入。
+	envLogUploadEndpoint = "HCI_BRIDGE_LOG_UPLOAD_ENDPOINT"
+	envLogUploadToken    = "HCI_BRIDGE_LOG_UPLOAD_TOKEN"
+	// 崩溃补传：启动时把本地日志文件里"水位之后"的条目回灌队列。
+	// 只扫最近几个文件即可覆盖进程被杀/Pod 重建的窗口，扫全量会拖慢启动。
+	defaultSeedMaxFiles   = 2
+	defaultSeedMaxEntries = 5000
 )
 
 // logUploader 是进程级单例：**串行**发送，全局并发恒为 1。
@@ -59,6 +69,8 @@ type logUploader struct {
 	endpoint string
 	caseID   string
 	instance string
+	// source 记录令牌来源（env / ws），排障时先看它判断"直传到底有没有被启用"。
+	source string
 	queue    []logEntry
 	outbox   *os.File
 	outboxAt string
@@ -91,6 +103,11 @@ func newLogUploader() *logUploader {
 // 幂等：同一 token 重复下发不会重启 worker；token 变化时重置退避计数，
 // 让上一次失败（例如旧令牌过期）不拖累新令牌。
 func (u *logUploader) configure(token, endpoint, caseID, instance string) {
+	u.configureWithSource(token, endpoint, caseID, instance, "ws")
+}
+
+// configureWithSource 与 configure 同一语义，但显式记录凭据来源。
+func (u *logUploader) configureWithSource(token, endpoint, caseID, instance, source string) {
 	if strings.TrimSpace(token) == "" || strings.TrimSpace(endpoint) == "" {
 		return
 	}
@@ -100,6 +117,7 @@ func (u *logUploader) configure(token, endpoint, caseID, instance string) {
 	u.endpoint = strings.TrimSpace(endpoint)
 	u.caseID = strings.TrimSpace(caseID)
 	u.instance = strings.TrimSpace(instance)
+	u.source = strings.TrimSpace(source)
 	if changed {
 		u.attempt = 0
 	}
@@ -110,12 +128,128 @@ func (u *logUploader) configure(token, endpoint, caseID, instance string) {
 	u.recoverOutbox()
 
 	blog("INFO", "log_upload.configured", "桥日志直传已启用", "", caseID, "", "", map[string]any{
-		"endpoint": endpoint, "instance": instance, "token_changed": changed,
+		"endpoint": endpoint, "instance": instance, "token_changed": changed, "source": source,
 	})
 	if needStart {
 		go u.run()
 	}
 	u.notify()
+}
+
+// bootstrapFromEnv 用部署期注入的 endpoint + 令牌自建直传通道。
+//
+// 为什么必须有这条路：现有唯一入口是浏览器经 WS 下发 `bridge_log_token`，
+// 而生产环境的桥部署在云端，没有浏览器给它发令牌 —— `/status` 长期显示
+// `log_upload.enabled=false`，服务端直连桥发起的插件下发日志一条也进不了库。
+// 部署期注入把"是否上传"从依赖页面在线，改成依赖部署配置。
+func (u *logUploader) bootstrapFromEnv() bool {
+	endpoint := strings.TrimSpace(os.Getenv(envLogUploadEndpoint))
+	token := strings.TrimSpace(os.Getenv(envLogUploadToken))
+	if endpoint == "" || token == "" {
+		return false
+	}
+	u.configureWithSource(token, endpoint, "", logHub.instanceID, "env")
+	return u.enabled()
+}
+
+// seedFromLocalLogs 把本地日志文件里尚未确认上传的条目回灌队列。
+//
+// 覆盖的场景：进程被 kill / OOM / Pod 重建时，最后一段日志只落到了本地文件，
+// 既不在 outbox 里（outbox 只在启用直传后按条追加），也没进过数据库。
+// 水位（watermark）按实例持久化，重启后只补"水位之后"的条目；
+// 后端按 event_id 幂等，重复补传不会产生重复行。
+func (u *logUploader) seedFromLocalLogs(maxFiles, maxEntries int) int {
+	if !u.enabled() {
+		return 0
+	}
+	dir := strings.TrimSpace(logHub.logDir)
+	if dir == "" {
+		return 0
+	}
+	if maxFiles <= 0 {
+		maxFiles = defaultSeedMaxFiles
+	}
+	if maxEntries <= 0 {
+		maxEntries = defaultSeedMaxEntries
+	}
+	files := recentBridgeLogFiles(dir, strings.TrimSpace(logHub.logPath), maxFiles)
+	if len(files) == 0 {
+		return 0
+	}
+	watermark := u.loadWatermark()
+	candidates := make([]logEntry, 0, 256)
+	for _, path := range files {
+		candidates = append(candidates, readLogFileEntries(path, watermark)...)
+	}
+	if len(candidates) == 0 {
+		return 0
+	}
+	// 只补最近的 maxEntries 条：更旧的窗口价值低，且会挤占 outbox 与发送带宽。
+	if len(candidates) > maxEntries {
+		candidates = candidates[len(candidates)-maxEntries:]
+	}
+
+	u.mu.Lock()
+	if len(u.queue)+len(candidates) > 5000 {
+		drop := len(u.queue) + len(candidates) - 5000
+		if drop > len(candidates) {
+			drop = len(candidates)
+		}
+		candidates = candidates[drop:]
+		atomic.AddUint64(&u.dropped, uint64(drop))
+	}
+	u.queue = append(candidates, u.queue...)
+	u.mu.Unlock()
+
+	blog("INFO", "log_upload.seeded", "已从本地日志文件补传未上传区间", "", "", "", "", map[string]any{
+		"files": len(files), "seeded": len(candidates), "watermark": watermark,
+	})
+	u.notify()
+	return len(candidates)
+}
+
+// watermarkPath 记录"该实例已成功上传到哪个 seq"，用于重启后精确补传。
+func (u *logUploader) watermarkPath() string {
+	dir := strings.TrimSpace(logHub.logDir)
+	u.mu.Lock()
+	instance := u.instance
+	u.mu.Unlock()
+	if dir == "" || instance == "" {
+		return ""
+	}
+	return filepath.Join(dir, "bridge-log-uploaded-"+instance+".seq")
+}
+
+func (u *logUploader) loadWatermark() uint64 {
+	path := u.watermarkPath()
+	if path == "" {
+		return 0
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	value, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return value
+}
+
+func (u *logUploader) saveWatermark(seq uint64) {
+	path := u.watermarkPath()
+	if path == "" || seq == 0 {
+		return
+	}
+	if current := u.loadWatermark(); seq <= current {
+		return
+	}
+	// 先写临时文件再 rename：进程在写一半时被杀，水位不会变成半截数字。
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(seq, 10)), 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 // enabled 返回当前是否具备直传条件（有令牌且已配置）。
@@ -257,11 +391,85 @@ func (u *logUploader) flushOnce() (int, error) {
 	}
 
 	// 成功才推进队列：失败时整批保留，靠 event_id 幂等抵消重复发送。
+	maxSeq := uint64(0)
+	for _, entry := range batch {
+		if entry.Seq > maxSeq {
+			maxSeq = entry.Seq
+		}
+	}
 	u.mu.Lock()
 	u.queue = u.queue[size:]
 	u.attempt = 0
 	u.mu.Unlock()
+	// 水位只在批次确认成功后才推进：崩溃补传的边界就靠它，提前推进等于自认没发出去。
+	if maxSeq > 0 {
+		u.saveWatermark(maxSeq)
+	}
 	return size, nil
+}
+
+// recentBridgeLogFiles 返回目录内最近修改的 N 个 bridge-*.log（排除正在写的那个）。
+func recentBridgeLogFiles(dir, exclude string, limit int) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	type candidate struct {
+		path string
+		mod  time.Time
+	}
+	items := make([]candidate, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "bridge-") || !strings.HasSuffix(name, ".log") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		if path == exclude {
+			continue
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			continue
+		}
+		items = append(items, candidate{path: path, mod: info.ModTime()})
+	}
+	// 旧→新：调用方按文件顺序追加，水位过滤后仍保持 seq 递增语义。
+	sort.Slice(items, func(i, j int) bool { return items[i].mod.Before(items[j].mod) })
+	if limit > 0 && len(items) > limit {
+		items = items[len(items)-limit:]
+	}
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		paths = append(paths, item.path)
+	}
+	return paths
+}
+
+// readLogFileEntries 读取单个日志文件中 seq 大于水位的条目。
+func readLogFileEntries(path string, watermark uint64) []logEntry {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	entries := make([]logEntry, 0, 128)
+	for scanner.Scan() {
+		var entry logEntry
+		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			continue
+		}
+		if entry.Seq <= watermark || entry.EventID == "" {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 // sendBatch 发送一批日志；平台使用自签证书时自动放宽一次并记住该 endpoint。
@@ -274,6 +482,9 @@ func (u *logUploader) flushOnce() (int, error) {
 // 安全边界：这条通道只写绑定工单的日志、只携带只写令牌，放宽 TLS 不等于放宽鉴权；
 // 放宽范围被限定在**该 endpoint**，不影响交付通道，也不影响其它域名。
 func (u *logUploader) sendBatch(payload []byte, endpoint, token string) (*http.Response, error) {
+	u.mu.Lock()
+	instance := u.instance
+	u.mu.Unlock()
 	build := func() (*http.Request, error) {
 		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
 		if err != nil {
@@ -282,6 +493,11 @@ func (u *logUploader) sendBatch(payload []byte, endpoint, token string) (*http.R
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Content-Encoding", "gzip")
 		request.Header.Set("X-Bridge-Upload-Token", token)
+		// 实例号必须走请求头：条目里的实例号可能为空（历史事件），
+		// 服务端要靠它把"云端桥的内部令牌"绑定到具体实例，防止令牌被复制滥用。
+		if instance != "" {
+			request.Header.Set("X-Bridge-Instance-Id", instance)
+		}
 		return request, nil
 	}
 
@@ -439,5 +655,7 @@ func logUploadStats() map[string]any {
 		"dropped":  atomic.LoadUint64(&u.dropped),
 		"instance": u.instance,
 		"outbox":   u.outboxAt,
+		// source 让排障第一眼就能区分"部署期注入生效"与"只有浏览器下发"。
+		"source": u.source,
 	}
 }
