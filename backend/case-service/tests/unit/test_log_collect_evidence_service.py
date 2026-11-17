@@ -213,6 +213,26 @@ class TestEvidenceRoutes:
         assert any("CAST(:entries AS jsonb)" in sql for sql, _ in session.calls)
         assert all(":entries::jsonb" not in sql and ":evidence::jsonb" not in sql for sql, _ in session.calls)
 
+    def test_artifact_manifest_task_update_casts_reason_to_text(self, client):
+        """jsonb_build_object 是多态 any：reason 只出现在其中时 asyncpg 无法推断参数类型。
+
+        必须显式 CAST(:reason AS text)，否则 IndeterminateDatatypeError → 500
+        （Q2026111700614 现场）。quality 同理一并 cast。
+        """
+        test_client, session = client
+        response = test_client.post(
+            f"/api/direct/log-collect/tasks/{TASK_ID}/artifact-manifest",
+            json={"source": "node_zip", "archive_size": 608, "entry_count": 2, "entry_total_bytes": 1024},
+            headers={"X-Evidence-Ticket": routes.tickets.issue(TASK_ID)},
+        )
+        assert response.status_code == 200
+        task_updates = [
+            sql for sql, _ in session.calls if "UPDATE log_collect_task" in sql and "artifact_quality" in sql
+        ]
+        assert task_updates
+        assert any("CAST(:reason AS text)" in sql for sql in task_updates)
+        assert any("CAST(:quality AS text)" in sql for sql in task_updates)
+
     def test_process_log_rejects_path_outside_whitelist(self, client):
         test_client, _ = client
         response = test_client.post(
