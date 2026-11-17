@@ -533,7 +533,7 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
         '  STATUS="rolled_back"',
         "  finish",
         "}",
-        ('mkdir -p "$TMP/backup" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }' if builtin
+        ('mkdir -p "$TMP/backup" "$TMP/stage/$NAME" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }' if builtin
          else 'mkdir -p "$TMP/backup" "$TMP/stage/$NAME/bin" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }'),
         'exec 9>"$BASE/plugin_register.lock" || fail "lock_open_failed"',
         'flock -w 30 9 || fail "lock_timeout"',
