@@ -124,14 +124,28 @@ async function loadPlugins() {
   }
 }
 
+/** 会话是 bridge 进程内的实时状态：登录/退出都会变，打开抽屉与展开下拉时都要重取。 */
+async function loadSessions() {
+  try {
+    sessions.value = await listSessions()
+    if (!sessions.value.some(item => item.key === selectedSessionKey.value)) {
+      // 原选项已失效（会话退出）或从未选择：回落到首个可用会话，避免提交过期 key。
+      selectedSessionKey.value = sessions.value.length ? sessions.value[0].key : ''
+    }
+  } catch {
+    ElMessage.warning('已登录会话列表加载失败，请确认 terminal_bridge 在线后重试')
+  }
+}
+
+/** 下拉展开即重取：用户可能刚在 custom-ui 里登录，缓存列表会过期。 */
+function handleSessionSelectVisible(visible: boolean) {
+  if (visible) void loadSessions()
+}
+
 async function loadMeta() {
   try {
-    const [sessionData, templateData] = await Promise.all([listSessions(), getTemplate()])
-    sessions.value = sessionData
+    const [, templateData] = await Promise.all([loadSessions(), getTemplate()])
     templateInfo.value = templateData
-    if (!sessions.value.some(item => item.key === selectedSessionKey.value) && sessions.value.length) {
-      selectedSessionKey.value = sessions.value[0].key
-    }
   } catch {
     ElMessage.warning('模板或环境列表加载失败，可稍后重试')
   }
@@ -153,6 +167,7 @@ function openCreate() {
   form.value.extra_files = []
   activeTab.value = 'basic'
   formVisible.value = true
+  void loadSessions()
 }
 
 function openEdit(row: AcliPluginItem) {
@@ -160,6 +175,7 @@ function openEdit(row: AcliPluginItem) {
   form.value = JSON.parse(JSON.stringify(row.spec_json ?? blankSpec()))
   activeTab.value = 'basic'
   formVisible.value = true
+  void loadSessions()
 }
 
 function addParameter() {
@@ -205,6 +221,11 @@ function validateBeforePublish(): boolean {
     activeTab.value = 'basic'
     return false
   }
+  // 目标会话必须在弹二次确认之前就校验：否则用户确认覆盖后才发现没选环境，白白多点一次。
+  if (!selectedSession.value) {
+    ElMessage.warning('请先在 custom-ui 登录目标 HCI，使 terminal_bridge 存在已连接的 SSH 会话')
+    return false
+  }
   return true
 }
 
@@ -223,13 +244,12 @@ async function handlePublish() {
   }
   publishing.value = true
   try {
-    if (!selectedSession.value) {
-      ElMessage.warning('请先在 custom-ui 登录目标 HCI，使 terminal_bridge 存在已连接的 SSH 会话')
-      return
-    }
+    // validateBeforePublish 已保证 selectedSession 存在；这里只做类型收窄。
+    const session = selectedSession.value
+    if (!session) return
     const result = await publishPlugin(form.value, {
-      caseId: selectedSession.value.case_id,
-      nodeIp: selectedSession.value.node_ip,
+      caseId: session.case_id,
+      nodeIp: session.node_ip,
     })
     currentDeployId.value = result.deploy_id
     idempotent.value = result.idempotent
@@ -497,7 +517,12 @@ onBeforeUnmount(() => {
       <template #footer>
         <div class="drawer-footer">
           <span class="env-label">目标会话</span>
-          <el-select v-model="selectedSessionKey" style="width: 260px" placeholder="custom-ui 已登录的 HCI">
+          <el-select
+            v-model="selectedSessionKey"
+            style="width: 260px"
+            placeholder="custom-ui 已登录的 HCI"
+            @visible-change="handleSessionSelectVisible"
+          >
             <el-option
               v-for="item in sessions"
               :key="item.key"
