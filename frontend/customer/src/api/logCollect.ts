@@ -134,6 +134,8 @@ export interface LogCollectTaskCreate {
     modules_count?: number
     catalog_source?: string
     catalog_note?: string
+    /** 节点 help 真实列出的专项枚举（不补全），版本警示的事后证据 */
+    node_modules?: string[]
     log_server_reachable?: boolean
     http_code?: number
     /**

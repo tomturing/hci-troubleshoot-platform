@@ -201,6 +201,12 @@ interface ModuleOption {
   sortOrder?: number
   /** 是否命中字典（决定是否显示"平台未维护说明"提醒） */
   documented?: boolean
+  /**
+   * 节点 help 是否真实列出该专项（probe node_modules）。
+   * false 时渲染非阻塞版本警示徽标但仍可勾选：help 漏列不等于不支持，
+   * 置灰会误伤"漏列但实际支持"的版本（Q2026111700614）。undefined 表示未知。
+   */
+  helpListed?: boolean
 }
 
 interface HostOption {
@@ -275,6 +281,8 @@ interface ProbeResult {
   hosts?: HostOption[]
   catalog_source?: 'acli_help' | 'platform_default'
   catalog_note?: string
+  /** 节点 help 真实列出的专项枚举（不补全）；与 modules 全集之差即版本警示依据 */
+  node_modules?: string[]
   /** 日志服务器探测失败原因（bridge 原话，只做排障佐证，不参与结论） */
   note?: string
 }
@@ -647,6 +655,10 @@ const selectedManifestPreviews = computed(() => {
 })
 const moduleOptions = computed<ModuleOption[]>(() =>
   mergeModuleOptions(probeModules.value, scenarioDict.value),
+)
+/** 节点 help 未列出的专项（版本警示依据）；仅 probe 明确标注 helpListed=false 时计入。 */
+const unlistedHelpModules = computed(() =>
+  moduleOptions.value.filter((item) => item.helpListed === false),
 )
 const hostOptions = ref<HostOption[]>([])
 const prepareState = ref<PrepareState>('idle')
@@ -1551,6 +1563,8 @@ function mergeModuleOptions(
       exclusive: hit.exclusive,
       sortOrder: hit.sort_order,
       documented: true,
+      // 字典只叠加文案，不得覆盖 probe 给出的版本警示标记。
+      helpListed: item.helpListed,
     })
   }
   documented.sort((a, b) => (a.sortOrder ?? 100) - (b.sortOrder ?? 100))
@@ -1598,7 +1612,16 @@ async function loadScenarioDict(): Promise<void> {
 
 /** 用探测结果覆盖目录与节点清单；场景目录以集群为准，内置目录只做兜底。 */
 function applyCatalog(data: ProbeResult) {
-  probeModules.value = data.modules?.length ? data.modules : [...BUILTIN_MODULES]
+  const modules = data.modules?.length ? data.modules : [...BUILTIN_MODULES]
+  // 版本警示（非阻塞）：目录恒为白名单全集，节点 help 未列出的专项可能因
+  // 版本不匹配被拒（Q2026111700614：降级到 1.0.0 后 core 不在枚举内）。
+  // 只在集群确实给出枚举时标注；缺省/内置兜底一律不标，避免误伤。
+  if (data.catalog_source === 'acli_help' && data.node_modules?.length) {
+    const listed = new Set(data.node_modules)
+    probeModules.value = modules.map((item) => ({ ...item, helpListed: listed.has(item.value) }))
+  } else {
+    probeModules.value = modules
+  }
   hostOptions.value = data.hosts ?? []
   // 目录收敛后清掉已不存在的场景，否则提交时会被 create 判为非法枚举
   const valid = new Set(moduleOptions.value.map((item) => item.value))
@@ -2703,6 +2726,7 @@ async function handleStart() {
               modules_count: probeResult.value.modules?.length ?? 0,
               catalog_source: probeResult.value.catalog_source,
               catalog_note: probeResult.value.catalog_note,
+              node_modules: probeResult.value.node_modules,
               log_server_reachable: probeResult.value.log_server_reachable,
               http_code: probeResult.value.http_code,
               note: probeResult.value.note,
@@ -5352,10 +5376,21 @@ onBeforeUnmount(() => {
                 size="small"
                 class="lc-module-item"
               >
-                <span class="lc-module-name">{{ item.label }}</span>
+                <span class="lc-module-name">
+                  {{ item.label }}
+                  <span
+                    v-if="item.helpListed === false"
+                    class="lc-module-warn"
+                    title="节点 help 未列出该专项，可能因版本不匹配被拒；仍可勾选"
+                  >节点可能不支持</span>
+                </span>
                 <span v-if="item.summary" class="lc-module-summary">{{ item.summary }}</span>
               </el-checkbox>
             </el-checkbox-group>
+            <div v-if="unlistedHelpModules.length" class="lc-hint lc-hint-warn">
+              节点 help 未列出专项 {{ unlistedHelpModules.map((item) => item.label).join('、') }}，
+              可能因版本不匹配被拒（仍可勾选，建议先确认节点 acli 版本）
+            </div>
             <div v-if="hasModuleConflict" class="lc-hint lc-hint-warn">
               当前选择同时包含「不收集上述场景」与其他专项（沿历史任务回填），建议只保留其中一类
             </div>
@@ -5973,6 +6008,17 @@ onBeforeUnmount(() => {
 .lc-module-name {
   font-weight: 500;
   white-space: normal;
+}
+/* 版本警示徽标：只加色不改可选性——help 漏列不等于不支持，置灰会误伤 */
+.lc-module-warn {
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--el-color-warning);
+  border: 1px solid var(--el-color-warning-light-5);
+  border-radius: 3px;
+  white-space: nowrap;
 }
 .lc-module-summary {
   font-size: 11px;

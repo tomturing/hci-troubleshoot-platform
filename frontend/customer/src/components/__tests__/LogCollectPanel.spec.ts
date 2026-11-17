@@ -790,9 +790,11 @@ describe('LogCollectPanel', () => {
   async function mountAndProbe({
     modules,
     catalogSource = 'acli_help',
+    nodeModules,
   }: {
     modules: Array<{ value: string; label: string }>
     catalogSource?: string
+    nodeModules?: string[]
   }) {
     const wrapper = mountPanel()
     await flushPromises()
@@ -812,6 +814,7 @@ describe('LogCollectPanel', () => {
           catalog_source: catalogSource,
           modules,
           hosts: [],
+          ...(nodeModules ? { node_modules: nodeModules } : {}),
         },
       }),
     })
@@ -855,6 +858,40 @@ describe('LogCollectPanel', () => {
       .map((item) => item.attributes('data-value'))
     // other 只在字典里、不在集群目录里 ⇒ 展示它等于承诺一个 create 必然失败的选项
     expect(values).toEqual(['vm_suspend'])
+  })
+
+  // 版本警示（Q2026111700614）：目录恒为白名单全集，节点 help 未列出的专项
+  // 只警示不置灰——help 漏列不等于不支持，禁用会误伤实际可用的版本。
+  it('版本警示：core 不在 node_modules 时显示警示但仍可选', async () => {
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue(scenarioDictFixture)
+    const wrapper = await mountAndProbe({
+      modules: [
+        { value: 'vm_suspend', label: '虚拟机挂起专项' },
+        { value: 'core', label: 'core 文件专项' },
+      ],
+      nodeModules: ['vm_suspend'],
+    })
+
+    const group = wrapper.find('.lc-module-group')
+    const core = group.find('.cbx[data-value="core"]')
+    // 非阻塞警示：徽标 + 汇总提示都要出现
+    expect(core.find('.lc-module-warn').exists()).toBe(true)
+    expect(wrapper.text()).toContain('节点 help 未列出专项')
+    // 仍可选：不禁用，点击能勾上
+    expect(core.attributes('data-disabled')).toBe('0')
+    await core.trigger('click')
+    await flushPromises()
+    expect(group.find('.cbx[data-value="core"]').attributes('data-checked')).toBe('1')
+    // help 已列出的专项不得带警示（字典命中项的标记也不能被合并丢掉）
+    expect(group.find('.cbx[data-value="vm_suspend"]').find('.lc-module-warn').exists()).toBe(false)
+  })
+
+  it('版本警示：node_modules 缺省（旧 bridge / 内置兜底）不标注任何警示', async () => {
+    const wrapper = await mountAndProbe({
+      modules: [{ value: 'core', label: 'core 文件专项' }],
+    })
+    expect(wrapper.find('.lc-module-warn').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('节点 help 未列出专项')
   })
 
   it('exclusive 双向互斥：选中普通项时互斥项禁用，选中互斥项时其它项全禁用', async () => {

@@ -419,7 +419,11 @@ type logCollectProbeResult struct {
 	Hosts         []logCollectHostOption   `json:"hosts"`
 	CatalogSource string                   `json:"catalog_source"`
 	CatalogNote   string                   `json:"catalog_note,omitempty"`
-	Note          string                   `json:"note,omitempty"`
+	// NodeModules 是节点 help 真实列出的白名单专项（不补全）。Modules 恒为白名单
+	// 全集以保证可选性，两者之差即"节点可能不支持"的专项，前端据此渲染非阻塞
+	// 版本警示（Q2026111700614：降级到 1.0.0 后 core 不在枚举内，create 必失败）。
+	NodeModules []string `json:"node_modules,omitempty"`
+	Note        string   `json:"note,omitempty"`
 }
 
 // ── 日志服务器连通性：有界重试 ─────────────────────────────────────────────
@@ -569,6 +573,25 @@ func (s *SSHSession) probeLogCollectCatalog(ctx context.Context, result *logColl
 	if modules := parseLogCollectModuleCatalog(helpOut); len(modules) > 0 {
 		result.Modules = modules
 		result.CatalogSource = "acli_help"
+		// 回传节点真实枚举：目录恒补白名单全集，help 未列出的专项可能因版本
+		// 不匹配被拒（Q2026111700614：1.0.0 无 core）。前端据此做非阻塞警示。
+		result.NodeModules = parseLogCollectHelpModules(helpOut)
+		if len(result.NodeModules) > 0 {
+			listed := map[string]bool{}
+			for _, value := range result.NodeModules {
+				listed[value] = true
+			}
+			var unlisted []string
+			for _, option := range modules {
+				if !listed[option.Value] {
+					unlisted = append(unlisted, option.Value)
+				}
+			}
+			if len(unlisted) > 0 {
+				result.CatalogNote = appendProbeNote(result.CatalogNote,
+					fmt.Sprintf("节点 help 未列出专项 %s，可能因版本不匹配被拒", strings.Join(unlisted, ", ")))
+			}
+		}
 	} else {
 		result.Modules = builtinLogCollectModules()
 		result.CatalogSource = "platform_default"
@@ -605,18 +628,13 @@ func appendProbeNote(current, extra string) string {
 	return current + "；" + extra
 }
 
-// parseLogCollectModuleCatalog 从 help 文本提取场景枚举。
+// logCollectHelpEnumBlock 从 help 文本圈定枚举区，返回目录解析与真实枚举统计共用。
 //
-// 对抗性审查：实机 help 把枚举值按两列排版（同一行有两个「名称（标签）」），
-// 且正文里还夹着示例命令，因此只解析「枚举值」到「说明」之间的段落并全量扫描。
-func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
+// 中文 help 用「枚举值 … 说明」两段标题圈定枚举区。英文 help 的标题文案没有
+// 实机样本，不能凭猜测把某一种写法当唯一入口；找不到标题时改为全量扫描，
+// 并把命中门槛提高到 2 条——示例命令里也可能出现括号，单条命中不足以定论。
+func logCollectHelpEnumBlock(raw string) (string, bool) {
 	block := raw
-	// 中文 help 用「枚举值 … 说明」两段标题圈定枚举区。英文 help 的标题文案没有
-	// 实机样本，不能凭猜测把某一种写法当唯一入口；找不到标题时改为全量扫描，
-	// 并把命中门槛提高到 2 条——示例命令里也可能出现括号，单条命中不足以定论。
 	scoped := false
 	for _, head := range []string{"枚举值", "Enum values", "Valid values"} {
 		idx := strings.Index(block, head)
@@ -633,6 +651,46 @@ func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
 		scoped = true
 		break
 	}
+	return block, scoped
+}
+
+// parseLogCollectHelpModules 返回 help 中真实列出的白名单专项（按目录顺序、去重）。
+//
+// 与 parseLogCollectModuleCatalog 的"补齐白名单全集"不同，这里只报事实：
+// help 未列出的专项可能因版本不匹配被节点拒绝（acli 1.0.0 无 core），
+// 前端据此渲染非阻塞警示，不影响可选性——help 漏列但实际支持的版本不能被误伤。
+func parseLogCollectHelpModules(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	block, _ := logCollectHelpEnumBlock(raw)
+	hit := map[string]bool{}
+	for _, match := range logCollectModuleOptionRe.FindAllStringSubmatch(block, -1) {
+		if logCollectModules[match[1]] {
+			hit[match[1]] = true
+		}
+	}
+	if len(hit) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(hit))
+	for _, value := range logCollectModuleCatalogOrder {
+		if hit[value] {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+// parseLogCollectModuleCatalog 从 help 文本提取场景枚举。
+//
+// 对抗性审查：实机 help 把枚举值按两列排版（同一行有两个「名称（标签）」），
+// 且正文里还夹着示例命令，因此只解析「枚举值」到「说明」之间的段落并全量扫描。
+func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	block, scoped := logCollectHelpEnumBlock(raw)
 
 	// 第一性原理：白名单 logCollectModules 是 -m 的合法枚举全集，目录只应从中取。
 	// help 只用来「确认集群确实支持枚举」，不用来生成展示文案：
@@ -1618,7 +1676,8 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 			// 落库是为了让"为什么这次走了 P2"在事后可回答，而不是只能靠版本号猜。
 			"acli_supports_upload_header": probe.AcliSupportsUploadHeader,
 			"catalog_source":              probe.CatalogSource, "modules_count": len(probe.Modules),
-			"hosts_count": len(probe.Hosts), "catalog_note": probe.CatalogNote,
+			"node_modules": probe.NodeModules,
+			"hosts_count":  len(probe.Hosts), "catalog_note": probe.CatalogNote,
 			"note": probe.Note, "key": key,
 		})
 
