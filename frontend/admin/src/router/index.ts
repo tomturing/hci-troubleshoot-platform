@@ -107,16 +107,16 @@ const router = createRouter({
     },
     {
       path: '/tools',
-      name: 'ToolManage',
-      component: () => import('@/views/ToolManageView.vue'),
-      meta: { title: 'agent工具', icon: 'Setting', order: 8, parent: 'tools' },
+      name: 'ToolsManage',
+      component: () => import('@/views/ToolsManageView.vue'),
+      // 与「日志收集」一致：侧边栏一个父入口，页内页签切换
+      // agent工具 / acli插件 两个子页面。
+      meta: { title: '工具管理', icon: 'Setting', order: 8 },
     },
     {
       path: '/acli-plugins',
-      name: 'AcliPluginManage',
-      component: () => import('@/views/AcliPluginManageView.vue'),
-      // 与 agent工具 同属「工具管理」父菜单下的子页面。
-      meta: { title: 'acli插件', icon: 'Tools', order: 8.5, parent: 'tools' },
+      redirect: { path: '/tools', query: { tab: 'acli' } },
+      meta: { hidden: true },
     },
     {
       path: '/skills',

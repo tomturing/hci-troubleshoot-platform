@@ -31,14 +31,10 @@ describe('admin menu', () => {
     // 两个 DSH 实例的 order 为 4.5/4.6，必须都落在「可观测性」(4) 与「分类基线」(5) 之间；
     // 「日志收集」(4.1) 已归入可观测性分组（页面主入口是采集进展），
     // 排在 DSH诊断 之前，不再属于「Catalog基线」(5.5) 那一组配置文案。
-    const items = buildMenuItems(router.getRoutes())
-    expect(items.map((item) => item.title)).toEqual([
+    expect(buildMenuItems(router.getRoutes()).map((item) => item.title)).toEqual([
       '仪表盘', '用户管理', '工单管理', '可观测性', '日志收集', 'DSH诊断', 'DSH离线诊断', '分类基线', 'Catalog基线',
       'KBD管理', 'SOP管理', '工具管理', '技能管理', 'Prompt管理', '离线诊断',
       'Console审计', '仿真测试', 'Bundle工厂', '模板实例库',
-    ])
-    expect(items.find((item) => item.title === '工具管理')?.children?.map((child) => child.title)).toEqual([
-      'agent工具', 'acli插件',
     ])
   })
 
