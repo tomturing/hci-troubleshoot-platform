@@ -61,13 +61,31 @@ func TestValidateSpcContent(t *testing.T) {
 	}
 }
 
-func TestBuildSpcWriteCommandUsesBase64(t *testing.T) {
+func TestBuildSpcWriteCommandUsesPrintfNoBase64(t *testing.T) {
 	cmd := buildSpcWriteCommand("/sf/spc/core.json", "{\"a\":1}")
-	if !strings.Contains(cmd, "base64 -d") {
-		t.Fatalf("必须用 base64 写入：%s", cmd)
+	if strings.Contains(cmd, "base64") {
+		t.Fatalf("HCI 宿主机没有 base64，写入不能依赖它：%s", cmd)
+	}
+	if !strings.Contains(cmd, "printf '%s'") {
+		t.Fatalf("应使用 shell 内建 printf 直写：%s", cmd)
 	}
 	if !strings.Contains(cmd, "core.json") {
 		t.Fatalf("目标路径丢失：%s", cmd)
+	}
+}
+
+// 内容含单引号、$、* 时，单引号包裹必须仍然安全（不能被 shell 展开/截断）。
+func TestBuildSpcWriteCommandQuotesSpecialChars(t *testing.T) {
+	content := `[{"note":"a'b","path":"/sf/$HOME/*"}]`
+	cmd := buildSpcWriteCommand("/sf/spc/core.json", content)
+	if strings.Contains(cmd, "base64") {
+		t.Fatalf("不能依赖 base64：%s", cmd)
+	}
+	if strings.Contains(cmd, "a'b") {
+		t.Fatalf("单引号未转义，会被 shell 截断：%s", cmd)
+	}
+	if !strings.Contains(cmd, `a'\''b`) {
+		t.Fatalf("单引号转义不符合 POSIX：%s", cmd)
 	}
 }
 

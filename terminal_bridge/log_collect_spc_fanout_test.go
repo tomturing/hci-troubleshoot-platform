@@ -4,6 +4,9 @@ package main
 // 写完怎么证明、什么时候还原、还原状态怎么表达"这些会导致静默错采的判定。
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -124,13 +127,20 @@ func TestBuildSpcPrepareCommandOrder(t *testing.T) {
 	}
 }
 
-// TestBuildSpcWriteVerifyCommand 写入必须可证明：base64 回读比对，失败就用备份回滚。
+// TestBuildSpcWriteVerifyCommand 写入必须可证明：printf 重传 + cmp 逐字节比对，失败就用备份回滚。
 func TestBuildSpcWriteVerifyCommand(t *testing.T) {
 	content := `[{"action":"copy","path":"/var/log/messages"}]`
 	command := buildSpcWriteVerifyCommand("/sf/x/spc/core.json", "/sf/x/spc/core.json.platform.task1.bak", content)
 
-	if !strings.Contains(command, "base64") {
-		t.Fatalf("缺少 base64 回读校验：%s", command)
+	if strings.Contains(command, "base64") {
+		t.Fatalf("HCI 宿主机没有 base64，校验不能依赖它：%s", command)
+	}
+	if !strings.Contains(command, "cmp -s - ") {
+		t.Fatalf("缺少 cmp 逐字节回读校验：%s", command)
+	}
+	// $(cat) 命令替换会剥掉末尾换行：原文以换行结尾时写对了也会误判 verify_mismatch。
+	if strings.Contains(command, "$(cat") {
+		t.Fatalf("不能用命令替换回读（剥尾换行）：%s", command)
 	}
 	if strings.Contains(command, "sha256sum") {
 		t.Fatalf("裁剪系统可能没有 sha256sum，不能作为唯一校验手段：%s", command)
@@ -143,6 +153,44 @@ func TestBuildSpcWriteVerifyCommand(t *testing.T) {
 	rollback := buildSpcRestoreCommand("/sf/x/spc/core.json.platform.task1.bak", "/sf/x/spc/core.json")
 	if count := strings.Count(command, rollback); count != 2 {
 		t.Fatalf("失败路径应各回滚一次，实际 %d 次：%s", count, command)
+	}
+}
+
+// TestSpcWriteVerifyScriptByteExact 在本地 shell 真跑写入+校验脚本：
+// 原文以换行结尾也必须原样落盘并逐字节校验通过（$(cat) 回读会剥尾换行造成误报）。
+// 环境缺 cmp 时跳过；CI（ubuntu）与 HCI 宿主机（prepare 已依赖 cmp）均具备。
+func TestSpcWriteVerifyScriptByteExact(t *testing.T) {
+	if _, err := exec.LookPath("cmp"); err != nil {
+		t.Skip("环境缺 cmp，跳过真 shell 回归")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "core.json")
+	backup := target + ".platform.task1.bak"
+	if err := os.WriteFile(backup, []byte("[]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	content := "[{\"action\":\"copy\",\"path\":\"/var/log/a\"}]\n"
+	command := buildSpcWriteVerifyCommand(target, backup, content)
+	out, err := exec.Command("sh", "-c", command).CombinedOutput()
+	if err != nil || !spcMarkerHas(string(out), "SPC_WRITE_OK") {
+		t.Fatalf("尾换行原文的写入+校验应通过：err=%v out=%s", err, out)
+	}
+	onDisk, err := os.ReadFile(target)
+	if err != nil || string(onDisk) != content {
+		t.Fatalf("盘上字节与原文不一致：%q err=%v", onDisk, err)
+	}
+}
+
+// TestSpcOutputTailKeepsStderrInMarkerBranches marker 失败分支的诊断文本必须合并 stderr：
+// 标记行本身没有诊断价值，留下的必须是真实原因（缺命令/只读等），否则现场无法自证。
+func TestSpcOutputTailKeepsStderrInMarkerBranches(t *testing.T) {
+	diag := spcJoinDiag("SPC_WRITE_FAIL reason=write_rejected", "-bash: base64: command not found")
+	got := spcOutputTail(diag, 2, 200)
+	if !strings.Contains(got, "base64: command not found") {
+		t.Fatalf("stderr 必须进入 error_detail：%q", got)
+	}
+	if strings.Contains(got, "SPC_") {
+		t.Fatalf("标记行应被 spcOutputTail 跳过：%q", got)
 	}
 }
 
