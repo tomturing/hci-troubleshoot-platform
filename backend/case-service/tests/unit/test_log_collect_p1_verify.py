@@ -59,6 +59,19 @@ class TestJudge:
         verified, reason, _, _ = _judge_p1_archive(_task(created), {"found": True, "size": 100, "mtime": stale}, 100)
         assert (verified, reason) == (False, "stale_archive")
 
+    def test_previous_archive_smaller_than_record_is_stale_first(self):
+        """Q2026111700614：新包上传中、规范名仍挂旧包 → stale_archive，不是 size_mismatch。
+
+        旧包体积必然小于本次记录值，但先判时间才能说清"新包还没发布"这个事实；
+        展示层据此走有界等待（LC-HTP-001），而不是「大小不一致」红卡。
+        """
+        created = datetime.now(UTC) - timedelta(minutes=50)
+        old_mtime = (created - timedelta(hours=3)).timestamp()
+        verified, reason, size, _ = _judge_p1_archive(
+            _task(created), {"found": True, "size": 314_820_302, "mtime": old_mtime}, 4_952_749_247
+        )
+        assert (verified, reason, size) == (False, "stale_archive", 314_820_302)
+
     def test_zero_size_archive_is_invalid(self):
         verified, reason, _, _ = _judge_p1_archive(_task(), {"found": True, "size": 0}, None)
         assert (verified, reason) == (False, "archive_size_invalid")

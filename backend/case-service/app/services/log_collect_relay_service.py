@@ -654,8 +654,9 @@ class LogCollectRelayService:
         探测策略（第一性原理：清理是正常设计，不能让历史清理反转已确认结论）：
         - 只在本次 relay 成功写终态前探测，单任务、有界 3 次；
         - 已确认成功的任务不会进入这里——relay success + delivered 已被 reconcile 排除；
-        - 只有 archive_missing 才重试（异步合片竞态）；size_mismatch / stale_archive
-          是确定性否定，重试不会改变结论；
+        - 只有 archive_missing / stale_archive 才重试（异步合片竞态：5888 收完整包
+          才切换规范名，窗口内读到的是上一轮旧包）；size_mismatch 是确定性否定
+          （任务窗口内发布却偏小=截断），重试不会改变结论；
         - 探测异常只记快照，不抛错打断 relay 终态，由快照的 verified=false 如实呈现。
         """
         expected_size = getattr(task, "object_size", None) or getattr(task, "archive_size", None)
@@ -693,7 +694,7 @@ class LogCollectRelayService:
                     "checked_at": datetime.now(UTC).isoformat(),
                 }
             )
-            if verified or reason != "archive_missing":
+            if verified or reason not in ("archive_missing", "stale_archive"):
                 break
 
         logger.info(

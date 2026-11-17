@@ -316,7 +316,7 @@ export const FAULT_CATALOG = {
   },
   "LC-5888-003": {
     "action": "请联系管理员按上传ID核对，不要直接覆盖归档件",
-    "admin_detail": "verify-archive reason=size_mismatch / stale_archive；同工单目录可能留有旧包，规范名=最新包、旧包带时间戳。",
+    "admin_detail": "verify-archive reason=size_mismatch：包在任务窗口内发布但体积小于任务记录，疑似截断；reason=stale_archive 说明规范名仍挂着上一轮旧包（新包可能仍在上传），按等待/超时口径处理（LC-HTP-001 / LC-5888-004），不报本码。",
     "check": [],
     "component": "log_server",
     "evidence": "p1_archive_check.expected_size / archived_size / stored_name",
@@ -326,16 +326,16 @@ export const FAULT_CATALOG = {
     "layer": "ATTRIBUTION",
     "match_keywords": [],
     "owner": "platform",
-    "problem": "归档件大小或时间不一致",
+    "problem": "归档件大小不一致",
     "retryable": "manual",
     "scope": "cloud",
     "stage": "S6",
-    "title_zh": "归档件大小或时间不一致",
+    "title_zh": "归档件大小不一致",
     "tone": "warning"
   },
   "LC-5888-004": {
     "action": "请截图本页并联系管理员核对日志服务器，不要重复收集",
-    "admin_detail": "p1_archive_check.reason=archive_missing 且 checked_at 已超过 archive_verify_wait_minutes；先查 5888 upload_server.log 的 UploadComplete 与 /sf/log 规范归档名，再决定重传还是补归档，禁止直接重新采集。",
+    "admin_detail": "p1_archive_check.reason=archive_missing / stale_archive 且 checked_at 已超过 archive_verify_wait_minutes（窗口内规范名仍挂旧包属竞态，超窗才归因未发布）；先查 5888 upload_server.log 的 UploadComplete 与 /sf/log 规范归档名，再决定重传还是补归档，禁止直接重新采集。",
     "check": [],
     "component": "log_server",
     "evidence": "detail.p1_archive_check.checked_at / reason、5888 upload_server.log",
@@ -942,10 +942,10 @@ export const FAULT_CATALOG = {
   },
   "LC-HTP-001": {
     "action": "请等待最多10分钟或点「重新核验归档」，不要重新收集",
-    "admin_detail": "P1 UploadComplete 与 5888 发布规范归档名之间存在竞态（现场实测约 31 秒）；verify-archive 返回 archive_missing 只写快照不写终态，等待窗口内结论应为 pending。",
+    "admin_detail": "P1 UploadComplete 与 5888 发布规范归档名之间存在竞态（现场实测约 31 秒，大包按上传时长放宽）；verify-archive 返回 archive_missing / stale_archive（规范名仍挂旧包、新包在传）只写快照不写终态，等待窗口内结论应为 pending。",
     "check": [],
     "component": "htp",
-    "evidence": "detail.p1_archive_check.reason=archive_missing / checked_at、case-service P1 归档核验日志",
+    "evidence": "detail.p1_archive_check.reason=archive_missing / stale_archive / checked_at、case-service P1 归档核验日志",
     "fix": [],
     "http_status": 200,
     "kind": "signal",
@@ -2691,6 +2691,7 @@ export const FAULT_MATCHERS = [
     "code": "LC-HTP-001",
     "keywords": [
       "archive_missing",
+      "stale_archive",
       "未核验到归档件",
       "归档核验未完成"
     ]
@@ -2723,7 +2724,6 @@ export const FAULT_MATCHERS = [
     "code": "LC-5888-003",
     "keywords": [
       "size_mismatch",
-      "stale_archive",
       "归档件大小不一致"
     ]
   },

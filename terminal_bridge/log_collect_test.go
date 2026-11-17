@@ -1076,6 +1076,59 @@ func TestParseLogCollectModuleCatalogEnglishFallback(t *testing.T) {
 	}
 }
 
+// TestParseLogCollectHelpModules 真实枚举统计只报 help 列出的专项，不补白名单全集：
+// 目录与真实枚举之差就是前端版本警示的依据（Q2026111700614：1.0.0 无 core）。
+func TestParseLogCollectHelpModules(t *testing.T) {
+	enumLines := []string{
+		"vm_suspend（虚拟机挂起专项）              vm_start（虚拟机开机失败专项）",
+		"host_offline（主机离线专项）              network（网络专项）",
+		"storage（虚拟存储专项）                    slowdisk（卡慢盘专项）",
+		"performance（性能专项）                    core（core文件专项）",
+		"system（中台专项）                          other（默认收集专项）",
+	}
+	helpWithCore := "枚举值：\n" + strings.Join(enumLines, "\n") + "\n说明:\n-s 为必要参数\n"
+
+	t.Run("全量 help 返回全部白名单专项且按目录顺序", func(t *testing.T) {
+		got := parseLogCollectHelpModules(helpWithCore)
+		want := []string{"vm_suspend", "vm_start", "host_offline", "network", "storage", "slowdisk", "performance", "core", "system", "other"}
+		if !sameStrings(got, want) {
+			t.Fatalf("真实枚举 = %v，期望 %v", got, want)
+		}
+	})
+
+	t.Run("1.0.0 式 help 无 core：目录仍补全但真实枚举不含 core", func(t *testing.T) {
+		withoutCore := strings.ReplaceAll(helpWithCore, "core（core文件专项）", "")
+		got := parseLogCollectHelpModules(withoutCore)
+		for _, value := range got {
+			if value == "core" {
+				t.Fatalf("help 未列出 core 时真实枚举不得含 core：%v", got)
+			}
+		}
+		if len(got) != 9 {
+			t.Fatalf("应返回其余 9 个专项：%v", got)
+		}
+		// 展示目录不受影响：core 仍在可选全集里（警示但保留可选）。
+		if catalog := parseLogCollectModuleCatalog(withoutCore); len(catalog) != 10 {
+			t.Fatalf("展示目录应仍补全 10 项：%d", len(catalog))
+		}
+	})
+
+	t.Run("空文本与非白名单括号返回空", func(t *testing.T) {
+		for _, raw := range []string{"", "  ", "note about file (Please see the manual)"} {
+			if got := parseLogCollectHelpModules(raw); len(got) != 0 {
+				t.Fatalf("%q 不应产出真实枚举：%v", raw, got)
+			}
+		}
+	})
+
+	t.Run("重复命中去重", func(t *testing.T) {
+		got := parseLogCollectHelpModules("枚举值：\nnetwork（网络专项）\nnetwork（网络专项）\n说明:\n")
+		if len(got) != 1 || got[0] != "network" {
+			t.Fatalf("重复枚举必须去重：%v", got)
+		}
+	})
+}
+
 // ── create 接单确认 ─────────────────────────────────────────────────────────
 // 现场 Q2026110901673：create exit_code=0，但 progress 一直回「收集任务不存在！」。
 // 这组用例锁定三条边界：只认 running、不认残留 completed、查询失败不误判失败。

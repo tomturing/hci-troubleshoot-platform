@@ -369,13 +369,16 @@ async def put_artifact_manifest(
         ),
         params,
     )
+    # jsonb_build_object 的参数是多态 any：绑定参数若只出现在这里，asyncpg 无法
+    # 推断类型（IndeterminateDatatypeError: could not determine data type of parameter）。
+    # quality/reason 必须显式 CAST AS text 给定类型（Q2026111700614 现场 500 根因）。
     await session.execute(
         text(
             """
             UPDATE log_collect_task
             SET detail = COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
-                    'artifact_quality', :quality,
-                    'artifact_reason', :reason,
+                    'artifact_quality', CAST(:quality AS text),
+                    'artifact_reason', CAST(:reason AS text),
                     'artifact_evidence', CAST(:evidence AS jsonb)),
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_id = :task_id

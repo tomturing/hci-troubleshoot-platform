@@ -22,6 +22,23 @@ func TestBuildSpcDirProbeUsesFixedPath(t *testing.T) {
 	}
 }
 
+// acli 重装会清掉插件目录（含 spc）：探测必须"缺失即创建"，否则被清的
+// 固定目录会让自定义/默认场景下发永远卡在 spc_dir_missing（Q2026111700614）。
+func TestBuildSpcDirProbeRecreatesMissingDir(t *testing.T) {
+	command := buildSpcDirProbe()
+	mkdir := strings.Index(command, "mkdir -p")
+	if mkdir < 0 {
+		t.Fatalf("缺失即创建：探测脚本必须含 mkdir -p：%s", command)
+	}
+	if !strings.Contains(command, "[ -d "+shellQuote(spcDeployDir)+" ] || mkdir -p "+shellQuote(spcDeployDir)) {
+		t.Fatalf("mkdir 必须只在目录缺失时触发且指向固定路径：%s", command)
+	}
+	// 创建之后仍要回读存在性并回显路径，pickSpcDir 的解析语义不变。
+	if !strings.Contains(command, "[ -d "+shellQuote(spcDeployDir)+" ] && printf") {
+		t.Fatalf("创建后必须回读存在性并回显路径：%s", command)
+	}
+}
+
 func TestParseSpcDirsRealDeployPath(t *testing.T) {
 	const real = spcDeployDir
 	if got := parseSpcDirs(real + "\n"); len(got) != 1 || got[0] != real {

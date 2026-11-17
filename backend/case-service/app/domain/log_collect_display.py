@@ -64,8 +64,11 @@ _ARTIFACT_QUALITIES = frozenset({"ok", "suspect", "invalid", "unknown"})
 _GRADE_RANK = {"unknown": 0, "good": 1, "fair": 2, "poor": 3}
 
 # 归档核验的「结果未知」窗口：5888 收完包才发布规范归档名，一次查不到不是失败。
-_WAITING_ARCHIVE_REASONS = frozenset({"archive_missing", "archive_size_invalid"})
-_ARCHIVE_MISMATCH_REASONS = frozenset({"size_mismatch", "stale_archive"})
+# stale_archive 同属未知档：新包上传期间规范名仍挂旧包（Q2026111700614，4.95 GB
+# 直传被核验成"旧包体积不符"），窗口内是竞态、超窗才归因 5888 未发布（LC-5888-004）。
+# size_mismatch 保持确定性否定：包在任务窗口内发布却偏小，只可能是截断。
+_WAITING_ARCHIVE_REASONS = frozenset({"archive_missing", "archive_size_invalid", "stale_archive"})
+_ARCHIVE_MISMATCH_REASONS = frozenset({"size_mismatch"})
 
 # 顺序固定：同一份数据在任何入口都必须渲染出同一个顺序。
 _CONDITION_ORDER: tuple[str, ...] = (

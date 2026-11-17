@@ -387,10 +387,10 @@ FAULT_CATALOG = {   'LC-HCI-001': {   'component': 'hci',
                       'action': '请等待最多10分钟或点「重新核验归档」，不要重新收集',
                       'tone': 'info',
                       'admin_detail': 'P1 UploadComplete 与 5888 发布规范归档名之间存在竞态（现场实测约 31 '
-                                      '秒）；verify-archive 返回 archive_missing 只写快照不写终态，等待窗口内结论应为 '
-                                      'pending。',
-                      'evidence': 'detail.p1_archive_check.reason=archive_missing / '
-                                  'checked_at、case-service P1 归档核验日志',
+                                      '秒，大包按上传时长放宽）；verify-archive 返回 archive_missing / '
+                                      'stale_archive（规范名仍挂旧包、新包在传）只写快照不写终态，等待窗口内结论应为 pending。',
+                      'evidence': 'detail.p1_archive_check.reason=archive_missing / stale_archive '
+                                  '/ checked_at、case-service P1 归档核验日志',
                       'kind': 'signal',
                       'check': [],
                       'fix': [],
@@ -457,17 +457,19 @@ FAULT_CATALOG = {   'LC-HCI-001': {   'component': 'hci',
                        'scope': 'cloud'},
     'LC-5888-003': {   'component': 'log_server',
                        'stage': 'S6',
-                       'problem': '归档件大小或时间不一致',
+                       'problem': '归档件大小不一致',
                        'action': '请联系管理员按上传ID核对，不要直接覆盖归档件',
                        'tone': 'warning',
-                       'admin_detail': 'verify-archive reason=size_mismatch / '
-                                       'stale_archive；同工单目录可能留有旧包，规范名=最新包、旧包带时间戳。',
+                       'admin_detail': 'verify-archive '
+                                       'reason=size_mismatch：包在任务窗口内发布但体积小于任务记录，疑似截断；reason=stale_archive '
+                                       '说明规范名仍挂着上一轮旧包（新包可能仍在上传），按等待/超时口径处理（LC-HTP-001 / '
+                                       'LC-5888-004），不报本码。',
                        'evidence': 'p1_archive_check.expected_size / archived_size / stored_name',
                        'kind': 'signal',
                        'check': [],
                        'fix': [],
                        'match_keywords': [],
-                       'title_zh': '归档件大小或时间不一致',
+                       'title_zh': '归档件大小不一致',
                        'layer': 'ATTRIBUTION',
                        'owner': 'platform',
                        'retryable': 'manual',
@@ -478,9 +480,11 @@ FAULT_CATALOG = {   'LC-HCI-001': {   'component': 'hci',
                        'problem': '等待10分钟后日志服务器仍未发布归档件',
                        'action': '请截图本页并联系管理员核对日志服务器，不要重复收集',
                        'tone': 'error',
-                       'admin_detail': 'p1_archive_check.reason=archive_missing 且 checked_at 已超过 '
-                                       'archive_verify_wait_minutes；先查 5888 upload_server.log 的 '
-                                       'UploadComplete 与 /sf/log 规范归档名，再决定重传还是补归档，禁止直接重新采集。',
+                       'admin_detail': 'p1_archive_check.reason=archive_missing / stale_archive 且 '
+                                       'checked_at 已超过 '
+                                       'archive_verify_wait_minutes（窗口内规范名仍挂旧包属竞态，超窗才归因未发布）；先查 '
+                                       '5888 upload_server.log 的 UploadComplete 与 /sf/log '
+                                       '规范归档名，再决定重传还是补归档，禁止直接重新采集。',
                        'evidence': 'detail.p1_archive_check.checked_at / reason、5888 '
                                    'upload_server.log',
                        'kind': 'signal',
@@ -1902,11 +1906,11 @@ FAULT_MATCHERS = [   {   'code': 'LC-HTP-004',
         'keywords': ['桥接端版本较旧', 'capabilities.log_collect_evidence=false', '暂无该数据']},
     {'code': 'LC-BRIDGE-004', 'keywords': ['代传失败', 'relay_last_error', 'P2平台中转失败']},
     {'code': 'LC-BRIDGE-006', 'keywords': ['下发失败', '任务下发失败', 'log_collect create 失败']},
-    {'code': 'LC-HTP-001', 'keywords': ['archive_missing', '未核验到归档件', '归档核验未完成']},
+    {'code': 'LC-HTP-001', 'keywords': ['archive_missing', 'stale_archive', '未核验到归档件', '归档核验未完成']},
     {'code': 'LC-HTP-003', 'keywords': ['任务状态加载失败', '任务进度查询失败', '任务状态查询失败']},
     {'code': 'LC-BRIDGE-005', 'keywords': ['包内容未探测', 'artifact_uninspected', '包内容清单未回传']},
     {'code': 'LC-5888-002', 'keywords': ['日志服务器不可达', 'log_server_reachable=false', '5888不可达']},
-    {'code': 'LC-5888-003', 'keywords': ['size_mismatch', 'stale_archive', '归档件大小不一致']},
+    {'code': 'LC-5888-003', 'keywords': ['size_mismatch', '归档件大小不一致']},
     {'code': 'LC-5888-004', 'keywords': ['归档核验等待超时', 'archive_verify_timeout', '始终未发布归档件']},
     {'code': 'LC-HTP-002', 'keywords': ['未给出可识别的错误码', '未返回具体原因']},
     {'code': 'LC-SPC-001', 'keywords': ['场景清单目录缺失']},
