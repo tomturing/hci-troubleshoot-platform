@@ -119,6 +119,25 @@ def test_builtin_override_requires_original_id_and_official_source():
     assert validate_descriptor(desc)["ok"]
 
 
+def test_builtin_override_keeps_factory_directory_layout():
+    """内置覆盖只写 extra_files 声明的脚本，目录结构与出厂逐文件一致。"""
+    spec = _spec(
+        update_mode="builtin_override",
+        plugin_name="netdoctor",
+        plugin_uuid="现场原id",
+        extra_files=[{"path": "scripts/netdoctor.sh", "mode": "0755", "content": "#!/bin/bash\nexit 0\n"}],
+    )
+    desc = build_descriptor(spec, deploy_id="htp-acli-test-builtin-layout", now=NOW)
+    paths = [item["path"] for item in desc["files"]]
+
+    assert "netdoctor/plugin" not in paths
+    assert not any("/bin/" in path for path in paths)
+    assert "netdoctor/scripts/netdoctor.sh" in paths
+    assert 'mkdir -p "$TMP/backup" "$TMP/stage/$NAME"' in desc["deploy_script"]
+    assert "$TMP/stage/$NAME/bin" not in desc["deploy_script"]
+    assert validate_descriptor(desc)["ok"]
+
+
 def test_descriptor_manifest_and_hashes():
     desc = _descriptor()
     assert validate_descriptor(desc)["ok"], validate_descriptor(desc)["errors"]
