@@ -65,3 +65,33 @@ tests:
       - matchRegex:
           path: spec.template.spec.containers[0].volumeMounts[0].mountPath
           pattern: ^/var/lib/terminal-bridge$
+
+  - it: "云端桥默认开启日志直传（端点走集群网关，令牌取内部 Secret）"
+    set:
+      terminalBridge.enabled: true
+    asserts:
+      # 没有浏览器给云端桥下发 bridge_log_token，只能靠部署期注入；
+      # 缺这两项时 /status 的 log_upload 永远 enabled=false，插件下发日志进不了库。
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HCI_BRIDGE_LOG_UPLOAD_ENDPOINT
+            value: http://api-gateway:8000/api/bridge-logs/direct
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HCI_BRIDGE_LOG_UPLOAD_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hci-secrets
+                key: INTERNAL_API_TOKEN
+
+  - it: "显式关闭日志直传时不注入上传变量"
+    set:
+      terminalBridge.enabled: true
+      terminalBridge.logUpload.enabled: false
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HCI_BRIDGE_LOG_UPLOAD_ENDPOINT
