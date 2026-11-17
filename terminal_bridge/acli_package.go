@@ -492,6 +492,81 @@ func acliOutputForLog(outcome acliInstallOutcome) (preview string, bytesStdout, 
 	return formatOutputPreview(combined, 2048, 2048), bytesStdout, bytesStderr
 }
 
+// ── 安装后逐节点插件落盘校验 ─────────────────────────────────────────────────
+
+// logCollectPluginBinary 是日志收集插件的可执行入口：安装器声称"集群分发成功"
+// 之后，唯一能证明插件真的落到每台节点上的事实就是它存在且可执行。
+const logCollectPluginBinary = "/sf/data/local/acli/plugins/log_collect/plugin"
+
+// buildPluginProbeCommand 探测插件是否落盘且可执行。
+// 只判 -x 不判 -f：空目录/半包文件可能留下不可执行的残骸，-x 才能证明可用。
+func buildPluginProbeCommand() string {
+	return fmt.Sprintf("[ -x %s ] && printf 'OK\\n'", shellQuote(logCollectPluginBinary))
+}
+
+// parsePluginProbeResult 判定探测输出：出现 OK 标记行即落盘成功。
+func parsePluginProbeResult(output string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r", ""), "\n") {
+		if strings.TrimSpace(line) == "OK" {
+			return true
+		}
+	}
+	return false
+}
+
+// nodePluginState 记录单节点的插件落盘事实，供日志与结果文案共用。
+type nodePluginState struct {
+	IP      string `json:"ip"`
+	Present bool   `json:"present"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// verifyClusterPluginLanding 安装后逐节点校验 log_collect 插件是否落盘。
+//
+// 为什么必须逐节点：安装器退出码 0 只代表发起节点装好了；集群分发可能静默
+// 留下空目录（Q2026111700614 现场 47 个空目录被"安装成功"掩盖）。复用 spc
+// 扇出的主机执行原语：本机直连当前会话，其余节点走 BatchMode ssh。
+func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *SSHSession) []nodePluginState {
+	hosts := s.spcNodeList(ctx)
+	if len(hosts) == 0 {
+		return nil
+	}
+	localIPs := s.spcLocalAddresses(ctx)
+	states := make([]nodePluginState, len(hosts))
+	sem := make(chan struct{}, spcFanoutConcurrency)
+	var wg sync.WaitGroup
+	for index, host := range hosts {
+		wg.Add(1)
+		go func(index int, ip string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			stdout, stderr, _, err := s.runSpcOnHostStreams(ctx, ip, localIPs[ip], buildPluginProbeCommand())
+			state := nodePluginState{IP: ip, Present: parsePluginProbeResult(stdout)}
+			if !state.Present {
+				state.Detail = strings.TrimSpace(stderr)
+				if err != nil {
+					state.Detail = err.Error()
+				}
+			}
+			states[index] = state
+		}(index, host.IP)
+	}
+	wg.Wait()
+	return states
+}
+
+// missingPluginNodes 汇总未落盘节点 IP，供如实警示文案使用。
+func missingPluginNodes(states []nodePluginState) []string {
+	var missing []string
+	for _, state := range states {
+		if !state.Present {
+			missing = append(missing, state.IP)
+		}
+	}
+	return missing
+}
+
 // ── 缓存（支撑"只重试上传"）──────────────────────────────────────────────────
 
 type acliPackageCacheEntry struct {

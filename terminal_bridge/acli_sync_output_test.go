@@ -29,6 +29,28 @@ func TestSameBuildDate(t *testing.T) {
 	}
 }
 
+// 升级判定必须有序：只有远端日期严格更新才安装，同日或本地更新一律跳过，
+// 禁止降级（Q2026111700614：预装 1.0.3 被旧官方包 1.0.0 误判落后并降级）。
+func TestRemoteBuildNewer(t *testing.T) {
+	cases := []struct {
+		name, current, remote string
+		want                  bool
+	}{
+		{"远端跨天更新", "2026-05-20 16:01:31", "2026-05-21 00:00:01", true},
+		{"同日不同时刻不升级", "2026-05-20 16:01:31", "2026-05-20 17:46:20", false},
+		{"远端更旧禁止降级", "2026-11-09 15:21:16", "2026-05-20 17:33:24", false},
+		{"本端为空", "", "2026-05-20 17:46:20", false},
+		{"远端为空", "2026-05-20 16:01:31", "", false},
+		{"非标准格式无法判序", "abc", "def", false},
+		{"非标准格式相同也不升级", "abc", "abc", false},
+	}
+	for _, c := range cases {
+		if got := remoteBuildNewer(c.current, c.remote); got != c.want {
+			t.Fatalf("%s: remoteBuildNewer(%q,%q)=%v want %v", c.name, c.current, c.remote, got, c.want)
+		}
+	}
+}
+
 func TestBuildDate(t *testing.T) {
 	if got := buildDate("2026-05-20 16:01:31"); got != "2026-05-20" {
 		t.Fatalf("buildDate=%q", got)

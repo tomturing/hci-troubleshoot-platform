@@ -94,6 +94,12 @@ func TestBuildSpcPrepareCommandOrder(t *testing.T) {
 	if !strings.Contains(command, "SPC_PREPARE_OK") {
 		t.Fatalf("缺少成功标记：%s", command)
 	}
+	// acli 重装会清掉 spc 目录：目录重建必须最先做，且指向 target 的父目录，
+	// 否则被清的目录会让后续备份/写入全部失败（Q2026111700614）。
+	ensureDir := strings.Index(command, "mkdir -p '/sf/x/spc'")
+	if ensureDir < 0 {
+		t.Fatalf("缺少目录重建：%s", command)
+	}
 	selfHeal := strings.Index(command, "__prev")
 	if selfHeal < 0 {
 		t.Fatalf("缺少历史备份自愈：%s", command)
@@ -101,6 +107,9 @@ func TestBuildSpcPrepareCommandOrder(t *testing.T) {
 	backupGate := strings.Index(command, "if [ ! -f ")
 	if backupGate < 0 {
 		t.Fatalf("缺少备份存在性判断：%s", command)
+	}
+	if ensureDir > backupGate {
+		t.Fatalf("目录重建必须早于备份：%s", command)
 	}
 	if selfHeal > backupGate {
 		t.Fatalf("自愈必须早于备份，否则本次备份会存下上一轮的平台清单：%s", command)

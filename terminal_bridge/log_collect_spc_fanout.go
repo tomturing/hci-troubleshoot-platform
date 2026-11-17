@@ -441,12 +441,20 @@ func buildSpcSSHCommand(ip, script string) string {
 	return fmt.Sprintf("ssh -o BatchMode=yes -o ConnectTimeout=5 root@%s %s", ip, shellQuote(script))
 }
 
-// buildSpcPrepareCommand 完成「写前自愈 + 备份 + 备份保真校验」。
+// buildSpcPrepareCommand 完成「目录重建 + 写前自愈 + 备份 + 备份保真校验」。
+//
+// 目录重建必须最先做：acli 重装会清掉整个插件目录（含 spc），目录不在时
+// 后面的备份/写入全部失败。该目录是平台自有固定路径，mkdir -p 安全。
 //
 // 自愈顺序不可颠倒：先把历史备份（原件）放回去，再备份，否则本次备份存下的是
 // 上一次的平台清单，原件会被永久覆盖。本次任务的备份已存在时不再覆盖，
 // 保证重试写同一个任务不会把原件换成平台内容。
 func buildSpcPrepareCommand(target, backup string) string {
+	dir := target
+	if idx := strings.LastIndex(target, "/"); idx > 0 {
+		dir = target[:idx]
+	}
+	ensureDir := fmt.Sprintf("mkdir -p %s", shellQuote(dir))
 	glob := fmt.Sprintf("%s.platform.*.bak", shellQuote(target))
 	prev := fmt.Sprintf("__prev=$(ls -1t %s 2>/dev/null | grep -v -F %s | head -n 1)", glob, shellQuote(backup))
 	selfHeal := fmt.Sprintf("if [ -n \"$__prev\" ]; then cp -p \"$__prev\" %s 2>/dev/null; fi", shellQuote(target))
@@ -456,7 +464,7 @@ func buildSpcPrepareCommand(target, backup string) string {
 		"cmp -s %s %s || { printf 'SPC_PREPARE_FAIL reason=backup_mismatch\\n'; exit 0; }; fi",
 		shellQuote(backup), shellQuote(target), shellQuote(backup), shellQuote(target), shellQuote(backup))
 	orig := fmt.Sprintf("__orig=$(sha256sum %s 2>/dev/null | awk '{print $1}')", shellQuote(backup))
-	return fmt.Sprintf("%s; %s; %s; %s; printf 'SPC_PREPARE_OK orig=%%s\\n' \"$__orig\"", prev, selfHeal, backupCmd, orig)
+	return fmt.Sprintf("%s; %s; %s; %s; %s; printf 'SPC_PREPARE_OK orig=%%s\\n' \"$__orig\"", ensureDir, prev, selfHeal, backupCmd, orig)
 }
 
 // buildSpcWriteVerifyCommand 写入并回读校验，任一步失败立刻用备份回滚。

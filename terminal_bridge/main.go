@@ -3442,9 +3442,18 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		blog("INFO", "acli_sync.retry_requested", "收到重试请求，强制执行对应阶段", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"retry_stage": retryStage, "current_version": currentVer, "current_build": currentBuild,
 		})
-	case remoteBuild != "" && currentBuild != "" && !sameBuildDate(currentBuild, remoteBuild):
+	case remoteBuild != "" && currentBuild != "" && remoteBuildNewer(currentBuild, remoteBuild):
 		needInstall = true
-		blog("INFO", "acli_sync.version_outdated", "acli 版本落后，需要更新", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		blog("INFO", "acli_sync.version_outdated", "acli 远端包更新，需要升级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"current_build": currentBuild, "remote_build": remoteBuild,
+			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
+		})
+	case remoteBuild != "" && currentBuild != "" && !sameBuildDate(currentBuild, remoteBuild):
+		// 日期不同但远端并非更新：本地版本更新，禁止降级。
+		// 历史 bug：sameBuildDate 只判"是否相等"，预装的新包会被旧官方包误判"落后"
+		// 触发 --install --force 降级重装（Q2026111700614：1.0.3 被降到 1.0.0，
+		// 连带清掉插件目录与 core 专项）。这里显式跳过并留痕，降级永不自动发生。
+		blog("INFO", "acli_sync.downgrade_blocked", "远端包更旧，禁止降级，跳过安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"current_build": currentBuild, "remote_build": remoteBuild,
 			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
 		})
@@ -3827,6 +3836,33 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	newVer, newBuild := parseAcliVersion(verifyOut)
 	if verifyCode == 0 && newVer != "" {
 		log.Printf("[Bridge] acli 安装成功且已验证: ver=%s build=%s key=%s", newVer, newBuild, key)
+
+		// 12. 逐节点校验插件落盘：安装器退出码 0 只证明发起节点装好，
+		// 集群分发可能静默留下空目录（Q2026111700614）。缺失只如实警示，
+		// 不把本地已成功的安装整体判失败，保留「重试安装」入口。
+		pluginCtx, cancelPlugin := context.WithTimeout(ctx, 2*time.Minute)
+		pluginStates := b.verifyClusterPluginLanding(pluginCtx, s)
+		cancelPlugin()
+		installedMessage := "acli 工具安装并集群分发成功！"
+		if len(pluginStates) > 0 {
+			blog("INFO", "acli_sync.node_plugin_verify", "安装后逐节点校验 log_collect 插件落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"nodes": pluginStates, "missing": missingPluginNodes(pluginStates),
+			})
+			if missing := missingPluginNodes(pluginStates); len(missing) > 0 {
+				blog("WARN", "acli_sync.node_plugin_missing", "部分节点 log_collect 插件未落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"missing": missing, "nodes": pluginStates,
+				})
+				installedMessage += fmt.Sprintf("\n警示：节点 %s 的 log_collect 插件未落盘，请重试安装。", strings.Join(missing, ", "))
+			}
+		}
+
+		// 重装会清掉插件目录（含平台写入的 spc 场景清单）：如实观测并提示，
+		// 清单将在下次采集 create 时自动重新下发（目录重建已加固）。
+		blog("WARN", "acli_sync.spc_reset", "acli 重装已重置插件目录，平台场景清单将在下次采集自动重新下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"spc_dir": spcDeployDir,
+		})
+		installedMessage += "\n提示：重装已重置插件目录（含场景清单），平台场景清单将在下次采集自动重新下发。"
+
 		sendMsg(ws, OutMessage{
 			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "installed",
 			Architecture: targetArch, CurrentVersion: newVer, LatestVersion: newBuild,
@@ -3836,7 +3872,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
 			RemoteSize: writeRes.RemoteSize, RemoteAlgo: writeRes.Algo, RemoteDigest: writeRes.Digest,
 			InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
-			Message: "acli 工具安装并集群分发成功！",
+			Message: installedMessage,
 		})
 		blog("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": newVer, "build": newBuild, "key": key,
@@ -6072,6 +6108,24 @@ func sameBuildDate(current, remote string) bool {
 		return cur == rem
 	}
 	return cur[:10] == rem[:10]
+}
+
+// remoteBuildNewer 判断远端包是否比本地更新（按日期严格大于）。
+//
+// 为什么必须有序比较而不是只判相等：sameBuildDate 只回答"是否同一天"，
+// 无法区分"远端更新"与"远端更旧"。若用 !sameBuildDate 触发安装，预装的
+// 新包会被旧官方包误判落后并降级重装（Q2026111700614 现场）。这里只在
+// 远端日期严格晚于本地时才升级；同日或本地更新一律跳过，降级永不自动发生。
+//
+// 保守原则：任一侧为空或日期段不足 10 位（非标准格式）无法判序，返回 false
+// 跳过安装——宁可漏一次升级（可 force），也不冒降级风险。YYYY-MM-DD 字典序
+// 即时间序，无需逐秒比较（编译时间与打包时间不同源，同日视为同一版本）。
+func remoteBuildNewer(current, remote string) bool {
+	cur, rem := buildDate(current), buildDate(remote)
+	if len(cur) < 10 || len(rem) < 10 {
+		return false
+	}
+	return rem > cur
 }
 
 // normalizeOutputText 把命令输出规整为合法 UTF-8。

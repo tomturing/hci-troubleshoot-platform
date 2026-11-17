@@ -37,8 +37,12 @@ var (
 // buildSpcDirProbe 输出固定路径存在性检查脚本：存在则回显路径，不存在则无输出。
 // 2026-11-17：目录由 acli 插件自部署，日志收集固定使用 spcDeployDir，
 // 不再用 find 探测（多目录 + exit 1 曾导致 LC-SPC-001 误报）。
+// 缺失即创建：acli 重装会清掉插件目录（含 spc），下次采集写清单前必须能把
+// 被清的固定目录重建出来，否则 spc_dir_missing 会挡住自定义/默认场景下发。
+// 该路径是平台自有的固定目录，mkdir -p 安全且不引入误判面。
 func buildSpcDirProbe() string {
-	return fmt.Sprintf("[ -d %s ] && printf '%%s\\n' %s", shellQuote(spcDeployDir), shellQuote(spcDeployDir))
+	q := shellQuote(spcDeployDir)
+	return fmt.Sprintf("[ -d %s ] || mkdir -p %s; [ -d %s ] && printf '%%s\\n' %s", q, q, q, q)
 }
 
 // buildSpcFindCommand 保留旧函数名仅为兼容存量测试，语义已改为固定路径检查。
