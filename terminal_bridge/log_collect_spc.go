@@ -8,7 +8,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -150,11 +149,17 @@ func validateSpcContent(raw string) error {
 	return nil
 }
 
-// buildSpcWriteCommand 用 base64 写入：JSON 里的引号与 $ 在 heredoc 中会被展开，
-// 直写等价于把场景内容当脚本片段执行。
+// buildSpcWriteCommand 直接写入原文，只用 shell 内建 printf。
+//
+// 为什么不再走 base64（2026-11-17 Q2026110302166 现场）：
+// bridge 通过 SSH 登录的是 HCI 宿主机，宿主机是极简系统，**没有 base64**
+// （容器内才有），`printf ... | base64 -d` 必然 exit 127，表现为
+// LC-SPC-004 write_rejected。printf 是 bash/dash/busybox 内建，宿主机必在。
+//
+// 为什么不用 heredoc：heredoc 会在末尾追加换行，写入字节比 spc_sha256 多 1 字节，
+// 破坏摘要自洽。shellQuote 用单引号包裹后 $、反引号、双引号、* 都不会展开。
 func buildSpcWriteCommand(path, raw string) string {
-	encoded := base64.StdEncoding.EncodeToString([]byte(raw))
-	return fmt.Sprintf("printf '%%s' %s | base64 -d > %s", shellQuote(encoded), shellQuote(path))
+	return fmt.Sprintf("printf '%%s' %s > %s", shellQuote(raw), shellQuote(path))
 }
 
 func buildSpcBackupCommand(path, backup string) string {

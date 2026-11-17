@@ -124,13 +124,16 @@ func TestBuildSpcPrepareCommandOrder(t *testing.T) {
 	}
 }
 
-// TestBuildSpcWriteVerifyCommand 写入必须可证明：base64 回读比对，失败就用备份回滚。
+// TestBuildSpcWriteVerifyCommand 写入必须可证明：cat 回读比对，失败就用备份回滚。
 func TestBuildSpcWriteVerifyCommand(t *testing.T) {
 	content := `[{"action":"copy","path":"/var/log/messages"}]`
 	command := buildSpcWriteVerifyCommand("/sf/x/spc/core.json", "/sf/x/spc/core.json.platform.task1.bak", content)
 
-	if !strings.Contains(command, "base64") {
-		t.Fatalf("缺少 base64 回读校验：%s", command)
+	if strings.Contains(command, "base64") {
+		t.Fatalf("HCI 宿主机没有 base64，校验不能依赖它：%s", command)
+	}
+	if !strings.Contains(command, "cat ") {
+		t.Fatalf("缺少 cat 回读校验：%s", command)
 	}
 	if strings.Contains(command, "sha256sum") {
 		t.Fatalf("裁剪系统可能没有 sha256sum，不能作为唯一校验手段：%s", command)

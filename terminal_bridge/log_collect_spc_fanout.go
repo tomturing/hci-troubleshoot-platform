@@ -22,7 +22,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"sort"
 	"strings"
@@ -469,11 +468,13 @@ func buildSpcPrepareCommand(target, backup string) string {
 
 // buildSpcWriteVerifyCommand 写入并回读校验，任一步失败立刻用备份回滚。
 //
-// 校验用 base64 逐字节比对而不是 sha256：base64 是 coreutils 必备命令，
-// 而 sha256sum 在裁剪系统上可能缺失，缺了就等于"写完没有证据"。
+// 校验用 cat 回读后与原文比较：HCI 宿主机是极简系统，可能既没有 base64
+// 也没有 sha256sum（2026-11-17 Q2026110302166 现场 base64 缺失导致写入 exit 127）。
+// cat 是基础命令，必定可用；printf '%s' 写入不带末尾换行，
+// $(cat) 剥掉末尾换行后可直接与原文比较，字节一致才放行。
 func buildSpcWriteVerifyCommand(target, backup, content string) string {
 	write := buildSpcWriteCommand(target, content)
-	verify := fmt.Sprintf("[ \"$(base64 %s 2>/dev/null | tr -d '\\n')\" = %s ]", shellQuote(target), shellQuote(spcBase64(content)))
+	verify := fmt.Sprintf("__spc_now=$(cat %s 2>/dev/null); [ \"$__spc_now\" = %s ]", shellQuote(target), shellQuote(content))
 	rollback := buildSpcRestoreCommand(backup, target)
 	return fmt.Sprintf("%s || { %s 2>/dev/null; printf 'SPC_WRITE_FAIL reason=write_rejected\\n'; exit 0; }; "+
 		"%s || { %s 2>/dev/null; printf 'SPC_WRITE_FAIL reason=verify_mismatch\\n'; exit 0; }; "+
@@ -575,10 +576,6 @@ func (s *SSHSession) spcLocalAddresses(ctx context.Context) map[string]bool {
 		return map[string]bool{}
 	}
 	return parseSpcLocalAddresses(output)
-}
-
-func spcBase64(raw string) string {
-	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
 // parseSpcFiles 校验平台签发的逐槽位清单。
@@ -959,7 +956,9 @@ func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip strin
 	}
 	if !spcMarkerHas(prepareOut, "SPC_PREPARE_OK") {
 		state.ErrorCode = firstNonEmpty(spcMarkerField(prepareOut, "reason"), spcErrBackup)
-		state.ErrorDetail = spcOutputTail(prepareOut, 2, 200)
+		// 合并 stderr：宿主机缺命令、目录不可写等真实原因只在 stderr 里，
+		// 只取 stdout 会只剩一个 backup_failed，现场无法自证。
+		state.ErrorDetail = spcOutputTail(spcJoinDiag(prepareOut, prepareErrOut), 2, 200)
 		return state
 	}
 	state.OriginalSHA = spcMarkerField(prepareOut, "orig")
@@ -971,7 +970,9 @@ func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip strin
 	}
 	if !spcMarkerHas(writeOut, "SPC_WRITE_OK") {
 		state.ErrorCode = firstNonEmpty(spcMarkerField(writeOut, "reason"), spcErrWrite)
-		state.ErrorDetail = spcOutputTail(writeOut, 2, 200)
+		// 合并 stderr：base64/printf 缺失、重定向被拒等真实原因只在 stderr 里，
+		// 之前只取 stdout 导致 error_detail 只剩 write_rejected（Q2026110302166）。
+		state.ErrorDetail = spcOutputTail(spcJoinDiag(writeOut, writeErrOut), 2, 200)
 		return state
 	}
 	state.Written = true

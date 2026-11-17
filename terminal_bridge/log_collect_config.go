@@ -11,7 +11,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -112,11 +111,11 @@ func verifyConfigSHA256(raw, expected string) error {
 
 // writeLogCollectConfig 把配置写入发起节点并证明"写下去的就是平台签发的内容"。
 //
-// 写入用 base64 解码而不是 heredoc：JSON 里的引号、`$`、反引号在 shell 里
-// 会被展开，heredoc 直写等价于把配置内容当成脚本片段执行。
+// 写入用 printf 直写原文（shellQuote 单引号包裹）：JSON 里的引号、`$`、反引号
+// 在单引号内不展开，等价于安全的字面量写入；宿主机没有 base64，不能依赖它。
 //
 // 校验优先 sha256sum；受限 shell 可能没有该命令（stat 就没有），
-// 此时降级为 base64 回读原文逐字节比对——**不做"探测不了就跳过"**，
+// 此时降级为 cat 回读原文逐字节比对——**不做"探测不了就跳过"**，
 // 否则一次写坏的配置会以"任务成功但少收"收场。
 func writeLogCollectConfig(
 	ctx context.Context,
@@ -131,10 +130,11 @@ func writeLogCollectConfig(
 		return "", err
 	}
 
-	encoded := base64.StdEncoding.EncodeToString([]byte(raw))
+	// 直接写原文，只用 shell 内建 printf：HCI 宿主机是极简系统，没有 base64
+	// （容器内才有），走 base64 会在宿主机 exit 127（2026-11-17 Q2026110302166 现场）。
 	writeCmd := fmt.Sprintf(
-		`mkdir -p %s && printf '%%s' %s | base64 -d > %s`,
-		shellQuote(logCollectConfigDir), shellQuote(encoded), shellQuote(path),
+		`mkdir -p %s && printf '%%s' %s > %s`,
+		shellQuote(logCollectConfigDir), shellQuote(raw), shellQuote(path),
 	)
 	if _, code, err := s.runQuickCommand(ctx, writeCmd); err != nil || code != 0 {
 		return "", fmt.Errorf("写入配置文件失败（exit=%d）：%v", code, err)
@@ -146,14 +146,15 @@ func writeLogCollectConfig(
 		return path, nil
 	}
 
-	// 降级：回读原文。base64 输出可能带换行，统一剥掉再比。
-	readCmd := fmt.Sprintf(`base64 %s | tr -d '\n'`, shellQuote(path))
+	// 降级：改用 cat 回读原文逐字节比对。宿主机没有 base64，不能再用它兜底；
+	// 回读文本可能带末尾换行，剥掉首尾空白后与原文比较。
+	readCmd := fmt.Sprintf(`cat %s`, shellQuote(path))
 	readOut, code, err := s.runQuickCommand(ctx, readCmd)
-	onDisk := strings.NewReplacer("\r", "", "\n", "", " ", "").Replace(readOut)
+	onDisk := strings.TrimSpace(readOut)
 	if err != nil || code != 0 {
 		return "", fmt.Errorf("配置文件回读失败（exit=%d）：%v", code, err)
 	}
-	if onDisk != encoded {
+	if onDisk != strings.TrimSpace(raw) {
 		return "", fmt.Errorf("配置文件内容与平台签发内容不一致")
 	}
 	return path, nil
