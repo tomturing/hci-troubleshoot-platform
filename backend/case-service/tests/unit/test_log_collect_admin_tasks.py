@@ -48,6 +48,21 @@ def test_filters_are_parameterized():
     assert "Q123" not in where
 
 
+def test_filters_all_time_has_no_time_boundary_and_valid_sql():
+    """days=0 的「全部」不能退化为更大天数，也不能拼出空 WHERE。"""
+    where, params = routes._build_filters(
+        since=None,
+        until=None,
+        case_id=None,
+        node_ip=None,
+        upload_mode=None,
+        status=None,
+        delivery_status=None,
+    )
+    assert where == "TRUE"
+    assert params == {}
+
+
 @pytest.mark.parametrize(
     "field,value",
     [("status", "drop_table"), ("delivery_status", "hacked"), ("upload_mode", "sneaky")],
@@ -231,6 +246,32 @@ async def test_list_returns_both_customer_name_and_client_id_without_querying_58
     assert response.items[0].customer_name == "示例客户"
     assert response.items[0].client_id == "client-abc"
     assert response.summary.p1.delivered == 1
+
+
+@pytest.mark.asyncio
+async def test_list_days_zero_drops_time_window(monkeypatch):
+    """前端「全部」走 days=0：列表/总数/汇总三条 SQL 都不能带 created_at 边界。"""
+    fetched: list[str] = []
+
+    async def fake_fetch(sql, params):
+        fetched.append(sql)
+        return []
+
+    monkeypatch.setattr(routes, "_fetch", fake_fetch)
+    await routes.list_admin_tasks(
+        page=1,
+        page_size=20,
+        days=0,
+        case_id=None,
+        node_ip=None,
+        upload_mode=None,
+        status=None,
+        delivery_status=None,
+    )
+    # 空列表时本页证据的批量查询直接跳过，只剩列表/总数/汇总三条。
+    assert len(fetched) == 3
+    assert all("created_at >=" not in sql and "created_at <=" not in sql for sql in fetched)
+    assert all("WHERE TRUE" in sql for sql in fetched)
 
 
 @pytest.mark.asyncio

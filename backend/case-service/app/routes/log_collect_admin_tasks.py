@@ -114,15 +114,18 @@ async def _fetch(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _build_filters(
     *,
-    since: datetime,
-    until: datetime,
+    since: datetime | None,
+    until: datetime | None,
     case_id: str | None,
     node_ip: str | None,
     upload_mode: str | None,
     status: str | None,
     delivery_status: str | None,
 ) -> tuple[str, dict[str, Any]]:
-    """所有用户输入都走 bind params；枚举字段额外白名单，避免脏值静默返回空列表。"""
+    """所有用户输入都走 bind params；枚举字段额外白名单，避免脏值静默返回空列表。
+
+    since/until 为 None 表示「全部」：不追加时间边界，避免把哨兵值当成更大的天数。
+    """
     if status and status not in VALID_STATUSES:
         raise HTTPException(status_code=400, detail=f"非法采集状态：{status}")
     if delivery_status and delivery_status not in VALID_DELIVERY:
@@ -130,8 +133,11 @@ def _build_filters(
     if upload_mode and upload_mode not in VALID_MODES:
         raise HTTPException(status_code=400, detail=f"非法交付路径：{upload_mode}")
 
-    clauses = ["t.created_at >= :since", "t.created_at <= :until"]
-    params: dict[str, Any] = {"since": since, "until": until}
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if since is not None and until is not None:
+        clauses.extend(["t.created_at >= :since", "t.created_at <= :until"])
+        params.update({"since": since, "until": until})
     if case_id:
         clauses.append("t.case_id ILIKE :case_id")
         params["case_id"] = f"%{case_id}%"
@@ -147,7 +153,8 @@ def _build_filters(
     if delivery_status:
         clauses.append("t.delivery_status = :delivery_status")
         params["delivery_status"] = delivery_status
-    return " AND ".join(clauses), params
+    # 「全部」且无其它条件时不能拼出空 WHERE，否则 SQL 语法错误。
+    return " AND ".join(clauses) or "TRUE", params
 
 
 _JOIN = """
@@ -322,7 +329,7 @@ async def _page_probes(task_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
 async def list_admin_tasks(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    days: int = Query(7, ge=1, le=90, description="时间范围（天），默认近 7 天"),
+    days: int = Query(7, ge=0, le=90, description="时间范围（天），默认近 7 天；0 表示全部"),
     case_id: str | None = Query(None, max_length=20),
     node_ip: str | None = Query(None, max_length=64),
     upload_mode: str | None = Query(None, description="acli_direct / bridge_relay / none"),
@@ -335,7 +342,8 @@ async def list_admin_tasks(
     """
     started = time.monotonic()
     now = datetime.now(UTC)
-    since, until = now - timedelta(days=days), now
+    # days=0 是前端「全部」选项的哨兵：不设时间下界，而不是当成更大的天数。
+    since, until = (None, None) if days == 0 else (now - timedelta(days=days), now)
     where, params = _build_filters(
         since=since,
         until=until,
@@ -377,6 +385,7 @@ async def list_admin_tasks(
         message="管理端读取日志上传列表",
         page=page,
         page_size=page_size,
+        days=days,  # 周期筛选（0=全部）必须可追踪，便于对账不同口径的查询量
         total=int(count_rows[0]["total"]) if count_rows else 0,
         elapsed_ms=round((time.monotonic() - started) * 1000, 1),
         trace_id=get_current_trace_id(),

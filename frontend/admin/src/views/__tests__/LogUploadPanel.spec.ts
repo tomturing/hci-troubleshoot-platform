@@ -403,4 +403,21 @@ describe('LogUploadPanel', () => {
     expect(text).not.toContain('本次任务未进入该环节')
     wrapper.unmount()
   })
+
+  it('周期下拉含「全部」，切换后立即查询且无需点查询按钮', async () => {
+    const wrapper = await mountPanel()
+    api.listAdminTasks.mockClear()
+    const daysSelect = wrapper.findAllComponents({ name: 'ElSelect' })[0]
+    expect(daysSelect).toBeTruthy()
+    const labels = daysSelect.findAllComponents({ name: 'ElOption' }).map((item) => item.props('label'))
+    expect(labels).toEqual(['近 7 天', '近 14 天', '近 30 天', '全部'])
+
+    // 真实 Element Plus 顺序：先写回 v-model，再抛 change。
+    await daysSelect.vm.$emit('update:modelValue', 0)
+    await daysSelect.vm.$emit('change', 0)
+    await flushPromises()
+    expect(api.listAdminTasks).toHaveBeenCalledTimes(1)
+    expect(api.listAdminTasks.mock.calls[0][0]).toMatchObject({ days: 0, page: 1 })
+    wrapper.unmount()
+  })
 })

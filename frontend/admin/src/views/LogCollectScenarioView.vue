@@ -22,7 +22,8 @@ import {
   type ScenarioUpdatePayload,
 } from '@/api/logCollectScenario'
 
-const activeTab = ref<'upload' | 'default' | 'custom'>('default')
+// 日志收集入口默认落在任务进展：管理员第一诉求是看任务状态，而不是改场景配置。
+const activeTab = ref<'upload' | 'default' | 'custom'>('upload')
 
 const rows = ref<LogCollectScenario[]>([])
 const loading = ref(false)
@@ -209,7 +210,7 @@ async function submitDetail() {
 <template>
   <div class="scenario-page">
     <el-tabs v-model="activeTab" class="scenario-tabs">
-      <el-tab-pane label="日志上传" name="upload" lazy>
+      <el-tab-pane label="任务进展" name="upload" lazy>
         <LogUploadPanel />
       </el-tab-pane>
 

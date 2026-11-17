@@ -61,6 +61,18 @@ async function mountView() {
   return wrapper
 }
 
+/** 场景配置的断言需要先从默认落地的「任务进展」切回「默认场景」。 */
+async function mountDefaultScenarioView() {
+  const wrapper = await mountView()
+  const tab = wrapper
+    .findAll('.scenario-tabs .el-tabs__item')
+    .find((item) => item.text() === '默认场景')
+  expect(tab).toBeTruthy()
+  await tab!.trigger('click')
+  await flushPromises()
+  return wrapper
+}
+
 function buttonByText(wrapper: ReturnType<typeof mount>, text: string) {
   const button = wrapper.findAll('button').find((item) => item.text().includes(text))
   if (!button) throw new Error(`未找到按钮: ${text}`)
@@ -83,7 +95,7 @@ describe('默认场景（两级页签）', () => {
   })
 
   it('固定场景横向平铺，无搜索、筛选与新增入口', async () => {
-    const wrapper = await mountView()
+    const wrapper = await mountDefaultScenarioView()
     const text = wrapper.text()
 
     expect(text).toContain('默认收集专项')
@@ -105,7 +117,7 @@ describe('默认场景（两级页签）', () => {
   })
 
   it('保存概要只提交短名、释义、排序与启用四个字段', async () => {
-    const wrapper = await mountView()
+    const wrapper = await mountDefaultScenarioView()
     const inputs = wrapper.findAll('input')
     const summaryInput = inputs.find(
       (item) => (item.element as HTMLInputElement).value === '只收基础系统日志',
@@ -126,7 +138,7 @@ describe('默认场景（两级页签）', () => {
   })
 
   it('编辑说明只提交差异字段', async () => {
-    const wrapper = await mountView()
+    const wrapper = await mountDefaultScenarioView()
     await buttonByText(wrapper, '编辑说明').trigger('click')
     await flushPromises()
 
@@ -155,7 +167,7 @@ describe('默认场景（两级页签）', () => {
 
   it('有未保存改动时切换场景需确认，取消后留在原场景', async () => {
     const confirm = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue(new Error('取消'))
-    const wrapper = await mountView()
+    const wrapper = await mountDefaultScenarioView()
 
     const inputs = wrapper.findAll('input')
     const labelInput = inputs.find(
@@ -174,6 +186,15 @@ describe('默认场景（两级页签）', () => {
     expect(confirm).toHaveBeenCalled()
     expect(wrapper.text()).toContain('other')
     expect(wrapper.find('.readonly').text()).toBe('other')
+    wrapper.unmount()
+  })
+
+  it('进入日志收集默认打开「任务进展」，旧「日志上传」文案不再出现', async () => {
+    const wrapper = await mountView()
+    const tabs = wrapper.findAll('.scenario-tabs .el-tabs__item')
+    expect(tabs.map((item) => item.text())).toContain('任务进展')
+    expect(tabs.map((item) => item.text())).not.toContain('日志上传')
+    expect(tabs.find((item) => item.classes().includes('is-active'))?.text()).toBe('任务进展')
     wrapper.unmount()
   })
 })
