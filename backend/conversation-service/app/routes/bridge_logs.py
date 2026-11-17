@@ -624,7 +624,7 @@ async def issue_bridge_log_direct_token(
     }
 
 
-async def _ingest_direct_internal(body: "BridgeLogBatch", instance_header: str) -> dict[str, Any]:
+async def _ingest_direct_internal(body: BridgeLogBatch, instance_header: str) -> dict[str, Any]:
     """集群内部桥直传：按条目自带的 case_id 归档，不绑单、不做归属校验。
 
     为什么需要这条分支：生产环境的桥跑在云端 Pod 里，既没有浏览器给它下发
@@ -725,12 +725,8 @@ async def ingest_bridge_logs_direct(
     # case-service 直连发起、根本没有浏览器。这类日志属于平台自身运行证据，
     # 不做工单归属校验，但每条仍按自己的 case_id 归档，绝不串单。
     internal_token = (settings.INTERNAL_API_TOKEN or "").strip()
-    if internal_token and x_bridge_upload_token and hmac.compare_digest(
-        x_bridge_upload_token.strip(), internal_token
-    ):
-        return await _ingest_direct_internal(
-            body, (request.headers.get("x-bridge-instance-id") or "").strip()
-        )
+    if internal_token and x_bridge_upload_token and hmac.compare_digest(x_bridge_upload_token.strip(), internal_token):
+        return await _ingest_direct_internal(body, (request.headers.get("x-bridge-instance-id") or "").strip())
 
     payload = verify_bridge_log_token(x_bridge_upload_token or "", secret)
     if payload is None:

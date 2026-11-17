@@ -71,13 +71,17 @@ class TestAssertCaseOwned:
         """构造 access 判定所需的 5 列行（shared.security.case_access 的查询契约）。"""
         session = AsyncMock()
         res = MagicMock()
-        res.mappings.return_value.first.return_value = None if owner is None else {
-            "client_id": owner,
-            "source": source,
-            "conversations": conversations,
-            "messages": messages,
-            "own_task": own_task,
-        }
+        res.mappings.return_value.first.return_value = (
+            None
+            if owner is None
+            else {
+                "client_id": owner,
+                "source": source,
+                "conversations": conversations,
+                "messages": messages,
+                "own_task": own_task,
+            }
+        )
         session.execute.return_value = res
         return session
 
@@ -100,9 +104,7 @@ class TestAssertCaseOwned:
     @pytest.mark.asyncio
     async def test_passes_for_shell_case_with_own_task(self):
         """同一人换浏览器后采完仍能回采：壳工单 + 本人采集任务放行。"""
-        await _assert_case_owned(
-            self._session("cust-B", source="log_collect", own_task=True), "Q001", "cust-A"
-        )
+        await _assert_case_owned(self._session("cust-B", source="log_collect", own_task=True), "Q001", "cust-A")
 
     @pytest.mark.asyncio
     async def test_forbidden_for_business_case_with_task(self):
@@ -136,13 +138,17 @@ class TestVerifyBatchOwnership:
         async def _execute(_stmt, params):
             result = MagicMock()
             owner = owners.get(params["case_id"])
-            result.mappings.return_value.first.return_value = None if not owner else {
-                "client_id": owner,
-                "source": "chat",
-                "conversations": 1,
-                "messages": 1,
-                "own_task": False,
-            }
+            result.mappings.return_value.first.return_value = (
+                None
+                if not owner
+                else {
+                    "client_id": owner,
+                    "source": "chat",
+                    "conversations": 1,
+                    "messages": 1,
+                    "own_task": False,
+                }
+            )
             return result
 
         session.execute = AsyncMock(side_effect=_execute)
@@ -701,9 +707,7 @@ class TestDirectIngestCompressedBody:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
             mock_settings.INTERNAL_API_TOKEN = "internal"
-            result = await ingest_bridge_logs_direct(
-                request=request, x_bridge_upload_token=self._token()
-            )
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self._token())
 
         assert result["accepted"] == 1
         assert result["forbidden"] == 0
@@ -722,9 +726,7 @@ class TestDirectIngestCompressedBody:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
             mock_settings.INTERNAL_API_TOKEN = "internal"
-            result = await ingest_bridge_logs_direct(
-                request=request, x_bridge_upload_token=self._token()
-            )
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self._token())
 
         assert result["accepted"] == 1
 
@@ -740,9 +742,7 @@ class TestDirectIngestCompressedBody:
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = self.SECRET
             mock_settings.INTERNAL_API_TOKEN = "internal"
             with pytest.raises(HTTPException) as exc:
-                await ingest_bridge_logs_direct(
-                    request=request, x_bridge_upload_token=self._token()
-                )
+                await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self._token())
         assert exc.value.status_code == 400
 
 
@@ -795,8 +795,13 @@ class TestDirectInternalBridgeUpload:
         body = json.dumps(
             {
                 "logs": [
-                    {"case_id": "Q2026101409999", "level": "INFO", "event": "exec.request"},
-                    {"case_id": "Q2026101409999", "level": "INFO", "event": "exec.done"},
+                    {
+                        "case_id": "Q2026101409999",
+                        "level": "INFO",
+                        "event": "exec.request",
+                        "message": "收到命令执行请求",
+                    },
+                    {"case_id": "Q2026101409999", "level": "INFO", "event": "exec.done", "message": "命令执行完成"},
                 ]
             }
         ).encode()
@@ -811,9 +816,7 @@ class TestDirectInternalBridgeUpload:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
             mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
-            result = await ingest_bridge_logs_direct(
-                request=request, x_bridge_upload_token=self.INTERNAL
-            )
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self.INTERNAL)
 
         assert result["mode"] == "internal"
         assert result["accepted"] == 2
@@ -830,7 +833,9 @@ class TestDirectInternalBridgeUpload:
 
         from app.routes.bridge_logs import ingest_bridge_logs_direct
 
-        body = json.dumps({"logs": [{"level": "INFO", "event": "bridge.startup"}]}).encode()
+        body = json.dumps(
+            {"logs": [{"level": "INFO", "event": "bridge.startup", "message": "terminal_bridge 已启动"}]}
+        ).encode()
         request = self._request(body, {"x-bridge-instance-id": self.INSTANCE})
         with (
             patch("app.routes.bridge_logs._db_manager", self._db_manager()),
@@ -839,9 +844,7 @@ class TestDirectInternalBridgeUpload:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
             mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
-            result = await ingest_bridge_logs_direct(
-                request=request, x_bridge_upload_token=self.INTERNAL
-            )
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self.INTERNAL)
 
         assert result["accepted"] == 1
         stored = insert.await_args_list[0].args[1]
@@ -862,6 +865,7 @@ class TestDirectInternalBridgeUpload:
                         "case_id": "Q2026101409999",
                         "level": "INFO",
                         "event": "exec.done",
+                        "message": "命令执行完成",
                         "bridge_instance_id": "another-instance",
                     }
                 ]
@@ -875,9 +879,7 @@ class TestDirectInternalBridgeUpload:
         ):
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
             mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
-            result = await ingest_bridge_logs_direct(
-                request=request, x_bridge_upload_token=self.INTERNAL
-            )
+            result = await ingest_bridge_logs_direct(request=request, x_bridge_upload_token=self.INTERNAL)
 
         assert result["forbidden"] == 1
         assert result["accepted"] == 0
@@ -890,7 +892,7 @@ class TestDirectInternalBridgeUpload:
 
         from app.routes.bridge_logs import ingest_bridge_logs_direct
 
-        body = json.dumps({"logs": [{"case_id": "Q1", "level": "INFO", "event": "x"}]}).encode()
+        body = json.dumps({"logs": [{"case_id": "Q1", "level": "INFO", "event": "x", "message": "占位"}]}).encode()
         request = self._request(body, {})
         with (
             patch("app.routes.bridge_logs._db_manager", self._db_manager()),
@@ -899,7 +901,5 @@ class TestDirectInternalBridgeUpload:
             mock_settings.BRIDGE_LOG_TOKEN_SECRET = ""
             mock_settings.INTERNAL_API_TOKEN = self.INTERNAL
             with pytest.raises(HTTPException) as exc:
-                await ingest_bridge_logs_direct(
-                    request=request, x_bridge_upload_token="not-the-internal-token"
-                )
+                await ingest_bridge_logs_direct(request=request, x_bridge_upload_token="not-the-internal-token")
         assert exc.value.status_code == 401
