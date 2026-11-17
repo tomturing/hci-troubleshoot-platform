@@ -4039,3 +4039,100 @@ describe('LogCollectPanel 归属认领与补交付入口', () => {
     expect(wrapper.text()).toContain('正在与节点核对包状态')
   })
 })
+
+/**
+ * 回归（Q2026110302166）：切换 SSH 会话 = 换了一个集群，上一集群的已选目标必须作废。
+ *
+ * 现场形态：运维先连 25.x 集群、勾了 172.28.25.2，之后改连 24.x 集群。
+ * 勾选框只渲染新集群的 hostOptions，172.28.25.2 在界面上彻底不可见，
+ * 却仍留在 form.ips 里随 create 下发 —— bridge 去 24.x 集群里连 25.x 的地址，
+ * SSH 认证失败，整单采集被判失败。界面上没有任何地方能看出"多发了一台"。
+ *
+ * 这里必须走真实交互（探测 → 勾选 → 换会话主机 → 再探测），
+ * 只断言源码里有没有某几行字符串，等于把"改个变量名"和"功能退化"混为一谈。
+ */
+describe('跨集群目标残留回归', () => {
+  beforeEach(() => {
+    sentMessages.length = 0
+    fakeSocket.readyState = 1
+    mockStore.lastSshHost = ''
+    mockStore.sshConnectionState = 'disconnected'
+    mockStore.sshCurrentConfig = null
+    vi.mocked(logCollectApi.listTasks).mockReset()
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 0, items: [] })
+    vi.mocked(logCollectApi.listScenarios).mockReset()
+    vi.mocked(logCollectApi.listScenarios).mockResolvedValue([])
+    vi.mocked(logCollectApi.getTask).mockReset()
+  })
+
+  const replyProbeHosts = (hosts: Array<{ ip: string; name: string; master?: boolean }>) => {
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: {
+          architecture: 'x86_64',
+          acli_installed: true,
+          acli_version: '1.0.1',
+          available_mb: 20480,
+          log_server_reachable: true,
+          http_code: 200,
+          catalog_source: 'acli_help',
+          modules: [{ value: 'vm_suspend', label: '虚拟机挂起专项' }],
+          hosts,
+        },
+      }),
+    })
+  }
+
+  it('换会话主机后旧集群已选目标作废，新集群仍是全选', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await flushPromises()
+
+    replyProbeHosts([
+      { ip: '172.28.25.1', name: 'node-1', master: true },
+      { ip: '172.28.25.2', name: 'node-2' },
+    ])
+    await flushPromises()
+
+    const group = wrapper.find('.lc-host-group')
+    expect(group.findAll('.cbx').length).toBe(2)
+
+    // 默认全选，点掉 node-2 后只剩 node-1：form.ips 变成具体 IP，不再是 all
+    await group.find('.cbx[data-value="172.28.25.2"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已选 1 台')
+
+    // 换会话主机（= 换集群）
+    await wrapper.setProps({ nodeIp: '172.28.24.1' })
+    await flushPromises()
+
+    // 旧清单立刻作废：勾选框退场，回落到手填框，值必须是 all，不能残留任何 25.x
+    expect(wrapper.find('.lc-host-group').exists()).toBe(false)
+    const inputValues = wrapper
+      .findAll('input')
+      .map((node) => (node.element as HTMLInputElement).value)
+    expect(inputValues).toContain('all')
+    expect(inputValues.some((value) => value.includes('172.28.25.'))).toBe(false)
+
+    // 等会话切换后的重探（500ms 节流）就位，再回新集群清单
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    await flushPromises()
+    replyProbeHosts([
+      { ip: '172.28.24.2', name: 'node-1', master: true },
+      { ip: '172.28.24.3', name: 'node-2' },
+    ])
+    await flushPromises()
+
+    const nextGroup = wrapper.find('.lc-host-group')
+    expect(nextGroup.findAll('.cbx').length).toBe(2)
+    expect(nextGroup.text()).toContain('172.28.24.3')
+    expect(nextGroup.text()).not.toContain('172.28.25.')
+    // 没有勾选记录 = 仍是全选，旧集群的"已选 1 台"不会带过来
+    expect(wrapper.text()).toContain('已全选')
+    wrapper.unmount()
+  })
+})
