@@ -718,7 +718,10 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 			Code:    code,
 			Message: spcRejectionMessage(written, report),
 		}
-		restored, restoreFailed := b.rollbackSpcAll(s, state, "写入未通过，已回滚")
+		// 只回滚已写入的主机：从未写入的节点不需要恢复，把它计入 restore_failed
+		// 会推导出"可能残留平台清单"的假告警（2026-11-17 Q2026110302166 现场：
+		// 172.28.25.2 SSH 认证失败、written=false，却被报成回滚失败）。
+		restored, restoreFailed := b.rollbackSpcAll(s, state, "写入未通过，已回滚", spcWrittenTargets(results))
 		if restoreFailed > 0 {
 			// 主因码保持不变：回滚失败是叠加风险，覆盖主因会让用户按错误的码排查。
 			rejection.Message = truncateString(rejection.Message+
@@ -980,13 +983,27 @@ func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip strin
 	return state
 }
 
-// rollbackSpcAll 回滚本次写入（全量恢复，备份不存在的节点自动 skip）。
-// 返回 (恢复成功台数, 恢复失败台数)。
-func (b *Bridge) rollbackSpcAll(s *SSHSession, st *spcTaskState, reason string) (int, int) {
+// spcWrittenTargets 只挑出写入成功的主机 IP。
+// 回滚的语义是撤销已完成的写入，从未写入的节点不应参与，否则会把"SSH 不可达"
+// 误报成"回滚失败、可能残留平台清单"（Q2026110302166）。
+func spcWrittenTargets(results []spcHostState) []string {
+	out := make([]string, 0, len(results))
+	for _, host := range results {
+		if host.Written {
+			out = append(out, host.IP)
+		}
+	}
+	return out
+}
+
+// rollbackSpcAll 对 targets 执行回滚，返回 (恢复成功台数, 恢复失败台数)。
+// targets 必须只包含 written=true 的主机：从未写入的节点没有需要撤销的改动，
+// 把它们纳入回滚只会制造"可能残留平台清单"的假告警（Q2026110302166）。
+func (b *Bridge) rollbackSpcAll(s *SSHSession, st *spcTaskState, reason string, targets []string) (int, int) {
 	ctx, cancel := context.WithTimeout(context.Background(), spcRestoreActionBudget)
 	defer cancel()
 	results := b.restoreSpcHosts(ctx, s, spcRestorePlan{
-		Slot: st.Slot, Slots: st.Slots, TaskID: st.TaskID, Targets: st.Targets,
+		Slot: st.Slot, Slots: st.Slots, TaskID: st.TaskID, Targets: targets,
 		LocalIPs: st.LocalIPs, Dirs: st.dirs(),
 	})
 	restored, failed := spcCountRestore(results)

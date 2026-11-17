@@ -1892,6 +1892,16 @@ watch(sshConnected, (ok) => {
   if (ok) sshSessionLost.value = false
 })
 
+// 切换 SSH 会话意味着可能换了集群：旧集群的节点清单与已选目标一律作废。
+// 否则勾选框只渲染新 hostOptions，旧 IP 在界面上不可见却仍随 form.ips 提交
+// （Q2026110302166：连 24.x 集群却把上一集群 25.x 的 172.28.25.2 一并下发，
+//  bridge 跨集群 SSH 认证失败，整体采集被判失败）。
+watch(nodeIp, (next, prev) => {
+  if (next === prev) return
+  hostOptions.value = []
+  form.ips = 'all'
+})
+
 function rejectWaiter(action: string, error: Error) {
   const reject = waiterRejectors.get(action)
   if (!reject) return

@@ -445,6 +445,26 @@ func TestSpcSnapshotCapsFailures(t *testing.T) {
 	}
 }
 
+// 回滚只能针对已写入主机：未写入节点不参与，否则会误报"可能残留平台清单"。
+func TestSpcWrittenTargetsFiltersUnwritten(t *testing.T) {
+	results := []spcHostState{
+		{IP: "172.28.24.2", Written: true},
+		{IP: "172.28.25.2", Written: false},
+		{IP: "172.28.24.3", Written: true},
+	}
+	got := spcWrittenTargets(results)
+	if len(got) != 2 || got[0] != "172.28.24.2" || got[1] != "172.28.24.3" {
+		t.Fatalf("只应返回已写入主机：%v", got)
+	}
+	if targets := spcWrittenTargets(nil); len(targets) != 0 {
+		t.Fatalf("空输入不应产生目标：%v", targets)
+	}
+	// 全部未写入时返回空：调用方据此完全跳过回滚，不产生 restore_failed。
+	if targets := spcWrittenTargets([]spcHostState{{IP: "172.28.25.2"}}); len(targets) != 0 {
+		t.Fatalf("全部未写入时必须为空：%v", targets)
+	}
+}
+
 func sameStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false
