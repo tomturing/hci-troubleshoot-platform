@@ -10,12 +10,6 @@ export interface AdminMenuItem {
   path: string
   title: string
   icon: string
-  children?: AdminMenuItem[]
-}
-
-/** 共享父菜单：工具管理下挂 agent工具 与 acli插件 两个子页面。 */
-const PARENT_MENUS: Record<string, { path: string; title: string; icon: string; order: number }> = {
-  tools: { path: '/tools-group', title: '工具管理', icon: 'Setting', order: 8 },
 }
 
 /**
@@ -57,35 +51,12 @@ export function getRouteOrder(route: AdminRouteLike): number {
 
 /** 根据路由元数据构造侧边栏菜单，确保排序规则只有一个事实来源。 */
 export function buildMenuItems(routes: readonly AdminRouteLike[]): AdminMenuItem[] {
-  const ordered = [...routes]
+  return [...routes]
     .filter((route) => route.meta?.icon && !route.meta?.hidden)
-    .map((route) => {
-      const parentKey = typeof route.meta?.parent === 'string' ? route.meta.parent : ''
-      const parent = PARENT_MENUS[parentKey]
-      const item: AdminMenuItem = {
-        path: route.path,
-        title: String(route.meta?.title || ''),
-        icon: String(route.meta?.icon || ''),
-      }
-      return { item, parentKey, effectiveOrder: parent ? parent.order : getRouteOrder(route) }
-    })
-    .sort((a, b) => a.effectiveOrder - b.effectiveOrder)
-
-  const result: AdminMenuItem[] = []
-  const groups = new Map<string, AdminMenuItem>()
-  for (const { item, parentKey } of ordered) {
-    const parent = PARENT_MENUS[parentKey]
-    if (!parent) {
-      result.push(item)
-      continue
-    }
-    let group = groups.get(parentKey)
-    if (!group) {
-      group = { path: parent.path, title: parent.title, icon: parent.icon, children: [] }
-      groups.set(parentKey, group)
-      result.push(group)
-    }
-    group.children!.push(item)
-  }
-  return result
+    .sort((a, b) => getRouteOrder(a) - getRouteOrder(b))
+    .map((route) => ({
+      path: route.path,
+      title: String(route.meta?.title || ''),
+      icon: String(route.meta?.icon || ''),
+    }))
 }
