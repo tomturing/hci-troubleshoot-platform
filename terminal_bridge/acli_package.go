@@ -34,6 +34,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +67,9 @@ const (
 
 	// 已校验安装包的内存缓存时长：支撑前端"只重试上传"而不必重新下载。
 	acliPackageCacheTTL = 10 * time.Minute
+	// 内存缓存条目上限（B9）：每份包 20~31MB，无上限时多会话并行会把内存吃光。
+	// 超限淘汰最旧条目；校验基线另落账本，淘汰不丢"重试安装"的比对依据。
+	acliPackageCacheMaxEntries = 4
 
 	// 远端写入脚本的输出标记（解析契约，改动需同步单测）。
 	// 字节形态被 golden 测试逐字锁定，因此收口后**不改一个字符**：
@@ -407,36 +411,71 @@ func acliOutputForLog(outcome acliInstallOutcome) (preview string, bytesStdout, 
 // 之后，唯一能证明插件真的落到每台节点上的事实就是它存在且可执行。
 const logCollectPluginBinary = "/sf/data/local/acli/plugins/log_collect/plugin"
 
-// buildPluginProbeCommand 探测插件是否落盘且可执行。
-// 只判 -x 不判 -f：空目录/半包文件可能留下不可执行的残骸，-x 才能证明可用。
-func buildPluginProbeCommand() string {
-	return fmt.Sprintf("[ -x %s ] && printf 'OK\\n'", shellQuote(logCollectPluginBinary))
+// acliBuiltinPlugins 是 acli 安装器向集群分发的出厂内置插件清单，与后端
+// BUILTIN_PLUGINS（acli_plugin_spec.py）同源，漂移由 TestAcliBuiltinPluginsMatchBackend 钉住。
+// B8：落盘验证范围必须与分发范围一致——只验 log_collect 单路径时，
+// 其余插件的空目录会被"安装成功"掩盖（Q2026111700614 现场 47 个空目录）。
+var acliBuiltinPlugins = []string{
+	"asan_ops", "asys", "log_collect", "netdoctor", "performance_tools", "vm_suspend", "vm_start",
 }
 
-// parsePluginProbeResult 判定探测输出：出现 OK 标记行即落盘成功。
-func parsePluginProbeResult(output string) bool {
-	for _, line := range strings.Split(strings.ReplaceAll(output, "\r", ""), "\n") {
-		if strings.TrimSpace(line) == "OK" {
-			return true
+// acliLandingDescriptor 声明安装后落盘验证的目标（B8：验证范围由 descriptor
+// 声明，不再硬编码单路径）。目录目标判"存在且非空"——空目录正是分发假成功
+// 的事故形态；log_collect 额外验可执行入口（日志收集的硬依赖，沿用旧强校验）。
+func acliLandingDescriptor() reconcile.DesiredState {
+	d := reconcile.DesiredState{Kind: reconcile.KindPluginBundle}
+	for _, name := range acliBuiltinPlugins {
+		d.Files = append(d.Files, reconcile.FileSpec{Path: acliPluginBaseDir + "/" + name, IsDirTree: true})
+	}
+	d.Files = append(d.Files, reconcile.FileSpec{Path: logCollectPluginBinary})
+	return d
+}
+
+// buildPluginLandingProbeCommand 按 descriptor 声明逐目标渲染探测：
+// 目录目标判非空，文件目标判可执行（-x：半包残骸可能不可执行，-f 证明不了可用）。
+// 每目标一行 OK/MISS 标记，缺失哪个一目了然。
+func buildPluginLandingProbeCommand(d reconcile.DesiredState) string {
+	var builder strings.Builder
+	for _, f := range d.Files {
+		p := shellQuote(f.Path)
+		if f.IsDirTree {
+			fmt.Fprintf(&builder, `[ -d %s ] && [ -n "$(ls -A %s 2>/dev/null)" ] && printf 'OK\t%%s\n' %s || printf 'MISS\t%%s\n' %s; `, p, p, p, p)
+		} else {
+			fmt.Fprintf(&builder, `[ -x %s ] && printf 'OK\t%%s\n' %s || printf 'MISS\t%%s\n' %s; `, p, p, p)
 		}
 	}
-	return false
+	return builder.String()
+}
+
+// parsePluginLandingProbe 解析逐目标探测回显，返回已落盘路径集合。
+// 只认 OK 标记行：读不到/没回显一律不算落盘，绝不把"没验过"当"验过了"。
+func parsePluginLandingProbe(output string) map[string]bool {
+	present := make(map[string]bool)
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r", ""), "\n") {
+		fields := strings.SplitN(strings.TrimSpace(line), "\t", 2)
+		if len(fields) == 2 && fields[0] == "OK" && fields[1] != "" {
+			present[fields[1]] = true
+		}
+	}
+	return present
 }
 
 // nodePluginState 记录单节点的插件落盘事实，供日志与结果文案共用。
 type nodePluginState struct {
-	IP      string `json:"ip"`
-	Present bool   `json:"present"`
-	Detail  string `json:"detail,omitempty"`
+	IP      string   `json:"ip"`
+	Present bool     `json:"present"`
+	Missing []string `json:"missing,omitempty"`
+	Detail  string   `json:"detail,omitempty"`
 }
 
-// verifyClusterPluginLanding 安装后逐节点校验 log_collect 插件是否落盘。
+// verifyClusterPluginLanding 安装后逐节点校验 descriptor 声明的全部内置插件落盘。
 //
 // 为什么必须逐节点：安装器退出码 0 只代表发起节点装好了；集群分发可能静默
 // 留下空目录（Q2026111700614 现场 47 个空目录被"安装成功"掩盖）。
-// S4a：并发编排委托 reconcile.Fanout.Each（与 spc 同一套骨架），
-// 探测命令与判定语义不变；HostTimeout 取负禁用主机级超时，
-// 单条命令的 30s 预算已在 runSpcOnHostStreams 内部强制（与旧实现一致）。
+// S4a：并发编排委托 reconcile.Fanout.Each（与 spc 同一套骨架）；
+// S4b：探测目标改由 acliLandingDescriptor 声明（B8），不再只验 log_collect。
+// HostTimeout 取负禁用主机级超时，单条命令的 30s 预算已在
+// runSpcOnHostStreams 内部强制（与旧实现一致）。
 func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *SSHSession) []nodePluginState {
 	hosts := s.spcNodeList(ctx)
 	if len(hosts) == 0 {
@@ -447,10 +486,19 @@ func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *SSHSession) 
 	for _, host := range hosts {
 		targets = append(targets, host.IP)
 	}
+	descriptor := acliLandingDescriptor()
+	probeCmd := buildPluginLandingProbeCommand(descriptor)
 	fanout := reconcile.Fanout{Concurrency: spcFanoutConcurrency, HostTimeout: -1, BatchMode: true}
 	results := fanout.Each(ctx, targets, func(ctx context.Context, ip string) reconcile.HostResult {
-		stdout, stderr, _, err := s.runSpcOnHostStreams(ctx, ip, localIPs[ip], buildPluginProbeCommand())
-		state := nodePluginState{IP: ip, Present: parsePluginProbeResult(stdout)}
+		stdout, stderr, _, err := s.runSpcOnHostStreams(ctx, ip, localIPs[ip], probeCmd)
+		present := parsePluginLandingProbe(stdout)
+		state := nodePluginState{IP: ip, Present: true}
+		for _, f := range descriptor.Files {
+			if !present[f.Path] {
+				state.Present = false
+				state.Missing = append(state.Missing, f.Path)
+			}
+		}
 		if !state.Present {
 			state.Detail = strings.TrimSpace(stderr)
 			if err != nil {
@@ -493,9 +541,12 @@ type acliPackageCacheEntry struct {
 //
 // 存在的唯一理由：前端提供「重试上传」时，用户要的是"别再去官网下一遍"。
 // 缓存必须带 TTL —— 官方 latest 可能已经换了包，长期缓存会让重试装回旧版本。
+// B9：内存条目有上限且随 TTL 清扫；校验基线（size/双摘要/文件名）同步落
+// reconcile 账本——桥重启后"重试安装"仍能与节点上的包比对，不再依赖内存基线。
 type acliPackageCache struct {
 	mu    sync.Mutex
 	items map[string]acliPackageCacheEntry
+	store *reconcile.Store // 基线账本；nil 时退化为纯内存（零值构造的测试桥）
 }
 
 func newAcliPackageCache() *acliPackageCache {
@@ -508,7 +559,29 @@ func (c *acliPackageCache) put(key string, pkg *acliPackage) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items[key] = acliPackageCacheEntry{pkg: pkg, cachedAt: time.Now()}
+	now := time.Now()
+	// TTL 清扫：过期条目不能只在"恰好被 get 命中"时才淘汰，
+	// 否则无人问津的会话包会永驻内存（B9）。
+	for k, entry := range c.items {
+		if now.Sub(entry.cachedAt) > acliPackageCacheTTL {
+			delete(c.items, k)
+		}
+	}
+	// 上限淘汰：丢最旧的，保住最近活跃的会话。
+	for len(c.items) >= acliPackageCacheMaxEntries {
+		oldestKey, oldestAt := "", now
+		for k, entry := range c.items {
+			if entry.cachedAt.Before(oldestAt) {
+				oldestKey, oldestAt = k, entry.cachedAt
+			}
+		}
+		if oldestKey == "" {
+			break
+		}
+		delete(c.items, oldestKey)
+	}
+	c.items[key] = acliPackageCacheEntry{pkg: pkg, cachedAt: now}
+	c.putBaselineLocked(key, pkg, now)
 }
 
 func (c *acliPackageCache) get(key string) *acliPackage {
@@ -517,15 +590,15 @@ func (c *acliPackageCache) get(key string) *acliPackage {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	entry, ok := c.items[key]
-	if !ok {
-		return nil
-	}
-	if time.Since(entry.cachedAt) > acliPackageCacheTTL {
+	if entry, ok := c.items[key]; ok {
+		if time.Since(entry.cachedAt) <= acliPackageCacheTTL {
+			return entry.pkg
+		}
 		delete(c.items, key)
-		return nil
 	}
-	return entry.pkg
+	// 内存未命中（桥重启/被上限淘汰）：凭账本基线恢复"重试安装"的比对依据。
+	// 基线包没有字节（Data=nil），只能做校验基线，不能当上传内容。
+	return c.loadBaselineLocked(key)
 }
 
 func (c *acliPackageCache) drop(key string) {
@@ -535,6 +608,61 @@ func (c *acliPackageCache) drop(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.items, key)
+	if c.store != nil {
+		// 传输失败丢缓存时基线一并作废：下一轮重新下载会重建，
+		// 留着旧基线反而可能让"盘上那份可疑的包"通过比对。
+		_ = c.store.Delete(reconcile.KindAcliBinary, acliBaselineLedgerKey(key))
+	}
+}
+
+// acliBaselineLedgerKey 把会话键映射为账本节点键：与真实节点 IP 的
+// acli_binary 账本（判定用）隔离，互不覆盖。
+func acliBaselineLedgerKey(key string) string { return "pkg-" + key }
+
+// putBaselineLocked 把校验基线落账本（调用方已持锁）。只存元数据不存字节：
+// 20~31MB 的包不进 JSON；落盘失败不推翻已成功的下载，只是少一次重启后的复用。
+func (c *acliPackageCache) putBaselineLocked(key string, pkg *acliPackage, at time.Time) {
+	if c.store == nil {
+		return
+	}
+	_ = c.store.Save(&reconcile.AppliedState{
+		Kind:        reconcile.KindAcliBinary,
+		NodeIP:      acliBaselineLedgerKey(key),
+		DesiredHash: pkg.SHA256,
+		AppliedAt:   at,
+		Evidence: []reconcile.Evidence{
+			reconcile.KV("filename", pkg.Filename),
+			reconcile.KV("size", strconv.FormatInt(pkg.Size, 10)),
+			reconcile.KV("md5", pkg.MD5),
+		},
+	})
+}
+
+// loadBaselineLocked 从账本恢复基线包（调用方已持锁）。TTL 与内存缓存同口径：
+// 官方 latest 可能已换包，过期基线会让重试装回旧版本。
+func (c *acliPackageCache) loadBaselineLocked(key string) *acliPackage {
+	if c.store == nil {
+		return nil
+	}
+	st, err := c.store.Load(reconcile.KindAcliBinary, acliBaselineLedgerKey(key))
+	if err != nil || st == nil || st.DesiredHash == "" {
+		return nil
+	}
+	if time.Since(st.AppliedAt) > acliPackageCacheTTL {
+		return nil
+	}
+	pkg := &acliPackage{SHA256: st.DesiredHash, FetchedAt: st.AppliedAt}
+	for _, ev := range st.Evidence {
+		switch ev.Key {
+		case "filename":
+			pkg.Filename = ev.Value
+		case "size":
+			pkg.Size, _ = strconv.ParseInt(ev.Value, 10, 64)
+		case "md5":
+			pkg.MD5 = ev.Value
+		}
+	}
+	return pkg
 }
 
 // ── 日志字段取值（允许 pkg 为空：install-only 复用时不重新下载）────────────────
@@ -677,11 +805,13 @@ func (b *Bridge) acquireAcliTransfer(key string) (release func(), ok bool) {
 }
 
 // packageCache 惰性初始化缓存（Bridge 可能在测试中零值构造）。
+// 基线账本与 reconcile 状态同目录（PVC/HCI_BRIDGE_LOG_DIR 同源），桥重启不丢。
 func (b *Bridge) packageCache() *acliPackageCache {
 	b.acliMu.Lock()
 	defer b.acliMu.Unlock()
 	if b.acliCache == nil {
 		b.acliCache = newAcliPackageCache()
+		b.acliCache.store = reconcile.NewStore(reconcile.DefaultStateDir())
 	}
 	return b.acliCache
 }

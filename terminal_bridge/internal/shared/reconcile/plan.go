@@ -47,6 +47,12 @@ type CompareOptions struct {
 	// acli 的"版本优先 + 日期兜底 + 禁降级"留在调用方，骨架不认识具体产品。
 	// 为 nil 时 ordered 模式退化为"字符串相等即对齐"，并记 degraded 证据。
 	CompareVersion func(fact NodeFact, want VersionSpec) int
+	// NodeOnly 标识无账本链路（acli_sync）：节点事实是唯一真相。
+	// 节点对齐即 Skip，不为建账本补一次 Apply；期望证据缺失（Probed=false，
+	// 如官方源探测失败/包名解析落空）时降级 Skip 并标 Degraded——不得把
+	// "没判定"伪装成"已是最新"（B6）。唯一例外：ordered 模式下节点版本为空
+	// 是"明确未安装"，无论期望证据是否可得都必须 Install。
+	NodeOnly bool
 }
 
 // Compare 判定期望态与现场事实/账本的差异。
@@ -73,6 +79,15 @@ func Compare(d DesiredState, fact NodeFact, ledger *AppliedState, opts CompareOp
 
 	// 探测失败：字段一律不可信。此时才允许凭账本快速 Skip，但必须标降级。
 	if !fact.Probed {
+		if opts.NodeOnly {
+			if d.Version.Mode == VersionOrdered && strings.TrimSpace(fact.Version) == "" {
+				return Plan{Action: ActionInstall, Reason: "not_installed", Degraded: true, Stage: StageProbe,
+					Evidence: append(ev, KV("degraded", "true"), KV("reason", "not_installed"))}
+			}
+			// 无账本可凭、期望又不可知：降级 Skip，调用方必须如实标注"未做升级判定"。
+			return Plan{Action: ActionSkip, Reason: "probe_failed_no_desired", Degraded: true, Stage: StageProbe,
+				Evidence: append(ev, KV("degraded", "true"), KV("reason", "probe_failed_no_desired"))}
+		}
 		if ledgerAligned {
 			return Plan{Action: ActionSkip, Reason: "probe_failed_ledger_aligned", Degraded: true, Stage: StageProbe,
 				Evidence: append(ev, KV("degraded", "true"), KV("reason", "probe_failed_ledger_aligned"))}
@@ -94,6 +109,11 @@ func Compare(d DesiredState, fact NodeFact, ledger *AppliedState, opts CompareOp
 			Evidence: append(ev, KV("reason", reason))}
 	}
 	if !ledgerAligned {
+		if opts.NodeOnly {
+			// 无账本链路：节点对齐即对齐，不存在"补建账本"的 Apply。
+			return Plan{Action: ActionSkip, Reason: "up_to_date", Stage: StageProbe,
+				Evidence: append(ev, KV("reason", "up_to_date"))}
+		}
 		// 节点已对齐但账本缺失/不符：补一次 Apply 把账本建起来。
 		// 宁可多做一次幂等写入，也不要让"账本丢了"变成永久不可判定的状态。
 		return Plan{Action: ActionInstall, Reason: "ledger_missing_node_aligned", Stage: StageProbe,

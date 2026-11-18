@@ -51,6 +51,7 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 
+	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
 )
 
@@ -584,6 +585,9 @@ type OutMessage struct {
 	// PluginSync 是 acli_sync 第二阶段回执（只读事实，不参与阶段一结论）：
 	// 阶段二失败绝不把已成功的安装整体判失败，反之阶段一失败时阶段二根本不跑。
 	PluginSync *acliPluginStageReceipt `json:"plugin_sync,omitempty"`
+	// Degraded 如实标注"本次结论带降级"（B6：期望证据缺失未做升级判定；
+	// B7：磁盘空间未验证）。只增可选字段，旧前端忽略不受影响。
+	Degraded bool `json:"degraded,omitempty"`
 
 	// ── log_collect_result 专用字段 ──
 	// 进度与探测结果是结构化数据；RAW 保留插件原文，解析失败时前端按原文展示，
@@ -3448,8 +3452,9 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		})
 	}
 
-	// 4. 版本判定（纯函数，见 acliInstallDecision）
-	needInstall, decision := acliInstallDecision(currentVer, currentBuild, remoteVersion, remoteBuild, msg.Force, retryStage)
+	// 4. 版本判定（S4b：descriptor + reconcile.Compare 驱动，见 acliSyncDecision）
+	decisionPlan := acliSyncDecision(currentVer, currentBuild, remoteVersion, remoteBuild, msg.Force, retryStage)
+	needInstall, decision := acliDecisionOutcome(decisionPlan, currentVer, msg.Force)
 	switch decision {
 	case "not_installed":
 		blog("INFO", "acli_sync.not_installed", "HCI 未安装 acli，需要安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
@@ -3482,6 +3487,13 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			"current_build": currentBuild, "remote_build": remoteBuild,
 			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
 		})
+	case "probe_failed":
+		// B6：期望证据缺失（源探测失败/包名解析落空）时不得回"已是最新"。
+		// 旧实现只打一行日志就落进 up_to_date 分支，断网被伪装成最新。
+		blog("WARN", "acli_sync.probe_failed", "期望证据缺失，未做升级判定（可强制更新）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"probe_error": errString(probeErr), "remote_filename": remoteFilename,
+			"current_version": currentVer,
+		})
 	}
 
 	blog("INFO", "acli_sync.version_check", "acli 版本判定完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
@@ -3492,13 +3504,17 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	})
 
 	if !needInstall {
-		blog("INFO", "acli_sync.up_to_date", "acli 已就绪且为最新", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"version": currentVer, "build": currentBuild,
+		blog("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"version": currentVer, "build": currentBuild, "decision": decision, "degraded": decisionPlan.Degraded,
 		})
 		upToDateMessage := "acli 工具已就绪且为最新版本"
-		if remoteFilename != "" && remoteVersion == "" && remoteBuild == "" {
-			// 解析落空时"已是最新"是假结论：如实告知未做升级判定，避免静默失效。
-			upToDateMessage = "acli 已安装；远端包名无法解析，未做升级判定（可强制更新）"
+		if decision == "probe_failed" {
+			// B6："已是最新"是假结论：如实告知未做升级判定，避免静默失效。
+			if probeErr != nil {
+				upToDateMessage = "acli 已安装；官方源探测失败，未做升级判定（可强制更新）"
+			} else {
+				upToDateMessage = "acli 已安装；远端包名无法解析，未做升级判定（可强制更新）"
+			}
 		}
 		// 阶段一成功（无需装工具）→ 紧接阶段二。工具没更新**不代表**插件已是
 		// 平台期望态：admin-ui 可能刚改过规格，差量三态必须每台都重算一遍。
@@ -3523,6 +3539,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			Detail:         fmt.Sprintf("%s (build %s)", currentVer, currentBuild),
 			Message:        upToDateMessage,
 			PluginSync:     pluginReceipt,
+			Degraded:       decisionPlan.Degraded,
 		})
 		blog("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": currentVer, "build": currentBuild,
@@ -3539,17 +3556,20 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	})
 
 	spaceOut, spaceCode, spaceErr := s.runQuickCommand(ctx, "df -P -m /sf/data/local | tail -1 | awk '{print $4}'")
-	var availableMB int64 = 0
-	if spaceCode == 0 && spaceErr == nil {
-		availableMB, _ = strconv.ParseInt(strings.TrimSpace(spaceOut), 10, 64)
-	}
-
 	minDiskMB := defaultMinDiskMB
 	if msg.MinDiskMB > 0 {
 		minDiskMB = msg.MinDiskMB
 	}
+	diskPass, availableMB, diskProbed := acliDiskSpaceDecision(spaceOut, spaceCode, spaceErr, minDiskMB)
+	if !diskProbed {
+		// B7：df 失败/输出不可解析不得静默跳过空间检查：留痕并降级继续安装，
+		// 回执如实标注"空间未验证"。旧实现 availableMB=0 让检查条件短路，无人察觉。
+		blog("WARN", "acli_sync.disk_probe_failed", "磁盘空间探测失败，降级继续安装（可用空间未验证）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"exit_code": spaceCode, "error": errString(spaceErr), "output_preview": formatOutputPreview(spaceOut, 256, 256),
+		})
+	}
 
-	if availableMB > 0 && availableMB < int64(minDiskMB) {
+	if !diskPass {
 		log.Printf("[Bridge] /sf/data/local 空间不足: 当前 %d MB, 要求 %d MB", availableMB, minDiskMB)
 		sendMsg(ws, OutMessage{
 			Type:   "acli_sync_result",
@@ -3660,7 +3680,8 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 
 			// 9.1 拿包：优先复用“只重传”场景下的已校验缓存。
 			if pkg == nil {
-				if cached := cache.get(key); cached != nil && retryStage == "upload" {
+				// 基线包（Data 为空，来自账本恢复）只能做校验基线，不能当上传字节。
+				if cached := cache.get(key); cached != nil && cached.Data != nil && retryStage == "upload" {
 					pkg = cached
 					blog("INFO", "acli_sync.package_reused", "复用已校验的安装包缓存，跳过下载", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 						"size": cached.Size, "sha256": cached.SHA256, "md5": cached.MD5, "filename": cached.Filename,
@@ -3888,15 +3909,19 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		pluginStates := b.verifyClusterPluginLanding(pluginCtx, s)
 		cancelPlugin()
 		installedMessage := "acli 工具安装并集群分发成功！"
+		if !diskProbed {
+			// B7 降级留痕：空间没验过就是没验过，成功回执里如实标注。
+			installedMessage += "\n提示：磁盘空间探测失败，本次安装未验证可用空间。"
+		}
 		if len(pluginStates) > 0 {
-			blog("INFO", "acli_sync.node_plugin_verify", "安装后逐节点校验 log_collect 插件落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			blog("INFO", "acli_sync.node_plugin_verify", "安装后逐节点校验内置插件落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"nodes": pluginStates, "missing": missingPluginNodes(pluginStates),
 			})
 			if missing := missingPluginNodes(pluginStates); len(missing) > 0 {
-				blog("WARN", "acli_sync.node_plugin_missing", "部分节点 log_collect 插件未落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				blog("WARN", "acli_sync.node_plugin_missing", "部分节点内置插件未落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"missing": missing, "nodes": pluginStates,
 				})
-				installedMessage += fmt.Sprintf("\n警示：节点 %s 的 log_collect 插件未落盘，请重试安装。", strings.Join(missing, ", "))
+				installedMessage += fmt.Sprintf("\n警示：节点 %s 的内置插件未落盘（明细见日志），请重试安装。", strings.Join(missing, ", "))
 			}
 		}
 
@@ -3931,6 +3956,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
 			Message:    installedMessage,
 			PluginSync: pluginReceipt,
+			Degraded:   !diskProbed,
 		})
 		blog("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": newVer, "build": newBuild, "key": key,
@@ -6245,8 +6271,33 @@ func compareAcliVersions(a, b string) int {
 	return 0
 }
 
+// acliDiskSpaceDecision 判定磁盘空间是否放行（B7）。
+//
+// 三种结论严格分开：
+//   - 探测成功且空间足够 → pass=true, probed=true；
+//   - 探测成功但空间不足（含 0 MB）→ pass=false，拒绝安装；
+//   - 探测失败/输出不可解析 → pass=true, probed=false：降级继续，
+//     但调用方必须 WARN 留痕并在回执标注"空间未验证"。
+//
+// 旧实现的 availableMB>0 条件把"df 失败"与"真的 0 空间"都短路成跳过：
+// 前者静默漏检（B7），后者更是把明确的空间不足放了过去。
+func acliDiskSpaceDecision(out string, exitCode int, runErr error, minDiskMB int) (pass bool, availableMB int64, probed bool) {
+	if exitCode != 0 || runErr != nil {
+		return true, 0, false
+	}
+	mb, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil || mb < 0 {
+		return true, 0, false
+	}
+	return mb >= int64(minDiskMB), mb, true
+}
+
 // acliInstallDecision 判定是否需要安装/升级，返回 (needInstall, 留痕事件名)。
-// 事件名空串表示"无结论性事件"（已最新或解析落空保守跳过）。
+// 事件名空串表示"无结论性事件"（已最新）；probe_failed 表示期望证据缺失、
+// 未做升级判定（B6：不得回"已是最新"）。
+//
+// S4b：判定本体拆到 acliSyncDecision（descriptor + reconcile.Compare 驱动），
+// 这里只做 Plan → 既有事件名的映射，blog switch 与旧单测的判定名不变。
 //
 // 判序优先级（第一性原理：用最直接的权威信号，代理信号只做兜底）：
 //  1. 版本号：新包名携带 semver，本地 `acli --version` 同源可比。版本不同直接定序——
@@ -6255,27 +6306,86 @@ func compareAcliVersions(a, b string) int {
 //  2. 打包日期：仅同版本（或任一侧版本解析落空但日期可得）时比日期，沿用
 //     remoteBuildNewer/sameBuildDate 的既定语义——编译时间与打包时间不同源，
 //     同日视为同一版本，同日重打包不自动升级（可 force）；
-//  3. 都解析不出：保守跳过（降级安全方向），调用方负责 WARN 留痕。
+//  3. 都解析不出：降级 Skip（降级安全方向），调用方负责 WARN 留痕。
 //
 // 未安装 / force / 显式重试是强制信号，先于一切判序。
 func acliInstallDecision(currentVer, currentBuild, remoteVersion, remoteBuild string, force bool, retryStage string) (bool, string) {
-	switch {
-	case currentVer == "":
-		return true, "not_installed"
-	case force:
-		return true, "force_install"
-	case retryStage != "all":
-		return true, "retry_requested"
-	case remoteVersion != "" && compareAcliVersions(currentVer, remoteVersion) < 0:
-		return true, "version_outdated"
-	case remoteVersion != "" && compareAcliVersions(currentVer, remoteVersion) > 0:
-		return false, "downgrade_blocked"
-	case remoteBuild != "" && currentBuild != "" && remoteBuildNewer(currentBuild, remoteBuild):
-		return true, "version_outdated"
-	case remoteBuild != "" && currentBuild != "" && !sameBuildDate(currentBuild, remoteBuild):
-		return false, "downgrade_blocked"
+	plan := acliSyncDecision(currentVer, currentBuild, remoteVersion, remoteBuild, force, retryStage)
+	return acliDecisionOutcome(plan, currentVer, force)
+}
+
+// acliSyncDecision 构造期望态 descriptor + 节点事实，把三态判定委托给
+// reconcile.Compare（S4b：判定不再是一串手写 switch，而是骨架驱动）。
+//
+// acli 无账本：NodeOnly 让节点事实成为唯一真相。remoteVersion/remoteBuild
+// 全空 = 期望证据缺失（官方源探测失败或包名解析落空），Probed=false，
+// Compare 降级 Skip 并标 Degraded——断网/源站故障不得被伪装成"已是最新"（B6）。
+func acliSyncDecision(currentVer, currentBuild, remoteVersion, remoteBuild string, force bool, retryStage string) reconcile.Plan {
+	d := reconcile.DesiredState{
+		Kind: reconcile.KindAcliBinary,
+		Version: reconcile.VersionSpec{
+			Mode:     reconcile.VersionOrdered,
+			Expected: remoteVersion,
+			Build:    remoteBuild,
+		},
 	}
-	return false, ""
+	fact := reconcile.NodeFact{
+		Probed:    remoteVersion != "" || remoteBuild != "",
+		Version:   currentVer,
+		BuildTime: currentBuild,
+	}
+	return reconcile.Compare(d, fact, nil, reconcile.CompareOptions{
+		NodeOnly: true,
+		Force:    force || retryStage != "all",
+		CompareVersion: func(f reconcile.NodeFact, want reconcile.VersionSpec) int {
+			// 版本优先：版本不同直接定序（旧版本新日期重打包不得降级）。
+			if want.Expected != "" {
+				if c := compareAcliVersions(f.Version, want.Expected); c != 0 {
+					return c
+				}
+			}
+			// 日期兜底：两侧日期可得才判；同日视为同版本；本地更新禁降级。
+			if want.Build != "" && f.BuildTime != "" {
+				if remoteBuildNewer(f.BuildTime, want.Build) {
+					return -1
+				}
+				if !sameBuildDate(f.BuildTime, want.Build) {
+					return 1
+				}
+			}
+			return 0
+		},
+	})
+}
+
+// acliDecisionOutcome 把 Plan 映射回既有 (needInstall, 事件名)。
+// 未安装优先于 force 的旧判序在这里保住：Compare 的 Force 先行，
+// 但"未安装 + force"的留痕事件仍必须是 not_installed。
+func acliDecisionOutcome(plan reconcile.Plan, currentVer string, force bool) (bool, string) {
+	switch plan.Action {
+	case reconcile.ActionInstall:
+		switch plan.Reason {
+		case "not_installed":
+			return true, "not_installed"
+		case "force":
+			if currentVer == "" {
+				return true, "not_installed"
+			}
+			if force {
+				return true, "force_install"
+			}
+			return true, "retry_requested"
+		default:
+			return true, plan.Reason // version_outdated 等
+		}
+	case reconcile.ActionBlockedDowngrade:
+		return false, "downgrade_blocked"
+	default: // Skip
+		if plan.Reason == "probe_failed_no_desired" {
+			return false, "probe_failed"
+		}
+		return false, ""
+	}
 }
 
 // normalizeOutputText 把命令输出规整为合法 UTF-8。

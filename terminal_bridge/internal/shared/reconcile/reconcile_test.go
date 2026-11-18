@@ -245,6 +245,51 @@ func TestCompareProbeFailureDegradedSkip(t *testing.T) {
 	}
 }
 
+// NodeOnly（acli_sync 无账本链路）：节点事实是唯一真相，
+// 期望证据缺失时降级 Skip 而非假"已是最新"（B6）。
+func TestCompareNodeOnlySemantics(t *testing.T) {
+	d := baseDesired(inlineFile("/sf/a.acli", 8))
+	d.Kind = KindAcliBinary
+	d.Version = VersionSpec{Mode: VersionOrdered, Expected: "1.0.3"}
+	norm, _, _ := Normalize(d)
+	opts := CompareOptions{NodeOnly: true, CompareVersion: func(fact NodeFact, want VersionSpec) int {
+		if fact.Version == want.Expected {
+			return 0
+		}
+		return -1
+	}}
+
+	// 节点对齐 + 无账本：直接 Skip，不为建账本补 Apply（否则 acli 每次登录都重装）。
+	plan := Compare(norm, NodeFact{Probed: true, Version: "1.0.3"}, nil, opts)
+	if plan.Action != ActionSkip || plan.Reason != "up_to_date" || plan.Degraded {
+		t.Fatalf("NodeOnly 节点对齐应无降级 Skip，实际 %+v", plan)
+	}
+
+	// 期望证据缺失（Probed=false）+ 已安装：降级 Skip，绝不回"已是最新"。
+	plan = Compare(norm, NodeFact{Probed: false, Version: "1.0.0"}, nil, opts)
+	if plan.Action != ActionSkip || !plan.Degraded || plan.Reason != "probe_failed_no_desired" || plan.Stage != StageProbe {
+		t.Fatalf("期望缺失应降级 Skip 并留证，实际 %+v", plan)
+	}
+
+	// 期望缺失但明确未安装：仍须 Install（不能因源站故障把"没装"也跳过）。
+	plan = Compare(norm, NodeFact{Probed: false}, nil, opts)
+	if plan.Action != ActionInstall || plan.Reason != "not_installed" || !plan.Degraded {
+		t.Fatalf("未安装不受期望缺失影响，实际 %+v", plan)
+	}
+
+	// force 先行：期望缺失也拦不住用户显式意图。
+	forceOpts := opts
+	forceOpts.Force = true
+	if plan = Compare(norm, NodeFact{Probed: false, Version: "1.0.0"}, nil, forceOpts); plan.Action != ActionInstall {
+		t.Fatalf("force 应无条件 Install，实际 %+v", plan)
+	}
+
+	// 节点落后：照常 Install（NodeOnly 不影响差量判定）。
+	if plan = Compare(norm, NodeFact{Probed: true, Version: "1.0.0"}, nil, opts); plan.Action != ActionInstall || plan.Reason != "version_outdated" {
+		t.Fatalf("节点落后应 Install，实际 %+v", plan)
+	}
+}
+
 func TestCompareOrderedVersionAndDowngradeBlock(t *testing.T) {
 	d := baseDesired(inlineFile("/sf/a.acli", 8))
 	d.Kind = KindAcliBinary

@@ -35,11 +35,14 @@ func TestGuardAcquireRejectsConcurrentSameHost(t *testing.T) {
 
 // TestGuardConcurrentAcquireExactlyOneWins 竞态用例：50 个执行者同时抢同一主机，
 // 必须恰好一个成功。用 map+mutex 而不是 channel 时最容易写出"两个都拿到锁"。
+// 胜者必须持锁到所有尝试者都完成：只持固定短时长时，慢调度（-race/drvfs）下
+// 后来者会在释放后合法再抢到，wins>1 是时序现象而非互斥失效，用例必须排除它。
 func TestGuardConcurrentAcquireExactlyOneWins(t *testing.T) {
 	guard := NewGuard("")
 	var wins, busy int32
 	var wg sync.WaitGroup
 	start := make(chan struct{})
+	attempts := make(chan struct{}, 50)
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func() {
@@ -48,13 +51,25 @@ func TestGuardConcurrentAcquireExactlyOneWins(t *testing.T) {
 			release, err := guard.Acquire("acli_binary@172.28.25.1")
 			if err == nil {
 				atomic.AddInt32(&wins, 1)
-				time.Sleep(5 * time.Millisecond)
+				// 持锁到其余 49 个尝试者全部结束，保证"同一时刻"覆盖整个竞争窗口。
+				// 带超时：若互斥真失效出现多个胜者，信号凑不齐时干净失败而非挂死。
+				deadline := time.After(10 * time.Second)
+				for j := 0; j < 49; j++ {
+					select {
+					case <-attempts:
+					case <-deadline:
+						t.Errorf("胜者等待尝试者超时：疑似多个执行者同时拿到锁")
+						release()
+						return
+					}
+				}
 				release()
 				return
 			}
 			if errors.Is(err, ErrBusy) {
 				atomic.AddInt32(&busy, 1)
 			}
+			attempts <- struct{}{}
 		}()
 	}
 	close(start)
