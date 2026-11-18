@@ -324,3 +324,30 @@ func TestUploadStreamDeadCodeRemoved(t *testing.T) {
 		}
 	}
 }
+
+// TestAcliSyncConsumerGoesThroughPrimitives S4a 验收：acli_sync 三段内部
+// 实现必须真的走原语/骨架，而不是"原语建好了、链路还在自己手写并发/分轨"。
+// 外壳（事件名/预算/retry_stage）不在本守卫范围：那是 S4b 的事。
+func TestAcliSyncConsumerGoesThroughPrimitives(t *testing.T) {
+	data, err := os.ReadFile("acli_package.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "remote.RunSplit(ctx, newSSHRunner(s), outcome.Command)") {
+		t.Error("installAcliPackage 必须经 remote.RunSplit 分轨执行（S4a）")
+	}
+	if !strings.Contains(src, "fanout.Each(ctx, targets,") {
+		t.Error("verifyClusterPluginLanding 必须经 reconcile.Fanout.Each 编排（S4a）")
+	}
+	if strings.Contains(src, "sem := make(chan struct{}, spcFanoutConcurrency)") {
+		t.Error("逐节点校验不得再手写 sem/wg 并发（唯一编排实现是 reconcile.Fanout）")
+	}
+	mainSrc, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mainSrc), "remote.Run(ctx, newSSHRunner(s), \"uname -m\")") {
+		t.Error("架构探测必须经 remote.Run 执行（S4a）")
+	}
+}

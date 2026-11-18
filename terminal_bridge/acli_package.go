@@ -38,6 +38,7 @@ import (
 	"sync"
 	"time"
 
+	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
 )
 
@@ -376,15 +377,15 @@ type acliInstallOutcome struct {
 //
 // 为什么必须分离 stdout/stderr：安装器的进度条走 stdout、真正的失败原因常常
 // 只出现在 stderr；合并成一个字符串后，"退出码非零但看起来全是进度条"就无法解释。
+// S4a：分轨执行委托 remote.RunSplit（唯一分轨实现），命令与结论语义不变。
 func installAcliPackage(ctx context.Context, s *SSHSession, destPath string) acliInstallOutcome {
 	outcome := acliInstallOutcome{Command: buildAcliInstallCommand(destPath)}
-	start := time.Now()
-	stdout, stderr, code, err := s.runQuickCommandStreams(ctx, outcome.Command)
-	outcome.DurationMS = time.Since(start).Milliseconds()
-	outcome.Stdout = stdout
-	outcome.Stderr = stderr
-	outcome.ExitCode = code
-	outcome.Err = err
+	res := remote.RunSplit(ctx, newSSHRunner(s), outcome.Command)
+	outcome.DurationMS = res.Duration.Milliseconds()
+	outcome.Stdout = res.Stdout
+	outcome.Stderr = res.Stderr
+	outcome.ExitCode = res.ExitCode
+	outcome.Err = res.Err
 	return outcome
 }
 
@@ -432,35 +433,41 @@ type nodePluginState struct {
 // verifyClusterPluginLanding 安装后逐节点校验 log_collect 插件是否落盘。
 //
 // 为什么必须逐节点：安装器退出码 0 只代表发起节点装好了；集群分发可能静默
-// 留下空目录（Q2026111700614 现场 47 个空目录被"安装成功"掩盖）。复用 spc
-// 扇出的主机执行原语：本机直连当前会话，其余节点走 BatchMode ssh。
+// 留下空目录（Q2026111700614 现场 47 个空目录被"安装成功"掩盖）。
+// S4a：并发编排委托 reconcile.Fanout.Each（与 spc 同一套骨架），
+// 探测命令与判定语义不变；HostTimeout 取负禁用主机级超时，
+// 单条命令的 30s 预算已在 runSpcOnHostStreams 内部强制（与旧实现一致）。
 func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *SSHSession) []nodePluginState {
 	hosts := s.spcNodeList(ctx)
 	if len(hosts) == 0 {
 		return nil
 	}
 	localIPs := s.spcLocalAddresses(ctx)
-	states := make([]nodePluginState, len(hosts))
-	sem := make(chan struct{}, spcFanoutConcurrency)
-	var wg sync.WaitGroup
-	for index, host := range hosts {
-		wg.Add(1)
-		go func(index int, ip string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			stdout, stderr, _, err := s.runSpcOnHostStreams(ctx, ip, localIPs[ip], buildPluginProbeCommand())
-			state := nodePluginState{IP: ip, Present: parsePluginProbeResult(stdout)}
-			if !state.Present {
-				state.Detail = strings.TrimSpace(stderr)
-				if err != nil {
-					state.Detail = err.Error()
-				}
-			}
-			states[index] = state
-		}(index, host.IP)
+	targets := make([]string, 0, len(hosts))
+	for _, host := range hosts {
+		targets = append(targets, host.IP)
 	}
-	wg.Wait()
+	fanout := reconcile.Fanout{Concurrency: spcFanoutConcurrency, HostTimeout: -1, BatchMode: true}
+	results := fanout.Each(ctx, targets, func(ctx context.Context, ip string) reconcile.HostResult {
+		stdout, stderr, _, err := s.runSpcOnHostStreams(ctx, ip, localIPs[ip], buildPluginProbeCommand())
+		state := nodePluginState{IP: ip, Present: parsePluginProbeResult(stdout)}
+		if !state.Present {
+			state.Detail = strings.TrimSpace(stderr)
+			if err != nil {
+				state.Detail = err.Error()
+			}
+		}
+		return reconcile.HostResult{Host: ip, Value: state}
+	})
+	states := make([]nodePluginState, 0, len(results))
+	for _, result := range results {
+		if state, ok := result.Value.(nodePluginState); ok {
+			states = append(states, state)
+			continue
+		}
+		// 动作未执行（ busy 等骨架结论）：如实报未落盘，不静默当成成功。
+		states = append(states, nodePluginState{IP: result.Host, Detail: result.ErrorDetail})
+	}
 	return states
 }
 

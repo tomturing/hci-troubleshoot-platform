@@ -3390,8 +3390,9 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		Message: "正在检测 HCI 硬件架构与当前 acli 状态...",
 	})
 
-	// 1. 判定架构
-	archOut, exitCode, err := s.runQuickCommand(ctx, "uname -m")
+	// 1. 判定架构（S4a：执行机制换 remote.Run，命令与判定语义逐字不动）
+	archRes := remote.Run(ctx, newSSHRunner(s), "uname -m")
+	archOut, exitCode, err := archRes.Stdout, archRes.ExitCode, archRes.Err
 	if err != nil || exitCode != 0 {
 		sendMsg(ws, OutMessage{
 			Type:    "acli_sync_result",
@@ -3429,7 +3430,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 	// 与日志收集面板的 probe 共用同一命令：版本判定与界面展示必须同源，
 	// 否则会出现「面板显示 1.0.1 却每次登录都判定落后并重装」的错位。
 	versionCmd := buildAcliVersionCommand()
-	verOut, _, _ := s.runQuickCommand(ctx, versionCmd)
+	verOut := remote.Run(ctx, newSSHRunner(s), versionCmd).Stdout
 	currentVer, currentBuild := parseAcliVersion(verOut)
 	currentBinary := parseAcliBinary(verOut)
 
@@ -3873,8 +3874,9 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 
 	// 11. 验证安装成果
 	verifyCtx, cancelVerify := context.WithTimeout(ctx, acliVerifyTimeout)
-	verifyOut, verifyCode, _ := s.runQuickCommand(verifyCtx, versionCmd)
+	verifyRes := remote.Run(verifyCtx, newSSHRunner(s), versionCmd)
 	cancelVerify()
+	verifyOut, verifyCode := verifyRes.Stdout, verifyRes.ExitCode
 	newVer, newBuild := parseAcliVersion(verifyOut)
 	if verifyCode == 0 && newVer != "" {
 		log.Printf("[Bridge] acli 安装成功且已验证: ver=%s build=%s key=%s", newVer, newBuild, key)
