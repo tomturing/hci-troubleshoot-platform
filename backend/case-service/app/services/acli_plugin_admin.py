@@ -1,8 +1,9 @@
 """acli 插件管理端服务：保存配置即创建下发任务。
 
-职责：把 admin-ui 提交的插件规格收敛成不可变 revision，写入事实源，并创建
-``pending`` 下发任务交给 ``AcliPluginDeployRelay``。页面只传规格与环境代号，
-不传 node_ip / 凭据 / bridge 地址；环境表里的目标是服务端解析的。
+职责：把 admin-ui 提交的插件规格收敛成不可变 revision，写入事实源，创建
+``pending`` 下发任务，并把**部署命令**一并返回给页面——执行由持有 SSH 会话的
+浏览器在桥连接上完成（与 acli_sync / log_collect 同一模型），服务端不连桥。
+页面只传规格与会话标识，不传口令 / 私钥 / bridge 地址。
 
 幂等：同一 ``spec_hash`` + 环境已有进行中或已成功且 ``current_spec_hash``
 已对齐的任务时，直接返回原 ``deploy_id``，不重复写 HCI。
@@ -61,6 +62,8 @@ def prepare_publication(
         "actor": actor,
         "smoke_command": descriptor["smoke_command"],
         "verify_commands": descriptor["verify_commands"],
+        # 设备侧部署命令（大脚本已按分片切成多条），由浏览器逐条执行。
+        "deploy_commands": descriptor.get("deploy_commands") or [descriptor["deploy_command"]],
     }
 
 
@@ -208,12 +211,14 @@ class AcliPluginAdminStore:
                 (
                     """
                     INSERT INTO acli_plugin_deployment
-                        (deploy_id, plugin_name, revision, spec_hash, env_code, node_ip, status)
+                        (deploy_id, plugin_name, revision, spec_hash, env_code, node_ip,
+                         status, exec_id, trace_id)
                     SELECT CAST(:deploy_id AS varchar), CAST(:plugin_name AS varchar),
                            COALESCE((SELECT MAX(revision) FROM acli_plugin_spec
                                       WHERE spec_hash = CAST(:revision_spec_hash AS varchar)), 1),
                            CAST(:spec_hash AS varchar), CAST(:env_code AS varchar),
-                           CAST(:node_ip AS varchar), 'pending'
+                           CAST(:node_ip AS varchar), 'pending',
+                           CAST(:exec_id AS varchar), CAST(:trace_id AS varchar)
                     RETURNING deploy_id, status
                     """,
                     {
@@ -223,6 +228,8 @@ class AcliPluginAdminStore:
                         "spec_hash": spec_hash,
                         "env_code": env_code,
                         "node_ip": env["node_ip"],
+                        "exec_id": str(prepared.get("exec_id") or ""),
+                        "trace_id": str(prepared.get("trace_id") or ""),
                     },
                 ),
             ]
@@ -234,6 +241,62 @@ class AcliPluginAdminStore:
             "idempotent": False,
             "env_code": env_code,
         }
+
+    async def finish_reported(
+        self,
+        deploy_id: str,
+        *,
+        status: str,
+        verification: dict[str, Any],
+        bridge_result: dict[str, Any],
+        error_code: str,
+        error_message: str,
+    ) -> dict[str, Any] | None:
+        """写入浏览器回报的终态；已终结的任务不再覆盖（幂等）。"""
+        await self._script(
+            [
+                (
+                    """
+                    UPDATE acli_plugin_deployment
+                       SET status = :status,
+                           verification = CAST(:verification AS jsonb),
+                           bridge_result = CAST(:bridge_result AS jsonb),
+                           error_code = :error_code,
+                           error_message = :error_message,
+                           finished_at = now()
+                     WHERE deploy_id = :deploy_id
+                       AND status IN ('pending', 'claimed', 'running')
+                    """,
+                    {
+                        "deploy_id": deploy_id,
+                        "status": status,
+                        "verification": json.dumps(verification, ensure_ascii=False),
+                        "bridge_result": json.dumps(bridge_result, ensure_ascii=False),
+                        "error_code": error_code[:64],
+                        "error_message": error_message[:2000],
+                    },
+                )
+            ]
+        )
+        return await self.get_deployment(deploy_id)
+
+    async def mark_plugin_succeeded(self, plugin_name: str, spec_hash: str) -> None:
+        """只有设备侧自检通过后才推进 current_spec_hash。"""
+        await self._script(
+            [
+                (
+                    """
+                    UPDATE acli_plugin
+                       SET current_spec_hash = :spec_hash,
+                           last_deploy_status = 'succeeded',
+                           last_deploy_at = now(),
+                           updated_at = now()
+                     WHERE plugin_name = :plugin_name
+                    """,
+                    {"plugin_name": plugin_name, "spec_hash": spec_hash},
+                )
+            ]
+        )
 
     async def list_plugins(self) -> list[dict[str, Any]]:
         rows = await self._script(

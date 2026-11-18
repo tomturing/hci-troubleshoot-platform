@@ -1,9 +1,10 @@
 /**
  * acli 插件管理端 API。
  *
- * 契约边界：页面只提交「插件规格 spec + 已登录 SSH 会话」。
- * 目标节点、SSH 凭据、bridge 地址与部署命令全部由平台服务端托管，
- * 这里不定义、不发送、不接收这些字段（服务端白名单会直接拒绝）。
+ * 契约边界：页面提交「插件规格 spec + 已登录 SSH 会话标识」，服务端返回
+ * **部署命令**与规格摘要；命令的**执行**由页面经 `acliPluginBridge` 直接发到桥
+ * （与 customer-ui 的 acli_sync / log_collect 同一条链路），执行结果再回报给服务端落库。
+ * 页面始终不接触 SSH 口令/私钥，也不新建 SSH 连接。
  *
  * 鉴权走管理端 JWT，由网关 `require_admin` 校验后重签内部令牌。
  */
@@ -65,7 +66,7 @@ export interface AcliPluginTemplateResponse {
   forbidden_fields: string[]
 }
 
-/** custom-ui + terminal_bridge 当前已登录的 SSH 会话（可下发目标）。 */
+/** 桥（terminal_bridge）上当前已登录的 SSH 会话（可下发目标），由 `acliPluginBridge` 直读。 */
 export interface AcliPluginSession {
   case_id: string
   node_ip: string
@@ -104,21 +105,27 @@ export interface AcliPluginDeployment {
   finished_at: string | null
 }
 
+/** 服务端返回的部署计划：命令文本 + 摘要，执行权在浏览器侧。 */
+export interface AcliPluginDeployPlan {
+  exec_id: string
+  trace_id: string
+  commands: string[]
+  timeout_seconds: number
+  case_id: string
+  node_ip: string
+}
+
 export interface PublishResult {
   deploy_id: string
   spec_hash: string
   status: string
   idempotent: boolean
+  plan?: AcliPluginDeployPlan
 }
 
 export async function getTemplate(): Promise<AcliPluginTemplateResponse> {
   const { data } = await client.get(`${BASE}/templates`)
   return data as AcliPluginTemplateResponse
-}
-
-export async function listSessions(): Promise<AcliPluginSession[]> {
-  const { data } = await client.get(`${BASE}/sessions`)
-  return (data?.sessions ?? []) as AcliPluginSession[]
 }
 
 export async function listPlugins(): Promise<AcliPluginItem[]> {
@@ -127,13 +134,40 @@ export async function listPlugins(): Promise<AcliPluginItem[]> {
 }
 
 /** 保存配置并自动下发；返回 deploy_id 用于页面轮询状态。 */
-export async function publishPlugin(spec: AcliPluginSpec, session: { caseId: string; nodeIp: string }): Promise<PublishResult> {
+export async function publishPlugin(
+  spec: AcliPluginSpec,
+  session: { caseId: string; nodeIp: string },
+  force = false,
+): Promise<PublishResult> {
   const { data } = await client.post(`${BASE}/plugins`, {
     spec,
     case_id: session.caseId,
     node_ip: session.nodeIp,
+    force,
   })
   return data as PublishResult
+}
+
+export interface AcliPluginReportPayload {
+  exec_id: string
+  exit_code: number
+  stdout: string
+  stderr: string
+  timed_out: boolean
+  duration_ms: number
+  bridge_instance_id: string
+}
+
+/** 浏览器执行完部署命令后回报结果；服务端解析设备侧 ACP_RESULT 后落终态。 */
+export async function reportDeployResult(
+  deployId: string,
+  payload: AcliPluginReportPayload,
+): Promise<AcliPluginDeployment> {
+  const { data } = await client.post(
+    `${BASE}/deployments/${encodeURIComponent(deployId)}/result`,
+    payload,
+  )
+  return data?.deployment as AcliPluginDeployment
 }
 
 export async function listDeployments(pluginName: string, limit = 50): Promise<AcliPluginDeployment[]> {

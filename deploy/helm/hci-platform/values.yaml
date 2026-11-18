@@ -224,25 +224,6 @@ apiGateway:
 
 # ======================== Case Service ======================================
 caseService:
-  # ======================== acli 插件管理（服务端编排） ========================
-  # 管理员在 admin-ui 保存插件规格后，由 case-service 主动连 terminal_bridge 下发；
-  # 页面不接触 bridge 地址、目标节点与 SSH 凭据。
-  acliPlugin:
-    relayEnabled: true
-    # 生产走集群内 terminal-bridge Service（cluster 模式允许空 Origin 的服务端客户端）；
-    # dev 若只有 Windows desktop bridge 可达，用环境级 override 指向该地址，
-    # 但连接发起方仍是 case-service，不是浏览器。
-    bridgeUrl: "ws://terminal-bridge:9999"
-    # 凭据 JSON 由运维预建的 Secret 注入（{"24": {"auth_type": "key", ...}}）。
-    # 留空表示不注入，服务端下发任务会明确报 credential_missing，不会静默失败。
-    # 口令认证只填去掉 sangfornetwork 后缀的前缀；明文绝不写入 values 或 ConfigMap。
-    credentialsSecret: ""
-    credentialsSecretKey: "credentials.json"
-    credentialsFile: ""
-    deployTimeoutSeconds: 180
-    relayIntervalSeconds: 5
-    leaseSeconds: 180
-    maxAttempts: 3
   replicaCount: 1
   # helm-unittest 单文件渲染时需要关掉：checksum 是跨文件 include，
   # 测试只加载 case-service/deployment.yaml 会因找不到 configmap.yaml 而失败。
@@ -578,9 +559,6 @@ terminalBridge:
   # 通过 NetworkPolicy 静默放行真实 HCI 网段。
   networkPolicy:
     enabled: true
-    # case-service 作为服务端 WS 客户端直连 bridge（不经浏览器）。默认放行，
-    # 但只按 Pod label 放行一个来源，不放行整个命名空间。
-    caseServiceIngressEnabled: true
     # 真实 HCI 的 SSH 出站白名单。默认空 = 不放行任何真实网段（最小权限）；
     # dev 验证时用环境专属 override 填 [{"cidr":"172.28.24.1/32","port":22}]，
     # 不要把现场地址写进会同步到所有环境的公共 values。

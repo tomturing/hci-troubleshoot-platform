@@ -54,13 +54,16 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: "放行 case-service 服务端直连，默认不放行任何真实 HCI 网段"
+  - it: "不再放行 case-service 直连（执行权在浏览器），默认也不放行任何真实 HCI 网段"
     set:
       terminalBridge.enabled: true
     asserts:
-      - equal:
-          path: spec.ingress[2].from[0].podSelector.matchLabels["app.kubernetes.io/name"]
-          value: case-service
+      # 入站只剩 Traefik（同源入口）与 Prometheus（抓取）两条。
+      # 插件下发由浏览器经 /terminal-bridge 执行，服务端不再持有一条到桥的网络路径；
+      # 若有人把 case-service 入站加回来，这条断言会立刻失败。
+      - lengthEqual:
+          path: spec.ingress
+          count: 2
       # hciSshCidrs 默认空：egress 只有 DNS / hci-sim / Tempo / api-gateway 四条，
       # 真实 HCI 出站必须由环境专属 override 显式登记。
       - lengthEqual:
