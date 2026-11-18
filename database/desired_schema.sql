@@ -4322,7 +4322,7 @@ CREATE INDEX IF NOT EXISTS idx_dsh_diagnosis_session_activity
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS acli_plugin_environment (
-    env_code varchar(32) NOT NULL,
+    env_code varchar(128) NOT NULL,
     display_name varchar(128) NOT NULL DEFAULT '',
     node_ip varchar(64) NOT NULL,
     ssh_port integer NOT NULL DEFAULT 22,
@@ -4372,7 +4372,7 @@ CREATE TABLE IF NOT EXISTS acli_plugin_deployment (
     plugin_name varchar(64) NOT NULL,
     revision integer NOT NULL,
     spec_hash varchar(64) NOT NULL,
-    env_code varchar(32) NOT NULL,
+    env_code varchar(128) NOT NULL,
     node_ip varchar(64) NOT NULL DEFAULT '',
     status varchar(24) NOT NULL DEFAULT 'pending',
     lease_owner varchar(128) NOT NULL DEFAULT '',
@@ -4391,6 +4391,32 @@ CREATE TABLE IF NOT EXISTS acli_plugin_deployment (
 COMMENT ON TABLE acli_plugin_deployment IS 'acli 插件下发任务；租约/重试/回执正交，按 exec_id 与 bridge 日志对齐';
 
 CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_status ON acli_plugin_deployment (status, created_at DESC);
+-- 2026-11-18（P-1⑤）：env_code 可能承载 128 字符的 case_id。
+-- CREATE TABLE IF NOT EXISTS **不会**修正已存在的旧表（#1508 存活期内初始化的库
+-- 至今仍是 varchar(32)，改上面的常量只在全新环境生效），必须显式 ALTER；
+-- 用 DO 块 + schema 过滤保证脚本可重复执行。
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'acli_plugin_deployment'
+           AND column_name = 'env_code'
+           AND character_maximum_length < 128
+    ) THEN
+        ALTER TABLE acli_plugin_deployment ALTER COLUMN env_code TYPE varchar(128);
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'acli_plugin_environment'
+           AND column_name = 'env_code'
+           AND character_maximum_length < 128
+    ) THEN
+        ALTER TABLE acli_plugin_environment ALTER COLUMN env_code TYPE varchar(128);
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_hash ON acli_plugin_deployment (spec_hash, env_code);
 CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_plugin ON acli_plugin_deployment (plugin_name, created_at DESC);
 

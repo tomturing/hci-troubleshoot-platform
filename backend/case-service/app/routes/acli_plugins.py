@@ -59,6 +59,10 @@ class PublishRequest(BaseModel):
     spec: dict[str, Any]
     case_id: str = Field(default="", max_length=128)
     node_ip: str = Field(default="", max_length=64)
+    # acli 重装会清空插件目录，而节点当前态无法用服务端幂等表达。
+    # force=True 跳过"succeeded 且 current_spec_hash 对齐"的幂等命中，
+    # 让管理员在节点被清空后能把同一规格重新发下去。
+    force: bool = False
 
 
 def _bad_request(errors: list[str]) -> HTTPException:
@@ -121,6 +125,7 @@ async def publish_plugin(
         )
         prepared["target_case_id"] = body.case_id.strip()
         prepared["target_node_ip"] = body.node_ip.strip()
+        prepared["force"] = body.force
     except SpecValidationError as exc:
         raise _bad_request(exc.errors) from exc
     except AdminValidationError as exc:

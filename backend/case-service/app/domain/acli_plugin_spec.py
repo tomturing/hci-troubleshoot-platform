@@ -59,9 +59,7 @@ MANIFEST_REQUIRED_FIELDS = frozenset(
         "hash",
     }
 )
-REGISTER_REQUIRED_FIELDS = frozenset(
-    {"id", "name", "version", "status", "source", "built_in", "last_updated_at"}
-)
+REGISTER_REQUIRED_FIELDS = frozenset({"id", "name", "version", "status", "source", "built_in", "last_updated_at"})
 
 # 页面提交体里出现这些键即视为契约破坏：运行环境不属于插件规格。
 FORBIDDEN_SPEC_FIELDS = frozenset(
@@ -216,12 +214,7 @@ def _printf_arg(text: str) -> str:
     ``%b`` 会解释反斜杠转义，因此先转义反斜杠本身与常见控制字符；
     单引号与其余 shell 元字符交给 ``shlex.quote``。
     """
-    escaped = (
-        text.replace("\\", "\\\\")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t")
-    )
+    escaped = text.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     return shlex.quote(escaped)
 
 
@@ -409,14 +402,18 @@ def build_files(spec: Mapping[str, Any], wrapper: str) -> list[dict[str, str]]:
     # 内置覆盖只替换 extra_files 声明的脚本：原 wrapper、bin 与其他出厂资产
     # 原样保留，目录结构与出厂完全一致（不写 stub、不创建空 bin 目录）。
     builtin = str(spec.get("update_mode") or "") == "builtin_override"
-    files: list[dict[str, str]] = [] if builtin else [
-        {"path": f"{name}/plugin", "mode": "0755", "content": wrapper},
-        {
-            "path": f"{name}/bin/{spec['script_filename']}",
-            "mode": "0755" if interpreter == "bash" else "0644",
-            "content": str(spec["script_content"]),
-        },
-    ]
+    files: list[dict[str, str]] = (
+        []
+        if builtin
+        else [
+            {"path": f"{name}/plugin", "mode": "0755", "content": wrapper},
+            {
+                "path": f"{name}/bin/{spec['script_filename']}",
+                "mode": "0755" if interpreter == "bash" else "0644",
+                "content": str(spec["script_content"]),
+            },
+        ]
+    )
     for extra in spec.get("extra_files") or []:
         files.append(
             {
@@ -433,9 +430,7 @@ def build_files(spec: Mapping[str, Any], wrapper: str) -> list[dict[str, str]]:
 def build_manifest(spec: Mapping[str, Any], files: list[dict[str, str]]) -> dict[str, Any]:
     name = str(spec["plugin_name"])
     hashes = {
-        item["path"][len(name) + 1 :]: item["sha256"]
-        for item in files
-        if item["path"] != f"{name}/manifest.json"
+        item["path"][len(name) + 1 :]: item["sha256"] for item in files if item["path"] != f"{name}/manifest.json"
     }
     vendor = str(spec.get("vendor_name") or "HTP")
     description_zh = str(spec.get("description_zh") or "")
@@ -505,9 +500,15 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
         "rollback() {",
         '  [ -f "$TMP/backup/plugin_register.json" ] && cp -a "$TMP/backup/plugin_register.json" "$REG"',
         '  [ -f "$TMP/backup/bash_completion.conf" ] && cp -a "$TMP/backup/bash_completion.conf" "$COMPL"',
-        '  [ -d "$BASE/$NAME" ] && rm -rf "$BASE/$NAME"',
-        '  if [ -d "$TMP/backup/$NAME" ]; then cp -a "$TMP/backup/$NAME" "$BASE/$NAME"; fi',
-        '  if [ -d "$BASE/$NAME.old.$DEPLOY_ID" ]; then mv "$BASE/$NAME.old.$DEPLOY_ID" "$BASE/$NAME"; fi',
+        # 目录删除以"有备份 或 有 .old"为前提：lock_timeout / register_backup_failed
+        # 都发生在目录备份之前，此时 "$BASE/$NAME" 是现场唯一副本，删了就再也回不来。
+        '  if [ -d "$TMP/backup/$NAME" ] || [ -d "$BASE/$NAME.old.$DEPLOY_ID" ]; then',
+        '    if [ -d "$BASE/$NAME" ]; then rm -rf "$BASE/$NAME"; fi',
+        '    if [ -d "$TMP/backup/$NAME" ]; then cp -a "$TMP/backup/$NAME" "$BASE/$NAME"; fi',
+        '    if [ -d "$BASE/$NAME.old.$DEPLOY_ID" ]; then mv "$BASE/$NAME.old.$DEPLOY_ID" "$BASE/$NAME"; fi',
+        "  else",
+        '    echo "ACP_ROLLBACK_SKIPPED=no_backup" >&2',
+        "  fi",
         "  return 0",
         "}",
         "finish() {",
@@ -527,21 +528,28 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
         "  exit 0",
         "}",
         "fail() {",
+        "  trap - INT TERM HUP",
         '  ERROR="$1"',
         '  echo "ACP_ERROR=$1" >&2',
         "  rollback",
         '  STATUS="rolled_back"',
         "  finish",
         "}",
-        ('mkdir -p "$TMP/backup" "$TMP/stage/$NAME" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }' if builtin
-         else 'mkdir -p "$TMP/backup" "$TMP/stage/$NAME/bin" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }'),
+        # 脚本被 SIGTERM/SIGKILL 打断时停在"旧目录已挪走、新目录未就位"之间；
+        # INT/TERM/HUP 走 fail 收敛到回滚，SIGKILL 由下次执行前的自愈逻辑兜底。
+        "trap 'fail interrupted' INT TERM HUP",
+        (
+            'mkdir -p "$TMP/backup" "$TMP/stage/$NAME" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }'
+            if builtin
+            else 'mkdir -p "$TMP/backup" "$TMP/stage/$NAME/bin" || { echo "ACP_ERROR=mkdir_failed" >&2; exit 1; }'
+        ),
         'exec 9>"$BASE/plugin_register.lock" || fail "lock_open_failed"',
         'flock -w 30 9 || fail "lock_timeout"',
         'cp -a "$REG" "$TMP/backup/plugin_register.json" || fail \'register_backup_failed\'',
         '[ -f "$COMPL" ] && cp -a "$COMPL" "$TMP/backup/bash_completion.conf"',
         # 覆盖内置插件时原目录必须存在且必须备份成功，否则拒绝改动。
         'if [ "$BUILTIN" = "1" ]; then',
-        '  [ -d "$BASE/$NAME" ] || fail \'builtin_plugin_missing\'',
+        "  [ -d \"$BASE/$NAME\" ] || fail 'builtin_plugin_missing'",
         '  cp -a "$BASE/$NAME" "$TMP/backup/" || fail \'builtin_backup_failed\'',
         "else",
         '  if [ -d "$BASE/$NAME" ]; then cp -a "$BASE/$NAME" "$TMP/backup/" || fail \'plugin_backup_failed\'; fi',
@@ -565,18 +573,18 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
         ]
     if builtin:
         lines += [
-            'cd "$TMP/stage/$NAME" || fail \'stage_cd_failed\'',
-            'HASH_JSON=$(find . -type f ! -name manifest.json -print0 | sort -z | while IFS= read -r -d \'\' f; do',
-            '  sum=$(sha256sum "$f" | cut -d\' \' -f1); rel=${f#./};',
+            "cd \"$TMP/stage/$NAME\" || fail 'stage_cd_failed'",
+            "HASH_JSON=$(find . -type f ! -name manifest.json -print0 | sort -z | while IFS= read -r -d '' f; do",
+            "  sum=$(sha256sum \"$f\" | cut -d' ' -f1); rel=${f#./};",
             '  printf \'"%s":"%s",\' "$rel" "$sum";',
-            'done)',
+            "done)",
             'HASH_JSON="{${HASH_JSON%,}}"',
-            'jq --argjson h "$HASH_JSON" \'.hash = $h\' manifest.json > manifest.new || fail \'manifest_hash_rebuild_failed\'',
-            'mv manifest.new manifest.json || fail \'manifest_replace_failed\'',
-            'cd - >/dev/null || true',
+            "jq --argjson h \"$HASH_JSON\" '.hash = $h' manifest.json > manifest.new || fail 'manifest_hash_rebuild_failed'",
+            "mv manifest.new manifest.json || fail 'manifest_replace_failed'",
+            "cd - >/dev/null || true",
         ]
     lines += [
-        'chmod 0755 "$TMP/stage/$NAME/plugin" || fail \'chmod_failed\'',
+        "chmod 0755 \"$TMP/stage/$NAME/plugin\" || fail 'chmod_failed'",
         f"printf '%b' {_printf_arg(_canonical(descriptor['register_item']))} > \"$TMP/register_item.json\" || fail 'register_item_write_failed'",
         'if [ -d "$BASE/$NAME" ]; then mv "$BASE/$NAME" "$BASE/$NAME.old.$DEPLOY_ID" || fail "old_dir_move_failed"; fi',
         'mv "$TMP/stage/$NAME" "$BASE/$NAME" || fail "stage_move_failed"',
@@ -584,8 +592,8 @@ def build_deploy_script(descriptor: Mapping[str, Any]) -> str:
         'jq -e \'type == "array"\' "$TMP/plugin_register.json" >/dev/null || fail "register_json_invalid"',
         'mv "$TMP/plugin_register.json" "$REG" || fail "register_replace_failed"',
         'if [ "$ENABLE_COMPLETION" = "1" ] && [ -f "$COMPL" ]; then grep -qx "$NAME" "$COMPL" || printf "\\n%s\\n" "$NAME" >> "$COMPL"; fi',
-        f'{ACLI_BIN} --formatter json plugin list > "$TMP/plugin_list.json" 2>&1 || fail \'plugin_list_failed\'',
-        'grep -q "\\\"Name\\\": \\\"$NAME\\\"" "$TMP/plugin_list.json" || fail "plugin_not_registered"',
+        f"{ACLI_BIN} --formatter json plugin list > \"$TMP/plugin_list.json\" 2>&1 || fail 'plugin_list_failed'",
+        'grep -q "\\"Name\\": \\"$NAME\\"" "$TMP/plugin_list.json" || fail "plugin_not_registered"',
         f'{ACLI_BIN} --timeout 60 "$NAME" --help > "$TMP/help.out" 2>&1 || fail \'plugin_help_failed\'',
         f'{ACLI_BIN} --timeout 60 "$NAME" $SMOKE_ARGS > "$TMP/smoke.out" 2>&1 || fail "plugin_smoke_failed"',
         '[ -s "$TMP/smoke.out" ] || fail "plugin_smoke_empty"',
@@ -656,7 +664,7 @@ def build_descriptor(
     # 大脚本（如 netdoctor 近 1MB）不能塞进单条 shell argv：Linux 单参数上限
     # 通常 128KB。按 48KB 分片写入再执行，规避 MAX_ARG_STRLEN。
     chunk_size = 48 * 1024
-    chunks = [script[i:i + chunk_size] for i in range(0, len(script), chunk_size)] or [""]
+    chunks = [script[i : i + chunk_size] for i in range(0, len(script), chunk_size)] or [""]
     # 每条命令只写一个分片，避免把整份脚本拼成一条超长 WS 消息 / SSH 命令
     # （实测 1MB 命令在 bridge exec 通道会卡住且无 exec_result）。
     descriptor["deploy_commands"] = [
@@ -699,7 +707,7 @@ def validate_descriptor(descriptor: Mapping[str, Any]) -> dict[str, Any]:
         if '"$SCRIPT_DIR/bin/' not in wrapper:
             errors.append("wrapper 的 SCRIPT_DIR 必须原样展开，不能被单引号包住")
         if '"$@"' not in wrapper:
-            errors.append("wrapper 必须原样透传 \"$@\"")
+            errors.append('wrapper 必须原样透传 "$@"')
         plugin_file = next((item for item in files if item["path"] == f"{name}/plugin"), None)
         if not plugin_file or plugin_file["mode"] != "0755":
             errors.append(f"{name}/plugin 权限必须是 0755")
@@ -708,7 +716,13 @@ def validate_descriptor(descriptor: Mapping[str, Any]) -> dict[str, Any]:
     for token in ("base64", "python3"):
         if token in script:
             errors.append(f"部署脚本含 HCI 不存在的依赖: {token}")
-    for token in ("sha256sum -c -", "jq --slurpfile", "mv \"$TMP/plugin_register.json\"", "flock -w 30", "ACP_SMOKE_BEGIN"):
+    for token in (
+        "sha256sum -c -",
+        "jq --slurpfile",
+        'mv "$TMP/plugin_register.json"',
+        "flock -w 30",
+        "ACP_SMOKE_BEGIN",
+    ):
         if token not in script:
             errors.append(f"部署脚本缺少必要环节: {token}")
     smoke_invocation = f'{ACLI_BIN} --timeout 60 "$NAME" $SMOKE_ARGS'
