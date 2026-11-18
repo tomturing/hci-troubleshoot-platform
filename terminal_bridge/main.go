@@ -5463,6 +5463,10 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				"user": msg.Username, "host": msg.Host, "port": msg.Port, "key": key,
 				"conn_id": connID, "role": role,
 			})
+			// 抗崩溃（收口设计 §3.2）：bridge 重启后 spc 终态还原的 watcher 没了，
+			// 凭持久意图账本把原件放回去。放进协程：集合性还原可能几十秒，
+			// 不能阻塞连接回包；无意图时几乎零开销。
+			go b.recoverSpcRestoreIntents(session, msg.TraceID, msg.CaseID, msg.NodeIP, cui)
 
 			caseID := msg.CaseID
 			session.on_output_start(ws, stdout, caseID, func(reason string) {

@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"terminal_bridge/internal/shared/reconcile"
 )
 
 const (
@@ -59,7 +61,39 @@ const (
 	spcErrFileMissing = "spc_file_missing"
 	spcErrBackup      = "backup_failed"
 	spcErrWrite       = "write_failed"
+	// spcErrBusy 是主机键互斥的结论（B3）：另一条链路正在同一台上写/还原。
+	// 不是环境故障，稍后重试即可，映射到可重试的 LC-SPC-011。
+	spcErrBusy = "host_busy"
 )
+
+// spcHostGuard 按裸主机键串行化"场景写入"（B3）：两个任务同时写同一台时，
+// 后写者会静默覆盖先写者的清单，采集用哪份完全看时序，产物无法解释。
+// 与 reconcile.Run 的 kind@host 键不同命名空间，不会自己锁死自己。
+var spcHostGuard = reconcile.NewGuard("")
+
+// spcWriteFanout 是写入/回滚的编排器：并发 4、主机键互斥。
+// HostTimeout 取负禁用主机级超时：逐台动作含探测+逐槽位备份/写入多条命令，
+// 每条的 30s 预算已在 runSpcOnHostStreams 内部强制，再套 30s 主机级
+// 会把多槽位写入误杀成"单台超时"。
+func spcWriteFanout() reconcile.Fanout {
+	return reconcile.Fanout{
+		Concurrency: spcFanoutConcurrency,
+		HostTimeout: -1,
+		BatchMode:   true,
+		Guard:       spcHostGuard,
+	}
+}
+
+// spcRestoreFanout 是还原的编排器：**不占主机锁**。
+// 还原是幂等 cp -p（从不删除），占锁反而制造"终态还原被新任务挡住→
+// 意图滞留"的新失败模式；写入侧互斥 + 写前自愈已保证交错最终收敛到原件。
+func spcRestoreFanout() reconcile.Fanout {
+	return reconcile.Fanout{
+		Concurrency: spcFanoutConcurrency,
+		HostTimeout: -1,
+		BatchMode:   true,
+	}
+}
 
 // spcHostState 是一台目标主机的写入 / 恢复结果。
 // spcHostSlotState 是一台主机上一个槽位的写入/还原证据。
@@ -136,6 +170,12 @@ type spcTaskState struct {
 	everRunning  bool
 	restoreTaken bool
 	updatedAt    time.Time
+
+	// activator 登记本任务真正写成功的槽位（B1 判定部分）：
+	// 回滚前提 = 已登记写入集 ∧ 备份名非空，设备脚本再保证备份确实存在。
+	activator *reconcile.Activator
+	// written 是骨架维护的写入集：回滚只碰它，不再从结果里手工挑一遍。
+	written reconcile.WrittenSet
 }
 
 func (st *spcTaskState) setHosts(hosts []spcHostState) {
@@ -454,6 +494,10 @@ func buildSpcPrepareCommand(target, backup string) string {
 		dir = target[:idx]
 	}
 	ensureDir := fmt.Sprintf("mkdir -p %s", shellQuote(dir))
+	// 确定性 tmp 的崩溃残留清理：argv 写入协议先写 <target>.tmp 再 mv，
+	// 断链/进程被杀会留下半截 tmp；不清掉它虽不影响正确性（下次写入会覆盖），
+	// 但会永久占着磁盘并在排查时误导"是不是写了一半"。
+	cleanTmp := fmt.Sprintf("rm -f %s", shellQuote(target+".tmp"))
 	glob := fmt.Sprintf("%s.platform.*.bak", shellQuote(target))
 	prev := fmt.Sprintf("__prev=$(ls -1t %s 2>/dev/null | grep -v -F %s | head -n 1)", glob, shellQuote(backup))
 	selfHeal := fmt.Sprintf("if [ -n \"$__prev\" ]; then cp -p \"$__prev\" %s 2>/dev/null; fi", shellQuote(target))
@@ -463,7 +507,7 @@ func buildSpcPrepareCommand(target, backup string) string {
 		"cmp -s %s %s || { printf 'SPC_PREPARE_FAIL reason=backup_mismatch\\n'; exit 0; }; fi",
 		shellQuote(backup), shellQuote(target), shellQuote(backup), shellQuote(target), shellQuote(backup))
 	orig := fmt.Sprintf("__orig=$(sha256sum %s 2>/dev/null | awk '{print $1}')", shellQuote(backup))
-	return fmt.Sprintf("%s; %s; %s; %s; %s; printf 'SPC_PREPARE_OK orig=%%s\\n' \"$__orig\"", ensureDir, prev, selfHeal, backupCmd, orig)
+	return fmt.Sprintf("%s; %s; %s; %s; %s; %s; printf 'SPC_PREPARE_OK orig=%%s\\n' \"$__orig\"", ensureDir, cleanTmp, prev, selfHeal, backupCmd, orig)
 }
 
 // buildSpcWriteVerifyCommand 写入并回读校验，任一步失败立刻用备份回滚。
@@ -477,7 +521,10 @@ func buildSpcWriteVerifyCommand(target, backup, content string) string {
 	write := buildSpcWriteCommand(target, content)
 	verify := fmt.Sprintf("printf '%%s' %s | cmp -s - %s", shellQuote(content), shellQuote(target))
 	rollback := buildSpcRestoreCommand(backup, target)
-	return fmt.Sprintf("%s || { %s 2>/dev/null; printf 'SPC_WRITE_FAIL reason=write_rejected\\n'; exit 0; }; "+
+	// 写入段包在子 shell 里：argv 写入协议以 umask 077 开头，本机直连模式下
+	// 脚本跑在交互会话里，不包住会把会话 umask 永久改成 077，
+	// 后续其它命令创建的文件全部变成 0600。
+	return fmt.Sprintf("( %s ) || { %s 2>/dev/null; printf 'SPC_WRITE_FAIL reason=write_rejected\\n'; exit 0; }; "+
 		"%s || { %s 2>/dev/null; printf 'SPC_WRITE_FAIL reason=verify_mismatch\\n'; exit 0; }; "+
 		"printf 'SPC_WRITE_OK\\n'", write, rollback, verify, rollback)
 }
@@ -684,14 +731,16 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 		LocalIPs:     s.spcLocalAddresses(ctx),
 		CreatedAt:    time.Now(),
 		restoreState: "pending",
+		activator:    reconcile.NewActivator(),
 	}
 	blog("INFO", "log_collect.spc_fanout_start", "开始把场景写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "slots": slots, "spc_sha256": digest,
 		"spc_digests": digests, "hosts_count": len(targets), "ips_all": all, "spc_bytes": spcBytes,
 	})
 
-	results := b.applySpcAll(ctx, s, state, spec)
+	results, writtenSet := b.applySpcAll(ctx, s, state, spec)
 	state.setHosts(results)
+	state.written = writtenSet
 
 	written, failed := spcClassifyHosts(results)
 	// all 模式下不可达视为本轮不参与（保持既有语义）；
@@ -739,6 +788,9 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *SSHSession, msg InMe
 	}
 
 	spcTaskStore.put(state)
+	// 抗崩溃（§3.2）：终态还原的责任先落盘再交给内存 watcher。
+	// bridge 被杀后 watcher 消失，重启时凭意图 + 自描述备份名收尾。
+	b.persistSpcRestoreIntent(state, traceID, msg.CaseID, msg.NodeIP, customUI)
 	blog("INFO", "log_collect.spc_fanout", "场景已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "spc_sha256": digest,
 		"written": written, "failed_hosts": spcHostAuditTrail(failed),
@@ -876,29 +928,49 @@ func (st *spcTaskState) writtenTargets() []string {
 	return out
 }
 
-// applySpcAll 并发把场景写到全部目标节点。
-func (b *Bridge) applySpcAll(ctx context.Context, s *SSHSession, state *spcTaskState, spec spcApplySpec) []spcHostState {
-	results := make([]spcHostState, len(state.Targets))
-	sem := make(chan struct{}, spcFanoutConcurrency)
-	var wg sync.WaitGroup
-	for index, ip := range state.Targets {
-		wg.Add(1)
-		go func(index int, ip string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[index] = b.applySpcToHost(ctx, s, spec, ip, state.LocalIPs[ip])
-		}(index, ip)
+// applySpcAll 并发把场景写到全部目标节点（S3：编排委托 reconcile.Fanout）。
+// 并发上限、主机键互斥、written-set 跟踪由骨架维护；逐台动作内部的
+// 探测/备份/写入/回读校验仍是产品语义，留在 applySpcToHost。
+func (b *Bridge) applySpcAll(ctx context.Context, s *SSHSession, state *spcTaskState, spec spcApplySpec) ([]spcHostState, reconcile.WrittenSet) {
+	results, written := spcWriteFanout().WriteAll(ctx, state.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
+		host := b.applySpcToHost(ctx, s, spec, ip, state.LocalIPs[ip], state.activator)
+		return reconcile.HostResult{
+			Host: host.IP, Written: host.Written,
+			ErrorCode: host.ErrorCode, ErrorDetail: host.ErrorDetail, Value: host,
+		}
+	})
+	hosts := make([]spcHostState, 0, len(results))
+	for _, result := range results {
+		hosts = append(hosts, spcHostFromResult(result))
 	}
-	wg.Wait()
-	return results
+	return hosts, written
+}
+
+// spcHostFromResult 把骨架结论还原成逐台证据。
+// busy/超时这类结论来自动作执行之前，没有逐槽位明细可取；
+// 动作已返回但父 ctx 恰好取消时，骨架会叠加错误码——此时必须把
+// Written 压回 false，否则回执说写成了而写入集里没有它，两边对不上。
+func spcHostFromResult(result reconcile.HostResult) spcHostState {
+	if host, ok := result.Value.(spcHostState); ok {
+		if result.ErrorCode != "" && host.ErrorCode == "" {
+			host.ErrorCode, host.ErrorDetail = result.ErrorCode, result.ErrorDetail
+			host.Written = false
+		}
+		return host
+	}
+	host := spcHostState{IP: result.Host, ErrorCode: result.ErrorCode, ErrorDetail: result.ErrorDetail}
+	if result.ErrorCode == reconcile.CodeBusy {
+		host.ErrorCode = spcErrBusy
+		host.ErrorDetail = "该节点已有另一次场景写入在进行，稍后重试"
+	}
+	return host
 }
 
 // applySpcToHost 在单台主机上完成目录探测 → 逐槽位备份（含自愈）→ 写入 → 回读校验。
 //
 // 多槽位下任一槽位失败即把整台标为失败：写不全就绝不能下发，
 // 否则部分模块用平台清单、部分用节点原清单，产物无法解释。
-func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcApplySpec, ip string, local bool) spcHostState {
+func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcApplySpec, ip string, local bool, activator *reconcile.Activator) spcHostState {
 	state := spcHostState{IP: ip, RestoreState: "pending"}
 
 	output, errOut, _, err := s.runSpcOnHostStreams(ctx, ip, local, buildSpcDirCommand(""))
@@ -915,7 +987,7 @@ func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcAppl
 
 	files := spec.files()
 	for _, file := range files {
-		slotState := b.applySpcSlotToHost(ctx, s, ip, local, dir, spec.TaskID, file)
+		slotState := b.applySpcSlotToHost(ctx, s, ip, local, dir, spec.TaskID, file, activator)
 		if len(files) > 1 {
 			state.Slots = append(state.Slots, slotState)
 		}
@@ -937,7 +1009,7 @@ func (b *Bridge) applySpcToHost(ctx context.Context, s *SSHSession, spec spcAppl
 }
 
 // applySpcSlotToHost 在已探测到的目录里完成一个槽位的完整写入闭环。
-func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip string, local bool, dir, taskID string, file spcSlotFile) spcHostSlotState {
+func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip string, local bool, dir, taskID string, file spcSlotFile, activator *reconcile.Activator) spcHostSlotState {
 	state := spcHostSlotState{Slot: file.Slot}
 	target, pathErr := spcFilePath(dir, file.Slot)
 	if pathErr != nil {
@@ -980,6 +1052,9 @@ func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *SSHSession, ip strin
 		return state
 	}
 	state.Written = true
+	// B1 登记：只有真正写成功的槽位才进入可回滚集合。
+	// 备份名按任务隔离（spcBackupPath 已校验），回滚时以登记值为准。
+	activator.Register(reconcile.WriteEntry{Path: target, BackupPath: backup})
 	return state
 }
 
@@ -996,41 +1071,99 @@ func spcWrittenTargets(results []spcHostState) []string {
 	return out
 }
 
-// rollbackSpcAll 对 targets 执行回滚，返回 (恢复成功台数, 恢复失败台数)。
-// targets 必须只包含 written=true 的主机：从未写入的节点没有需要撤销的改动，
+// rollbackSpcAll 对已写入主机执行回滚，返回 (恢复成功台数, 恢复失败台数)。
+// 回滚范围以骨架维护的 written-set 为准：从未写入的节点没有需要撤销的改动，
 // 把它们纳入回滚只会制造"可能残留平台清单"的假告警（Q2026110302166）。
 func (b *Bridge) rollbackSpcAll(s *SSHSession, st *spcTaskState, reason string, targets []string) (int, int) {
+	// B1 门：回滚前提 = 已登记写入集 ∧ 备份名非空（判定部分）；
+	// "备份确实存在"由设备脚本在同一条命令里保证（if [ ! -f ] → skip）。
+	// 门不过就一条命令都不发：fail-closed 报还原失败，绝不凭猜测碰现场。
+	if _, err := st.activator.AssertRestorable(st.rollbackEntries()); err != nil {
+		results := make([]spcHostState, 0, len(targets))
+		for _, ip := range targets {
+			results = append(results, spcHostState{
+				IP: ip, RestoreState: "failed", RestoreError: spcErrWrite, ErrorDetail: err.Error(),
+			})
+		}
+		st.finishRestore("failed", reason, results)
+		return 0, len(targets)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), spcRestoreActionBudget)
 	defer cancel()
-	results := b.restoreSpcHosts(ctx, s, spcRestorePlan{
-		Slot: st.Slot, Slots: st.Slots, TaskID: st.TaskID, Targets: targets,
+	plan := spcRestorePlan{
+		Slot: st.Slot, Slots: st.Slots, TaskID: st.TaskID,
 		LocalIPs: st.LocalIPs, Dirs: st.dirs(),
+	}
+	results := spcRestoreFanout().RollbackWritten(ctx, st.written, func(ctx context.Context, ip string) reconcile.HostResult {
+		return spcRestoreResult(b.restoreSpcOnHost(ctx, s, plan, ip))
 	})
-	restored, failed := spcCountRestore(results)
+	hosts := make([]spcHostState, 0, len(results))
+	for _, result := range results {
+		hosts = append(hosts, spcRestoreHostFromResult(result))
+	}
+	restored, failed := spcCountRestore(hosts)
 	status := "success"
 	if failed > 0 {
 		status = "failed"
 	}
-	st.finishRestore(status, reason, results)
+	st.finishRestore(status, reason, hosts)
 	return restored, failed
 }
 
-// restoreSpcHosts 并发恢复全部目标节点。
-func (b *Bridge) restoreSpcHosts(ctx context.Context, s *SSHSession, plan spcRestorePlan) []spcHostState {
-	results := make([]spcHostState, len(plan.Targets))
-	sem := make(chan struct{}, spcFanoutConcurrency)
-	var wg sync.WaitGroup
-	for index, ip := range plan.Targets {
-		wg.Add(1)
-		go func(index int, ip string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			results[index] = b.restoreSpcOnHost(ctx, s, plan, ip)
-		}(index, ip)
+// rollbackEntries 拼出本任务全部槽位的"路径+备份名"供 B1 门判定。
+// 目录用固定 spcDeployDir：pickSpcDir 只认它，登记时的路径必然同源。
+// 未写入的槽位会被 AssertRestorable 剔除，而不是拒绝整个回滚：
+// 多槽位下第二个槽位全员写失败时，第一个槽位的已写内容仍须被还原。
+func (st *spcTaskState) rollbackEntries() []reconcile.WriteEntry {
+	slots := st.Slots
+	if len(slots) == 0 {
+		slots = []string{st.Slot}
 	}
-	wg.Wait()
-	return results
+	entries := make([]reconcile.WriteEntry, 0, len(slots))
+	for _, slot := range slots {
+		target, err := spcFilePath(spcDeployDir, slot)
+		if err != nil {
+			continue
+		}
+		backup, err := spcBackupPath(target, st.TaskID)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, reconcile.WriteEntry{Path: target, BackupPath: backup})
+	}
+	return entries
+}
+
+// spcRestoreResult 把逐台还原结论交给骨架（只用于计数，不跟踪写入集）。
+func spcRestoreResult(host spcHostState) reconcile.HostResult {
+	result := reconcile.HostResult{Host: host.IP, Value: host}
+	if host.RestoreState == "failed" {
+		result.ErrorCode = firstNonEmpty(host.RestoreError, spcErrWrite)
+		result.ErrorDetail = host.ErrorDetail
+	}
+	return result
+}
+
+func spcRestoreHostFromResult(result reconcile.HostResult) spcHostState {
+	if host, ok := result.Value.(spcHostState); ok {
+		return host
+	}
+	return spcHostState{
+		IP: result.Host, RestoreState: "failed",
+		RestoreError: firstNonEmpty(result.ErrorCode, spcErrWrite), ErrorDetail: result.ErrorDetail,
+	}
+}
+
+// restoreSpcHosts 并发恢复全部目标节点（S3：编排委托 reconcile.Fanout.Each）。
+func (b *Bridge) restoreSpcHosts(ctx context.Context, s *SSHSession, plan spcRestorePlan) []spcHostState {
+	results := spcRestoreFanout().Each(ctx, plan.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
+		return spcRestoreResult(b.restoreSpcOnHost(ctx, s, plan, ip))
+	})
+	hosts := make([]spcHostState, 0, len(results))
+	for _, result := range results {
+		hosts = append(hosts, spcRestoreHostFromResult(result))
+	}
+	return hosts
 }
 
 func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *SSHSession, plan spcRestorePlan, ip string) spcHostState {
@@ -1212,6 +1345,15 @@ func (b *Bridge) restoreSpcTask(s *SSHSession, st *spcTaskState, reason, traceID
 		level = "WARN"
 	}
 	st.finishRestore(status, reason, results)
+	// 还原全部成功才消费意图；失败保留，等下次重连恢复或显式 restore_spc 重试。
+	// 提前删意图会把"还没还原完"伪装成"已收尾"，崩溃后没人再管残留清单。
+	if failed == 0 {
+		if err := reconcile.DeleteIntent(reconcile.KindSpcSlot, st.TaskID); err != nil {
+			blog("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
+				"task_id": st.TaskID, "error": err.Error(),
+			})
+		}
+	}
 	blog(level, "log_collect.spc_restore", "场景槽位恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
 		"task_id": st.TaskID, "slot": st.Slot, "trigger": reason,
 		"restored": restored, "failed": failed, "hosts_count": len(results),
@@ -1233,9 +1375,18 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *SSHSession, msg InMess
 		slot = logCollectSpcSlot
 	}
 	state := spcTaskStore.get(taskID)
+	// 内存现场丢了（bridge 重启过）：意图账本就是抗崩溃的后备现场，
+	// 还原范围/本机地址/目录都从它取，不再依赖平台恰好传对 IP。
+	var intent *reconcile.RestoreIntent
+	if state == nil {
+		intent = findSpcRestoreIntent(taskID)
+	}
 	slots := append([]string(nil), msg.SpcSlots...)
 	if len(slots) == 0 && state != nil {
 		slots = append(slots, state.Slots...)
+	}
+	if len(slots) == 0 && intent != nil {
+		slots = append(slots, intent.Slots...)
 	}
 	if len(slots) == 0 {
 		if slot != logCollectSpcSlot {
@@ -1254,6 +1405,10 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *SSHSession, msg InMess
 		plan.Targets = state.Targets
 		plan.LocalIPs = state.LocalIPs
 		plan.Dirs = state.dirs()
+	} else if intent != nil {
+		plan.Targets = intent.NodeIPs
+		plan.LocalIPs = intent.LocalIPs
+		plan.Dirs = intent.Dirs
 	}
 	if len(plan.Targets) == 0 {
 		var hosts []logCollectHostOption
@@ -1276,6 +1431,10 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *SSHSession, msg InMess
 	if state != nil {
 		state.finishRestore(status, "", results)
 	}
+	if failed == 0 {
+		// 幂等消费：意图不存在时 DeleteIntent 也返回成功（重启后显式还原同样收尾）。
+		_ = reconcile.DeleteIntent(reconcile.KindSpcSlot, taskID)
+	}
 	logData := map[string]any{
 		"task_id":        taskID,
 		"spc_slot":       slot,
@@ -1289,4 +1448,149 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *SSHSession, msg InMess
 		return logData, "spc_restore_failed", fmt.Sprintf("%d 台节点未能恢复原清单，需人工核对节点上的备份文件", failed)
 	}
 	return logData, "", ""
+}
+
+// persistSpcRestoreIntent 把终态还原意图落盘（§3.2 抗崩溃三件套的第四件）。
+// watcher 是内存协程，bridge 被杀后还原责任必须能从盘上找回。
+// 意图内容是产品语义（哪些节点/槽位/目录），由消费者给；骨架只管形状与读写。
+// 落盘失败不阻断下发：内存 watcher 与显式 restore_spc 仍是两条活路，
+// 但必须留痕——静默丢意图会把抗崩溃变成运气。
+func (b *Bridge) persistSpcRestoreIntent(st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
+	slots := st.Slots
+	if len(slots) == 0 {
+		slots = []string{st.Slot}
+	}
+	intent := reconcile.RestoreIntent{
+		Kind: reconcile.KindSpcSlot, TaskKey: st.TaskID, WaitFor: reconcile.WaitTaskTerminal,
+		// 只登记真正写成功的节点：从未写入的节点没有需要还原的改动。
+		NodeIPs: st.writtenTargets(), LocalIPs: st.LocalIPs, Dirs: st.dirs(),
+		Slots: slots, CreatedAt: time.Now(), Reason: "custom_scenario",
+	}
+	if err := reconcile.SaveIntent(intent); err != nil {
+		blog("WARN", "log_collect.spc_intent_save_failed", "还原意图落盘失败，崩溃后需显式 restore_spc 兜底", traceID, caseID, nodeIP, customUI, map[string]any{
+			"task_id": st.TaskID, "error": err.Error(),
+		})
+		return
+	}
+	superseded := supersedeSpcRestoreIntents(intent)
+	blog("INFO", "log_collect.spc_intent_persisted", "终态还原意图已落盘", traceID, caseID, nodeIP, customUI, map[string]any{
+		"task_id": st.TaskID, "hosts_count": len(intent.NodeIPs), "slots": slots, "superseded": superseded,
+	})
+}
+
+// supersedeSpcRestoreIntents 删除与本次任务在"主机×槽位"上相交的旧意图。
+// 原因：本次写入前 prepare 的写前自愈已把旧任务残留的原件放回去，
+// 场景所有权转移到本次任务；旧意图若留着，bridge 重启后的恢复会
+// 把旧原件盖到新任务的平台清单上——而采集可能正在跑。
+func supersedeSpcRestoreIntents(current reconcile.RestoreIntent) int {
+	intents, err := reconcile.LoadIntents()
+	if err != nil {
+		return 0
+	}
+	hosts := map[string]bool{}
+	for _, ip := range current.NodeIPs {
+		hosts[ip] = true
+	}
+	slots := map[string]bool{}
+	for _, slot := range current.Slots {
+		slots[slot] = true
+	}
+	deleted := 0
+	for _, old := range intents {
+		if old.Kind != current.Kind || old.TaskKey == current.TaskKey {
+			continue
+		}
+		hostOverlap, slotOverlap := false, false
+		for _, ip := range old.NodeIPs {
+			if hosts[ip] {
+				hostOverlap = true
+				break
+			}
+		}
+		for _, slot := range old.Slots {
+			if slots[slot] {
+				slotOverlap = true
+				break
+			}
+		}
+		if hostOverlap && slotOverlap {
+			if reconcile.DeleteIntent(old.Kind, old.TaskKey) == nil {
+				deleted++
+			}
+		}
+	}
+	return deleted
+}
+
+// findSpcRestoreIntent 按任务键查意图；读不到/损坏都返回 nil，
+// 调用方退回"探测目录 + 拼备份名"的既有兜底路径。
+func findSpcRestoreIntent(taskID string) *reconcile.RestoreIntent {
+	intents, err := reconcile.LoadIntents()
+	if err != nil {
+		return nil
+	}
+	for index := range intents {
+		if intents[index].Kind == reconcile.KindSpcSlot && intents[index].TaskKey == taskID {
+			return &intents[index]
+		}
+	}
+	return nil
+}
+
+// recoverSpcRestoreIntents 在会话（重）建立后消费持久还原意图（§3.2）。
+// bridge 重启后 watcher 协程没了，但意图与自描述备份还在盘上：
+// 这里凭意图把原件放回去，还原全部成功才删意图；失败保留，
+// 等下次重连或显式 restore_spc 重试。必须由调用方放进协程：
+// 集合性还原可能几十秒，不能阻塞 ssh_connect 回包。
+func (b *Bridge) recoverSpcRestoreIntents(s *SSHSession, traceID, caseID, nodeIP, customUI string) {
+	intents, err := reconcile.LoadIntents()
+	if err != nil {
+		blog("WARN", "log_collect.spc_intent_load_failed", "还原意图读取失败", traceID, caseID, nodeIP, customUI, map[string]any{
+			"error": err.Error(),
+		})
+		return
+	}
+	for _, intent := range intents {
+		if intent.Kind != reconcile.KindSpcSlot {
+			continue
+		}
+		// 内存 watcher 还活着（同进程重连）：还原责任归它，不双头接管。
+		// 两条路真同时跑也幂等（第二次 skipped），但跳过省掉无谓 SSH 往返。
+		if spcTaskStore.get(intent.TaskKey) != nil {
+			continue
+		}
+		if len(intent.NodeIPs) == 0 {
+			_ = reconcile.DeleteIntent(intent.Kind, intent.TaskKey)
+			continue
+		}
+		slot := logCollectSpcSlot
+		if len(intent.Slots) > 0 {
+			slot = intent.Slots[0]
+		}
+		// 还原期间键盘零输入，不打戳会被 TMOUT=600 踢掉（与 watcher 同因）。
+		s.markBusy()
+		ctx, cancel := context.WithTimeout(context.Background(), spcRestoreActionBudget)
+		results := b.restoreSpcHosts(ctx, s, spcRestorePlan{
+			Slot: slot, Slots: intent.Slots, TaskID: intent.TaskKey,
+			Targets: intent.NodeIPs, LocalIPs: intent.LocalIPs, Dirs: intent.Dirs,
+		})
+		cancel()
+		restored, failed := spcCountRestore(results)
+		if failed > 0 {
+			blog("WARN", "log_collect.spc_intent_recover_failed", "重启后还原未全部成功，意图保留待重试", traceID, caseID, nodeIP, customUI, map[string]any{
+				"task_id": intent.TaskKey, "restored": restored, "failed": failed,
+				"hosts": spcHostAuditTrail(results),
+			})
+			continue
+		}
+		if err := reconcile.DeleteIntent(intent.Kind, intent.TaskKey); err != nil {
+			blog("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
+				"task_id": intent.TaskKey, "error": err.Error(),
+			})
+		}
+		blog("INFO", "log_collect.spc_intent_recovered", "重启后凭持久意图完成终态还原", traceID, caseID, nodeIP, customUI, map[string]any{
+			"task_id": intent.TaskKey, "restored": restored, "hosts_count": len(results),
+			"hosts": spcHostAuditTrail(results),
+		})
+	}
 }

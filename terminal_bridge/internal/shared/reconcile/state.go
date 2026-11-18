@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -214,3 +215,128 @@ func Load(kind, nodeIP string) (*AppliedState, error) { return sharedStore().Loa
 
 // Save 用默认账本目录持久化。
 func Save(state *AppliedState) error { return sharedStore().Save(state) }
+
+// RestoreIntent 是"成功后要还原"的持久意图（设计 §3.2）。
+//
+// 为什么必须落盘而不是内存尾钩子：spc 的 OnSuccessRestore 等的是 task_terminal——
+// 小时级、且跨越 bridge 进程重启。进程一死，内存 goroutine 就没了，
+// 平台清单会永久留在节点上污染下一次采集。意图落盘后，watcher 重启可以从
+// 账本 + 自描述备份名（.platform.<taskID>.bak）恢复现场，而不是复活一个协程。
+//
+// 字段只描述"去哪儿还原什么"，不含任何执行状态：执行状态属于内存里的
+// 一次性动作，把它写进意图会让重启后的恢复误判"已经还原过了"。
+type RestoreIntent struct {
+	Kind      string            `json:"kind"`
+	TaskKey   string            `json:"task_key"`
+	WaitFor   string            `json:"wait_for"`
+	NodeIPs   []string          `json:"node_ips"`
+	LocalIPs  map[string]bool   `json:"local_ips,omitempty"`
+	Dirs      map[string]string `json:"dirs,omitempty"`
+	Slots     []string          `json:"slots,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	Reason    string            `json:"reason,omitempty"`
+}
+
+// intentsDir 是意图子目录：与账本分开放，List() 才不会把意图当账本读
+// （两者 JSON 形状不同，混在一起会解析出 Kind 为空的假账本条目）。
+func (s *Store) intentsDir() string { return filepath.Join(s.dir, "intents") }
+
+func intentFileName(kind, taskKey string) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "..", "_")
+	return replacer.Replace(kind) + "-" + replacer.Replace(taskKey) + ".json"
+}
+
+// SaveIntent 持久化还原意图（临时文件 + rename，与账本同一套原子写法）。
+func (s *Store) SaveIntent(intent RestoreIntent) error {
+	if s == nil {
+		return nil
+	}
+	if intent.Kind == "" || intent.TaskKey == "" {
+		return fmt.Errorf("还原意图缺少 kind/task_key，拒绝落盘")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir := s.intentsDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(intent)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".intent-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(raw); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, filepath.Join(dir, intentFileName(intent.Kind, intent.TaskKey)))
+}
+
+// LoadIntents 列出全部未消费的还原意图（按创建时间升序，先写的先还原）。
+// 单条损坏只跳过该条：一份坏意图不该让其余任务的现场永远没人收尾。
+func (s *Store) LoadIntents() ([]RestoreIntent, error) {
+	if s == nil {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := os.ReadDir(s.intentsDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	out := make([]RestoreIntent, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(s.intentsDir(), entry.Name()))
+		if err != nil {
+			continue
+		}
+		var intent RestoreIntent
+		if err := json.Unmarshal(raw, &intent); err != nil || intent.TaskKey == "" {
+			continue
+		}
+		out = append(out, intent)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+// DeleteIntent 消费掉一条意图（还原完成后调用）。不存在视为成功——幂等重放的关键。
+func (s *Store) DeleteIntent(kind, taskKey string) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := os.Remove(filepath.Join(s.intentsDir(), intentFileName(kind, taskKey)))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// SaveIntent 用默认账本目录持久化还原意图。
+func SaveIntent(intent RestoreIntent) error { return sharedStore().SaveIntent(intent) }
+
+// LoadIntents 用默认账本目录列出还原意图（watcher 重启恢复入口）。
+func LoadIntents() ([]RestoreIntent, error) { return sharedStore().LoadIntents() }
+
+// DeleteIntent 用默认账本目录消费还原意图。
+func DeleteIntent(kind, taskKey string) error { return sharedStore().DeleteIntent(kind, taskKey) }

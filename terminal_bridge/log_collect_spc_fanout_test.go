@@ -142,8 +142,23 @@ func TestBuildSpcWriteVerifyCommand(t *testing.T) {
 	if strings.Contains(command, "$(cat") {
 		t.Fatalf("不能用命令替换回读（剥尾换行）：%s", command)
 	}
-	if strings.Contains(command, "sha256sum") {
-		t.Fatalf("裁剪系统可能没有 sha256sum，不能作为唯一校验手段：%s", command)
+	// 收口到 argv 写入协议后，sha256sum 只允许出现在 command -v 守卫下
+	// （裁剪系统自动降级 md5/size_only）；cmp 回读校验仍是权威手段。
+	if !strings.Contains(command, "command -v sha256sum") {
+		t.Fatalf("sha256sum 必须在 command -v 守卫下：%s", command)
+	}
+	stripped := strings.ReplaceAll(command, "command -v sha256sum", "")
+	stripped = strings.ReplaceAll(stripped, "$(sha256sum ", "")
+	if strings.Contains(stripped, "sha256sum") {
+		t.Fatalf("sha256sum 不能作为无守卫的校验手段：%s", command)
+	}
+	// 写入段必须包子 shell：协议以 umask 077 开头，本机直连时不包住
+	// 会把交互会话的 umask 永久改成 077。
+	if !strings.HasPrefix(command, "( umask 077; ") {
+		t.Fatalf("写入段必须包在子 shell 里隔离 umask：%s", command)
+	}
+	if !strings.Contains(command, "chmod 0644 ") {
+		t.Fatalf("场景清单必须显式 0644（协议默认 0755 不适用）：%s", command)
 	}
 	for _, marker := range []string{"SPC_WRITE_OK", "reason=verify_mismatch", "reason=write_rejected"} {
 		if !strings.Contains(command, marker) {

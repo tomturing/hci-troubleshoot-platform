@@ -19,6 +19,7 @@ import (
 type DesiredState struct {
 	Kind     string            // KindAcliBinary | KindSpcSlot | KindConfigFile | KindPluginBundle
 	NodeIP   string            // 目标节点（发起节点或集群成员）
+	TaskKey  string            // 任务/部署键：备份隔离与持久还原意图的主键（spc=taskID、plugin=syncID）
 	Files    []FileSpec        // 要写入的文件清单
 	Install  InstallSpec       // 安装动作（声明式）
 	Smoke    SmokeSpec         // 冒烟测试（声明式）
@@ -40,6 +41,12 @@ type FileSpec struct {
 	Mode   string // 权限位，如 "0755"；空则沿用 remote 的默认
 	Dir    string // 写前需确保存在的目录；空则不下发 mkdir
 	Source Source // 内容来源
+	// BackupPath 是回滚/还原的前提（B1 构造性不变量）。需要备份的策略下必填，
+	// 且必须任务/部署隔离（spc <path>.platform.<taskID>.bak、plugin <path>.old.<syncID>）：
+	// 固定 .bak 后缀会让两次采集互相覆盖原件。
+	BackupPath string
+	// IsDirTree 为真时按目录树整体回滚（插件目录是树粒度，只登记文件会漏掉它）。
+	IsDirTree bool
 }
 
 // Source 区分三种来源，避免把 20MB 的包序列化进 JSON（补丁 2）。
@@ -136,6 +143,9 @@ func Normalize(d DesiredState) (DesiredState, []Evidence, error) {
 	if err := validateVersionMode(d.Version.Mode); err != nil {
 		return d, ev, err
 	}
+	if needsBackup(d.Policy) && strings.TrimSpace(d.TaskKey) == "" {
+		return d, ev, fmt.Errorf("%s：需要备份的策略必须给定 TaskKey（备份名要按任务/部署隔离）", CodeDescriptorInvalid)
+	}
 
 	out := d
 	out.Files = make([]FileSpec, 0, len(d.Files))
@@ -145,6 +155,11 @@ func Normalize(d DesiredState) (DesiredState, []Evidence, error) {
 	for _, f := range d.Files {
 		if strings.TrimSpace(f.Path) == "" || !strings.HasPrefix(f.Path, "/") || strings.Contains(f.Path, "..") {
 			return d, ev, fmt.Errorf("%s：非法目标路径 %q", CodeDescriptorInvalid, f.Path)
+		}
+		if needsBackup(d.Policy) {
+			if err := validateBackupPath(f); err != nil {
+				return d, ev, err
+			}
 		}
 		switch f.Source.Kind {
 		case SourceInline:
@@ -244,6 +259,28 @@ func validateVersionMode(mode string) error {
 		return nil
 	}
 	return fmt.Errorf("%s：版本比对模式 %q 非法", CodeDescriptorInvalid, mode)
+}
+
+// needsBackup 报告策略是否依赖备份：失败回滚要它，成功还原也要它。
+// 两者缺一都会让"无备份不删"变成一句空话。
+func needsBackup(p ReconcilePolicy) bool {
+	return p.OnFailRollback.Strategy == RollbackRestoreBackup || p.OnSuccessRestore.Strategy == RestoreOriginal
+}
+
+// validateBackupPath 把备份名的硬要求写成校验：绝对路径、不含 ..、
+// 且不能与目标路径相同（相同等于"用现场证明现场"，回滚时什么都恢复不了）。
+func validateBackupPath(f FileSpec) error {
+	backup := strings.TrimSpace(f.BackupPath)
+	if backup == "" {
+		return fmt.Errorf("%s：%s 声明了依赖备份的策略却未给定 BackupPath", CodeDescriptorInvalid, f.Path)
+	}
+	if !strings.HasPrefix(backup, "/") || strings.Contains(backup, "..") {
+		return fmt.Errorf("%s：非法备份路径 %q", CodeDescriptorInvalid, f.BackupPath)
+	}
+	if backup == f.Path {
+		return fmt.Errorf("%s：备份路径与目标路径相同，回滚无法恢复原件", CodeDescriptorInvalid)
+	}
+	return nil
 }
 
 // DesiredHash 计算期望态的稳定指纹，用于桥侧账本对齐判定。

@@ -64,6 +64,9 @@ const (
 	ErrSpcFileMissing    = "LC-SPC-009"
 	// 多台失败且原因不同时只能给聚合码；逐台原因在 Message 与 detail.spc_hosts 里。
 	ErrSpcAggregate = "LC-SPC-010"
+	// 主机键互斥（B3）：另一条链路正在同一台上写场景。不是环境故障，
+	// 等它完成重试即可，因此 retryable=true，责任在桥侧串行化而非客户。
+	ErrSpcHostBusy = "LC-SPC-011"
 
 	ErrPlugInvalidTicket = "LC-PLUGIN-001"
 	ErrPlugInvalidModule = "LC-PLUGIN-002"
@@ -190,6 +193,7 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrSpcSSHTimeout:     {"SPC", "customer", "true", "create"},
 	ErrSpcFileMissing:    {"SPC", "customer", "manual", "create"},
 	ErrSpcAggregate:      {"SPC", "customer", "manual", "create"},
+	ErrSpcHostBusy:       {"SPC", "platform", "true", "create"},
 
 	ErrPlugInvalidTicket: {"PLUGIN", "platform", "false", "create"},
 	ErrPlugInvalidModule: {"PLUGIN", "platform", "false", "create"},
@@ -279,6 +283,8 @@ func validationErrorCode(errType string) string {
 		return ErrSpcSSHAuthFailed
 	case "host_timeout":
 		return ErrSpcSSHTimeout
+	case "host_busy":
+		return ErrSpcHostBusy
 	case "spc_restore_failed":
 		return ErrSpcRestoreFailed
 	case "spc_write_failed":

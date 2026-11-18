@@ -111,6 +111,25 @@ func BuildWriteCommand(spec WriteSpec) string {
 		spec.Size, spec.SHA256, spec.MD5, spec.Mode)
 }
 
+// BuildArgvWriteCommand 构造"内容随命令走 argv → 校验 → 原子替换"的远端命令。
+//
+// 与 BuildWriteCommand 的唯一差异是填充方式：printf 把字节写进 tmp，而不是 cat 收 stdin。
+// 存在的理由是传输形态：spc 扇出的脚本还要再经一跳 ssh 送到目标节点
+// （ssh root@node '<script>'），那一跳没有可用的 stdin 通道，cat 只会读到 EOF
+// 并写出空文件。校验/替换骨架仍是同一份 buildVerifiedMove，不允许另起一套。
+//
+// 代价必须写明：内容进 argv，因此调用方要保证 len(Data) 远小于 MAX_ARG_STRLEN
+// （Linux 单参数 128KB）。超限场景一律走 BuildWriteCommand + WriteStdin。
+// TmpPath 为空时用 Path+".tmp"：确定性命名让崩溃残留的 tmp 能被下一次写前自愈清掉。
+func BuildArgvWriteCommand(spec WriteSpec) string {
+	tmpPath := spec.TmpPath
+	if tmpPath == "" {
+		tmpPath = spec.Path + ".tmp"
+	}
+	fill := "printf '%s' " + ShellQuote(string(spec.Data)) + " > " + ShellQuote(tmpPath)
+	return buildVerifiedMove(fill, tmpPath, spec.Path, spec.Size, spec.SHA256, spec.MD5, spec.Mode)
+}
+
 // CopySpec 描述"把节点上已有的文件搬到目标路径"。
 //
 // 与 WriteSpec 共用同一套校验/替换协议：备份还原、槽位搬迁同样是写入，

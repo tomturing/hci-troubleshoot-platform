@@ -17,8 +17,9 @@ import (
 //	  → guard.Acquire → fanout.WriteAll → activate.Install → activate.Smoke
 //	  → state.Save → policy.OnSuccessRestore → receipt
 //
-// S2 先落单节点直写路径（ConfigFile 消费者）；guard/fanout/activate 在 S3
-// 接入，接入点是 Deps 上的可选字段，不需要改流水线本身。
+// S2 先落单节点直写路径（ConfigFile 消费者）；S3 接入 guard/activate 与
+// 三钩子（失败回滚 / 成功还原 / 备份保留），接入点是 Deps 上的可选字段。
+// 多主机编排由消费者直接用 Fanout（spc 扇出），不在单节点 Run 里再套一层。
 //
 // 产品语义一律经函数注入（ProbeFunc/InstallFunc/SmokeFunc/FetchFunc）：
 // descriptor 里不出现命令字符串，骨架也不认识 acli 或插件注册表。
@@ -39,15 +40,27 @@ type FetchFunc func(ctx context.Context, spec FileSpec) ([]byte, error)
 
 // Deps 是流水线的全部外部依赖。
 type Deps struct {
-	Runner      remote.Runner
-	State       *Store
-	ProbeFunc   ProbeFunc
-	InstallFunc InstallFunc
-	SmokeFunc   SmokeFunc
-	FetchFunc   FetchFunc
-	OnProgress  remote.ProgressFunc
-	Compare     CompareOptions
+	Runner    remote.Runner
+	State     *Store
+	Guard     *Guard     // 主机键互斥（B3）；nil 表示不互斥（单节点一次性动作）
+	Activator *Activator // 写入集与回滚/还原执行器；nil 时每次 Run 自建一个
+	// RestoreIntent 是 WaitFor=task_terminal 时要持久化的还原意图。
+	// 内容由消费者给（spc 的槽位/目录/本机地址是产品语义，骨架不该认识），
+	// 骨架只负责"何时落盘"——漏落盘就等于把平台清单永久留在节点上。
+	RestoreIntent *RestoreIntent
+	ProbeFunc     ProbeFunc
+	InstallFunc   InstallFunc
+	SmokeFunc     SmokeFunc
+	FetchFunc     FetchFunc
+	OnProgress    remote.ProgressFunc
+	Compare       CompareOptions
 }
+
+// rollbackBudget 是失败回滚的独立预算。
+//
+// 为什么不能沿用主 ctx：主 ctx 往往正是因为断链/超时才失败的，
+// 拿同一个已取消的 ctx 去回滚，一条命令都发不出去，现场永久留污染。
+const rollbackBudget = 60 * time.Second
 
 // Run 执行一次收敛，返回统一回执。
 //
@@ -87,20 +100,37 @@ func Run(ctx context.Context, deps Deps, d DesiredState) Result {
 		return Blocked(StageProbe, CodeDowngradeBlocked, plan.Reason, ev...)
 	}
 
-	writes, writeEv, fail := writeFiles(ctx, deps, d)
+	activator := deps.Activator
+	if activator == nil {
+		activator = NewActivator()
+	}
+	// 互斥只罩"会改节点"的段：探测是只读的，提前拿锁会让并发读白白排队。
+	if deps.Guard != nil {
+		release, guardErr := deps.Guard.Acquire(HostKey(d.Kind, d.NodeIP))
+		if guardErr != nil {
+			if errors.Is(guardErr, ErrBusy) {
+				return Blocked(StageWrite, CodeBusy, "同主机同链路已有同步在进行，稍后重试", ev...)
+			}
+			return Failed(StageWrite, CodeBusy, guardErr.Error(), true, ev...)
+		}
+		defer release()
+	}
+
+	writes, writeEv, fail := writeFiles(ctx, deps, activator, d)
 	ev = append(ev, writeEv...)
 	if fail != nil {
-		return fail.WithEvidence(ev...)
+		return withRollback(ctx, deps, activator, d, fail.WithEvidence(ev...))
 	}
 
 	if res, fail := runInstall(ctx, deps, d); fail != nil {
-		return fail.WithEvidence(ev...).WithEvidence(KV("install_exit", strconv.Itoa(res.ExitCode)))
+		return withRollback(ctx, deps, activator, d,
+			fail.WithEvidence(ev...).WithEvidence(KV("install_exit", strconv.Itoa(res.ExitCode))))
 	}
 
 	smokeRes, smokeEv, fail := runSmoke(ctx, deps, d, writes)
 	ev = append(ev, smokeEv...)
 	if fail != nil {
-		return fail.WithEvidence(ev...)
+		return withRollback(ctx, deps, activator, d, fail.WithEvidence(ev...))
 	}
 	_ = smokeRes
 
@@ -125,7 +155,104 @@ func Run(ctx context.Context, deps Deps, d DesiredState) Result {
 	if plan.Degraded {
 		result.Degraded = true
 	}
+	restoreEv, degraded := restoreOnSuccess(ctx, deps, activator, d)
+	result = result.WithEvidence(restoreEv...)
+	if degraded {
+		result.Degraded = true
+	}
 	return result
+}
+
+// withRollback 在失败回执上叠加回滚结果。
+//
+// 主因码不被覆盖：回滚失败是叠加风险，把它当成主因会让用户按错误的码排查
+// （与 spc 扇出同一教训）。回滚只动登记过的条目，且备份缺失时拒绝删除（B1）。
+func withRollback(ctx context.Context, deps Deps, activator *Activator, d DesiredState, result Result) Result {
+	if d.Policy.OnFailRollback.Strategy != RollbackRestoreBackup {
+		return result
+	}
+	entries := activator.Entries()
+	if len(entries) == 0 {
+		return result.WithEvidence(KV("rollback", "nothing_written"))
+	}
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackBudget)
+	defer cancel()
+	if err := activator.Rollback(rollbackCtx, deps.Runner, entries); err != nil {
+		return result.WithEvidence(KV("rollback", "failed"), KV("rollback_error", err.Error()))
+	}
+	return result.WithEvidence(KV("rollback", "restored"), KV("rollback_count", strconv.Itoa(len(entries))))
+}
+
+// restoreOnSuccess 执行成功钩子：immediate 当场还原，task_terminal 持久化意图。
+//
+// task_terminal 不是内存尾钩子（§3.2）：它等的是小时级、且跨越进程重启的
+// 任务终态。意图落盘后，watcher 重启能从账本 + 自描述备份名恢复现场。
+// 备份此时绝不能删：它就是还原的唯一来源，KeepBackup 只对 immediate 生效。
+func restoreOnSuccess(ctx context.Context, deps Deps, activator *Activator, d DesiredState) ([]Evidence, bool) {
+	spec := d.Policy.OnSuccessRestore
+	if spec.Strategy != RestoreOriginal {
+		return nil, false
+	}
+	entries := activator.Entries()
+	if spec.WaitFor == WaitTaskTerminal {
+		if deps.RestoreIntent == nil {
+			// 不静默：写入已成功，但没人会在终态把原件放回去。
+			// 置 Degraded + 留痕，让回执与日志都能看出"还原意图未登记"。
+			return []Evidence{KV("restore_intent", "undefined")}, true
+		}
+		intent := *deps.RestoreIntent
+		if intent.Kind == "" {
+			intent.Kind = d.Kind
+		}
+		if intent.TaskKey == "" {
+			intent.TaskKey = d.TaskKey
+		}
+		intent.WaitFor = WaitTaskTerminal
+		if intent.CreatedAt.IsZero() {
+			intent.CreatedAt = time.Now()
+		}
+		store := deps.State
+		if store == nil {
+			store = sharedStore()
+		}
+		if err := store.SaveIntent(intent); err != nil {
+			return []Evidence{KV("restore_intent", "save_failed"), KV("restore_intent_error", err.Error())}, true
+		}
+		return []Evidence{KV("restore_intent", "persisted"), KV("restore_task_key", intent.TaskKey)}, false
+	}
+
+	outcomes, err := activator.Restore(ctx, deps.Runner, entries)
+	restored, skipped, failed := 0, 0, 0
+	for _, outcome := range outcomes {
+		switch outcome.State {
+		case "restored":
+			restored++
+		case "skipped":
+			skipped++
+		default:
+			failed++
+		}
+	}
+	ev := []Evidence{
+		KV("restore", "immediate"),
+		KV("restore_restored", strconv.Itoa(restored)),
+		KV("restore_skipped", strconv.Itoa(skipped)),
+		KV("restore_failed", strconv.Itoa(failed)),
+	}
+	degraded := err != nil || failed > 0
+	if err != nil {
+		ev = append(ev, KV("restore_error", err.Error()))
+	}
+	if !degraded && !d.Policy.KeepBackup {
+		for _, entry := range entries {
+			if entry.IsDirTree {
+				continue // 目录树备份的清理归消费者（插件保留 .old.$SYNC_ID 供追认）
+			}
+			remote.Run(ctx, deps.Runner, "rm -f "+remote.ShellQuote(entry.BackupPath))
+		}
+		ev = append(ev, KV("backup_kept", "false"))
+	}
+	return ev, degraded
 }
 
 func descriptorCode(err error) string {
@@ -158,7 +285,7 @@ func loadLedger(deps Deps, d DesiredState) (*AppliedState, error) {
 //
 // 返回值里的 writes 供 sha256 冒烟复用：写入协议已经在 mv 后回读校验过，
 // 再探一次只是多一个往返，不产生新信息。
-func writeFiles(ctx context.Context, deps Deps, d DesiredState) ([]remote.WriteResult, []Evidence, *Result) {
+func writeFiles(ctx context.Context, deps Deps, activator *Activator, d DesiredState) ([]remote.WriteResult, []Evidence, *Result) {
 	writes := make([]remote.WriteResult, 0, len(d.Files))
 	var ev []Evidence
 	for _, f := range d.Files {
@@ -217,6 +344,8 @@ func writeFiles(ctx context.Context, deps Deps, d DesiredState) ([]remote.WriteR
 			}
 			return writes, ev, resultPtr(Failed(stage, code, werr.Error(), retryable))
 		}
+		// 写入成功才登记：回滚只动登记过的条目，未写入的路径即使传进来也不会被碰。
+		activator.Register(WriteEntry{Path: f.Path, IsDirTree: f.IsDirTree, BackupPath: f.BackupPath})
 	}
 	return writes, ev, nil
 }

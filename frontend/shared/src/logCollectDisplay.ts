@@ -2295,6 +2295,34 @@ export const FAULT_CATALOG = {
     "title_zh": "场景清单写入未通过",
     "tone": "error"
   },
+  "LC-SPC-011": {
+    "action": "该节点已有另一次场景写入在进行，稍后重试即可，无需人工干预。",
+    "admin_detail": "桥侧按主机键串行化场景写入（B3 互斥），后到任务在该节点被拒绝；等待先到的写入/还原完成即可重试，责任在桥侧编排而非客户环境。",
+    "business_stage": "create",
+    "check": [
+      "任务详情 detail.spc_hosts 里确认该节点 error_code 为 LC-SPC-011。",
+      "核对该节点是否有并发的自定义场景采集任务。"
+    ],
+    "component": "bridge",
+    "evidence": "detail.spc_hosts / bridge_execution_logs（SPC 层原始输出）",
+    "fix": [
+      "等待进行中的写入完成后重新下发。",
+      "不要并发下发写同一节点的自定义场景任务。"
+    ],
+    "http_status": 409,
+    "kind": "runtime",
+    "layer": "SPC",
+    "match_keywords": [
+      "目标节点场景写入进行中"
+    ],
+    "owner": "platform",
+    "problem": "目标节点场景写入进行中",
+    "retryable": "true",
+    "scope": "intranet",
+    "stage": "S3",
+    "title_zh": "目标节点场景写入进行中",
+    "tone": "warning"
+  },
   "LC-TRANSFER-001": {
     "action": "未找到采集产物，可能已被清理。",
     "admin_detail": "插件 help 明确要求完成后手动删除；归档后需以平台记录为准。",

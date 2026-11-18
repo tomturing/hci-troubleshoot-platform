@@ -502,6 +502,14 @@ var contractErrors = map[string]contractError{
 		Component: "hci",
 		Stage:     "S3",
 	},
+	"LC-SPC-011": {
+		Title:     "目标节点场景写入进行中",
+		Problem:   "目标节点场景写入进行中",
+		Action:    "该节点已有另一次场景写入在进行，稍后重试即可，无需人工干预。",
+		Layer:     "SPC",
+		Component: "bridge",
+		Stage:     "S3",
+	},
 	"LC-TRANSFER-001": {
 		Title:     "压缩包不存在",
 		Problem:   "压缩包不存在",
