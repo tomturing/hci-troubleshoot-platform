@@ -29,12 +29,14 @@ import (
 	"time"
 
 	"golang.org/x/net/websocket"
+
+	"terminal_bridge/internal/shared/remote"
 )
 
 const (
 	// 20 GiB @100 Mbps ≈ 27 分钟；留足余量覆盖弱网与重试。
 	logCollectTransferTimeout = 2 * time.Hour
-	logCollectPullBlock       = 4 * 1024 * 1024
+	logCollectPullBlock       = remote.DefaultPullBlock
 	logCollectPartRetries     = 3
 	logCollectPartTimeout     = 5 * time.Minute
 	logCollectMaxChunkSize    = 64 * 1024 * 1024
@@ -48,7 +50,10 @@ var logCollectArchivePathPattern = regexp.MustCompile(`^/sf/data/local/acli/tmp/
 //
 // 必须与网络中断区分：网络断了可以续传，源包被截断/同名覆盖则重试多少次都一样。
 // 用哨兵错误让调用方能判定"这是数据问题，不是链路问题"。
-var errPullSizeMismatch = errors.New("拉取字节数与源包不一致")
+//
+// S1 收口：哨兵本体已迁到 remote.ErrPullSizeMismatch，这里保留别名，
+// 使 delivery_runner 与 handleLogCollectTransfer 里的 errors.Is 判定链不断。
+var errPullSizeMismatch = remote.ErrPullSizeMismatch
 
 // 平台数据面默认路径，与 case-service 路由保持一致。
 const logCollectDirectUploadPrefix = "/api/direct/log-collect-uploads"
@@ -128,101 +133,48 @@ func validUploadedParts(raw []int, partCount int) map[int]bool {
 // exit 127，而 ls/cat 可用）。首次交付必然从 0 开始，这条替换覆盖绝大多数路径，
 // 且不存在语义差异——不必等现场因为没有 tail 再挂一次。
 func buildPullCommand(remotePath string, offset int64) string {
-	if offset <= 0 {
-		return fmt.Sprintf("cat %s", shellQuote(remotePath))
-	}
-	return fmt.Sprintf("tail -c +%d %s", offset+1, shellQuote(remotePath))
+	return remote.BuildPullCommand(remotePath, offset)
 }
 
-// pullStart 描述一次下载的起点决策。
-type pullStart struct {
-	// Offset 是本次从节点读取的起始字节位置（本地已有字节数）。
-	Offset int64
-	// Discard 为真表示本地残包不可信，必须先删除再从头下载。
-	Discard bool
-	// Complete 为真表示本地已持有完整包，无需任何网络读取。
-	Complete bool
-}
+// pullStart 描述一次下载的起点决策（别名：唯一实现在 remote/transfer.go）。
+type pullStart = remote.PullStart
 
 // resolvePullStart 依据两个物理事实决定续传起点：本地文件大小、远端源包大小。
 //
-// 三种边界各自的含义：
-//   - 本地为空或小于源包：正常续传，从已有字节处接着读；
-//   - 本地恰好等于源包：已传完，直接收工（重跑交付时能省掉整包重传）；
-//   - 本地大于源包：**必定**不是本次的包——同一份数据不可能是自己的前缀，
-//     只能是被同名覆盖/截断过的旧产物，追加进去会得到永远校验不过的坏包。
-//
-// remoteSize <= 0 表示远端大小未知（stat 失败）：此时无法判定完成，
-// 也不该丢弃本地数据（可能是正常的半包），一律按续传处理。
+// 三种边界（本地小于/等于/大于源包）与 remoteSize<=0 的降级口径，
+// 论证见 remote.ResolvePullStart——尤其是"本地大于源包必定不是本次的包"：
+// 同一份数据不可能是自己的前缀，追加进去会得到永远校验不过的坏包。
 func resolvePullStart(localSize, remoteSize int64) pullStart {
-	if remoteSize <= 0 {
-		return pullStart{Offset: localSize}
-	}
-	if localSize > remoteSize {
-		return pullStart{Offset: 0, Discard: true}
-	}
-	if localSize == remoteSize {
-		return pullStart{Offset: localSize, Complete: true}
-	}
-	return pullStart{Offset: localSize}
+	return remote.ResolvePullStart(localSize, remoteSize)
 }
 
 // hashFilePrefixStrict 把 path 的前 n 字节喂给 hasher。
 //
 // 续传时本地已有 offset 字节，必须先把它们重新摘要一遍，否则最终哈希只覆盖
 // 后半段——那比不提供哈希更糟：看起来"有校验"，实际永远对不上。
-//
-// 与 sftp.go 的同名逻辑分开：那边允许短读（下载场景 .part 可以没写完），
-// 这里短读就是残包失真，必须报错。
+// 短读即报错（与 sftp 下载侧允许 .part 短读的口径不同）。
 func hashFilePrefixStrict(path string, n int64, hasher hash.Hash) error {
-	if n <= 0 {
-		return nil
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	written, err := io.Copy(hasher, io.LimitReader(file, n))
-	if err != nil {
-		return err
-	}
-	if written != n {
-		return fmt.Errorf("本地残包长度不足：期望 %d，实际 %d", n, written)
-	}
-	return nil
+	return remote.HashFilePrefixStrict(path, n, hasher)
 }
 
-// progressStep 决定进度上报的字节步进。
+// progressStep 决定进度上报的字节步进（总量 1% 夹在 [4 MiB, 64 MiB]）。
 //
 // 固定 64 MiB 在小包上等于"全程不上报"：88 MB 的包从头到尾一次都不会触发，
 // 失败时 job.PulledBytes 恒为 0，而错误文案里却写着"已拉 9.3 MB"
-// （2026-11-03 Q2026110300988）。按总量的 1% 计算并夹在 [4 MiB, 64 MiB]：
-// 小包有足够粒度，20 GiB 的包也不会产生上万次 WS 消息与 job 落盘。
+// （2026-11-03 Q2026110300988）。
 func progressStep(total int64) int64 {
-	const minStep int64 = 4 << 20
-	const maxStep int64 = 64 << 20
-	if total <= 0 {
-		return maxStep
-	}
-	step := total / 100
-	if step < minStep {
-		return minStep
-	}
-	if step > maxStep {
-		return maxStep
-	}
-	return step
+	return remote.ProgressStep(total)
 }
 
 // pullArchive 把 HCI 上的压缩包续传到本地，同时返回整包 SHA-256。
 //
-// 断点依据是「本地文件已有大小」：HCI 侧用 `tail -c +offset+1` 从断点继续读，
-// 因此不需要 SFTP，也不依赖服务器端支持 range。
+// S1 收口：断点续传、边拉边摘要、字节数收敛三件事的唯一实现已迁到
+// remote.Pull。本方法只剩"把 SSHSession 适配成执行器 + 拆三元组返回值"。
 //
-// 为什么边拉边算而不是拉完再读一遍：20 GiB 再读一次磁盘要数十秒到数分钟，
-// 且这段时间里文件仍可能被外部改写；流式摘要与写入在同一份字节上完成，
-// 才是"校验的就是传过去的"。
+// 为什么 delivery_runner.pull 不需要再改：它本来就调用本方法，外壳里的
+// "每次重新 stat 量源包 / 长任务心跳抗 TMOUT=600 / 磁盘 admission 预检 /
+// 失败回填 PulledBytes" 都是交付编排语义，不属拉取原语，因此原地不动。
+// 收口前"两份拉取实现"的差异由此消除：两个调用方现在共用同一段字节逻辑。
 func (s *SSHSession) pullArchive(
 	ctx context.Context,
 	remotePath string,
@@ -230,98 +182,14 @@ func (s *SSHSession) pullArchive(
 	totalSize int64,
 	onProgress func(written, total int64),
 ) (int64, string, error) {
-	if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
-		return 0, "", err
-	}
-
-	var localSize int64
-	if info, err := os.Stat(localPath); err == nil {
-		localSize = info.Size()
-	}
-	start := resolvePullStart(localSize, totalSize)
-	if start.Discard {
-		os.Remove(localPath)
-	}
-
-	hasher := sha256.New()
-	if start.Offset > 0 {
-		if err := hashFilePrefixStrict(localPath, start.Offset, hasher); err != nil {
-			return 0, "", fmt.Errorf("重建本地摘要失败: %w", err)
-		}
-	}
-	if start.Complete {
-		onProgress(start.Offset, totalSize)
-		return start.Offset, hex.EncodeToString(hasher.Sum(nil)), nil
-	}
-	offset := start.Offset
-
-	session, err := s.client.NewSession()
-	if err != nil {
-		return offset, "", fmt.Errorf("创建下载会话失败: %w", err)
-	}
-	defer session.Close()
-
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		return offset, "", fmt.Errorf("获取下载管道失败: %w", err)
-	}
-	// tail -c +N 的 N 为 1-based 起始字节位置。
-	command := buildPullCommand(remotePath, offset)
-	if err := session.Start(command); err != nil {
-		return offset, "", fmt.Errorf("启动下载失败: %w", err)
-	}
-
-	file, err := os.OpenFile(localPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-	if err != nil {
-		return offset, "", fmt.Errorf("打开本地文件失败: %w", err)
-	}
-	defer file.Close()
-
-	// MultiWriter 保证 fwrite 与摘要吃的是同一段 buffer，不存在"文件写了、哈希没算"。
-	writer := io.MultiWriter(file, hasher)
-	written := offset
-	lastReport := offset
-	// 步进按总量自适应：固定 64 MiB 对 88 MB 的包等于全程不上报，
-	// 失败时 job.PulledBytes 恒为 0，与错误文案里的"已拉 9.3 MB"自相矛盾。
-	step := progressStep(totalSize)
-	buffer := make([]byte, logCollectPullBlock)
-
-	for {
-		if ctx.Err() != nil {
-			_ = session.Close()
-			return written, "", ctx.Err()
-		}
-		n, readErr := stdout.Read(buffer)
-		if n > 0 {
-			if _, err := writer.Write(buffer[:n]); err != nil {
-				_ = session.Close()
-				return written, "", fmt.Errorf("写入本地文件失败: %w", err)
-			}
-			written += int64(n)
-			if written-lastReport >= step {
-				lastReport = written
-				onProgress(written, totalSize)
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			_ = session.Close()
-			return written, "", fmt.Errorf("拉取中断: %w", readErr)
-		}
-	}
-
-	if err := session.Wait(); err != nil {
-		return written, "", fmt.Errorf("拉取命令失败（源包可能已被清理）: %w", err)
-	}
-	// 字节数在拉取层就收敛：`tail` 被源包截断/被 TMOUT 打断时都会提前 EOF，
-	// 不在这里拦住，就会把一个短包当完整包继续上传。
-	if totalSize > 0 && written != totalSize {
-		return written, "", fmt.Errorf("%w：期望 %d，实际 %d", errPullSizeMismatch, totalSize, written)
-	}
-	onProgress(written, totalSize)
-	return written, hex.EncodeToString(hasher.Sum(nil)), nil
+	result, err := remote.Pull(ctx, newSSHRunner(s), remote.PullSpec{
+		RemotePath: remotePath,
+		LocalPath:  localPath,
+		TotalSize:  totalSize,
+		BlockSize:  logCollectPullBlock,
+		OnProgress: onProgress,
+	})
+	return result.Written, result.SHA256, err
 }
 
 // fileSHA256 计算整包校验和；20 GiB 约需数十秒磁盘读。

@@ -50,6 +50,8 @@ import (
 	"golang.org/x/net/websocket"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
+
+	"terminal_bridge/internal/shared/remote"
 )
 
 const (
@@ -2683,23 +2685,13 @@ func vmConsoleCleanupArgv(captureID string) []string {
 
 // vmConsoleShellQuote 对单个 argv token 做安全单引号引用。
 // 输入已通过字符校验；此处仍按 POSIX 规则引用，防止任何未来放宽校验时的注入回归。
+//
+// S1 收口：唯一实现在 remote.ShellQuote。旧实现对"安全字符"省略引号，
+// 与加引号在 shell 里行为等价（base64 与 'base64' 是同一个词），但两套
+// 转义意味着两个注入面各自演化。统一为总是加引号后，本函数单测的
+// 断言随之改为带引号形态——这是调用方适配，不是安全语义变更。
 func vmConsoleShellQuote(arg string) string {
-	if arg == "" {
-		return "''"
-	}
-	safe := true
-	for _, r := range arg {
-		isPlain := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
-			r == '_' || r == '.' || r == '/' || r == ':' || r == '@' || r == '-' || r == '='
-		if !isPlain {
-			safe = false
-			break
-		}
-	}
-	if safe {
-		return arg
-	}
-	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+	return remote.ShellQuote(arg)
 }
 
 // vmConsoleCommandFromArgv 把固定 argv 拼接为交给远端 shell 的命令字符串。
@@ -3290,43 +3282,22 @@ func (s *SSHSession) runQuickCommandBytes(ctx context.Context, cmd string) ([]by
 	}
 }
 
-func (s *SSHSession) uploadStream(ctx context.Context, destPath string, reader io.Reader, mode string) error {
-	session, err := s.client.NewSession()
-	if err != nil {
-		return err
-	}
-	defer session.Close()
+// uploadStream 已删除（S1 死代码清理）。
+//
+// 它曾是"cat > tmp && mv"的无校验版本：丢弃 stdout、不验 size/digest、
+// 失败不清 tmp。全仓唯一引用是 acli_package.go 里的一句注释，实际调用
+// 早已换成 uploadAcliPackage。保留一份"看起来能用但没有校验"的写入函数，
+// 等于给未来的人留一个绕过完整性协议的入口，因此直接删掉。
+// 唯一写入实现：remote.WriteFile（先校验再 mv，失败只删 tmp）。
 
-	session.Stdin = reader
-	tmpFile := fmt.Sprintf("%s.tmp.%d", destPath, time.Now().UnixNano())
-	cmd := fmt.Sprintf("cat > '%s' && mv -f '%s' '%s' && chmod %s '%s'", tmpFile, tmpFile, destPath, mode, destPath)
-
-	done := make(chan error, 1)
-	go func() {
-		done <- session.Run(cmd)
-	}()
-
-	select {
-	case <-ctx.Done():
-		_ = session.Signal(ssh.SIGKILL)
-		return ctx.Err()
-	case err := <-done:
-		return err
-	}
-}
-
+// parseAcliVersion 从版本探测输出里取版本号与构建时间。
+//
+// S1 收口：解析唯一实现在 remote.ParseVersionOutput。acli 特有的
+// `__ACLI_BIN__=` / `__ACLI_ABSENT__` 契约由 buildAcliVersionCommand 产出，
+// 原语只负责如实解析（包括"未安装"这一结论）。
 func parseAcliVersion(output string) (version string, buildTime string) {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	reVer := regexp.MustCompile(`^\d+\.\d+(\.\d+)?`)
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "build ") {
-			buildTime = strings.TrimSpace(strings.TrimPrefix(line, "build "))
-		} else if version == "" && reVer.MatchString(line) {
-			version = line
-		}
-	}
-	return version, buildTime
+	info := remote.ParseVersionOutput(output)
+	return info.Version, info.BuildTime
 }
 
 func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filename string, buildTime string, version string, downloadURL string, err error) {
