@@ -122,12 +122,15 @@ def test_prepare_publication_requires_case_id():
 
 
 def test_save_and_publish_creates_pending_task_in_one_transaction():
-    db = FakeDB([
-        [],                                              # 幂等查询
-        FakeCursor([], returns_rows=False),               # INSERT acli_plugin_spec
-        FakeCursor([], returns_rows=False),               # INSERT acli_plugin
-        [{"deploy_id": DEPLOY_ID, "status": "pending"}],  # INSERT deployment RETURNING
-    ])
+    db = FakeDB(
+        [
+            [],  # 幂等 (a) in-flight
+            [],  # 幂等 (b) succeeded+对齐
+            FakeCursor([], returns_rows=False),  # INSERT acli_plugin_spec
+            FakeCursor([], returns_rows=False),  # INSERT acli_plugin
+            [{"deploy_id": DEPLOY_ID, "status": "pending"}],  # INSERT deployment RETURNING
+        ]
+    )
     result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
     assert result["status"] == "pending"
     assert result["idempotent"] is False
@@ -143,9 +146,7 @@ def test_save_and_publish_creates_pending_task_in_one_transaction():
     spec_params = next(params for sql, params in db.session.calls if "INSERT INTO acli_plugin_spec" in sql)
     assert "password" not in json.loads(spec_params["spec_json"])
     assert "private_key" not in json.loads(spec_params["spec_json"])
-    deployment_params = next(
-        params for sql, params in db.session.calls if "INSERT INTO acli_plugin_deployment" in sql
-    )
+    deployment_params = next(params for sql, params in db.session.calls if "INSERT INTO acli_plugin_deployment" in sql)
     assert deployment_params["env_code"] == CASE_ID
     assert deployment_params["node_ip"] == NODE_IP
 
@@ -160,12 +161,15 @@ def test_save_and_publish_creates_pending_task_in_one_transaction():
 
 
 def test_write_statements_without_returning_are_not_read_as_rows():
-    db = FakeDB([
-        [],
-        FakeCursor([], returns_rows=False),
-        FakeCursor([], returns_rows=False),
-        FakeCursor([], returns_rows=False),
-    ])
+    db = FakeDB(
+        [
+            [],
+            [],
+            FakeCursor([], returns_rows=False),
+            FakeCursor([], returns_rows=False),
+            FakeCursor([], returns_rows=False),
+        ]
+    )
     result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
     assert result["status"] == "pending"
     assert db.session.committed
@@ -174,9 +178,9 @@ def test_write_statements_without_returning_are_not_read_as_rows():
 @pytest.mark.parametrize(
     ("target_case_id", "target_node_ip", "env_code"),
     [
-        ("", NODE_IP, ""),       # 无 case_id
-        (CASE_ID, "", "24"),     # 无 node_ip（env_code 兜底不参与目标校验）
-        ("", "", ""),            # 两者都缺
+        ("", NODE_IP, ""),  # 无 case_id
+        (CASE_ID, "", "24"),  # 无 node_ip（env_code 兜底不参与目标校验）
+        ("", "", ""),  # 两者都缺
     ],
 )
 def test_save_and_publish_without_target_session_is_rejected(target_case_id, target_node_ip, env_code):
@@ -190,11 +194,46 @@ def test_save_and_publish_without_target_session_is_rejected(target_case_id, tar
 
 
 def test_repeated_publish_is_idempotent():
-    db = FakeDB([[{"deploy_id": "htp-acli-old", "status": "succeeded"}]])
+    # (a) in-flight 未命中，(b) succeeded+current_spec_hash 对齐命中。
+    db = FakeDB([[], [{"deploy_id": "htp-acli-old", "status": "succeeded"}]])
     result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
     assert result["idempotent"] is True
     assert result["deploy_id"] == "htp-acli-old"
     assert not any("INSERT" in sql for sql, _ in db.session.calls)
+
+
+def test_in_flight_publish_reuses_deploy_id_without_waiting_for_current_hash():
+    """首次下发未成功（current_spec_hash 未推进）时，重复提交也必须命中 in-flight 幂等。
+
+    旧实现把 current_spec_hash 写进同一条 SQL，导致这里返回 NULL → 重复建任务、
+    同一脚本排队执行两次。
+    """
+    db = FakeDB([[{"deploy_id": "htp-acli-running", "status": "running"}]])
+    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
+    assert result["idempotent"] is True
+    assert result["deploy_id"] == "htp-acli-running"
+    assert result["status"] == "running"
+    # 两条幂等查询同事务执行；关键是在飞判定语句里不得出现 current_spec_hash。
+    assert "current_spec_hash" not in db.session.calls[0][0]
+    assert not any("INSERT" in sql for sql, _ in db.session.calls)
+
+
+def test_force_skips_idempotency_so_cleared_node_can_be_reinstalled():
+    """acli 重装会清空插件目录：节点被清空后管理员必须能用 force 重发同一规格。"""
+    prepared = _targeted()
+    prepared["force"] = True
+    db = FakeDB(
+        [
+            FakeCursor([], returns_rows=False),  # INSERT acli_plugin_spec
+            FakeCursor([], returns_rows=False),  # INSERT acli_plugin
+            [{"deploy_id": DEPLOY_ID, "status": "pending"}],  # INSERT deployment RETURNING
+        ]
+    )
+    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(prepared))
+    assert result["idempotent"] is False
+    assert result["status"] == "pending"
+    sqls = " ".join(sql for sql, _ in db.session.calls)
+    assert "'pending', 'claimed', 'running'" not in sqls  # 未做任何幂等查询
 
 
 def test_deployment_queries_never_expose_node_ip_or_lease_owner():

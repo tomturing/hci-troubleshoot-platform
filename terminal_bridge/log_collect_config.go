@@ -132,9 +132,13 @@ func writeLogCollectConfig(
 
 	// 直接写原文，只用 shell 内建 printf：HCI 宿主机是极简系统，没有 base64
 	// （容器内才有），走 base64 会在宿主机 exit 127（2026-11-17 Q2026110302166 现场）。
+	// 必须先写临时文件再 mv：直写目标路径时，SSH 通道中断会留下**截断的配置**，
+	// 而 acli 对坏配置静默跳过——任务报成功、数据却没采到（S2）。
+	tmpPath := path + ".tmp"
 	writeCmd := fmt.Sprintf(
-		`mkdir -p %s && printf '%%s' %s > %s`,
-		shellQuote(logCollectConfigDir), shellQuote(raw), shellQuote(path),
+		`mkdir -p %s && printf '%%s' %s > %s && mv -f %s %s || { rm -f %s; false; }`,
+		shellQuote(logCollectConfigDir), shellQuote(raw), shellQuote(tmpPath),
+		shellQuote(tmpPath), shellQuote(path), shellQuote(tmpPath),
 	)
 	if _, code, err := s.runQuickCommand(ctx, writeCmd); err != nil || code != 0 {
 		return "", fmt.Errorf("写入配置文件失败（exit=%d）：%v", code, err)

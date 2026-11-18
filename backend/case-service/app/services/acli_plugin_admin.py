@@ -104,8 +104,30 @@ class AcliPluginAdminStore:
 
         env = {"node_ip": target_node_ip}
 
-        existing = await self._script(
-            [
+        # 幂等判定拆成两段（原实现把两件事塞进一条 SQL 才出的 bug）：
+        #   (a) in-flight：同一 spec 正在下发 → 复用 deploy_id。
+        #       不能带 current_spec_hash——它只在成功后推进，带上会让"首次未成功"的
+        #       重复提交不命中，同一脚本排队执行两次。
+        #   (b) succeeded：只有节点当前态确实等于该规格才算完成态幂等。
+        # force=True 跳过 (b)：acli 重装会清空插件目录，节点被清空后管理员必须能重发。
+        force = bool(prepared.get("force"))
+        params = {"plugin_name": plugin_name, "spec_hash": spec_hash, "env_code": env_code}
+        checks: list[tuple[str, dict[str, Any]]] = []
+        if not force:
+            checks = [
+                (
+                    """
+                    SELECT d.deploy_id, d.status
+                      FROM acli_plugin_deployment d
+                     WHERE d.plugin_name = :plugin_name
+                       AND d.spec_hash = :spec_hash
+                       AND d.env_code = :env_code
+                       AND d.status IN ('pending', 'claimed', 'running')
+                     ORDER BY d.created_at DESC
+                     LIMIT 1
+                    """,
+                    params,
+                ),
                 (
                     """
                     SELECT d.deploy_id, d.status
@@ -114,17 +136,19 @@ class AcliPluginAdminStore:
                      WHERE d.plugin_name = :plugin_name
                        AND d.spec_hash = :spec_hash
                        AND d.env_code = :env_code
-                       AND d.status IN ('pending', 'claimed', 'running', 'succeeded')
+                       AND d.status = 'succeeded'
                        AND p.current_spec_hash = :spec_hash
                      ORDER BY d.created_at DESC
                      LIMIT 1
                     """,
-                    {"plugin_name": plugin_name, "spec_hash": spec_hash, "env_code": env_code},
-                )
+                    params,
+                ),
             ]
-        )
-        if existing and existing[0]:
-            row = existing[0][0]
+        existing = await self._script(checks) if checks else []
+        for rows in existing:
+            if not rows:
+                continue
+            row = rows[0]
             return {
                 "deploy_id": row["deploy_id"],
                 "spec_hash": spec_hash,

@@ -70,7 +70,9 @@ def test_env_code_is_dropped_not_rejected():
     assert "env_code" not in spec
     assert validate_spec(spec)["ok"]
     with_env = build_descriptor(spec, deploy_id="htp-acli-test-0001", now=datetime(2026, 11, 14, 6, tzinfo=UTC))
-    without_env = build_descriptor(normalize_spec(TEMPLATE_SPEC), deploy_id="htp-acli-test-0001", now=datetime(2026, 11, 14, 6, tzinfo=UTC))
+    without_env = build_descriptor(
+        normalize_spec(TEMPLATE_SPEC), deploy_id="htp-acli-test-0001", now=datetime(2026, 11, 14, 6, tzinfo=UTC)
+    )
     assert with_env["spec_hash"] == without_env["spec_hash"]
 
 
@@ -163,6 +165,26 @@ def test_wrapper_transparency_and_mode():
     assert "1mt" not in wrapper
 
 
+def test_deploy_script_never_deletes_live_plugin_without_backup():
+    """P0：lock_timeout / register_backup_failed 发生在目录备份之前。
+
+    此时 "$BASE/$NAME" 是现场唯一副本，rollback 若无条件 rm -rf 会把它删掉且
+    既无备份也无 .old 可恢复——插件从此消失，重发同规格还会被幂等挡住。
+    """
+    script = _descriptor()["deploy_script"]
+    assert 'if [ -d "$TMP/backup/$NAME" ] || [ -d "$BASE/$NAME.old.$DEPLOY_ID" ]; then' in script
+    assert "ACP_ROLLBACK_SKIPPED=no_backup" in script
+    # 旧实现的无条件删除必须消失（该行出现在备份之前，删的就是现场目录）。
+    assert '[ -d "$BASE/$NAME" ] && rm -rf "$BASE/$NAME"\n' not in script
+
+
+def test_deploy_script_traps_termination_into_rollback():
+    """脚本被 SIGTERM 打断时会停在「旧目录已挪走、新目录未就位」之间，必须收敛到回滚。"""
+    script = _descriptor()["deploy_script"]
+    assert "trap 'fail interrupted' INT TERM HUP" in script
+    assert "trap - INT TERM HUP" in script  # fail 内先解绑，避免二次进入
+
+
 def test_spec_hash_is_deterministic_and_covers_every_input():
     first = _descriptor()
     second = build_descriptor(_spec(), deploy_id="htp-acli-test-0001", now=NOW)
@@ -182,9 +204,9 @@ def test_deploy_script_is_valid_bash_without_missing_hci_dependencies():
     script = _descriptor()["deploy_script"]
     assert "base64" not in script
     assert "python3" not in script
-    for token in ("flock -w 30 9", "sha256sum -c -", "jq --slurpfile", "mv \"$TMP/plugin_register.json\" \"$REG\""):
+    for token in ("flock -w 30 9", "sha256sum -c -", "jq --slurpfile", 'mv "$TMP/plugin_register.json" "$REG"'):
         assert token in script, token
-    assert "/sf/bin/acli --timeout 60 \"$NAME\" $SMOKE_ARGS" in script
+    assert '/sf/bin/acli --timeout 60 "$NAME" $SMOKE_ARGS' in script
     assert "plugin_smoke_empty" in script
     if shutil.which("bash"):
         result = subprocess.run(["bash", "-n"], input=script, capture_output=True, text=True, check=False)
