@@ -2294,6 +2294,19 @@ function stopAutoSync() {
 async function triggerAutoSync() {
   // 定时器可能在主流程启动前就排好了这一跳：进函数再判一次，防止迟到的对账抢先写库。
   if (mainFlowActive.value) return
+  // 结果态的展示数据源是 resultTask，不是 currentTask：只对账节点而不重读它，
+  // S7 会永久停在打开面板那一帧（实测「等待中」，必须重进工单才变成功）。
+  // 平台侧证据是异步写进来的，这里必须自己把最新快照取回来。
+  if (viewMode.value === 'result') {
+    const taskId = resultTask.value?.task_id
+    if (taskId) {
+      const latest = await logCollectApi.getTask(taskId).catch(() => null)
+      if (latest && resultTask.value?.task_id === taskId) {
+        resultTask.value = latest
+        currentTask.value = latest
+      }
+    }
+  }
   const action = await syncNodeState({ applyPatches: true, silent: true, source: 'auto' })
   // 落终态后降频而不是停摆：平台虽已终态，节点可能仍在跑（需要「接管」）或刚异常，
   // 完全停轮询会让接管入口再也不出现。
@@ -2304,7 +2317,7 @@ async function triggerAutoSync() {
     if (next !== autoSyncInterval) startAutoSync(next)
     return
   }
-  const task = resultTask.value
+  const task = resultTask.value ?? currentTask.value
   if (task && TERMINAL_TASK_STATUSES.includes(task.status)) {
     const next = terminalSyncInterval(task)
     if (next !== autoSyncInterval) startAutoSync(next)

@@ -3643,6 +3643,64 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     wrapper.unmount()
   })
 
+  // 回归（Q2026110302166 现场实测）：结果态打开时证据还在上报途中，S7 显示「等待中」。
+  // 证据是平台侧异步写进来的，自动对账若不重读任务，页面会永久停在那一帧，
+  // 用户只能重进工单才看到成功——这正是「页面状态未自动刷新」的现场表现。
+  it('结果态自动对账会重读任务：证据到达后 S7 从「等待中」自动变「成功」', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const stages = (status: string, label: string) => [
+      {
+        key: 'S7',
+        label: '证据回传',
+        scopes: ['local', 'cloud'],
+        scope_label: '本地 → 云端',
+        components: [],
+        status,
+        status_label: label,
+        criteria: '',
+        fault_code: null,
+        customer_text: null,
+      },
+    ]
+    const waitingTask = taskFixture({
+      task_id: 'task-s7-wait',
+      status: 'completed',
+      delivery_status: 'delivered',
+      finished_at: new Date().toISOString(),
+      display: {
+        phase: 'settled',
+        phase_label: '已结束',
+        conclusion: 'partial',
+        conclusion_label: '已交付 · 有疑点',
+        conclusion_tone: 'warning',
+        conditions: [{ key: 'artifact_uninspected', label: '包内容未探测' }],
+        progress_percent: 100,
+        stages: stages('waiting', '等待中'),
+      },
+    } as any)
+    try {
+      const wrapper = await mountResultTask(waitingTask)
+      expect(wrapper.text()).toContain('等待中')
+
+      // 平台侧证据落库后，下一次自动对账必须把最新快照读回来
+      vi.mocked(logCollectApi.getTask).mockResolvedValue({
+        ...waitingTask,
+        updated_at: new Date().toISOString(),
+        display: { ...(waitingTask.display as any), stages: stages('success', '成功') },
+      } as any)
+
+      await vi.advanceTimersByTimeAsync(11000)
+      await flushPromises()
+
+      expect(logCollectApi.getTask).toHaveBeenCalledWith('task-s7-wait')
+      expect(wrapper.text()).toContain('成功')
+      expect(wrapper.text()).not.toContain('等待中')
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   // 回归（Q2026110302166）：自定义场景下发时 acli 要求 `-m core`，平台把 modules
   // 覆写成 ["core"]。展示若直接读 modules，用户选的 test 就变成「core文件」。
   it('自定义场景任务显示场景名，而不是被覆写的 core 槽位', async () => {
