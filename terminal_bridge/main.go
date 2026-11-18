@@ -3238,6 +3238,44 @@ func (s *SSHSession) runQuickCommandStreams(ctx context.Context, cmd string) (st
 	}
 }
 
+// runQuickCommandBytes 与 runQuickCommandStreams 同构，但保留 stdout 原始字节。
+//
+// 为什么要单独一份：证据侧需要把 zip 尾部（含二进制 EOCD / 中央目录）取回本地，
+// runQuickCommandStreams 会 TrimSpace 并当字符串处理，二进制数据会被破坏。
+func (s *SSHSession) runQuickCommandBytes(ctx context.Context, cmd string) ([]byte, string, int, error) {
+	session, err := s.client.NewSession()
+	if err != nil {
+		return nil, "", -1, err
+	}
+	defer session.Close()
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	session.Stdout = &stdoutBuf
+	session.Stderr = &stderrBuf
+
+	done := make(chan error, 1)
+	go func() {
+		done <- session.Run(cmd)
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		return nil, "", -1, ctx.Err()
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			var exitErr *ssh.ExitError
+			if errors.As(err, &exitErr) {
+				exitCode = exitErr.ExitStatus()
+			} else {
+				exitCode = -1
+			}
+		}
+		return stdoutBuf.Bytes(), strings.TrimSpace(stderrBuf.String()), exitCode, err
+	}
+}
+
 func (s *SSHSession) uploadStream(ctx context.Context, destPath string, reader io.Reader, mode string) error {
 	session, err := s.client.NewSession()
 	if err != nil {

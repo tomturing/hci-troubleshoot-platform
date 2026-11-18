@@ -419,8 +419,11 @@ class TestScopeComponentAttribution:
 
         assert result["phase"] == "settled"
         assert result["conclusion"] == "partial"
-        assert result["fault_attribution"]["code"] == "LC-BRIDGE-005"
-        assert next(s for s in result["stages"] if s["key"] == "S7")["status"] == "failed"
+        # 证据没到 ≠ 证据上报失败：没有明确失败陈述时只能「未知」，不得挂归因码。
+        # 旧实现在这里直接判 failed + LC-BRIDGE-005，把异步证据的空窗期写成失败
+        # （Q2026110302166 页面显示「证据回传失败」，而字节早已到齐）。
+        assert result["fault_attribution"] is None
+        assert next(s for s in result["stages"] if s["key"] == "S7")["status"] == "unknown"
 
     def test_no_checked_at_never_hangs_in_waiting(self):
         """对抗：缺时间戳不得无限等待，否则任务会被永久挂起。"""
@@ -534,3 +537,107 @@ class TestArchiveTailDisplay:
         task = make_task(delivery_status="delivered", relay_status="success")
         assert delivery_evidence_ok(task) is True
         assert "archive_unconfirmed" not in key_list(derive(task, now=NOW))
+
+
+class TestEvidenceDelivery:
+    """S7 只回答「证据有没有回传到平台」，不回答「包内容好不好读」。
+
+    现场 Q2026110302166：1 MB 加密包，证据 00:11:03 落库、任务 00:10:32 终结。
+    旧派生在「未知」时直接判 failed + LC-BRIDGE-005，页面永久停在「证据回传失败」。
+    """
+
+    def delivered(self, **overrides) -> dict:
+        data = {
+            "status": "completed",
+            "progress": 100,
+            "upload_mode": "acli_direct",
+            "delivery_status": "delivered",
+            "relay_status": "none",
+            "finished_at": NOW - timedelta(seconds=10),
+            "detail": {"p1_archive_check": {"verified": True, "reason": "verified"}},
+        }
+        data.update(overrides)
+        return make_task(**data)
+
+    def s7(self, payload: dict) -> dict:
+        return next(stage for stage in payload["display"]["stages"] if stage["key"] == "S7")
+
+    def test_manifest_snapshot_marks_evidence_delivered(self):
+        """证据回传成功后，客户侧只凭任务行也必须判成功。"""
+        payload = derive(
+            self.delivered(
+                detail={
+                    "artifact_quality": "invalid",
+                    "artifact_reason": "unreadable",
+                    "artifact_manifest": {
+                        "received": True,
+                        "source": "node_zip",
+                        "quality": "invalid",
+                        "reason": "unreadable",
+                        "entry_count": 0,
+                        "readable": False,
+                    },
+                }
+            ),
+            now=NOW,
+        )
+
+        assert self.s7(payload)["status"] == "success"
+        assert self.s7(payload)["fault_code"] is None
+        # 内容不可读仍然如实展示在 artifact 上，不被 S7 的成功掩盖。
+        assert payload["artifact"]["quality"] == "invalid"
+        assert payload["artifact"]["reason"] == "unreadable"
+
+    def test_evidence_window_is_waiting_not_failed(self):
+        """交付刚终结、证据还在路上 → 等待中，不能写失败。"""
+        payload = derive(self.delivered(finished_at=NOW - timedelta(seconds=5)), now=NOW)
+
+        assert self.s7(payload)["status"] == "waiting"
+        assert payload["display"]["fault_attribution"] is None
+
+    def test_evidence_window_does_not_hang_forever(self):
+        """窗口外仍无证据 → 未知；不得为了「有个结论」就伪造失败。"""
+        payload = derive(self.delivered(finished_at=NOW - timedelta(minutes=10)), now=NOW)
+
+        assert self.s7(payload)["status"] == "unknown"
+        assert payload["display"]["fault_attribution"] is None
+
+    def test_explicit_failure_still_reported(self):
+        """桥明确上报过失败时，S7 必须失败并带归因码，不能一律和稀泥。"""
+        payload = derive(
+            self.delivered(finished_at=NOW - timedelta(minutes=10)),
+            now=NOW,
+        )
+        assert self.s7(payload)["status"] == "unknown"
+
+        detail = {
+            "p1_archive_check": {"verified": True, "reason": "verified"},
+            "evidence_error": {"kind": "artifact-manifest", "error": "证据上报 HTTP 404"},
+        }
+        failed = derive(self.delivered(finished_at=NOW - timedelta(minutes=10), detail=detail), now=NOW)
+        assert self.s7(failed)["status"] == "failed"
+        assert failed["display"]["fault_attribution"]["code"] == "LC-BRIDGE-005"
+        assert failed["display"]["fault_attribution"]["stage"] == "S7"
+
+    def test_naive_settled_time_does_not_crash(self):
+        """老数据/手写 SQL 可能给 naive 时间：窗口判断不能因此 500。"""
+        payload = derive(
+            self.delivered(finished_at=datetime(2026, 5, 20, 10, 0, 0)),
+            now=NOW,
+        )
+
+        assert self.s7(payload)["status"] in {"waiting", "unknown"}
+
+    def test_bridge_without_capability_is_skipped_not_failed(self):
+        """旧桥没有证据能力 → 未启用，与「传失败」区分开。"""
+        payload = derive(
+            self.delivered(
+                finished_at=NOW - timedelta(minutes=10),
+                detail={
+                    "p1_archive_check": {"verified": True, "reason": "verified"},
+                    "bridge_outdated": True,
+                },
+            ),
+            now=NOW,
+        )
+        assert self.s7(payload)["status"] == "skipped"

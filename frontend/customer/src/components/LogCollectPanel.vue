@@ -138,6 +138,16 @@ const POLL_INTERVAL = 5000
 // 终态任务的低频对账间隔：failed 的节点侧任务可能仍在跑（需要「接管」），
 // 完全停轮询会让接管入口再也不出现；但每 5s 打一次 SSH 也没有必要。
 const TERMINAL_POLL_INTERVAL = 30000
+/**
+ * 终态后证据到达窗口。
+ *
+ * 证据上报是 bridge 的异步动作：交付完成与证据落库之间有几十秒窗口
+ * （Q2026110302166 实测任务 00:10:32 终结、证据 00:11:03 落库，差 31s）。
+ * 30s 的终态间隔正好跨在窗口边缘，页面很容易永远停在「证据未到」那一刻，
+ * 于是窗口内改用短间隔，窗口外回落低频。
+ */
+const EVIDENCE_WAIT_WINDOW_MS = 120000
+const EVIDENCE_WAIT_POLL_INTERVAL = 10000
 
 /**
  * 交付证据等待起点（单调时钟，不持久化）。
@@ -945,8 +955,23 @@ const resultFinishedText = computed(() => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 })
 
-const resultModulesText = computed(() => {
-  const modules = resultTask.value?.modules ?? []
+/**
+ * 「收集场景」文案：场景快照优先，modules 只是兜底。
+ *
+ * 自定义场景下发时 acli 要求 `-m core`（spc 固定占 core 槽），平台会把
+ * modules 覆写成 ["core"]。直接展示 modules 就等于把实现细节当用户选择：
+ * 用户明明选的是「自定义场景 test」，页面却写着 core文件（Q2026110302166）。
+ * 名称来自创建时的快照，场景后来被改名/删除也不影响历史解释。
+ */
+const resultScenarioText = computed(() => {
+  const task = resultTask.value
+  if (!task) return '未记录'
+  if (task.scenario_kind === 'custom') {
+    const label = (task.scenario_label ?? '').trim()
+    if (label) return `${label}（自定义场景）`
+    return '自定义场景（已删除）'
+  }
+  const modules = task.modules ?? []
   return modules.length ? modules.map(moduleLabelOf).join('、') : '未记录'
 })
 
@@ -2202,7 +2227,10 @@ async function resumeTask(taskId: string) {
     if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
 
     // 终态任务仍然对账，但降频：节点可能还在跑（需要「接管」），5s 空转没有意义。
-    startAutoSync(TERMINAL_TASK_STATUSES.includes(task.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL)
+    // 等证据窗口内例外：加密到 10s，证据一到就回落。
+    startAutoSync(
+      TERMINAL_TASK_STATUSES.includes(task.status) ? terminalSyncInterval(task) : POLL_INTERVAL,
+    )
   } catch (e: any) {
     ElMessage.error(
       e?.response?.status === 404
@@ -2219,11 +2247,36 @@ async function resumeTask(taskId: string) {
  * 于是节点早已 100%，面板还停在 0%，"自动刷新"看着像没生效。
  * 统一入口后，自动与手动在任何时刻都得到同一个结论。
  */
+/**
+ * 终态任务是否仍在等证据到达。
+ *
+ * 判据只用服务端派生结果：交付已成立、S7 尚未成功/未启用、且仍在到达窗口内。
+ * 窗口外不再等待，避免把一次「桥没上报」变成无限轮询。
+ */
+function evidenceStillPending(task?: LogCollectTask | null): boolean {
+  if (!task || !TERMINAL_TASK_STATUSES.includes(task.status)) return false
+  if (task.delivery_status !== 'delivered') return false
+  const s7 = task.display?.stages?.find((item) => item.key === 'S7')
+  if (s7?.status === 'success' || s7?.status === 'skipped') return false
+  const settledRaw = task.finished_at || task.updated_at
+  const settled = settledRaw ? Date.parse(settledRaw) : NaN
+  if (!Number.isFinite(settled)) return false
+  return Date.now() - settled <= EVIDENCE_WAIT_WINDOW_MS
+}
+
+/** 终态任务的下一跳间隔：等证据时加密，其余沿用低频。 */
+function terminalSyncInterval(task?: LogCollectTask | null): number {
+  return evidenceStillPending(task) ? EVIDENCE_WAIT_POLL_INTERVAL : TERMINAL_POLL_INTERVAL
+}
+
+let autoSyncInterval = 0
+
 function startAutoSync(interval = POLL_INTERVAL) {
   stopAutoSync()
   // 主流程独占轮询权：它自己会推进状态机，再叠一条自动对账只会两条链路抢写
   // 同一行，输的那条拿 409 并中断交付（Q2026110900356）。
   if (mainFlowActive.value) return
+  autoSyncInterval = interval
   resumeTimer = setInterval(() => {
     if (!visible.value) return
     void triggerAutoSync()
@@ -2235,6 +2288,7 @@ function stopAutoSync() {
     clearInterval(resumeTimer)
     resumeTimer = null
   }
+  autoSyncInterval = 0
 }
 
 async function triggerAutoSync() {
@@ -2242,9 +2296,18 @@ async function triggerAutoSync() {
   if (mainFlowActive.value) return
   const action = await syncNodeState({ applyPatches: true, silent: true, source: 'auto' })
   // 落终态后降频而不是停摆：平台虽已终态，节点可能仍在跑（需要「接管」）或刚异常，
-  // 完全停轮询会让接管入口再也不出现；30s 一次足以发现节点态翻转。
+  // 完全停轮询会让接管入口再也不出现。
+  // 但「证据还没到」是另一回事：短窗口内必须加密刷新，否则页面会永久停在
+  // 「证据回传失败」那一帧（Q2026110302166 证据比终态晚 31s 才落库）。
   if (action && (action.action === 'patch_completed' || action.action === 'patch_failed')) {
-    startAutoSync(TERMINAL_POLL_INTERVAL)
+    const next = terminalSyncInterval(resultTask.value)
+    if (next !== autoSyncInterval) startAutoSync(next)
+    return
+  }
+  const task = resultTask.value
+  if (task && TERMINAL_TASK_STATUSES.includes(task.status)) {
+    const next = terminalSyncInterval(task)
+    if (next !== autoSyncInterval) startAutoSync(next)
   }
 }
 
@@ -2355,7 +2418,7 @@ async function restoreTaskState(force = false) {
       // 「接管」入口依赖这一次对账（同会话重开面板也走这里）。
       if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
       startAutoSync(
-        TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL,
+        TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? terminalSyncInterval(currentTask.value) : POLL_INTERVAL,
       )
     }
     return
@@ -2383,7 +2446,7 @@ async function restoreTaskState(force = false) {
       // 完成 ≠ 已交付：结果态也必须对账一次，否则"包还在节点上、平台没产物"
       // 的任务永远拿不到「上传到平台」，用户只剩"重新采集"这一条错路。
       if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
-      startAutoSync(TERMINAL_POLL_INTERVAL)
+      startAutoSync(terminalSyncInterval(latest))
       return
     }
     // 失败记录最后恢复：节点侧任务可能仍在运行，此时唯一正确的下一步是「接管」，
@@ -2990,7 +3053,7 @@ async function handleStart() {
       mainFlowActive.value = false
       if (token === runToken && visible.value && currentTask.value) {
         startAutoSync(
-          TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? TERMINAL_POLL_INTERVAL : POLL_INTERVAL,
+          TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? terminalSyncInterval(currentTask.value) : POLL_INTERVAL,
         )
       }
       // spc 槽位必须在流程退出时还原：失败/取消同样要撤掉平台清单，
@@ -3680,8 +3743,8 @@ async function syncNodeState(
       logDeliveryDecision('wait_delivery_polling', { wait_ms: waitMs, interval_ms: POLL_INTERVAL })
     } else if (action.action === 'delivery_unknown') {
       nodeSyncHint.value = buildSyncNotice(action)
-      startAutoSync(TERMINAL_POLL_INTERVAL)
-      logDeliveryDecision('delivery_unknown', { wait_ms: waitMs, interval_ms: TERMINAL_POLL_INTERVAL })
+      startAutoSync(terminalSyncInterval(resultTask.value))
+      logDeliveryDecision('delivery_unknown', { wait_ms: waitMs, interval_ms: terminalSyncInterval(resultTask.value) })
     }
     return action
   } finally {
@@ -5124,7 +5187,7 @@ onBeforeUnmount(() => {
         <el-descriptions :column="descColumns" border size="small">
           <el-descriptions-item label="发起节点">{{ resultTask.origin_node_ip }}</el-descriptions-item>
           <el-descriptions-item label="交付路径">{{ resultDeliveryText }}</el-descriptions-item>
-          <el-descriptions-item label="收集场景">{{ resultModulesText }}</el-descriptions-item>
+          <el-descriptions-item label="收集场景">{{ resultScenarioText }}</el-descriptions-item>
           <el-descriptions-item label="时间范围">{{ resultRangeText }}</el-descriptions-item>
           <el-descriptions-item label="目标主机">{{ resultHostsText }}</el-descriptions-item>
           <el-descriptions-item label="压缩包大小">{{ resultSizeText }}</el-descriptions-item>
