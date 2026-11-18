@@ -142,7 +142,7 @@ STAGES = {   'S1': {   'label': '环境探测',
               'scopes': ['local', 'cloud'],
               'scope_label': '本地 → 云端',
               'components': ['bridge', 'htp'],
-              'criteria': '4443 /api/direct/log-collect 四类端点、四张证据表'},
+              'criteria': '4443 /api/direct/log-collect 四类端点、四张证据表；回传成功即成功，包内容质量由 artifact 单独表达'},
     'S8': {   'label': '结论呈现',
               'scopes': ['cloud'],
               'scope_label': '云端',
@@ -359,23 +359,25 @@ FAULT_CATALOG = {   'LC-HCI-001': {   'component': 'hci',
                          'scope': 'local'},
     'LC-BRIDGE-005': {   'component': 'bridge',
                          'stage': 'S7',
-                         'problem': '已交付但包内容清单未回传',
-                         'action': '日志包已到日志服务器，请联系管理员补传证据，不要重新收集',
+                         'problem': '证据上报明确失败（桥已上报错误码）',
+                         'action': '证据链路失败，日志包本身可能已到日志服务器；请联系管理员按调用链排查，不要重新收集',
                          'tone': 'warning',
-                         'admin_detail': 'artifact_manifest 缺行使 quality=unknown，结论只能是 partial「已交付 '
-                                         '· 有疑点」；引入方是 S7 证据上报链路，不是采集失败也不是平台损坏。按优先级查：① '
-                                         'bridge_execution_logs 的 *_failed.error 是否 HTTP 404（若是，查 '
-                                         'ingress 是否把 /api/direct/log-collect/ 直连 '
-                                         'case-service，缺规则会被 /api 泛前缀送网关 404）；② '
-                                         'evidence_tls_relaxed 是否出现（自签 x509）；③ acli 版本是否过旧。别让用户重采。',
-                         'evidence': 'artifact.quality=unknown、log_collect_artifact_manifest '
+                         'admin_detail': '看 '
+                                         'detail.evidence_error（kind/error/http_code，由桥显式上报）判定失败类型；S7 '
+                                         '只表达「证据有没有回传到平台」，包内容是否可读由 artifact.quality/reason '
+                                         '单独表达。按优先级查：① HTTP 404 → ingress 是否把 '
+                                         '/api/direct/log-collect/ 直连 case-service；② HTTP 500/422 '
+                                         '→ case-service 证据端点报错（带 request_id）；③ '
+                                         'evidence_tls_relaxed 是否出现（自签 x509）；④ 桥日志 '
+                                         '*_failed.error。别让用户重采。',
+                         'evidence': 'detail.evidence_error、log_collect_artifact_manifest '
                                      '行数、bridge_execution_logs 的 *_failed.error HTTP 状态码、ingress 中 '
                                      '/api/direct/log-collect/ 路由',
                          'kind': 'signal',
                          'check': [],
                          'fix': [],
                          'match_keywords': [],
-                         'title_zh': '已交付但包内容清单未回传',
+                         'title_zh': '证据上报明确失败',
                          'layer': 'ATTRIBUTION',
                          'owner': 'platform',
                          'retryable': 'manual',

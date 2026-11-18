@@ -395,6 +395,18 @@ class LogCollectTaskResponse(BaseModel):
     # 它是平台生成的结构化结果，前端只负责透传，不得展示为可编辑项。
     custom_scenario_id: UUID | None = None
     custom_scenario_revision: int | None = None
+    # 「用户选了哪个场景」的语义字段：与 modules 分离。
+    # 自定义场景（spc）下发时必须 `-m core`，modules 会被覆写成 ["core"]，
+    # 直接拿 modules 展示会把实现细节当用户选择（Q2026110302166）。
+    scenario_kind: Literal["default", "custom"] | None = Field(
+        default=None, description="场景类型：默认场景 / 自定义场景"
+    )
+    scenario_label: str | None = Field(
+        default=None, description="场景名称快照（创建时固化，场景改名或删除后仍可解释历史）"
+    )
+    scenario_slot: str | None = Field(
+        default=None, description="自定义场景占用的 acli 槽位（spc 固定为 core，仅技术说明）"
+    )
     config_json: str | None = Field(default=None, description="仅创建响应：透传给 bridge 写入节点")
     spc_json: str | None = Field(default=None, description="仅创建响应：spc 收集定义原文")
     spc_sha256: str | None = None

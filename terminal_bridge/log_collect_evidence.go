@@ -25,7 +25,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -555,15 +554,42 @@ func reportLocalArchive(ctx context.Context, cfg evidenceConfig, path string) {
 		return
 	}
 	manifest := inspectLocalArchive(path)
-	if _, err := cfg.postEvidence(ctx, cfg.taskPath("artifact-manifest"), manifest, ""); err != nil {
-		blog("WARN", "log_collect.artifact_manifest_failed", "包内容探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-			"task_id": cfg.TaskID, "error": err.Error(),
-		})
+	postManifest(ctx, cfg, manifest, "log_collect.artifact_manifest_failed", "包内容探测上报失败")
+}
+
+// 节点侧读取窗口：EOCD 固定在尾部 64 KiB 内，中央目录通常远小于 512 KiB。
+// 超大包（中央目录更大）再退到 16 MiB 窗口重试一次。
+const (
+	archiveTailProbeBytes = 512 << 10
+	archiveTailMaxBytes   = 16 << 20
+)
+
+// tailReaderAt 让 zip.NewReader 在「只有尾部一段字节」的情况下也能解析中央目录。
+//
+// 物理事实：zip 的目录信息全在文件尾（EOCD + 中央目录），条目内容一个字节都不用读。
+// 因此无需把整个包（可能几十 GB）传回来，只需尾部窗口。
+type tailReaderAt struct {
+	data  []byte
+	start int64
+}
+
+func (t tailReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	end := off + int64(len(p))
+	if off < t.start || end > t.start+int64(len(t.data)) {
+		return 0, io.ErrUnexpectedEOF
 	}
+	copy(p, t.data[off-t.start:end-t.start])
+	return len(p), nil
 }
 
 // inspectNodeArchive 在节点侧读中央目录（P1 包不在客户机时也能拿到条目事实）。
-// 只读命令：zipinfo -t / unzip -Z1，不解压、不做完整性校验。
+//
+// 第一性原理：要回答「包里有几条日志」，物理上只有两条路——让节点上的程序读文件，
+// 或把字节省下来由 bridge 自己读。HCI 宿主机是极简系统（连 base64 都没有），
+// 不能假设 unzip/zipinfo 存在；而客户包全条目加密，`zipinfo -t` 必然非零退出。
+// 旧实现同时依赖这两条命令，于是「命令缺失」与「包加密」被统一报成
+// 「中央目录读取不可用」，S7 因此永远看不到包内容（Q2026110302166）。
+// 现在只依赖 tail：取包尾窗口，用 Go 标准库解析，加密标记也能如实读出。
 func inspectNodeArchive(ctx context.Context, s *SSHSession, cfg evidenceConfig, path string, size int64) {
 	if s == nil || strings.TrimSpace(path) == "" {
 		return
@@ -573,36 +599,134 @@ func inspectNodeArchive(ctx context.Context, s *SSHSession, cfg evidenceConfig, 
 		return
 	}
 	quoted := shellQuote(path)
-	namesOut, _, namesCode, namesErr := s.runQuickCommandStreams(ctx, "unzip -Z1 "+quoted+" | head -n "+strconv.Itoa(maxManifestEntries))
-	totalsOut, _, totalsCode, totalsErr := s.runQuickCommandStreams(ctx, "zipinfo -t "+quoted)
-	readable := namesErr == nil && namesCode == 0 && totalsErr == nil && totalsCode == 0
-	manifest := artifactManifest{
-		Source: "node_zip", ArchivePath: path, ArchiveSize: size,
-		Readable: readable, Entries: []manifestEntry{},
-		Evidence: map[string]any{"reader": "unzip -Z1 + zipinfo -t"},
-	}
-	for _, name := range strings.Split(strings.TrimSpace(namesOut), "\n") {
-		if strings.TrimSpace(name) == "" {
+	manifest := artifactManifest{Source: "node_zip", ArchivePath: path, ArchiveSize: size, Entries: []manifestEntry{}}
+	var lastErr error
+	var lastWindow int64
+	for _, window := range archiveTailWindows(size) {
+		lastWindow = window
+		raw, stderr, code, err := s.runQuickCommandBytes(ctx, "tail -c "+strconv.FormatInt(window, 10)+" "+quoted)
+		if err != nil || code != 0 {
+			manifest.Evidence = map[string]any{
+				"reader":            "tail -c + archive/zip",
+				"exit_code":         code,
+				"stderr":            truncateString(stderr, 400),
+				"tail_window_bytes": window,
+				"reason":            "节点侧读取包尾失败，仅保留体积证据",
+			}
+			postManifest(ctx, cfg, manifest, "log_collect.node_manifest_failed", "节点侧包内容探测上报失败")
+			return
+		}
+		filled, err := fillManifestFromZipTail(raw, size, path)
+		if err != nil {
+			lastErr = err
 			continue
 		}
-		manifest.EntryCount++
-		manifest.Entries = append(manifest.Entries, manifestEntry{Name: filepath.Base(name)})
+		filled.Evidence["tail_window_bytes"] = window
+		postManifest(ctx, cfg, filled, "log_collect.node_manifest_failed", "节点侧包内容探测上报失败")
+		return
 	}
-	// zipinfo -t 形如 "982 files, 10293010092 bytes uncompressed, ..."。
-	numbers := regexp.MustCompile(`[0-9]+`).FindAllString(totalsOut, 3)
-	if len(numbers) >= 2 {
-		if parsed, err := strconv.ParseInt(numbers[1], 10, 64); err == nil {
-			manifest.EntryTotalBytes = parsed
+	reason := "节点侧中央目录不在读取窗口内，仅保留体积证据"
+	if lastErr != nil {
+		reason = "节点侧中央目录解析失败：" + lastErr.Error()
+	}
+	manifest.Evidence = map[string]any{
+		"reader":            "tail -c + archive/zip",
+		"tail_window_bytes": lastWindow,
+		"reason":            truncateString(reason, 400),
+	}
+	postManifest(ctx, cfg, manifest, "log_collect.node_manifest_failed", "节点侧包内容探测上报失败")
+}
+
+// archiveTailWindows 给出由小到大的读取窗口，避免为一个小包一次拉 16 MiB。
+func archiveTailWindows(size int64) []int64 {
+	windows := []int64{archiveTailProbeBytes}
+	if size > archiveTailProbeBytes {
+		windows = append(windows, archiveTailMaxBytes)
+	}
+	out := make([]int64, 0, len(windows))
+	for _, window := range windows {
+		if size > 0 && size < window {
+			window = size
+		}
+		if len(out) > 0 && out[len(out)-1] == window {
+			continue
+		}
+		out = append(out, window)
+	}
+	return out
+}
+
+// fillManifestFromZipTail 用尾部字节解析中央目录；窗口不足时返回错误以便放大重试。
+func fillManifestFromZipTail(raw []byte, size int64, path string) (artifactManifest, error) {
+	if size <= 0 || int64(len(raw)) == 0 {
+		return artifactManifest{}, fmt.Errorf("包尾为空或体积未知")
+	}
+	start := size - int64(len(raw))
+	if start < 0 {
+		start = 0
+	}
+	zr, err := zip.NewReader(tailReaderAt{data: raw, start: start}, size)
+	if err != nil {
+		return artifactManifest{}, err
+	}
+	result := artifactManifest{Source: "node_zip", ArchivePath: path, ArchiveSize: size, Readable: true, Entries: []manifestEntry{}}
+	result.Evidence = map[string]any{
+		"min_archive_bytes": minArchiveBytesForEvidence,
+		"reader":            "tail -c + archive/zip",
+	}
+	for _, entry := range zr.File {
+		result.EntryCount++
+		if len(result.Entries) < maxManifestEntries {
+			result.Entries = append(result.Entries, manifestEntry{
+				Name:       filepath.Base(entry.Name),
+				Size:       int64(entry.UncompressedSize64),
+				Compressed: int64(entry.CompressedSize64),
+				Encrypted:  entry.Flags&0x1 != 0,
+			})
+		}
+		result.EntryTotalBytes += int64(entry.UncompressedSize64)
+		if entry.Flags&0x1 != 0 {
+			result.HasEncrypted = true
 		}
 	}
-	if !readable {
-		manifest.Evidence["reason"] = "节点侧中央目录读取不可用，仅保留体积证据"
+	result.Evidence["entries_capped"] = result.EntryCount > maxManifestEntries
+	return result, nil
+}
+
+// postManifest 上报清单；失败时把「明确失败」告诉平台，供 S7 判失败而不是猜。
+func postManifest(ctx context.Context, cfg evidenceConfig, manifest artifactManifest, event, message string) {
+	_, err := cfg.postEvidence(ctx, cfg.taskPath("artifact-manifest"), manifest, "")
+	if err == nil {
+		return
 	}
-	if _, err := cfg.postEvidence(ctx, cfg.taskPath("artifact-manifest"), manifest, ""); err != nil {
-		blog("WARN", "log_collect.node_manifest_failed", "节点侧包内容探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-			"task_id": cfg.TaskID, "error": err.Error(),
+	blog("WARN", event, message, cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+		"task_id": cfg.TaskID, "error": err.Error(),
+	})
+	cfg.reportEvidenceError(ctx, "artifact-manifest", err)
+}
+
+// reportEvidenceError 把这次失败显式告知平台。
+//
+// 没有这条陈述时，平台只能观察到「没收到清单」，无法区分「还没跑完」与
+// 「真的传不进去」，历史上只能把它猜成失败（Q2026110302166）。
+func (e evidenceConfig) reportEvidenceError(ctx context.Context, kind string, cause error) {
+	body, err := json.Marshal(map[string]any{"kind": kind, "error": truncateString(cause.Error(), 500)})
+	if err != nil {
+		return
+	}
+	target := strings.TrimRight(e.PlatformURL, "/") + e.taskPath("evidence-error")
+	req, buildErr := e.newEvidenceRequest(ctx, target, body, "")
+	if buildErr != nil {
+		return
+	}
+	resp, postErr := httpClientFor(true, 10*time.Second).Do(req)
+	if postErr != nil {
+		blog("WARN", "log_collect.evidence_error_report_failed", "证据失败陈述上报失败", e.TraceID, e.CaseID, e.NodeIP, e.CustomUI, map[string]any{
+			"task_id": e.TaskID, "kind": kind, "error": postErr.Error(),
 		})
+		return
 	}
+	_ = resp.Body.Close()
 }
 
 // ── 采集进程日志 ──────────────────────────────────────────────────────────

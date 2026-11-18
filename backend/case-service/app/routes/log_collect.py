@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -333,6 +334,9 @@ async def create_task(
     # 既不能自己拼，也不展示为可编辑项。
     custom_scenario: tuple[UUID, int] | None = None
     config_plan: tuple[str, str, int] | None = None
+    # 「用户选了什么」必须与 modules 分开记录：自定义场景要求 acli `-m core`，
+    # modules 会被覆写，再拿它展示就等于把实现细节当用户语义。
+    scenario_snapshot: dict[str, Any] | None = None
     if payload.custom_scenario_id is not None:
         scenario_service = LogCollectCustomScenarioService(service.repository.session)
         try:
@@ -341,6 +345,16 @@ async def create_task(
             raise HTTPException(status_code=422, detail="自定义场景不存在或已被删除") from exc
         if not scenario.enabled:
             raise HTTPException(status_code=422, detail="该自定义场景已停用，请重新选择")
+        # 名称在创建时快照：场景可被改名或删除，历史任务仍要能回答"当时选的是哪个"。
+        scenario_snapshot = {
+            "kind": "custom",
+            "id": str(scenario.scenario_id),
+            "revision": int(scenario.revision),
+            "code": scenario.code,
+            "label": scenario.label,
+            "source": scenario.source,
+            "item_count": int(scenario.item_count or 0),
+        }
         items = [item.model_dump() for item in scenario.items]
         if scenario.source == "spc":
             # spc 不做 {date} 展开：插件按 date_placeholders 与 -d 自行处理。
@@ -375,6 +389,7 @@ async def create_task(
             custom_scenario=custom_scenario,
             config_sha256=config_plan[1] if config_plan else None,
             path_count=config_plan[2] if config_plan else None,
+            scenario_snapshot=scenario_snapshot,
         )
     except TaskConflictError as exc:
         raise _problem(
@@ -478,6 +493,22 @@ async def create_task(
     return response
 
 
+def resolve_scenario_display(task: Any) -> tuple[str, str | None, str | None]:
+    """从 detail 快照还原场景语义：(kind, label, slot)。
+
+    抽成纯函数是为了可测：这块逻辑曾经缺席，页面只能拿 modules 展示，
+    而自定义场景的 modules 被固定成 ["core"]，于是用户选的 test 变成了 core文件
+    （Q2026110302166）。没有快照的历史任务按默认场景处理，不猜。
+    """
+    detail = task.get("detail") if isinstance(task, dict) else getattr(task, "detail", None)
+    snapshot = detail.get("scenario") if isinstance(detail, dict) else None
+    if not isinstance(snapshot, dict):
+        return "default", None, None
+    kind = "custom" if snapshot.get("kind") == "custom" else "default"
+    slot = snapshot.get("slot") or ("core" if snapshot.get("source") == "spc" else None)
+    return kind, snapshot.get("label"), slot
+
+
 def _attach_display(response: LogCollectTaskResponse, task) -> None:
     """给任务响应附加派生展示四件套（只读字段）。
 
@@ -490,6 +521,12 @@ def _attach_display(response: LogCollectTaskResponse, task) -> None:
     response.artifact = payload.artifact
     response.transfer = payload.transfer
     response.network = payload.network
+    # 场景语义：快照优先（创建时固化），缺失时显式标成默认场景，
+    # 让前端不必再从 modules 猜「core 是用户选的还是技术槽位」。
+    kind, label, slot = resolve_scenario_display(task)
+    response.scenario_kind = kind
+    response.scenario_label = label
+    response.scenario_slot = slot
 
 
 def _to_response(task) -> LogCollectTaskResponse:

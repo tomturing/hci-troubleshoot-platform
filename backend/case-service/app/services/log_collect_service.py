@@ -71,14 +71,26 @@ _PUBLIC_DETAIL_RESERVED_KEYS = frozenset(
 )
 
 
-def _build_task_detail(payload: LogCollectTaskCreate) -> dict[str, Any]:
+def _build_task_detail(
+    payload: LogCollectTaskCreate,
+    *,
+    scenario_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """把"下发前的事实"固化进任务 detail。
 
     第一性原理：任务失败后能自证的前提，是创建那一刻的环境被记下来了。
     `baseline_report_hash` 只回答"报告是谁的"，回答不了"哪台机器、哪版 acli、
     节点清单为什么是空的、日志服务器通不通"——而这些恰是事后定因的唯一入口。
+
+    ``scenario_snapshot`` 是「用户选了什么」的快照。它必须与 ``modules`` 分开：
+    自定义场景下发时 acli 要求 ``-m core``（spc 固定占 core 槽），modules 会被
+    覆写成 ``["core"]``，再拿它展示就等于把实现细节当作用户语义（Q2026110302166
+    选了自定义场景 test，页面却显示 core 文件）。名称必须在创建时快照：场景可被
+    改名或删除，历史任务仍要能回答"当时选的是哪个"。
     """
     detail: dict[str, Any] = {}
+    if scenario_snapshot:
+        detail["scenario"] = scenario_snapshot
     if payload.baseline_report_hash:
         detail["baseline_report_hash"] = payload.baseline_report_hash
     if payload.probe:
@@ -181,6 +193,7 @@ class LogCollectService:
         custom_scenario: tuple[UUID, int] | None = None,
         config_sha256: str | None = None,
         path_count: int | None = None,
+        scenario_snapshot: dict[str, Any] | None = None,
     ) -> LogCollectTask:
         # 应用层先判一次（友好报错），数据库部分唯一索引兜底并发。
         active = await self.repository.get_active_by_case(payload.case_id)
@@ -221,7 +234,7 @@ class LogCollectService:
             progress=0,
             # 下发锚定的报告指纹与探测快照必须随任务落库：前端内存里的基线在关面板、
             # 换浏览器、重启后会丢失，届时就无法判断"节点报告属于哪一次下发"。
-            detail=_build_task_detail(payload),
+            detail=_build_task_detail(payload, scenario_snapshot=scenario_snapshot),
             created_by=client_id,
             # trace_id 由平台兜底生成：前端若未传，任务仍必须有一个可贯穿
             # 「平台 → bridge → HCI → 回采日志」的链路 ID，否则远端无法按链路定位。

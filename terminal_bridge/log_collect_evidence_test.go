@@ -2,12 +2,14 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -209,5 +211,95 @@ func TestStreamEvidenceMetricsEmitsSampleWithoutFakingProgress(t *testing.T) {
 	}
 	if bodies[1].EtaSec != nil {
 		t.Fatalf("速率归零时不得继续倒数 ETA: %+v", bodies[1].EtaSec)
+	}
+}
+
+// buildZipFixture 生成真实 zip 字节：节点侧解析必须能处理真实中央目录，
+// 用字符串桩会把「读不出条目」测成绿灯。
+func buildZipFixture(t *testing.T, entries map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := zip.NewWriter(&buf)
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatalf("构造 zip 条目失败: %v", err)
+		}
+		if _, err := entry.Write([]byte(entries[name])); err != nil {
+			t.Fatalf("写入 zip 条目失败: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("关闭 zip 失败: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// markZipCentralDirectoryEncrypted 把中央目录里的加密标志位打开。
+// 客户包全条目加密是常态，这条路径必须可读——这正是旧实现（zipinfo -t）误判的地方。
+func markZipCentralDirectoryEncrypted(data []byte) []byte {
+	out := append([]byte(nil), data...)
+	for i := 0; i+10 < len(out); i++ {
+		if out[i] == 0x50 && out[i+1] == 0x4b && out[i+2] == 0x01 && out[i+3] == 0x02 {
+			out[i+8] |= 0x1
+		}
+	}
+	return out
+}
+
+func TestFillManifestFromZipTailReadsCentralDirectory(t *testing.T) {
+	data := buildZipFixture(t, map[string]string{"a.log": "hello", "b.log": "world!!"})
+	manifest, err := fillManifestFromZipTail(data, int64(len(data)), "/sf/x/Q.zip")
+	if err != nil {
+		t.Fatalf("真实 zip 必须可解析: %v", err)
+	}
+	if !manifest.Readable {
+		t.Fatalf("可解析时 readable 必须为真")
+	}
+	if manifest.EntryCount != 2 {
+		t.Fatalf("条目数错误: %d", manifest.EntryCount)
+	}
+	if manifest.EntryTotalBytes != int64(len("hello")+len("world!!")) {
+		t.Fatalf("原始总字节错误: %d", manifest.EntryTotalBytes)
+	}
+	if manifest.HasEncrypted {
+		t.Fatalf("未加密包不得标记加密")
+	}
+	if manifest.Source != "node_zip" || manifest.ArchivePath != "/sf/x/Q.zip" {
+		t.Fatalf("来源/路径必须如实回传: %+v", manifest)
+	}
+}
+
+func TestFillManifestFromZipTailKeepsEncryptedArchiveReadable(t *testing.T) {
+	data := markZipCentralDirectoryEncrypted(buildZipFixture(t, map[string]string{"a.log": "hello"}))
+	manifest, err := fillManifestFromZipTail(data, int64(len(data)), "/sf/x/Q.zip")
+	if err != nil || !manifest.Readable {
+		t.Fatalf("加密包中央目录仍可读，不得判不可读: err=%v manifest=%+v", err, manifest)
+	}
+	if !manifest.HasEncrypted {
+		t.Fatalf("加密标志必须如实上报：S7 判据依赖它区分内容质量")
+	}
+}
+
+func TestFillManifestFromZipTailRejectsTooSmallWindow(t *testing.T) {
+	data := buildZipFixture(t, map[string]string{"a.log": "hello"})
+	tail := data[len(data)-10:]
+	if _, err := fillManifestFromZipTail(tail, int64(len(data)), "/sf/x/Q.zip"); err == nil {
+		t.Fatalf("窗口不足必须报错，交给上层放大窗口重试")
+	}
+}
+
+func TestArchiveTailWindows(t *testing.T) {
+	if got := archiveTailWindows(1024); len(got) != 1 || got[0] != 1024 {
+		t.Fatalf("小包只取自身大小: %v", got)
+	}
+	got := archiveTailWindows(64 << 20)
+	if len(got) != 2 || got[0] != archiveTailProbeBytes || got[1] != archiveTailMaxBytes {
+		t.Fatalf("大包应由小到大两档: %v", got)
 	}
 }
