@@ -16,6 +16,7 @@ package main
 //	一次"顺手复用"就能把横向原语变成认识具体产品的纵向逻辑，因此用测试钉死。
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -201,21 +202,19 @@ func TestRemotePackageHasNoUpwardImport(t *testing.T) {
 	}
 }
 
-// TestReconcileOnlyImportsRemote 反向守卫：reconcile 落地后只能依赖 remote 与标准库。
-// 包尚未创建时跳过（S2 之前的中间态），但目录一旦出现就必须满足约束。
+// TestReconcileOnlyImportsRemote 反向守卫：reconcile 只能依赖 remote 与标准库。
+// S2 已落地，目录必须存在且扫到源文件——否则守卫形同虚设。
 func TestReconcileOnlyImportsRemote(t *testing.T) {
 	dir := filepath.Join("internal", "shared", "reconcile")
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		t.Skip("reconcile 包尚未落地（S2）")
-	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("reconcile 包必须已落地（S2）：%v", err)
 	}
 	fset := token.NewFileSet()
+	checked := 0
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") {
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
 		path := filepath.Join(dir, name)
@@ -223,6 +222,7 @@ func TestReconcileOnlyImportsRemote(t *testing.T) {
 		if err != nil {
 			t.Fatalf("解析 %s 失败: %v", path, err)
 		}
+		checked++
 		for _, imp := range file.Imports {
 			value, err := strconv.Unquote(imp.Path.Value)
 			if err != nil {
@@ -237,6 +237,69 @@ func TestReconcileOnlyImportsRemote(t *testing.T) {
 				t.Errorf("%s 只能依赖 remote 与标准库，出现 %s", path, value)
 			}
 		}
+	}
+	if checked == 0 {
+		t.Fatal("没有扫到任何 reconcile 源文件，守卫形同虚设")
+	}
+}
+
+// TestReconcileMetadataNeverDrivesBranch 补丁 5 的静态守卫：
+// Metadata 只能是展示/trace，骨架内不得出现 Metadata[...] 形式的读写。
+// 逃生舱一经滥用（if md["force"] 之类），收口目标就失效了；
+// 需要新语义时扩强类型字段（如 FileSpec.Dir），而不是塞进 Metadata。
+//
+// 走 AST 而非文本扫描：文本会把"禁止 Metadata[...] 读取"这条注释本身判成违规，
+// 而 AST 里注释根本不存在，同时能抓住任何真实的索引式读写（含别名赋值）。
+func TestReconcileMetadataNeverDrivesBranch(t *testing.T) {
+	dir := filepath.Join("internal", "shared", "reconcile")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	checked := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("解析 %s 失败: %v", path, err)
+		}
+		checked++
+		ast.Inspect(file, func(node ast.Node) bool {
+			index, ok := node.(*ast.IndexExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := index.X.(*ast.SelectorExpr)
+			if ok && selector.Sel.Name == "Metadata" {
+				t.Errorf("%s:%d 出现 Metadata[...] 读写：Metadata 不得驱动流程分支（补丁 5）",
+					name, fset.Position(index.Pos()).Line)
+			}
+			return true
+		})
+	}
+	if checked == 0 {
+		t.Fatal("没有扫到任何 reconcile 源文件")
+	}
+}
+
+// TestConfigConsumerGoesThroughReconcile S2 验收：ConfigFile 必须真的走骨架，
+// 而不是"骨架建好了、消费者还在自己拼 printf"。后者会让收口只完成一半。
+func TestConfigConsumerGoesThroughReconcile(t *testing.T) {
+	data, err := os.ReadFile("log_collect_config.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(data)
+	if !strings.Contains(src, "reconcile.Run(") {
+		t.Error("writeLogCollectConfig 必须经 reconcile.Run 执行（S2 消费者迁移）")
+	}
+	if strings.Contains(src, "printf '%%s' %s > %s") {
+		t.Error("config 写入段不得再自己拼 printf 直写（唯一写入实现是 remote.WriteFile）")
 	}
 }
 

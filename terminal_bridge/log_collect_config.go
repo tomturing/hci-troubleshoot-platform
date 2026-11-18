@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"terminal_bridge/internal/shared/reconcile"
 )
 
 const (
@@ -111,12 +113,18 @@ func verifyConfigSHA256(raw, expected string) error {
 
 // writeLogCollectConfig 把配置写入发起节点并证明"写下去的就是平台签发的内容"。
 //
-// 写入用 printf 直写原文（shellQuote 单引号包裹）：JSON 里的引号、`$`、反引号
-// 在单引号内不展开，等价于安全的字面量写入；宿主机没有 base64，不能依赖它。
+// S2 收口：写入段改由 reconcile 骨架驱动（InlineMessage Provider →
+// remote.WriteFile 先校验再 mv → sha256/cmp 冒烟），本函数只保留产品语义：
+// 路径按 task 隔离、schema 二次校验、以及调用方已在用的失败文案。
 //
-// 校验优先 sha256sum；受限 shell 可能没有该命令（stat 就没有），
-// 此时降级为 printf 重传原文 + cmp 逐字节比对——**不做"探测不了就跳过"**，
-// 否则一次写坏的配置会以"任务成功但少收"收场。
+// 为什么不再自己拼 printf 直写：SSH 通道中断会留下**截断的配置**，
+// 而 acli 对坏配置静默跳过（退出码仍 0、任务标 complete）——任务报成功、
+// 数据却没采到。骨架的写入协议保证正式路径上永远只会是完整文件
+// （校验失败只删 tmp），且降级档位显式上抛。
+//
+// 校验降级链保持不变：sha256sum 优先；HCI 宿主机是极简系统，可能没有该命令
+// （stat 就没有，base64 也没有），此时降级为 printf 重传原文 + cmp 逐字节比对
+// ——**不做"探测不了就跳过"**，否则一次写坏的配置会以"任务成功但少收"收场。
 func writeLogCollectConfig(
 	ctx context.Context,
 	s *SSHSession,
@@ -130,33 +138,43 @@ func writeLogCollectConfig(
 		return "", err
 	}
 
-	// 直接写原文，只用 shell 内建 printf：HCI 宿主机是极简系统，没有 base64
-	// （容器内才有），走 base64 会在宿主机 exit 127（2026-11-17 Q2026110302166 现场）。
-	// 必须先写临时文件再 mv：直写目标路径时，SSH 通道中断会留下**截断的配置**，
-	// 而 acli 对坏配置静默跳过——任务报成功、数据却没采到（S2）。
-	tmpPath := path + ".tmp"
-	writeCmd := fmt.Sprintf(
-		`mkdir -p %s && printf '%%s' %s > %s && mv -f %s %s || { rm -f %s; false; }`,
-		shellQuote(logCollectConfigDir), shellQuote(raw), shellQuote(tmpPath),
-		shellQuote(tmpPath), shellQuote(path), shellQuote(tmpPath),
-	)
-	if _, code, err := s.runQuickCommand(ctx, writeCmd); err != nil || code != 0 {
-		return "", fmt.Errorf("写入配置文件失败（exit=%d）：%v", code, err)
+	provider := reconcile.InlineMessage{
+		// 前端是不可信链路：平台已校验过，桥仍须独立证明 schema 合法。
+		Validate: func(text string) error {
+			_, err := parseLogCollectConfig(text)
+			return err
+		},
+		Smoke:   reconcile.SmokeSpec{Kind: reconcile.SmokeSHA256},
+		Version: reconcile.VersionSpec{Mode: reconcile.VersionNone},
+	}
+	desired, err := provider.Desired(ctx, reconcile.SyncRequest{
+		Kind:   reconcile.KindConfigFile,
+		NodeIP: sessionHostAddress(s, ""),
+		TaskID: taskID,
+		Raw:    raw,
+		SHA256: expectedSHA,
+		Path:   path,
+		Dir:    logCollectConfigDir,
+		Mode:   "0644",
+		Metadata: map[string]string{
+			reconcile.MDKeyTaskID: taskID,
+		},
+	})
+	if err != nil {
+		return "", err
 	}
 
-	digestCmd := fmt.Sprintf(`sha256sum %s 2>/dev/null | awk '{print $1}'`, shellQuote(path))
-	digestOut, code, digestErr := s.runQuickCommand(ctx, digestCmd)
-	if digestErr == nil && code == 0 && strings.EqualFold(strings.TrimSpace(digestOut), expectedSHA) {
+	// 不落账本：config 按 task_id 隔离、总是覆写，账本对它不产生任何判定价值，
+	// 逐任务落盘只会让 state 目录无界增长。
+	res := reconcile.Run(ctx, reconcile.Deps{Runner: newSSHRunner(s)}, desired[0])
+	switch res.Status {
+	case reconcile.StatusOK, reconcile.StatusSkipped:
 		return path, nil
 	}
-
-	// 降级：原文经 printf 再传一遍、用 cmp 逐字节比对。宿主机没有 base64，不能再用它兜底；
-	// cat 回读再剥空白不是字节级自洽——原文带首尾空白时写坏也会被放行。
-	cmpCmd := fmt.Sprintf(`printf '%%s' %s | cmp -s - %s`, shellQuote(raw), shellQuote(path))
-	if _, code, err := s.runQuickCommand(ctx, cmpCmd); err != nil || code != 0 {
-		return "", fmt.Errorf("配置文件回读校验失败（exit=%d）：%v", code, err)
+	if res.Stage == reconcile.StageVerify {
+		return "", fmt.Errorf("配置文件回读校验失败：%s", res.Detail)
 	}
-	return path, nil
+	return "", fmt.Errorf("写入配置文件失败：%s", res.Detail)
 }
 
 // preflightLogCollectPaths 逐条检查路径是否存在，返回缺失清单。

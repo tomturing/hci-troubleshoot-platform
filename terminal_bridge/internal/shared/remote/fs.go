@@ -71,6 +71,10 @@ type WriteResult struct {
 	Integrity string
 	// TmpPath 是本次实际使用的临时路径，供失败清理与日志复核。
 	TmpPath string
+	// ExitCode 是远端脚本的退出码（20/21/22/23 见写入协议）。
+	// 留它是为了"失败到底卡在哪一步"可查：只给 Reason 不给码，
+	// 调用方就无法把现场与协议对上号。
+	ExitCode int
 }
 
 // WriteError 表达写入/校验失败的结构化原因。
@@ -103,22 +107,50 @@ func (e *WriteError) Unwrap() error { return e.Err }
 // digest 期望值只允许来自本地校验过的 hex，天然不含 shell 元字符；
 // 路径一律经 ShellQuote，含单引号的路径不构成注入面。
 func BuildWriteCommand(spec WriteSpec) string {
-	quotedTmp := ShellQuote(spec.TmpPath)
-	quotedDest := ShellQuote(spec.Path)
-	mode := spec.Mode
+	return buildVerifiedMove("cat > "+ShellQuote(spec.TmpPath), spec.TmpPath, spec.Path,
+		spec.Size, spec.SHA256, spec.MD5, spec.Mode)
+}
+
+// CopySpec 描述"把节点上已有的文件搬到目标路径"。
+//
+// 与 WriteSpec 共用同一套校验/替换协议：备份还原、槽位搬迁同样是写入，
+// 不能因为"字节没经过 SSH"就免掉先校验再 mv——cp 到一半断链同样留半截文件。
+type CopySpec struct {
+	SourcePath string
+	Path       string
+	TmpPath    string
+	Size       int64
+	SHA256     string
+	MD5        string
+	Mode       string
+}
+
+// BuildCopyCommand 构造"节点内复制 → 校验 → 原子替换"命令。
+func BuildCopyCommand(spec CopySpec) string {
+	return buildVerifiedMove("cp -p "+ShellQuote(spec.SourcePath)+" "+ShellQuote(spec.TmpPath),
+		spec.TmpPath, spec.Path, spec.Size, spec.SHA256, spec.MD5, spec.Mode)
+}
+
+// buildVerifiedMove 是写入/复制共用的"填充 → 校验 → 替换"骨架。
+//
+// fill 是唯一的差异点（cat 收 stdin / cp 收节点内路径），其余逐字相同：
+// 两套校验协议各自演化正是收口要消灭的东西。
+func buildVerifiedMove(fill, tmpPath, destPath string, size int64, sha256Hex, md5Hex, mode string) string {
+	quotedTmp := ShellQuote(tmpPath)
+	quotedDest := ShellQuote(destPath)
 	if mode == "" {
 		mode = "0755"
 	}
 	return "umask 077; " +
-		"if cat > " + quotedTmp + "; then " +
+		"if " + fill + "; then " +
 		`SIZE=$(wc -c < ` + quotedTmp + ` 2>/dev/null | tr -d ' \r\n'); ` +
 		`ALGO=size_only; DIG=""; ` +
 		`if command -v sha256sum >/dev/null 2>&1; then ALGO=sha256; DIG=$(sha256sum ` + quotedTmp + ` 2>/dev/null | awk '{print $1}'); ` +
 		`elif command -v md5sum >/dev/null 2>&1; then ALGO=md5; DIG=$(md5sum ` + quotedTmp + ` 2>/dev/null | awk '{print $1}'); fi; ` +
 		`echo "` + WriteMark + `size=${SIZE} algo=${ALGO} digest=${DIG}"; ` +
-		`if [ "$SIZE" != "` + strconv.FormatInt(spec.Size, 10) + `" ]; then echo "` + WriteFailMark + `size_mismatch"; rm -f ` + quotedTmp + `; exit 21; fi; ` +
-		`if [ "$ALGO" = "sha256" ] && [ "$DIG" != "` + spec.SHA256 + `" ]; then echo "` + WriteFailMark + `digest_mismatch"; rm -f ` + quotedTmp + `; exit 22; fi; ` +
-		`if [ "$ALGO" = "md5" ] && [ "$DIG" != "` + spec.MD5 + `" ]; then echo "` + WriteFailMark + `digest_mismatch"; rm -f ` + quotedTmp + `; exit 22; fi; ` +
+		`if [ "$SIZE" != "` + strconv.FormatInt(size, 10) + `" ]; then echo "` + WriteFailMark + `size_mismatch"; rm -f ` + quotedTmp + `; exit 21; fi; ` +
+		`if [ "$ALGO" = "sha256" ] && [ "$DIG" != "` + sha256Hex + `" ]; then echo "` + WriteFailMark + `digest_mismatch"; rm -f ` + quotedTmp + `; exit 22; fi; ` +
+		`if [ "$ALGO" = "md5" ] && [ "$DIG" != "` + md5Hex + `" ]; then echo "` + WriteFailMark + `digest_mismatch"; rm -f ` + quotedTmp + `; exit 22; fi; ` +
 		`if mv -f ` + quotedTmp + ` ` + quotedDest + ` && chmod ` + mode + ` ` + quotedDest + `; then echo "` + WriteOKMark + `"; ` +
 		`else echo "` + WriteFailMark + `move_failed"; rm -f ` + quotedTmp + `; exit 23; fi; ` +
 		`else echo "` + WriteFailMark + `cat_failed"; rm -f ` + quotedTmp + `; exit 20; fi`
@@ -230,6 +262,7 @@ func WriteFile(ctx context.Context, r Runner, spec WriteSpec) (WriteResult, erro
 	stdout, code, err := r.WriteStdin(ctx, command, reader)
 	result := ParseWriteOutput(stdout)
 	result.TmpPath = spec.TmpPath
+	result.ExitCode = code
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		CleanupTmp(context.Background(), r, spec.TmpPath)
@@ -246,6 +279,45 @@ func WriteFile(ctx context.Context, r Runner, spec WriteSpec) (WriteResult, erro
 	integrity, verifyErr := VerifyWrite(spec, result)
 	result.Integrity = integrity
 	return result, verifyErr
+}
+
+// CopyFile 在节点内把已有文件搬到目标路径，同样先校验再 mv。
+func CopyFile(ctx context.Context, r Runner, spec CopySpec) (WriteResult, error) {
+	if spec.TmpPath == "" {
+		spec.TmpPath = fmt.Sprintf("%s.tmp.%d", spec.Path, time.Now().UnixNano())
+	}
+	stdout, code, err := r.RunQuickCommand(ctx, BuildCopyCommand(spec))
+	result := ParseWriteOutput(stdout)
+	result.TmpPath = spec.TmpPath
+	result.ExitCode = code
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		CleanupTmp(context.Background(), r, spec.TmpPath)
+		return result, &WriteError{Reason: "timeout", Stage: "upload", Retryable: true, Err: ctxErr}
+	}
+	if err != nil {
+		if code > 0 && result.FailReason != "" {
+			return result, nil
+		}
+		return result, &WriteError{Reason: "channel_broken", Stage: "upload", Retryable: true, Err: err}
+	}
+	integrity, verifyErr := VerifyWrite(WriteSpec{Size: spec.Size, SHA256: spec.SHA256, MD5: spec.MD5}, result)
+	result.Integrity = integrity
+	return result, verifyErr
+}
+
+// EnsureDir 确保节点上的目录存在（acli 重装会清掉插件目录，写前必须能重建）。
+func EnsureDir(ctx context.Context, r Runner, dir string) error {
+	if r == nil || strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	res := Run(ctx, r, "mkdir -p "+ShellQuote(dir))
+	if res.Err != nil {
+		return res.Err
+	}
+	if res.ExitCode != 0 {
+		return &ExitCodeError{Command: "mkdir -p " + ShellQuote(dir), ExitCode: res.ExitCode, Output: res.Stdout}
+	}
+	return nil
 }
 
 // CleanupTmp 尽力删除远端临时文件。失败不改变主结论，只由调用方记日志。
