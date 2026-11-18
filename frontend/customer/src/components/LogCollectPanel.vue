@@ -15,11 +15,14 @@ import {
   buildLogCollectMessage,
   checkBridgeBeforeOpen,
   createBridgeSocket,
+  parseAcliPluginSync,
   parseAcliSyncFacts,
   resolveBridgeUrl,
+  type AcliPluginSyncReceipt,
   type AcliRetryStage,
   type AcliSyncFacts,
 } from '@/api/terminal'
+import { resolveAcliPluginSyncCredentials } from '@/api/acliPluginSync'
 import {
   logCollectApi,
   type DeliveryStatus,
@@ -370,6 +373,21 @@ const acliFailure = ref<null | {
 }>(null)
 /** 重试进行中：按钮置灰，避免用户连点造成两个上传叠在同一个 destPath 上。 */
 const acliRetrying = ref(false)
+/**
+ * 阶段二（插件差量收敛）回执：与 acliFailure 相互独立。
+ *
+ * 分开存的理由：阶段二失败**不回滚阶段一**，桥给的阶段一结论仍是成功。把它
+ * 摊成一条 acliFailure 会谎报“工具没装上”，用户会去点一个不该点的重传按钮；
+ * 只拼进一句话则运维无法判断到底哪台节点、哪个插件没收敛完。
+ */
+const acliPluginSync = ref<AcliPluginSyncReceipt | null>(null)
+/**
+ * 阶段二本次未启用的原因（取票失败等）；非空即告诉用户“插件还是节点现状”。
+ *
+ * 不能只把 receipt 置 null 了事：null 同时表示“旧桥不会下发”与“本次根本没
+ * 发凭据”，两者在界面上长一个样，用户就无法判断该等桥升级还是该查平台。
+ */
+const acliPluginSyncBlocked = ref('')
 const probeResult = ref<ProbeResult | null>(null)
 const pathMode = ref<'P1' | 'P2' | ''>('')
 /**
@@ -1543,6 +1561,10 @@ const hasPinnedAlerts = computed(
     chatStore.logCollectCaseOwned === false ||
     prepareState.value === 'failed' ||
     Boolean(acliFailure.value) ||
+    // 阶段二结论同样属于“必须让用户看到的结论”：它不阻断采集，但它是插件收敛的
+    // 唯一客户端痕迹。漏进这个条件，下面的回执卡片会被整个固定提示区一起 v-if 掉。
+    Boolean(acliPluginSyncBlocked.value) ||
+    acliPluginSync.value !== null ||
     Boolean(nodeSyncHint.value) ||
     Boolean(cleanupTip.value) ||
     Boolean(resultCleanupTip.value),
@@ -2021,6 +2043,9 @@ function handleMessage(event: MessageEvent) {
     return
   }
   if (data.type === 'acli_sync_result') {
+    // 阶段二回执无论有没有等待者都要落下来：它是一次真实收敛的**唯一**客户端痕迹，
+    // 丢了就等于“插件到底收没收敛”只能登节点翻脚本。
+    acliPluginSync.value = parseAcliPluginSync(data)
     const waiter = waiters.get('acli_sync')
     if (waiter) {
       waiters.delete('acli_sync')
@@ -2133,6 +2158,10 @@ function sendAndWait(
           minDiskMb: 100,
           nodeIp: nodeIp.value,
           retryStage: (options.retryStage as AcliRetryStage) || 'all',
+          // 阶段二凭据：由调用方先取票再传进来（不在此处发 HTTP，保证本函数仍是
+          // 纯组装）。缺任何一个，buildAcliSyncMessage 都不下发，桥侧当本次未启用。
+          platformUrl: (options.platformUrl as string) || undefined,
+          pluginTicket: (options.pluginTicket as string) || undefined,
         }),
       )
     } else if (action === 'delivery_submit') {
@@ -3091,6 +3120,60 @@ function resetAcliLive() {
   acliLive.installOutput = ''
 }
 
+/** 每次发起 acli_sync 前清空阶段二展示态：旧回执不能被读成“本次已收敛”。 */
+function resetAcliPluginSync() {
+  acliPluginSync.value = null
+  acliPluginSyncBlocked.value = ''
+}
+
+/**
+ * 取阶段二凭据（票据 + 平台根地址）。
+ *
+ * 必须在**发送 acli_sync 之前**取：票据 TTL 只有 10 分钟，而桥会在阶段一开工前
+ * 一次性把期望态拉定（terminal_bridge 的 prepareAcliPluginStage）——发完消息再取票，
+ * 桥那边已经按“未启用”跑完了。
+ * 取不到不阻断安装：只同步工具，但原因必须上屏，不能静默降级成“看起来一切正常”。
+ */
+async function acliSyncCredentialOptions(caseId: string): Promise<Record<string, unknown>> {
+  const { credentials, error } = await resolveAcliPluginSyncCredentials(caseId)
+  if (error) {
+    acliPluginSyncBlocked.value = `插件同步票据获取失败，本次只同步 acli 工具：${error}`
+    console.warn('[acli] 插件同步票据获取失败:', error)
+  } else if (!credentials.pluginTicket) {
+    acliPluginSyncBlocked.value = '本次会话未绑定真实工单，插件期望态按工单签发，阶段二未启用'
+  }
+  return { ...credentials }
+}
+
+/** 阶段二回执的人类可读结论：三态计数 + 期望个数，未完成时带上原因码。 */
+function acliPluginSyncText(receipt: AcliPluginSyncReceipt): string {
+  const counts = `新增 ${receipt.installed}、覆盖 ${receipt.overwritten}、跳过 ${receipt.skipped}`
+  if (!receipt.ok) {
+    return `插件同步未完成（${receipt.reason || 'plugin_deploy_failed'}）：期望 ${receipt.desired_count} 个，${counts}，失败 ${receipt.failed}`
+  }
+  return `插件已按平台期望态收敛：期望 ${receipt.desired_count} 个，${counts}`
+}
+
+/**
+ * 未完成时把逐插件、逐节点的结论摊开。
+ *
+ * 只给一句“插件同步失败”等于没给：运维无法判断是取票、拉清单还是某台节点装挂，
+ * 只能登节点翻脚本——这正是本轮链路收口要消灭的那类现场。
+ */
+function acliPluginSyncDetail(receipt: AcliPluginSyncReceipt): string {
+  const lines: string[] = []
+  if (receipt.detail) lines.push(receipt.detail)
+  for (const plugin of receipt.plugins || []) {
+    for (const host of plugin.hosts || []) {
+      if (host.action === 'failed' || host.action === 'unreachable') {
+        lines.push(`${plugin.name}@${host.ip}：${host.action}（${host.reason || host.device_status || host.error || '未给原因'}）`)
+      }
+    }
+  }
+  for (const warning of receipt.warnings || []) lines.push(`提示：${warning}`)
+  return lines.join('\n')
+}
+
 /**
  * 把一次 acli 同步失败转换成可展示、可重试的失败态。
  *
@@ -3140,10 +3223,12 @@ async function confirmInstall(ws: WebSocket) {
   )
   stage.value = 'installing'
   resetAcliLive()
+  resetAcliPluginSync()
   acliFailure.value = null
-  // 超时预算跟 bridge 的分段预算对齐（下载 120s + 上传 300s + 安装 240s）：
+  // 超时预算跟 bridge 的分段预算对齐（下载 120s + 上传 300s + 安装 240s，再 + 阶段二封顶 30min）：
   // 前端先超时会让用户误以为已经失败，并叠出第二次上传。
-  const result = await sendAndWait(ws, 'acli_sync', {}, ACLI_SYNC_TIMEOUT_MS)
+  const credentials = await acliSyncCredentialOptions(props.caseId)
+  const result = await sendAndWait(ws, 'acli_sync', credentials, ACLI_SYNC_TIMEOUT_MS)
   // 除了 installed/up_to_date 之外都是失败——包括 disk_space_insufficient：
   // 历史实现只判 status==='error'，会把“磁盘不足”当成装好了，后面采集中再莫名失败。
   if (result.status !== 'installed' && result.status !== 'up_to_date') {
@@ -3179,8 +3264,10 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
   acliRetrying.value = true
   const previousStage = stage.value
   stage.value = 'installing'
+  resetAcliPluginSync()
   try {
-    const result = await sendAndWait(ws, 'acli_sync', { retryStage }, ACLI_SYNC_TIMEOUT_MS)
+    const credentials = await acliSyncCredentialOptions(props.caseId)
+    const result = await sendAndWait(ws, 'acli_sync', { retryStage, ...credentials }, ACLI_SYNC_TIMEOUT_MS)
     if (result.status !== 'installed' && result.status !== 'up_to_date') {
       recordAcliFailure(result, 'acli 安装重试失败')
       showCustomerFault(result.message || 'acli 安装重试失败')
@@ -4898,6 +4985,8 @@ watch(
     // B 单的安装失败，只会把排障引到错误的包上。
     acliFailure.value = null
     resetAcliLive()
+    // 阶段二回执同样属于上一单：A 单的插件三态展示给 B 单，会被读成“这个单也收敛完了”。
+    resetAcliPluginSync()
     // 节点包路径属于上一单的节点视图，必须一起清掉，否则补交付可能拿着 A 单的路径去 stat
     nodeArchivePath.value = ''
     nodeAction.value = ''
@@ -5092,6 +5181,44 @@ onBeforeUnmount(() => {
             知道了
           </el-button>
         </div>
+      </el-alert>
+      <!--
+        阶段二（插件差量收敛）结论：它与上面的安装失败是两个独立结论，必须分开摆。
+        工具装好了不等于插件已是平台期望态；反过来插件没收敛完也不代表 acli 没装上。
+        合成一条消息会诱导用户去点一个与真正问题无关的重传按钮。
+      -->
+      <el-alert
+        v-if="acliPluginSyncBlocked"
+        class="lc-acli-plugin"
+        type="warning"
+        :closable="false"
+        show-icon
+      >
+        <template #title>
+          <span>acli 工具已同步，但阶段二未启用：{{ acliPluginSyncBlocked }}</span>
+        </template>
+      </el-alert>
+      <el-alert
+        v-else-if="acliPluginSync"
+        class="lc-acli-plugin"
+        :type="acliPluginSync.ok ? 'info' : 'error'"
+        :closable="false"
+        show-icon
+      >
+        <template #title>
+          <span>{{ acliPluginSyncText(acliPluginSync) }}</span>
+        </template>
+        <div v-if="acliPluginSync.nodes && acliPluginSync.nodes.length" class="lc-acli-facts">
+          <span class="lc-acli-chip">期望态版本 {{ acliPluginSync.manifest_version || '未给' }}</span>
+          <span
+            v-for="node in acliPluginSync.nodes"
+            :key="node"
+            class="lc-acli-chip"
+          >{{ node }}</span>
+        </div>
+        <pre v-if="!acliPluginSync.ok && acliPluginSyncDetail(acliPluginSync)" class="lc-acli-output">{{
+          acliPluginSyncDetail(acliPluginSync)
+        }}</pre>
       </el-alert>
       <!--
         两端对账结论：节点是唯一真相源，平台只是投影。
@@ -5890,6 +6017,10 @@ onBeforeUnmount(() => {
   font-size: 12px;
   word-break: break-all;
   opacity: 0.8;
+}
+/* 阶段二回执：与安装失败卡片同层但不同色，避开“插件没成”被误读成“工具没装上”。 */
+.lc-acli-plugin {
+  margin-top: 8px;
 }
 .lc-conflict {
   display: flex;

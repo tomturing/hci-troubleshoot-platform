@@ -1,6 +1,8 @@
 import {
   buildAcliSyncMessage,
+  parseAcliPluginSync,
   parseAcliSyncFacts,
+  type AcliPluginSyncReceipt,
   type AcliRetryStage,
   type AcliSyncFacts,
   type AcliSyncOptions,
@@ -8,13 +10,27 @@ import {
 } from '@/api/terminal'
 
 /**
- * 前端等待 acli 同步的总预算。
+ * 阶段一（装工具）的等待预算。
  *
- * 必须**大于** bridge 侧的分段预算之和（下载 120s + 上传 300s + 安装 240s = 660s）：
+ * 必须**大于** bridge 侧的分段预算之和（下载 120s + 上传 300s + 安装 240s = 660s），
+ * 并再留 60s 给桥开工前的“拉插件期望态”（票据 TTL 只 10 分钟，桥必须先去取，
+ * 见 terminal_bridge/acli_plugin_sync.go）：
  * 前端先超时的话，bridge 还在重试，界面却已经报“超时”，用户会据此重复点击，
  * 反而把两个上传叠在一起（历史 92s×3 的现场就有这个味道）。
  */
-export const ACLI_SYNC_TIMEOUT_MS = 780_000
+export const ACLI_STAGE1_TIMEOUT_MS = 780_000
+
+/**
+ * 阶段二（插件差量收敛）的等待预算：与桥侧 acliPluginStageBudget 同值。
+ *
+ * 这两个数字必须一起看：桥的预算是“封顶”而非常态（无修改时阶段二只跑探测，秒级），
+ * 但前端必须按封顶算——前端先超时就等于在桥还在装插件时把整条链路报成失败，
+ * 而阶段二的失败**不回滚阶段一**，用户看到的是一个“假的没装成”。
+ */
+export const ACLI_PLUGIN_STAGE_TIMEOUT_MS = 1_800_000
+
+/** acli_sync 一次往返的总等待预算（阶段一 + 阶段二）。 */
+export const ACLI_SYNC_TIMEOUT_MS = ACLI_STAGE1_TIMEOUT_MS + ACLI_PLUGIN_STAGE_TIMEOUT_MS
 
 export interface AcliProgressCallback {
   (log: {
@@ -36,6 +52,13 @@ export interface AcliSyncResult {
   message?: string
   /** 安装包完整性事实：包多大、摘要是什么、校验强度、安装输出 */
   facts: AcliSyncFacts
+  /**
+   * 阶段二（插件差量同步）回执；旧桥不下发时为 null。
+   *
+   * 它与 status 是两个独立结论：阶段一成功而阶段二部分节点没装成，
+   * 必须能在界面上分开表达，不能揉成一句“acli 已就绪”。
+   */
+  pluginSync: AcliPluginSyncReceipt | null
 }
 
 /**
@@ -124,6 +147,7 @@ export function ensureAcliReady(
       if (msg.type === 'acli_sync_progress') {
         const text = msg.message || '正在处理 acli...'
         // install_output 是安装命令的完整回执：用 warn/error 呈现，避免读成“成功”。
+        // plugins 是阶段二开工提示：它不是失败，但也不该混在“正在安装工具”的文案里。
         const type: 'info' | 'warn' | 'error' =
           msg.status === 'install_output' ? (msg.install_success ? 'info' : 'error') : 'info'
         onProgress?.({
@@ -137,6 +161,7 @@ export function ensureAcliReady(
         cleanup()
 
         const facts = parseAcliSyncFacts(msg)
+        const pluginSync = parseAcliPluginSync(msg)
         const result: AcliSyncResult = {
           status: (msg.status as AcliSyncResult['status']) || 'installed',
           version: msg.current_version,
@@ -146,6 +171,7 @@ export function ensureAcliReady(
           requiredMb: msg.required_mb,
           message: msg.message,
           facts,
+          pluginSync,
         }
 
         if (msg.status === 'installed' || msg.status === 'up_to_date') {
@@ -155,6 +181,22 @@ export function ensureAcliReady(
             status: msg.status,
             facts,
           })
+          // 阶段二没全成：工具装好了是真，插件没收敛完也是真，两条都要上屏。
+          if (pluginSync && !pluginSync.ok) {
+            onProgress?.({
+              type: 'error',
+              text: `插件同步未完成（${pluginSync.reason || 'plugin_deploy_failed'}）：${pluginSync.detail || ''}`,
+              status: 'plugins',
+              facts,
+            })
+          } else if (pluginSync) {
+            onProgress?.({
+              type: 'info',
+              text: `插件同步：新增 ${pluginSync.installed}、覆盖 ${pluginSync.overwritten}、跳过 ${pluginSync.skipped}`,
+              status: 'plugins',
+              facts,
+            })
+          }
           resolve(result)
         } else if (msg.status === 'disk_space_insufficient') {
           const text = msg.message || '/sf/data/local 空间不足'

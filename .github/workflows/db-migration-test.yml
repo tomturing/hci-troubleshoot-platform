@@ -190,8 +190,8 @@ jobs:
             "fact" "claim_evidence_link"
             # 2026-10-29（数据库设计 v7.54）：日志收集「故障场景」字典，客户面板勾选项文案来源
             "log_collect_scenario"
-            # 2026-11-14：acli 插件管理（服务端编排）四张表
-            "acli_plugin_environment" "acli_plugin" "acli_plugin_spec" "acli_plugin_deployment"
+            # 2026-11-14：acli 插件管理两张规格表（环境表/下发任务表已随链路收口 D1 删除）
+            "acli_plugin" "acli_plugin_spec"
           )
           DEPRECATED_TABLES=(
             "kb_chunk" "kb_document" "kb_sop_node" "kb_synonym"
@@ -210,6 +210,9 @@ jobs:
             "agent_test_fixture_stale_outbox"
             "agent_test_run" "agent_test_run_attempt" "agent_test_run_event"
             "agent_test_run_result" "agent_test_runtime_instance"
+            # 2026-11-18：插件旧下发链路收口（D1），环境表与下发任务表已从
+            # desired_schema.sql 与两份 Helm init-configmap 删除并改为 DROP。
+            "acli_plugin_environment" "acli_plugin_deployment"
           )
 
           MISSING=0

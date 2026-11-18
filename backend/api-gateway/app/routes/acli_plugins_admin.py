@@ -1,8 +1,9 @@
 """acli 插件管理端网关代理：管理 JWT 验签 → 内部令牌重签 → case-service。
 
 与 ``capabilities.py`` 的泛代理不同，本族路由整族 ``require_admin``，且**不透传**
-管理员 JWT 给下游；配置保存、幂等发布与状态查询的业务语义全在 case-service，
-网关只负责鉴权边界、超时和错误转换。页面请求体里没有 SSH 凭据与目标节点。
+管理员 JWT 给下游；规格校验、不可变 revision 与 hash 计算的业务语义全在
+case-service，网关只负责鉴权边界、超时和错误转换。页面请求体里没有 SSH 凭据
+与目标节点；旧下发链路端点（环境/会话/下发任务）已随链路收口 D1 删除。
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ router = APIRouter(
 logger = get_logger("gateway-acli-plugins")
 
 UPSTREAM_PREFIX = "/internal/acli-plugins"
-# 保存配置会同步写 3 张表并等待上游校验，比纯读略长；下发本身异步，不在这里等。
+# 保存规格会同步写 2 张表并等待上游校验，比纯读略长。
 TIMEOUT_SECONDS = 30.0
 
 
@@ -72,34 +73,13 @@ async def get_templates(request: Request) -> Response:
     return await _proxy("GET", "/templates", request)
 
 
-@router.get("/environments")
-async def list_environments(request: Request) -> Response:
-    return await _proxy("GET", "/environments", request)
-
-
-@router.get("/sessions")
-async def list_bridge_sessions(request: Request) -> Response:
-    """代理 bridge 已登录 SSH 会话列表（管理端可选下发目标）。"""
-    return await _proxy("GET", "/sessions", request)
-
-
 @router.get("/plugins")
 async def list_plugins(request: Request) -> Response:
     return await _proxy("GET", "/plugins", request)
 
 
-@router.post("/plugins")
-async def publish_plugin(request: Request) -> Response:
+@router.post("/specs")
+async def save_spec(request: Request) -> Response:
+    """仅保存规格：校验 → 不可变 revision；不产生任何下发副作用。"""
     payload = await request.json()
-    return await _proxy("POST", "/plugins", request, payload)
-
-
-@router.get("/plugins/{plugin_name}/deployments")
-async def list_deployments(plugin_name: str, request: Request) -> Response:
-    query = request.url.query
-    return await _proxy("GET", f"/plugins/{plugin_name}/deployments", request, query=query or None)
-
-
-@router.get("/deployments/{deploy_id}")
-async def get_deployment(deploy_id: str, request: Request) -> Response:
-    return await _proxy("GET", f"/deployments/{deploy_id}", request)
+    return await _proxy("POST", "/specs", request, payload)

@@ -28,6 +28,7 @@ from app.middleware.error_handler import SecureErrorHandlerMiddleware  # 安全�
 from app.middleware.identity import IdentityMiddleware  # P0 修复：服务端身份 Cookie
 from app.routes import (
     acli_plugins_admin,
+    acli_plugins_client,
     assistants,
     audit,
     auth,
@@ -143,8 +144,8 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
         "/api/conversations/",
         "/api/terminal/",
         # acli 插件规格含完整脚本与附加文件（如 netdoctor 近 1MB 脚本），
-        # 保存并下发是管理员操作，走管理端 JWT；放行到 10MB 上限。
-        "/api/v1/acli-plugins/plugins",
+        # 保存规格是管理员操作，走管理端 JWT；整族放行到 10MB 上限。
+        "/api/v1/acli-plugins/",
     ]
 
     async def dispatch(self, request: Request, call_next):
@@ -227,6 +228,8 @@ app.include_router(terminal.router)
 app.include_router(audit.router)
 app.include_router(health.router)
 app.include_router(acli_plugins_admin.router)
+# acli_sync 第二阶段（S4c）：客户面取票走身份重签，manifest / 包下载只透传票据。
+app.include_router(acli_plugins_client.router)
 app.include_router(capabilities.router)
 app.include_router(bridge_logs.router)
 app.include_router(simulations.router)

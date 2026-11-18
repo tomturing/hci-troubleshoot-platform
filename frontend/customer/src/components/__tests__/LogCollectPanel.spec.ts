@@ -38,7 +38,7 @@ async function mountResultTask(task: LogCollectTask) {
   return wrapper
 }
 
-const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
+const { sentMessages, fakeSocket, mockStore, resolveAcliPluginSyncCredentialsMock } = vi.hoisted(() => {
   const sent: string[] = []
   const socket: any = {
     readyState: 1,
@@ -56,6 +56,9 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
   return {
     sentMessages: sent,
     fakeSocket: socket,
+    // 阶段二取票：逐例接管。不桩它就等于在单测里发一次真实 HTTP，
+    // 取票快慢会直接变成用例的不确定度。
+    resolveAcliPluginSyncCredentialsMock: vi.fn(),
     mockStore: {
       lastSshHost: '',
       sshConnectionState: 'disconnected' as 'disconnected' | 'connected',
@@ -89,6 +92,12 @@ const { sentMessages, fakeSocket, mockStore } = vi.hoisted(() => {
 })
 
 vi.mock('@/stores/chat', () => ({ useChatStore: () => mockStore }))
+
+vi.mock('@/api/acliPluginSync', () => ({
+  platformRootUrl: () => 'https://platform.example',
+  requestAcliPluginTicket: vi.fn(),
+  resolveAcliPluginSyncCredentials: resolveAcliPluginSyncCredentialsMock,
+}))
 
 vi.mock('@/api/terminal', async () => {
   // 真实实现仅在“纯函数”上复用：消息构造与完整性解析都是纯数据变换，桩掉它们
@@ -198,8 +207,14 @@ const ElDescriptionsItem = {
 const ElAlert = {
   props: ['title', 'type'],
   setup(props: any, { slots }: any) {
+    // #title 插槽也必须渲染：面板把结论文本（安装失败、阶段二回执）放在 #title 里，
+    // 桩子只渲染默认插槽会让“结论有没有上屏”这类断言看不到真相。
     return () =>
-      h('div', { class: ['alert-stub', `alert-${props.type}`] }, [props.title, slots.default?.()])
+      h('div', { class: ['alert-stub', `alert-${props.type}`] }, [
+        props.title,
+        slots.title?.(),
+        slots.default?.(),
+      ])
   },
 }
 
@@ -3873,6 +3888,12 @@ describe('LogCollectPanel acli 安装失败兜底', () => {
     vi.mocked(logCollectApi.listScenarios).mockReset()
     vi.mocked(logCollectApi.listScenarios).mockResolvedValue([])
     vi.mocked(logCollectApi.getTask).mockReset()
+    // 阶段二取票默认成功；不桩它等于在单测里发一次真实 HTTP
+    resolveAcliPluginSyncCredentialsMock.mockReset()
+    resolveAcliPluginSyncCredentialsMock.mockResolvedValue({
+      credentials: { platformUrl: 'https://platform.example', pluginTicket: 'tk-7' },
+      error: '',
+    })
   })
 
   const mountReady = async () => {
@@ -3991,6 +4012,136 @@ describe('LogCollectPanel acli 安装失败兜底', () => {
     const labels = card.findAll('button').map((btn) => btn.text())
     expect(labels).toContain('知道了')
     expect(labels.some((text) => text.includes('重试'))).toBe(false)
+  })
+
+  /**
+   * 阶段二（插件差量收敛）的前端契约。三条都是“不能静默”的具体形态：
+   * 凭据要真的下发、回执要真的上屏、未启用要真的说出口。
+   */
+  it('重试 acli_sync 把阶段二凭据真的发给桥', async () => {
+    const wrapper = await mountReady()
+
+    pushAcliResult({
+      case_id: 'Q2026102300001',
+      status: 'error',
+      stage: 'install',
+      error_code: 'LC-INSTALL-002',
+      error_retryable: 'true',
+      message: 'acli 安装命令退出码 2',
+    })
+    await flushPromises()
+
+    const installButton = wrapper
+      .find('.lc-acli-fail')
+      .findAll('button')
+      .find((btn) => btn.text().includes('重试安装'))
+    await installButton!.trigger('click')
+    await flushPromises()
+
+    const sync = sentMessages
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'acli_sync')
+      .pop()
+    // 只写进 options 不算：“票据没下发到桥”和“桥没拉到清单”在界面上长一个样，
+    // 但两者的责任方完全不同。
+    expect(sync?.platform_url).toBe('https://platform.example')
+    expect(sync?.plugin_ticket).toBe('tk-7')
+    expect(sync?.retry_stage).toBe('install')
+  })
+
+  it('取票失败时不下发半个凭据，但必须告诉用户阶段二未启用', async () => {
+    resolveAcliPluginSyncCredentialsMock.mockResolvedValue({
+      credentials: {},
+      error: '503 Case Service unavailable',
+    })
+    const wrapper = await mountReady()
+
+    pushAcliResult({
+      case_id: 'Q2026102300001',
+      status: 'error',
+      stage: 'install',
+      error_code: 'LC-INSTALL-002',
+      error_retryable: 'true',
+      message: 'acli 安装命令退出码 2',
+    })
+    await flushPromises()
+
+    const installButton = wrapper
+      .find('.lc-acli-fail')
+      .findAll('button')
+      .find((btn) => btn.text().includes('重试安装'))
+    await installButton!.trigger('click')
+    await flushPromises()
+
+    const sync = sentMessages
+      .map((raw) => JSON.parse(raw))
+      .filter((message) => message.type === 'acli_sync')
+      .pop()
+    // 成对下发：取票失败时两个字段都不发，不让桥走去跑一次注定 401 的拉清单。
+    expect(sync).toBeTruthy()
+    expect(sync?.platform_url).toBeUndefined()
+    expect(sync?.plugin_ticket).toBeUndefined()
+    // 降级可以，静默不行：插件仍是节点现状这件事必须看得见。
+    expect(wrapper.text()).toContain('阶段二未启用')
+    expect(wrapper.text()).toContain('503 Case Service unavailable')
+  })
+
+  it('阶段二未完成：不改写阶段一结论，但逐节点明细单独上屏', async () => {
+    const wrapper = await mountReady()
+
+    pushAcliResult({
+      case_id: 'Q2026102300001',
+      status: 'installed',
+      message: 'acli 安装完成',
+      plugin_sync: {
+        stage: 'plugin',
+        ok: false,
+        reason: 'plugin_deploy_failed',
+        detail: '1 个插件未收敛到平台期望态',
+        desired_count: 2,
+        installed: 1,
+        overwritten: 0,
+        skipped: 0,
+        failed: 1,
+        nodes: ['172.28.25.1', '172.28.25.2'],
+        manifest_version: '2.0',
+        plugins: [
+          {
+            name: 'log_collect',
+            action: 'failed',
+            hosts: [{ ip: '172.28.25.2', action: 'failed', reason: 'smoke_empty', device_status: 'error' }],
+          },
+        ],
+      },
+    })
+    await flushPromises()
+
+    // 阶段一成功：不能因此弹出一张“安装失败”的卡片（那会引导用户重传一个已经装好的包）。
+    expect(wrapper.find('.lc-acli-fail').exists()).toBe(false)
+
+    const plugin = wrapper.find('.lc-acli-plugin')
+    expect(plugin.exists()).toBe(true)
+    expect(plugin.text()).toContain('插件同步未完成')
+    expect(plugin.text()).toContain('plugin_deploy_failed')
+    expect(plugin.text()).toContain('期望 2 个')
+    // 逐节点结论：运维要知道的是“哪台、哪个插件、为什么”，不是一句“失败了”。
+    expect(plugin.text()).toContain('log_collect@172.28.25.2')
+    expect(plugin.text()).toContain('smoke_empty')
+    expect(plugin.text()).toContain('172.28.25.1')
+  })
+
+  it('旧桥不下发 plugin_sync：不渲染插件区块，也不编造一个“已收敛”', async () => {
+    const wrapper = await mountReady()
+
+    pushAcliResult({
+      case_id: 'Q2026102300001',
+      status: 'up_to_date',
+      message: 'acli 工具已就绪且为最新版本',
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.lc-acli-plugin').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('插件已按平台期望态收敛')
   })
 })
 

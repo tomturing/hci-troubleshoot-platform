@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ACLI_SYNC_TIMEOUT_MS, AcliSyncFailure, acliRetrySuggestions, ensureAcliReady } from '../acliManager'
+import {
+  ACLI_PLUGIN_STAGE_TIMEOUT_MS,
+  ACLI_STAGE1_TIMEOUT_MS,
+  ACLI_SYNC_TIMEOUT_MS,
+  AcliSyncFailure,
+  acliRetrySuggestions,
+  ensureAcliReady,
+} from '../acliManager'
 import { buildAcliSyncMessage, parseAcliSyncFacts } from '@/api/terminal'
 
 describe('acliManager', () => {
@@ -119,6 +126,35 @@ describe('acliManager', () => {
   it('前端超时预算大于 bridge 分段预算之和（120+300+240）', () => {
     // 前端先超时会让用户以为失败并重点一次，叠出第二次上传。
     expect(ACLI_SYNC_TIMEOUT_MS).toBeGreaterThan(660_000)
+  })
+
+  it('总预算覆盖两个阶段：阶段一 720s + 阶段二封顶 30min 都要小于前端等待', () => {
+    // 阶段二与阶段一串行，桥两段各自有预算；前端按总和等，否则在桥还在装插件时
+    // 就把整条链路报成失败，而阶段二失败**不回滚阶段一**，用户看到的是假的“没装成”。
+    expect(ACLI_STAGE1_TIMEOUT_MS).toBeGreaterThan(720_000)
+    expect(ACLI_PLUGIN_STAGE_TIMEOUT_MS).toBe(1_800_000)
+    expect(ACLI_SYNC_TIMEOUT_MS).toBe(ACLI_STAGE1_TIMEOUT_MS + ACLI_PLUGIN_STAGE_TIMEOUT_MS)
+  })
+
+  it('阶段二凭据成对下发；只带一半就不下发', () => {
+    const pair = JSON.parse(
+      buildAcliSyncMessage('case-pair', {
+        nodeIp: '10.0.0.1',
+        platformUrl: 'https://platform.example',
+        pluginTicket: 'tk-1',
+      }),
+    )
+    expect(pair.platform_url).toBe('https://platform.example')
+    expect(pair.plugin_ticket).toBe('tk-1')
+
+    // 只带 origin（取票失败）：下发一半等于让桥走完一次无凭据分支，不如不发。
+    const half = JSON.parse(buildAcliSyncMessage('case-half', { platformUrl: 'https://platform.example' }))
+    expect(half.platform_url).toBeUndefined()
+    expect(half.plugin_ticket).toBeUndefined()
+
+    const none = JSON.parse(buildAcliSyncMessage('case-none'))
+    expect(none).not.toHaveProperty('platform_url')
+    expect(none).not.toHaveProperty('plugin_ticket')
   })
 
   it('解析完整性事实：摘要、校验强度、安装输出都要能拿到', () => {
@@ -248,5 +284,89 @@ describe('acliManager', () => {
       data: JSON.stringify({ type: 'acli_sync_result', case_id: 'case-progress', status: 'installed' }),
     })
     await promise
+  })
+
+  /** 把一套“监听 + 推消息”的 mock 骨架抽出来：下面两个阶段二用例只差一条结果消息。 */
+  function mockSocketWithListeners() {
+    const listeners: Record<string, Function[]> = {}
+    const mockSocket = {
+      send: vi.fn(),
+      addEventListener: (type: string, fn: any) => {
+        listeners[type] = listeners[type] || []
+        listeners[type].push(fn)
+      },
+      removeEventListener: (type: string, fn: any) => {
+        listeners[type] = (listeners[type] || []).filter((f) => f !== fn)
+      },
+    } as unknown as WebSocket
+    return { mockSocket, listeners }
+  }
+
+  it('阶段二未完成时仍 resolve（阶段一结论不被改写），但单独上屏一条 error', async () => {
+    const { mockSocket, listeners } = mockSocketWithListeners()
+    const seen: any[] = []
+    const promise = ensureAcliReady(mockSocket, 'case-plugin-partial', (log) => seen.push(log))
+
+    listeners['message']?.[0]?.({
+      data: JSON.stringify({
+        type: 'acli_sync_result',
+        case_id: 'case-plugin-partial',
+        status: 'installed',
+        message: 'acli 安装完成',
+        plugin_sync: {
+          stage: 'plugin',
+          ok: false,
+          reason: 'plugin_deploy_failed',
+          detail: '10.0.0.2 log_collect 安装失败',
+          desired_count: 2,
+          installed: 1,
+          overwritten: 0,
+          skipped: 1,
+          failed: 1,
+          nodes: ['10.0.0.1', '10.0.0.2'],
+          plugins: [
+            {
+              name: 'log_collect',
+              action: 'failed',
+              hosts: [{ ip: '10.0.0.2', action: 'failed', reason: 'smoke_empty', device_status: 'error' }],
+            },
+          ],
+        },
+      }),
+    })
+
+    const res = await promise
+    // 阶段一成功是真的：不能因为插件没收敛完就把整次报成失败（那会诱导用户重传安装包）。
+    expect(res.status).toBe('installed')
+    expect(res.pluginSync?.ok).toBe(false)
+    expect(res.pluginSync?.failed).toBe(1)
+    expect(res.pluginSync?.plugins?.[0]?.hosts?.[0]?.device_status).toBe('error')
+
+    // 但阶段二的未完成必须单独上屏一条 error，不能只活在 result 里。
+    expect(seen.filter((l) => l.type === 'success')).toHaveLength(1)
+    const pluginLine = seen.find((l) => l.status === 'plugins')
+    expect(pluginLine?.type).toBe('error')
+    expect(pluginLine?.text).toContain('plugin_deploy_failed')
+    expect(pluginLine?.text).toContain('10.0.0.2 log_collect 安装失败')
+  })
+
+  it('旧桥不下发 plugin_sync：pluginSync 为 null，不渲染插件区块', async () => {
+    const { mockSocket, listeners } = mockSocketWithListeners()
+    const seen: any[] = []
+    const promise = ensureAcliReady(mockSocket, 'case-old-bridge', (log) => seen.push(log))
+
+    listeners['message']?.[0]?.({
+      data: JSON.stringify({
+        type: 'acli_sync_result',
+        case_id: 'case-old-bridge',
+        status: 'up_to_date',
+        message: 'acli 工具已就绪且为最新版本',
+      }),
+    })
+
+    const res = await promise
+    expect(res.pluginSync).toBeNull()
+    // 不能假补一条“插件同步：新增 0、覆盖 0、跳过 0”把旧桥显示成已收敛。
+    expect(seen.some((l) => l.status === 'plugins')).toBe(false)
   })
 })

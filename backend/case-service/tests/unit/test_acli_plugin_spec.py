@@ -1,14 +1,16 @@
-"""acli 插件规格域层单测：锁死「页面零凭据 + acli 硬契约 + 真冒烟」三条底线。
+"""acli 插件规格域层单测：锁死「页面零凭据 + acli 硬契约 + 期望态形状」三条底线。
 
 PR #1508 的教训是「能在页面上跑通」不等于「架构正确」：这里用纯域层断言
-把服务端事实源、manifest 逐文件 hash、无 base64 依赖、真实生效验证固定下来。
+把服务端事实源、manifest 逐文件 hash、无 base64 依赖固定下来。
+
+链路收口（D1）后本层多了一条边界：**域层只产期望态，不产设备侧执行脚本**。
+装 / 备份 / 回滚 / 冒烟的编排语义由 terminal_bridge 的 acli_sync 第二阶段用 Go
+实现；这里因此改为断言 descriptor 的键白名单，以及产物里不得再出现执行协议标记。
 """
 
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 from datetime import UTC, datetime
 
 import pytest
@@ -21,13 +23,34 @@ from app.domain.acli_plugin_spec import (
     TEMPLATE_SPEC,
     SpecValidationError,
     build_descriptor,
+    compile_descriptor,
     normalize_spec,
-    parse_deploy_result,
     validate_descriptor,
     validate_spec,
 )
 
 NOW = datetime(2026, 11, 14, 6, 0, 0, tzinfo=UTC)
+
+# descriptor 的完整键集合：新增键＝平台又开始替设备决定"怎么做"，必须在这里显式认领。
+DESCRIPTOR_KEYS = {
+    "built_in",
+    "descriptor_version",
+    "enable_completion",
+    "files",
+    "manifest",
+    "plugin_name",
+    "register_item",
+    "smoke_args",
+    "smoke_command",
+    "spec_hash",
+    "update_mode",
+    "verify_commands",
+    "version",
+    "wrapper",
+}
+
+# 旧下发时代的设备侧执行协议标记：它们只应存在于桥里。
+EXECUTION_MARKERS = ("ACP_RESULT", "ACP_SMOKE", "flock", "trap ", "rm -rf", "plugin_register.lock")
 
 
 def _spec(**overrides):
@@ -35,7 +58,7 @@ def _spec(**overrides):
 
 
 def _descriptor(**overrides):
-    return build_descriptor(_spec(**overrides), deploy_id="htp-acli-test-0001", now=NOW)
+    return build_descriptor(_spec(**overrides), now=NOW)
 
 
 def test_template_is_lmt_and_has_no_runtime_fields():
@@ -69,10 +92,8 @@ def test_env_code_is_dropped_not_rejected():
     spec = normalize_spec({**TEMPLATE_SPEC, "env_code": "24"})
     assert "env_code" not in spec
     assert validate_spec(spec)["ok"]
-    with_env = build_descriptor(spec, deploy_id="htp-acli-test-0001", now=datetime(2026, 11, 14, 6, tzinfo=UTC))
-    without_env = build_descriptor(
-        normalize_spec(TEMPLATE_SPEC), deploy_id="htp-acli-test-0001", now=datetime(2026, 11, 14, 6, tzinfo=UTC)
-    )
+    with_env = build_descriptor(spec, now=NOW)
+    without_env = build_descriptor(normalize_spec(TEMPLATE_SPEC), now=NOW)
     assert with_env["spec_hash"] == without_env["spec_hash"]
 
 
@@ -113,11 +134,10 @@ def test_builtin_override_requires_original_id_and_official_source():
     spec = _spec(update_mode="builtin_override", plugin_name="netdoctor", plugin_uuid="现场原id")
     assert validate_spec(spec)["ok"]
     assert spec["source"] == 1
-    desc = build_descriptor(spec, deploy_id="htp-acli-test-builtin", now=NOW)
+    desc = build_descriptor(spec, now=NOW)
     assert desc["register_item"]["built_in"] is True
     assert desc["register_item"]["source"] == 1
     assert desc["register_item"]["id"] == "现场原id"
-    assert "builtin_backup_failed" in desc["deploy_script"]
     assert validate_descriptor(desc)["ok"]
 
 
@@ -129,14 +149,12 @@ def test_builtin_override_keeps_factory_directory_layout():
         plugin_uuid="现场原id",
         extra_files=[{"path": "scripts/netdoctor.sh", "mode": "0755", "content": "#!/bin/bash\nexit 0\n"}],
     )
-    desc = build_descriptor(spec, deploy_id="htp-acli-test-builtin-layout", now=NOW)
+    desc = build_descriptor(spec, now=NOW)
     paths = [item["path"] for item in desc["files"]]
 
     assert "netdoctor/plugin" not in paths
     assert not any("/bin/" in path for path in paths)
     assert "netdoctor/scripts/netdoctor.sh" in paths
-    assert 'mkdir -p "$TMP/backup" "$TMP/stage/$NAME"' in desc["deploy_script"]
-    assert "$TMP/stage/$NAME/bin" not in desc["deploy_script"]
     assert validate_descriptor(desc)["ok"]
 
 
@@ -165,29 +183,18 @@ def test_wrapper_transparency_and_mode():
     assert "1mt" not in wrapper
 
 
-def test_deploy_script_never_deletes_live_plugin_without_backup():
-    """P0：lock_timeout / register_backup_failed 发生在目录备份之前。
-
-    此时 "$BASE/$NAME" 是现场唯一副本，rollback 若无条件 rm -rf 会把它删掉且
-    既无备份也无 .old 可恢复——插件从此消失，重发同规格还会被幂等挡住。
-    """
-    script = _descriptor()["deploy_script"]
-    assert 'if [ -d "$TMP/backup/$NAME" ] || [ -d "$BASE/$NAME.old.$DEPLOY_ID" ]; then' in script
-    assert "ACP_ROLLBACK_SKIPPED=no_backup" in script
-    # 旧实现的无条件删除必须消失（该行出现在备份之前，删的就是现场目录）。
-    assert '[ -d "$BASE/$NAME" ] && rm -rf "$BASE/$NAME"\n' not in script
-
-
-def test_deploy_script_traps_termination_into_rollback():
-    """脚本被 SIGTERM 打断时会停在「旧目录已挪走、新目录未就位」之间，必须收敛到回滚。"""
-    script = _descriptor()["deploy_script"]
-    assert "trap 'fail interrupted' INT TERM HUP" in script
-    assert "trap - INT TERM HUP" in script  # fail 内先解绑，避免二次进入
+def test_descriptor_is_desired_state_not_a_device_script():
+    """域层只描述"应该是什么样"：出现设备侧执行协议标记就是旧链路回来了。"""
+    desc = _descriptor()
+    assert set(desc) == DESCRIPTOR_KEYS
+    serialized = json.dumps(desc, ensure_ascii=False)
+    for marker in EXECUTION_MARKERS:
+        assert marker not in serialized, marker
 
 
 def test_spec_hash_is_deterministic_and_covers_every_input():
     first = _descriptor()
-    second = build_descriptor(_spec(), deploy_id="htp-acli-test-0001", now=NOW)
+    second = build_descriptor(_spec(), now=NOW)
     assert first["spec_hash"] == second["spec_hash"]
 
     changed_smoke = _descriptor(smoke_args="-m env -c mem_usage")
@@ -200,54 +207,34 @@ def test_spec_hash_is_deterministic_and_covers_every_input():
     assert changed_version["spec_hash"] != first["spec_hash"]
 
 
-def test_deploy_script_is_valid_bash_without_missing_hci_dependencies():
-    script = _descriptor()["deploy_script"]
-    assert "base64" not in script
-    assert "python3" not in script
-    for token in ("flock -w 30 9", "sha256sum -c -", "jq --slurpfile", 'mv "$TMP/plugin_register.json" "$REG"'):
-        assert token in script, token
-    assert '/sf/bin/acli --timeout 60 "$NAME" $SMOKE_ARGS' in script
-    assert "plugin_smoke_empty" in script
-    if shutil.which("bash"):
-        result = subprocess.run(["bash", "-n"], input=script, capture_output=True, text=True, check=False)
-        assert result.returncode == 0, result.stderr
+def test_spec_hash_ignores_the_build_stamp_but_compiled_freezes_it():
+    """``spec_hash`` 不含 last_updated_at（否则同一规格永远算不出"无修改"），
+    但 ``register_item.last_updated_at`` 必须随 revision 固化下来。"""
+    early = build_descriptor(_spec(), now=datetime(2026, 11, 14, 6, tzinfo=UTC))
+    late = build_descriptor(_spec(), now=datetime(2027, 1, 1, 0, tzinfo=UTC))
+    assert early["spec_hash"] == late["spec_hash"]
+    assert compile_descriptor(early)["register_item"]["last_updated_at"] != compile_descriptor(late)[
+        "register_item"
+    ]["last_updated_at"]
 
 
-def test_deploy_command_writes_script_with_printf_only():
-    desc = _descriptor()
-    assert desc["deploy_command"].startswith("printf '%b' ")
-    assert desc["deploy_script_path"] in desc["deploy_command"]
-    assert "bash " in desc["deploy_command"]
-    assert "base64" not in desc["deploy_command"]
+def test_compiled_payload_is_what_stage_two_writes():
+    """编译载荷＝阶段二直接落盘的东西：逐文件四要素齐备，标量够判序与冒烟。"""
+    compiled = compile_descriptor(_descriptor())
+    assert {"version", "spec_hash", "update_mode", "built_in", "smoke_args", "enable_completion"} <= set(compiled)
+    assert {"register_item", "files", "size"} <= set(compiled)
+    for item in compiled["files"]:
+        assert set(item) == {"path", "mode", "sha256", "content"}
+        assert len(item["sha256"]) == 64
+    # 桥要在没有网络的情况下完成收敛，所以内容与清单必须内联，不能只给引用。
+    assert any(item["path"].endswith("/manifest.json") for item in compiled["files"])
+    assert compiled["size"] == sum(len(item["content"].encode("utf-8")) for item in compiled["files"])
 
 
-def test_parse_deploy_result_only_accepts_success_with_smoke_output():
-    desc = _descriptor()
-    success = (
-        "ACP_RESULT_BEGIN\n"
-        + json.dumps(
-            {
-                "status": "success",
-                "plugin_name": desc["plugin_name"],
-                "version": desc["version"],
-                "spec_hash": desc["spec_hash"],
-                "deploy_id": desc["deploy_id"],
-                "error": "",
-            }
-        )
-        + "\nACP_RESULT_END\nACP_SMOKE_BEGIN\n巡检完成\nACP_SMOKE_END\n"
-    )
-    parsed = parse_deploy_result(success, exit_code=0)
-    assert parsed["ok"] is True
-    assert parsed["device_spec_hash"] == desc["spec_hash"]
-    assert "巡检完成" in parsed["smoke_output"]
-
-    assert parse_deploy_result(success, exit_code=1)["ok"] is False
-    assert parse_deploy_result(success.replace("巡检完成", ""), exit_code=0)["ok"] is False
-
-    rolled_back = success.replace('"status": "success"', '"status": "rolled_back"')
-    assert parse_deploy_result(rolled_back, exit_code=0)["device_status"] == "rolled_back"
-    assert parse_deploy_result("", exit_code=1)["ok"] is False
+def test_compiled_payload_carries_no_credentials_or_device_targets():
+    serialized = json.dumps(compile_descriptor(_descriptor()), ensure_ascii=False)
+    for forbidden in ("password", "private_key", "node_ip", "172.28.", "ssh"):
+        assert forbidden not in serialized, forbidden
 
 
 def test_builtin_reference_list_matches_24_environment():
