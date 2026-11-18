@@ -34,6 +34,7 @@ from ..schemas.log_collect_evidence import (
     ArtifactManifestIn,
     BandwidthAck,
     EvidenceAck,
+    EvidenceErrorIn,
     NetworkProbeAck,
     NetworkProbeIn,
     ProcessLogIn,
@@ -335,6 +336,23 @@ async def put_artifact_manifest(
             },
             ensure_ascii=False,
         ),
+        # 客户面板轮询只拿任务行：证据回传成功这件事必须能直接从 detail 读到，
+        # 否则 S7 只能靠 quality 猜，永远不会变成「成功」（Q2026110302166）。
+        "manifest_snapshot": json.dumps(
+            {
+                "received": True,
+                "source": payload.source,
+                "quality": quality,
+                "reason": reason,
+                "entry_count": payload.entry_count,
+                "entry_total_bytes": payload.entry_total_bytes,
+                "has_encrypted": payload.has_encrypted,
+                "readable": payload.readable,
+                "inspected_at": datetime.now(UTC).isoformat(),
+                "trace_id": _trace_of(task),
+            },
+            ensure_ascii=False,
+        ),
     }
     result = await session.execute(
         text(
@@ -376,10 +394,14 @@ async def put_artifact_manifest(
         text(
             """
             UPDATE log_collect_task
-            SET detail = COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
-                    'artifact_quality', CAST(:quality AS text),
-                    'artifact_reason', CAST(:reason AS text),
-                    'artifact_evidence', CAST(:evidence AS jsonb)),
+            SET detail = (
+                    COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
+                        'artifact_quality', CAST(:quality AS text),
+                        'artifact_reason', CAST(:reason AS text),
+                        'artifact_evidence', CAST(:evidence AS jsonb),
+                        'artifact_manifest', CAST(:manifest_snapshot AS jsonb))
+                    -- 成功清单到达即作废旧的失败陈述：重试成功不该继续显示失败。
+                ) - 'evidence_error',
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_id = :task_id
               AND (detail ->> 'artifact_quality' IS DISTINCT FROM 'ok' OR :quality = 'ok')
@@ -401,6 +423,64 @@ async def put_artifact_manifest(
         id=str(inserted[0]) if inserted else None,
         duplicate=inserted is None,
     )
+
+
+@router.post("/tasks/{task_id}/evidence-error", response_model=EvidenceAck)
+async def put_evidence_error(
+    task_id: UUID,
+    payload: EvidenceErrorIn,
+    x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    service: Any = Depends(get_log_collect_service),
+) -> EvidenceAck:
+    """记录一次明确的证据上报失败（HTTP 码 / 异常）。
+
+    为什么需要它：平台只能观察到「有没有收到清单」，无法凭缺失区分
+    「桥还没跑完」与「真的传不进去」。历史上两者都被写成 S7 失败，
+    用户看到「证据回传失败」而字节其实早已到齐（Q2026110302166）；
+    反过来，真的传不进去时又只能说「未知」，管理员无从定责。
+    这条陈述只写事实，结论仍由 derive 推导。
+
+    已收到成功清单的任务不再接受失败陈述：旧失败不能覆盖新成功。
+    """
+    if not tickets.verify(str(task_id), x_evidence_ticket):
+        raise _unauthorized()
+    task = await _require_task(service, task_id)
+    session = service.repository.session
+    await session.execute(
+        text(
+            """
+            UPDATE log_collect_task
+            SET detail = COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
+                    'evidence_error', CAST(:payload AS jsonb)),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = :task_id
+              AND detail -> 'artifact_manifest' IS NULL
+            """
+        ),
+        {
+            "task_id": str(task_id),
+            "payload": json.dumps(
+                {
+                    "kind": payload.kind,
+                    "error": payload.error,
+                    "http_code": payload.http_code,
+                    "at": datetime.now(UTC).isoformat(),
+                    "trace_id": _trace_of(task),
+                },
+                ensure_ascii=False,
+            ),
+        },
+    )
+    await session.commit()
+    logger.warning(
+        "log_collect.evidence_error task_id=%s kind=%s http_code=%s error=%s trace_id=%s",
+        task_id,
+        payload.kind,
+        payload.http_code,
+        payload.error[:200],
+        _trace_of(task),
+    )
+    return EvidenceAck(task_id=task_id)
 
 
 @router.post("/network-probe/{probe_id}/uplink", response_model=BandwidthAck)

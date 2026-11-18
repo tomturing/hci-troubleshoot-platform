@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .log_collect_display_generated import (
@@ -244,6 +244,73 @@ def delivery_evidence_ok(task: Any) -> bool:
     if isinstance(check, Mapping) and check.get("verified") is True:
         return True
     return detail.get("delivery_evidence") == "archive_verified"
+
+
+# 证据上报是异步动作：交付终结与证据落库之间存在秒级到分钟级窗口。
+# 现场 Q2026110302166 实测：任务 00:10:32 终结，证据 00:11:03 才落库（31s）。
+# 窗口内「还没收到」只能算等待，绝不能再写成失败——这是本轮误报的直接原因。
+EVIDENCE_ARRIVAL_WINDOW = timedelta(seconds=120)
+
+
+def _evidence_manifest(manifest: Mapping[str, Any] | None, detail: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """证据清单的唯一读取入口：真表行优先，其次 detail 快照。
+
+    客户面板与列表只拿任务行（避免 N+1），所以证据回传成功后必须由证据端点
+    把摘要写进 ``detail.artifact_manifest``。少了这一步，S7 在客户侧永远无法成立。
+    """
+    if isinstance(manifest, Mapping) and manifest:
+        return manifest
+    snapshot = detail.get("artifact_manifest")
+    if isinstance(snapshot, Mapping) and snapshot.get("received") is True:
+        return snapshot
+    return None
+
+
+def _evidence_disabled(detail: Mapping[str, Any]) -> bool:
+    """桥不具备证据能力：S7 只能标「未启用」，不能标失败。"""
+    capabilities = detail.get("capabilities")
+    if not isinstance(capabilities, Mapping):
+        capabilities = {}
+    return bool(detail.get("bridge_outdated")) or capabilities.get("log_collect_evidence") is False
+
+
+def _evidence_error(detail: Mapping[str, Any]) -> bool:
+    """证据上报过程中拿到的明确失败（桥上报的 HTTP 码 / 异常）。
+
+    只有拿到这类事实才允许判 S7 失败；「没有记录」不构成失败。
+    """
+    error = detail.get("evidence_error")
+    return isinstance(error, Mapping) and bool(error.get("error"))
+
+
+def _settled_at(task: Any) -> datetime | None:
+    for key in ("delivery_finished_at", "finished_at", "updated_at"):
+        value = _get(task, key)
+        if isinstance(value, datetime):
+            # 手写 SQL / 老数据可能给到 naive 时间，与 aware 的 now 相减会直接抛错。
+            return value if value.tzinfo else value.replace(tzinfo=UTC)
+    return None
+
+
+def _evidence_pending(
+    task: Any,
+    detail: Mapping[str, Any],
+    *,
+    delivered: bool,
+    now: datetime,
+) -> bool:
+    """交付已成立、但证据仍在到达窗口内 → 等待中。
+
+    窗口之外仍无证据时返回 False，由调用方落到 ``unknown``；
+    这条分支刻意不给``failed``，因为「平台没收到」可能是桥还没跑完，
+    也可能只是这一端没数据，不能替用户下失败结论。
+    """
+    if not delivered or _evidence_disabled(detail) or _evidence_error(detail):
+        return False
+    settled = _settled_at(task)
+    if settled is None:
+        return False
+    return now - settled <= EVIDENCE_ARRIVAL_WINDOW
 
 
 def derive_phase(task: Any, *, now: datetime | None = None) -> str:
@@ -579,6 +646,7 @@ def _build_stages(
     manifest: Mapping[str, Any] | None,
     network: Mapping[str, Any] | None,
     trace_id: str | None,
+    evidence_pending: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """S1-S8 阶段时间线 + 首个异常点归因。
 
@@ -617,7 +685,8 @@ def _build_stages(
         signals.append(("S2", "LC-ACLI-002", True))
     if detail.get("bridge_outdated") or capabilities.get("log_collect_evidence") is False:
         signals.append(("S7", "LC-BRIDGE-003", True))
-    if quality == "unknown" and delivered:
+    # 只有桥明确上报过失败才归因；「暂时没收到」不是失败（见 EVIDENCE_ARRIVAL_WINDOW）。
+    if _evidence_error(detail):
         signals.append(("S7", "LC-BRIDGE-005", True))
     if error_code in FAULT_CATALOG:
         signals.append((FAULT_CATALOG[error_code]["stage"], error_code, True))
@@ -683,12 +752,17 @@ def _build_stages(
     else:
         statuses["S6"] = "unknown"
 
+    # S7 只回答「证据有没有回传到平台」，不回答「包内容好不好读」：
+    # 后者由 artifact 质量（quality/reason）单独表达。混在一起时，一条 1MB
+    # 的加密包会永远显示「证据回传失败」，而字节其实早就到齐了（Q2026110302166）。
     if isinstance(manifest, Mapping) and manifest:
         statuses["S7"] = "success"
-    elif detail.get("bridge_outdated") or capabilities.get("log_collect_evidence") is False:
+    elif _evidence_disabled(detail):
         statuses["S7"] = "skipped"
-    elif (quality == "unknown" and delivered) or detail.get("evidence_enabled") is True:
+    elif _evidence_error(detail):
         statuses["S7"] = "failed"
+    elif evidence_pending:
+        statuses["S7"] = "waiting"
     else:
         statuses["S7"] = "unknown"
 
@@ -833,7 +907,11 @@ def derive(
     evidence_ok = delivery_evidence_ok(task)
     trace_id = _trace_id(task)
 
-    artifact = _artifact_payload(task, manifest, allow_size_inference=phase == "settled")
+    # 客户面板轮询只拿任务行：证据回传成功后，证据端点会把清单摘要写进
+    # detail.artifact_manifest 快照，这里作为 manifest 的等价来源。
+    # 在此之前客户侧永远拿不到「证据已回传」这件事，S7 只能靠 quality 猜。
+    effective_manifest = _evidence_manifest(manifest, detail)
+    artifact = _artifact_payload(task, effective_manifest, allow_size_inference=phase == "settled")
     quality = artifact["quality"]
     transfer = _transfer_payload(task, metrics, now=now)
     # 客户面板轮询只拿任务行；证据写侧会把「每目标最新探测」落进 detail，
@@ -858,7 +936,8 @@ def derive(
         evidence_ok=evidence_ok,
         quality=quality,
         archive_state=archive_state,
-        manifest=manifest,
+        manifest=effective_manifest,
+        evidence_pending=_evidence_pending(task, detail, delivered=delivered, now=now),
         network=network,
         trace_id=trace_id,
     )

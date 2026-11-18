@@ -78,6 +78,19 @@ class ArtifactManifestIn(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
 
 
+class EvidenceErrorIn(BaseModel):
+    """证据上报失败的显式陈述（bridge → 平台）。
+
+    没有这条事实时，平台只能观察到「没收到清单」，无法区分「还没跑完」
+    与「真的传不进去」，于是历史上只能靠 ``quality=unknown`` 猜成失败
+    （Q2026110302166 误报）。这里只收事实：哪一类证据、什么错误、HTTP 码。
+    """
+
+    kind: Literal["artifact-manifest", "transfer-metric", "network-probe", "process-logs"]
+    error: str = Field(max_length=512)
+    http_code: int | None = Field(default=None, ge=0, le=599)
+
+
 class EvidenceAck(BaseModel):
     ok: bool = True
     task_id: UUID | None = None

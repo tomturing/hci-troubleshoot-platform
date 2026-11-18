@@ -314,6 +314,16 @@ export interface LogCollectTask {
    */
   custom_scenario_id?: string | null
   custom_scenario_revision?: number | null
+  /**
+   * 场景语义：与 modules 分离。
+   *
+   * 自定义场景（spc）必须 `-m core`，modules 会被平台覆写成 ["core"]；
+   * 展示「用户选了什么」只能用这两个字段，否则页面把技术槽位当用户选择
+   * （Q2026110302166 选了自定义场景 test，页面显示 core文件）。
+   */
+  scenario_kind?: 'default' | 'custom' | null
+  scenario_label?: string | null
+  scenario_slot?: string | null
   config_json?: string | null
   config_sha256?: string | null
   path_count?: number | null

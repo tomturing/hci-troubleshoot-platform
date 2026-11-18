@@ -3642,6 +3642,29 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
     expect(wrapper.text()).not.toContain('evidence_ticket')
     wrapper.unmount()
   })
+
+  // 回归（Q2026110302166）：自定义场景下发时 acli 要求 `-m core`，平台把 modules
+  // 覆写成 ["core"]。展示若直接读 modules，用户选的 test 就变成「core文件」。
+  it('自定义场景任务显示场景名，而不是被覆写的 core 槽位', async () => {
+    const wrapper = await mountResultTask(
+      taskFixture({
+        modules: ['core'],
+        custom_scenario_id: '61f383e7-0000-0000-0000-000000000001',
+        scenario_kind: 'custom',
+        scenario_label: 'test',
+        scenario_slot: 'core',
+      } as any),
+    )
+
+    expect(wrapper.text()).toContain('test（自定义场景）')
+    expect(wrapper.text()).not.toContain('core文件')
+  })
+
+  it('默认场景任务仍按专项文案展示，不受场景字段影响', async () => {
+    const wrapper = await mountResultTask(taskFixture({ modules: ['vm_suspend'] } as any))
+
+    expect(wrapper.text()).toContain('虚拟机挂起专项')
+  })
 })
 
 /**
