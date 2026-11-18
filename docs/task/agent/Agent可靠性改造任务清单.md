@@ -2,7 +2,7 @@
 status: active
 category: task
 audience: developer
-last_updated: 2026-10-24
+last_updated: 2026-11-18
 related_prs:
   - PR #474: invoke() 重试 + tool_calls 清理 + skill 可观测 + 报告模板简化 + solution 格式合并
 owner: team
@@ -19,6 +19,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 |
 |------|------|---------|
+| 2026-11-18 | v3.77 | **acli 插件收敛收口到客户端两阶段（S4b）**：`frontend/customer/src/stores/chat.ts` 的 `checkAndSyncAcli` 不再只装工具，而是在发送 `acli_sync` **之前**调 `resolveAcliPluginSyncCredentials(caseId)` 拿到短期只读票据与 `platformUrl`，随指令透给桥去拉平台 PluginManifest；取票失败只降回阶段一且必留 `console.warn`，不静默。这个时序不是偏好而是算术：票据 TTL 600s < 阶段一预算 780s，取票晚于发送就必然在桥开工时 `ticket_expired`（见 v3.74 那次“连接就绪后自动自检”的延续修正）。详见 [节点同步链路统一收口设计](../../plans/2026-11-18-节点同步链路统一收口设计.md)。 |
 | 2026-10-26 | v3.76 | `atlas-migrations/20261013000000_add_kbd_entry_root_signal_json.sql` 标注历史路径，并说明幂等 ALTER 语义由 `database/desired_schema.sql` 承接；`backend/shared/tests/test_root_signal_runtime_cdd.py` 标注曾用名与现行位置 `backend/kb-service/tests/test_root_signal_track.py`（#1173 迁移）（详见 [文档瘦身 Wave 3 现行文档准确性治理](../../solution/events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md)） |
 | 2026-10-24 | v3.75 | **修复多 Agent Prompt 事实源断链与文档门禁失效**：① **Prompt 缺失（生产必崩）**：`signal_orchestrator.py:295` 硬编码加载 `kbd_signal_count_v1`（分类、建模、验证同理），但这 4 个 Prompt 的唯一 SQL 定义长期只存在于 `database/atlas-migrations/`（`atlas.hcl` 无 `migration_dir`，`db-migrate.sh` 全链路不执行该目录，故已于本日整体删除 47 文件），生产库调抽取必抛 `PromptLoadError`；现将 count/classify 迁入 `database/seeds/02_system_prompts.sql`（种子为新库完整基线，存量库走 `data-migrations/`）并补齐 4 条 `prompt_slot`。② **门禁丢失**：`data-migrations/034` 将 `kbd_signal_model_v1`/`kbd_signal_verify_v1` 升到 1.1 时，相对同源 1.0 逐行比对各丢失一条约束（建模缺「JSON 取值路径契约（严苛门禁）」、验证缺「修复 JSON 取值路径错误」），按「已执行迁移永不修改、变更走 Forward Fix」铁律新增 `050_restore_json_extract_path_contract.sql` 升至 1.2 补回，Prompt 契约测试统一指向种子以覆盖四个 Agent 的最终版。③ **文档门禁失效**：`scripts/ci/check_module_doc_sync.py` 的 20 条 ModuleMapping 中 11 条指向不存在的文档（`docs/solution/agent/design/agent工具设计.md` 漏 `design/` 中间层、`AI助手设计.md` 已改名），这些模块的 docs-governance 长期只能靠 `[skip doc-sync]` 绕过；已全部修正为现存路径。 | [知识库设计](../../solution/knowledge-base/知识库设计.md) |
 | 2026-09-20 | v3.74 | **客户端 SSH 与 acli 状态管理安全加固**：`chat.ts` 补充 `typeof localStorage !== 'undefined'` 防御性保护消除单测环境异常；在 SSH 连接就绪后异步触发 `checkAndSyncAcli` 自动就绪自检 | [acli自动检测与安装更新方案](../../solution/custom-ui/events/2026-09-20-acli自动检测与安装更新方案.md) |
@@ -769,3 +770,14 @@ owner: team
   `logCollectResumeTaskId` + `openLogCollectForTask` 支持"查看任务状态"接管为只读轮询。
 - [x] **测试**：store 6 例（含 resolve 422、接管）、对话框 4 例（格式/列表/取消）；
   customer 全量 162 passed。
+
+## acli 插件收敛收口到客户端两阶段（2026-11-18）
+
+> 关联：`frontend/customer/src/stores/chat.ts`、`frontend/customer/src/api/acliPluginSync.ts`、
+> `docs/solution/custom-ui/客户端设计.md` §5.12、`docs/solution/case/工单设计.md` §6.3
+
+- [x] **总是触发**：`markConnected()` 无条件调 `checkAndSyncAcli()`，删掉“看本地记录决定要不要
+  同步”的分支——差量判据在平台，客户端只能问，不能猜。
+- [x] **凭据前置**：取票 `await` 完再发 `acli_sync`；占位工单号不取票，旧桥不认新字段也不探测。
+- [x] **预算**：`ACLI_STAGE1_TIMEOUT_MS=780s` + `ACLI_PLUGIN_STAGE_TIMEOUT_MS=1800s`，
+  阶段二失败不回滚阶段一，两条结论分开上屏（不能只看顶层 `status` 就报全绿）。

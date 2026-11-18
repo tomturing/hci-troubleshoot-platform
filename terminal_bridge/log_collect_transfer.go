@@ -490,7 +490,7 @@ func (b *Bridge) handleLogCollectTransfer(
 	if err != nil {
 		return fail(ErrTransferArchiveMissing, err.Error(), logCollectTransferProgress{})
 	}
-	platformURL, err := validatePlatformURL(msg.TransferPlatformURL)
+	platformURL, err := validatePlatformURL(msg.PlatformURL)
 	if err != nil {
 		return fail(ErrTransferChunkFailed, err.Error(), logCollectTransferProgress{})
 	}

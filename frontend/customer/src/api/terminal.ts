@@ -224,6 +224,8 @@ export interface TerminalWsMessage {
   error_type?: string
   // acli_sync 专用字段
   status?: string
+  /** 阶段二（插件差量同步）回执；旧桥不下发。 */
+  plugin_sync?: AcliPluginSyncReceipt | null
   architecture?: string
   current_version?: string
   latest_version?: string
@@ -520,6 +522,15 @@ export interface AcliSyncOptions {
   retryStage?: AcliRetryStage
   /** 重试时可指定新的追踪链路，便于把“首次失败”与“重试结果”分开看 */
   traceId?: string
+  /**
+   * 阶段二（插件差量同步）凭据：两者必须成对出现，缺一个桥就当本次没启用阶段二。
+   *
+   * platform_url 是桥**从客户机**回连平台的根地址（不是浏览器内部地址）：
+   * 桥只认 https，唯一例外是回环（本地联调），明文公网地址在桥侧直接拒。
+   * plugin_ticket 是平台按工单签发的短期只读票据：桥拿的是票据，不是管理令牌。
+   */
+  platformUrl?: string
+  pluginTicket?: string
 }
 
 /** acli 安装链路的重试起点 */
@@ -539,7 +550,105 @@ export function buildAcliSyncMessage(caseId: string, options?: AcliSyncOptions):
     // 只在显式重试时下发：bridge 把非 all 视作“用户明确要求重做该阶段”的强制信号。
     retry_stage: options?.retryStage && options.retryStage !== 'all' ? options.retryStage : undefined,
     trace_id: options?.traceId || undefined,
+    // 阶段二凭据：**成对**才下发。只带一半（比如取票失败但 origin 还在）桥侧会当未启用，
+    // 不如前端就不发：旧桥收到不认识的字段会静默忽略，阶段一不受影响。
+    platform_url: options?.platformUrl && options?.pluginTicket ? options.platformUrl : undefined,
+    plugin_ticket: options?.platformUrl && options?.pluginTicket ? options.pluginTicket : undefined,
   })
+}
+
+/**
+ * 阶段二回执（bridge `acli_sync_result.plugin_sync`）：逐插件差量三态的聚合事实。
+ *
+ * 为什么必须结构化上屏而不是只拼在一句文案里：插件同步失败**不回滚阶段一**，
+ * 阶段一结论仍是成功。只给一句“插件同步失败”，运维就无法判断到底是取票、拉清单
+ * 还是某台节点装挂，只能去登节点翻脚本。
+ */
+export interface AcliPluginHostOutcome {
+  ip: string
+  action: 'install' | 'overwrite' | 'skip' | 'failed' | 'unreachable' | string
+  reason?: string
+  /** 设备侧 ACP_RESULT.status；桥的字段名是 device_status，不能写成 status（解不出永远是 undefined） */
+  device_status?: string
+  error?: string
+  smoke_preview?: string
+  elapsed_ms?: number
+}
+
+export interface AcliPluginResult {
+  name: string
+  version?: string
+  spec_hash?: string
+  action: string
+  hosts?: AcliPluginHostOutcome[]
+}
+
+export interface AcliPluginSyncReceipt {
+  stage: string
+  ok: boolean
+  reason?: string
+  detail?: string
+  desired_count: number
+  installed: number
+  overwritten: number
+  skipped: number
+  failed: number
+  nodes?: string[]
+  plugins?: AcliPluginResult[]
+  warnings?: string[]
+  manifest_version?: string
+  elapsed_ms?: number
+}
+
+function asCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function asRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'object' && item !== null) as Array<Record<string, unknown>> : []
+}
+
+/**
+ * 解析阶段二回执；没有该字段（旧桥/旧前端）时返回 null，调用方据此不展示插件区块。
+ *
+ * 不直接相信桥给的计数：计数与逐台结论都可能缺失，因此保留原始结构由展示层取用，
+ * 解析层只保证“字段缺失不会抛错”。
+ */
+export function parseAcliPluginSync(message: unknown): AcliPluginSyncReceipt | null {
+  const data = (typeof message === 'object' && message !== null ? message : {}) as Record<string, unknown>
+  const raw = data.plugin_sync
+  if (typeof raw !== 'object' || raw === null) return null
+  const receipt = raw as Record<string, unknown>
+  return {
+    stage: asText(receipt.stage) || 'plugin',
+    ok: receipt.ok === true,
+    reason: asText(receipt.reason) || undefined,
+    detail: asText(receipt.detail) || undefined,
+    desired_count: asCount(receipt.desired_count),
+    installed: asCount(receipt.installed),
+    overwritten: asCount(receipt.overwritten),
+    skipped: asCount(receipt.skipped),
+    failed: asCount(receipt.failed),
+    nodes: Array.isArray(receipt.nodes) ? receipt.nodes.map((item) => asText(item)) : undefined,
+    plugins: asRecordArray(receipt.plugins).map((item) => ({
+      name: asText(item.name),
+      version: asText(item.version) || undefined,
+      spec_hash: asText(item.spec_hash) || undefined,
+      action: asText(item.action),
+      hosts: asRecordArray(item.hosts).map((host) => ({
+        ip: asText(host.ip),
+        action: asText(host.action),
+        reason: asText(host.reason) || undefined,
+        device_status: asText(host.device_status) || undefined,
+        error: asText(host.error) || undefined,
+        smoke_preview: asText(host.smoke_preview) || undefined,
+        elapsed_ms: typeof host.elapsed_ms === 'number' ? host.elapsed_ms : undefined,
+      })),
+    })),
+    warnings: Array.isArray(receipt.warnings) ? receipt.warnings.map((item) => asText(item)) : undefined,
+    manifest_version: asText(receipt.manifest_version) || undefined,
+    elapsed_ms: typeof receipt.elapsed_ms === 'number' ? receipt.elapsed_ms : undefined,
+  }
 }
 
 /**

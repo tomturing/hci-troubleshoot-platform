@@ -27,6 +27,7 @@ import {
 import { normalizeToolEvent } from '@/utils/toolEvent'
 import { navigateToOfflineDiagnosis } from '@/utils/offlineDiagnosis'
 import { ensureAcliReady, type AcliSyncResult } from '@/services/acliManager'
+import { resolveAcliPluginSyncCredentials } from '@/api/acliPluginSync'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -3211,12 +3212,28 @@ export const useChatStore = defineStore('chat', () => {
     // 必然 session_missing（历史上 acli 因此从未被自动安装）。
     const nodeIp = sshCurrentConfig.value?.host
     devLog('acli', '开始后台检测 acli 状态...', { caseId, nodeIp })
+    // 阶段二凭据：按工单取一张短期只读票据，随 acli_sync 透给桥去拉平台期望态。
+    // 取不到就只跑阶段一（fail-soft），但不能不留痕迹：这里只 warn 不弹窗，
+    // 后台自动同步弹“插件没更新”会把一个不影响终端可用性的事变成噪声。
+    //
+    // 不先做 capabilities 探测：旧桥不认识这两个字段会直接忽略（契约只增不改），
+    // 代价不过是一次白取的票据；先探测则多一次往返，还把“探测本身失败”
+    // 变成第二个需要解释的静默分支。
+    const { credentials, error: ticketError } = await resolveAcliPluginSyncCredentials(caseId)
+    if (ticketError) {
+      console.warn('[acli] 插件同步票据获取失败，本次只同步 acli 工具:', ticketError)
+    }
     try {
       const result = await ensureAcliReady(
         sshWebSocket.value,
         caseId,
-        (p) => devLog('acli', p.text),
-        { ...options, nodeIp },
+        (p) => {
+          devLog('acli', p.text)
+          // 后台同步没有自己的日志面板：error 必须落到 console，否则“插件没收敛完”
+          // 在生产环境里只能登节点翻脚本才能知道（本轮收口要消灭的就是这类现场）。
+          if (p.type === 'error') console.warn(`[acli] ${p.text}`)
+        },
+        { ...options, nodeIp, ...credentials },
       )
       if (result?.status === 'installed') {
         // 第一性原理：bash 把解析过的命令路径缓存在 hash 表里。安装器替换（甚至挪走）

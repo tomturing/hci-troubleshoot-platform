@@ -385,6 +385,8 @@ async function runSshAndCreateCase() {
 
     // ===== 步骤 1.5: 检查与自动安装 acli 工具 =====
     addLog('info', '正在检查集群 acli 工具链状态...')
+    // 此处故意不带阶段二凭据：工单还没建，而票据绑定工单（拿 ssh-create-temp 去取只会
+    // 换一个 404）。插件收敛在工单建好后的那次连接里跑（chat store 的 checkAndSyncAcli）。
     try {
       const acliRes = await ensureAcliReady(
         tempSocket!,

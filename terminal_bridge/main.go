@@ -383,6 +383,14 @@ type InMessage struct {
 	//   upload      —— 复用已校验的安装包缓存，只重传（对应「重新上传」按钮）；
 	//   install     —— 复用节点上已校验的安装包，只重跑安装命令。
 	RetryStage string `json:"retry_stage,omitempty"`
+	// ── acli_sync 第二阶段（插件差量同步）专用字段 ──
+	// 对外契约只**增**这一个可选字段（platform_url 复用交付/日志取证已有的同名字段，
+	// 三处都是“平台根地址”，语义同一）：旧桥不认识 → 阶段二不执行，阶段一与
+	// 终端/日志业务完全不受影响（兼容路径）。
+	// PluginTicket 是平台按 case 签发的短期只读票据，只能拉 manifest 与插件包。
+	// 桥拿的是票据，绝不是管理令牌或客户身份——桥跑在客户机上，是不受信进程。
+	// 自签证书平台沿用交付通道已有的 tls_insecure 用户授权位，不再新增契约字段。
+	PluginTicket string `json:"plugin_ticket,omitempty"`
 
 	// ── log_collect 专用字段 ──
 	// 参数在 bridge 侧二次校验并以单引号转义后拼命令：acli 插件本身不防注入。
@@ -444,8 +452,11 @@ type InMessage struct {
 	// 段① 用 `tail -c +N` 从 HCI 续读到客户机；段② 按 chunk_size 切片直传平台数据面。
 	// 平台的 init / complete 由前端调用（需客户身份），bridge 只持数据面 token，
 	// 因此这里不包含任何平台控制面字段。
-	TransferSourcePath    string `json:"source_path,omitempty"`    // HCI 上的 zip 绝对路径
-	TransferPlatformURL   string `json:"platform_url,omitempty"`   // 平台根地址（http/https）
+	TransferSourcePath string `json:"source_path,omitempty"` // HCI 上的 zip 绝对路径
+	// PlatformURL 是平台根地址（http/https），三条链路共用：日志取证上传、
+	// 交付通道、acli 插件第二阶段的 manifest/包拉取。JSON 名不能重复声明：
+	// encoding/json 对同层重复 tag 会**两边都解不出来**，静默把票据拉取变成空 URL。
+	PlatformURL           string `json:"platform_url,omitempty"`   // 平台根地址（http/https）
 	TransferToken         string `json:"upload_token,omitempty"`   // 平台签发的数据面 token
 	TransferChunkSize     int64  `json:"chunk_size,omitempty"`     // 分片大小（字节）
 	TransferPartCount     int    `json:"part_count,omitempty"`     // 分片总数
@@ -537,7 +548,7 @@ type OutMessage struct {
 	UploadStatus string `json:"upload_status,omitempty"` // uploaded | artifact_upload_disabled | upload_failed | not_applicable
 
 	// ── acli_sync 专用字段 ──
-	Status         string `json:"status,omitempty"` // up_to_date | installed | disk_space_insufficient | error | checking | downloading | uploading | installing
+	Status         string `json:"status,omitempty"` // up_to_date | installed | disk_space_insufficient | error | checking | downloading | uploading | installing | plugins
 	Architecture   string `json:"architecture,omitempty"`
 	CurrentVersion string `json:"current_version,omitempty"`
 	LatestVersion  string `json:"latest_version,omitempty"`
@@ -568,6 +579,9 @@ type OutMessage struct {
 	InstallMS       int64  `json:"install_ms,omitempty"`
 	InstallOutput   string `json:"install_output,omitempty"`
 	InstallStderr   string `json:"install_stderr,omitempty"`
+	// PluginSync 是 acli_sync 第二阶段回执（只读事实，不参与阶段一结论）：
+	// 阶段二失败绝不把已成功的安装整体判失败，反之阶段一失败时阶段二根本不跑。
+	PluginSync *acliPluginStageReceipt `json:"plugin_sync,omitempty"`
 
 	// ── log_collect_result 专用字段 ──
 	// 进度与探测结果是结构化数据；RAW 保留插件原文，解析失败时前端按原文展示，
@@ -3387,6 +3401,11 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		"retry_stage": retryStage,
 	})
 
+	// 阶段二的期望态必须在阶段一开工**前**取定：票据 TTL 只有 10 分钟，而阶段一
+	// 最长要跑 660s，装完再去拉 manifest 会拿着过期票据吃 401。
+	// 旧前端不带凭据 → 返回 nil，后面两个成功出口都不进阶段二。
+	pluginPlan := b.prepareAcliPluginStage(msg, cui, traceID)
+
 	// 总预算是三段独立预算之和再加余量：下载 120s + 上传 300s + 安装 240s。
 	// 历史实现用单一 180s 总超时，导致任何一段变慢都会表现成“另一段超时”，
 	// 排障只能猜（Q2026102901049 现场三次失败都精确卡在 92s）。
@@ -3509,6 +3528,18 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			// 解析落空时"已是最新"是假结论：如实告知未做升级判定，避免静默失效。
 			upToDateMessage = "acli 已安装；远端包名无法解析，未做升级判定（可强制更新）"
 		}
+		// 阶段一成功（无需装工具）→ 紧接阶段二。工具没更新**不代表**插件已是
+		// 平台期望态：admin-ui 可能刚改过规格，差量三态必须每台都重算一遍。
+		var pluginReceipt *acliPluginStageReceipt
+		if acliPluginStageRequested(msg) {
+			sendMsg(ws, OutMessage{
+				Type: "acli_sync_progress", CaseID: msg.CaseID,
+				Status: "plugins", TraceID: traceID,
+				Message: "acli 工具已就绪，正在按平台期望态收敛插件...",
+			})
+			pluginReceipt = b.runAcliPluginStage(s, msg, pluginPlan, cui, traceID)
+			upToDateMessage += pluginReceipt.summaryText()
+		}
 		sendMsg(ws, OutMessage{
 			Type:           "acli_sync_result",
 			CaseID:         msg.CaseID,
@@ -3519,6 +3550,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			TraceID:        traceID,
 			Detail:         fmt.Sprintf("%s (build %s)", currentVer, currentBuild),
 			Message:        upToDateMessage,
+			PluginSync:     pluginReceipt,
 		})
 		blog("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": currentVer, "build": currentBuild,
@@ -3902,6 +3934,19 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 		})
 		installedMessage += "\n提示：重装已重置插件目录（含场景清单），平台场景清单将在下次采集自动重新下发。"
 
+		// 阶段一刚装完 acli：重装会清掉插件目录，阶段二正好把平台期望态重新收敛回去
+		//（B4 根治：判定只看节点事实，不信"上次装过"）。
+		var pluginReceipt *acliPluginStageReceipt
+		if acliPluginStageRequested(msg) {
+			sendMsg(ws, OutMessage{
+				Type: "acli_sync_progress", CaseID: msg.CaseID,
+				Status: "plugins", TraceID: traceID,
+				Message: "acli 工具安装完成，正在按平台期望态收敛插件...",
+			})
+			pluginReceipt = b.runAcliPluginStage(s, msg, pluginPlan, cui, traceID)
+			installedMessage += pluginReceipt.summaryText()
+		}
+
 		sendMsg(ws, OutMessage{
 			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "installed",
 			Architecture: targetArch, CurrentVersion: newVer, LatestVersion: newBuild,
@@ -3911,7 +3956,8 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg InMessage, cui string) {
 			PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
 			RemoteSize: writeRes.RemoteSize, RemoteAlgo: writeRes.Algo, RemoteDigest: writeRes.Digest,
 			InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
-			Message: installedMessage,
+			Message:    installedMessage,
+			PluginSync: pluginReceipt,
 		})
 		blog("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": newVer, "build": newBuild, "key": key,

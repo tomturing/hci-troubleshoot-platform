@@ -4318,39 +4318,23 @@ CREATE INDEX IF NOT EXISTS idx_dsh_diagnosis_session_activity
     ON dsh_diagnosis_session (last_activity_at DESC);
 
 -- ============================================================================
--- acli 插件管理（服务端编排事实源）：环境 / 插件 / 不可变规格 / 下发任务
+-- acli 插件管理（规格事实源）：插件档案 / 不可变规格
+-- 旧下发链路的环境表与下发任务表已随链路收口删除（D1）：插件到达节点由
+-- 客户侧 acli_sync 第二阶段拉取 manifest 驱动，平台不再登记部署任务。
 -- ============================================================================
-
-CREATE TABLE IF NOT EXISTS acli_plugin_environment (
-    env_code varchar(128) NOT NULL,
-    display_name varchar(128) NOT NULL DEFAULT '',
-    node_ip varchar(64) NOT NULL,
-    ssh_port integer NOT NULL DEFAULT 22,
-    auth_type varchar(16) NOT NULL DEFAULT 'key',
-    credential_ref varchar(128) NOT NULL DEFAULT '',
-    bridge_url varchar(256) NOT NULL DEFAULT '',
-    enabled boolean NOT NULL DEFAULT true,
-    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT acli_plugin_environment_pkey PRIMARY KEY (env_code)
-);
-COMMENT ON TABLE acli_plugin_environment IS 'acli 插件下发目标环境；只存凭据引用，不存口令或私钥';
 
 CREATE TABLE IF NOT EXISTS acli_plugin (
     plugin_name varchar(64) NOT NULL,
     display_name varchar(200) NOT NULL DEFAULT '',
     update_mode varchar(24) NOT NULL DEFAULT 'third_party',
-    current_spec_hash varchar(64) NOT NULL DEFAULT '',
     desired_spec_hash varchar(64) NOT NULL DEFAULT '',
-    last_deploy_status varchar(32) NOT NULL DEFAULT 'never',
-    last_deploy_at timestamptz,
     enabled boolean NOT NULL DEFAULT true,
     created_by varchar(128) NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT acli_plugin_pkey PRIMARY KEY (plugin_name)
 );
-COMMENT ON TABLE acli_plugin IS 'acli 插件当前态；current/desired spec_hash 分离用于识别待下发变更';
+COMMENT ON TABLE acli_plugin IS 'acli 插件档案；desired_spec_hash 指向当前期望 revision，节点收敛由 acli_sync 第二阶段拉 manifest 完成';
 
 CREATE TABLE IF NOT EXISTS acli_plugin_spec (
     spec_id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -4367,58 +4351,12 @@ CREATE TABLE IF NOT EXISTS acli_plugin_spec (
 );
 COMMENT ON TABLE acli_plugin_spec IS 'acli 插件不可变规格版本；spec_hash 覆盖规范化 spec 与全部文件字节';
 
-CREATE TABLE IF NOT EXISTS acli_plugin_deployment (
-    deploy_id varchar(64) NOT NULL,
-    plugin_name varchar(64) NOT NULL,
-    revision integer NOT NULL,
-    spec_hash varchar(64) NOT NULL,
-    env_code varchar(128) NOT NULL,
-    node_ip varchar(64) NOT NULL DEFAULT '',
-    status varchar(24) NOT NULL DEFAULT 'pending',
-    lease_owner varchar(128) NOT NULL DEFAULT '',
-    lease_until timestamptz,
-    attempt integer NOT NULL DEFAULT 0,
-    exec_id varchar(64) NOT NULL DEFAULT '',
-    trace_id varchar(128) NOT NULL DEFAULT '',
-    verification jsonb NOT NULL DEFAULT '{}'::jsonb,
-    bridge_result jsonb NOT NULL DEFAULT '{}'::jsonb,
-    error_code varchar(64) NOT NULL DEFAULT '',
-    error_message text NOT NULL DEFAULT '',
-    created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    finished_at timestamptz,
-    CONSTRAINT acli_plugin_deployment_pkey PRIMARY KEY (deploy_id)
-);
-COMMENT ON TABLE acli_plugin_deployment IS 'acli 插件下发任务；租约/重试/回执正交，按 exec_id 与 bridge 日志对齐';
-
-CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_status ON acli_plugin_deployment (status, created_at DESC);
--- 2026-11-18（P-1⑤）：env_code 可能承载 128 字符的 case_id。
--- CREATE TABLE IF NOT EXISTS **不会**修正已存在的旧表（#1508 存活期内初始化的库
--- 至今仍是 varchar(32)，改上面的常量只在全新环境生效），必须显式 ALTER；
--- 用 DO 块 + schema 过滤保证脚本可重复执行。
-DO $$
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-         WHERE table_schema = current_schema()
-           AND table_name = 'acli_plugin_deployment'
-           AND column_name = 'env_code'
-           AND character_maximum_length < 128
-    ) THEN
-        ALTER TABLE acli_plugin_deployment ALTER COLUMN env_code TYPE varchar(128);
-    END IF;
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-         WHERE table_schema = current_schema()
-           AND table_name = 'acli_plugin_environment'
-           AND column_name = 'env_code'
-           AND character_maximum_length < 128
-    ) THEN
-        ALTER TABLE acli_plugin_environment ALTER COLUMN env_code TYPE varchar(128);
-    END IF;
-END $$;
-
-CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_hash ON acli_plugin_deployment (spec_hash, env_code);
-CREATE INDEX IF NOT EXISTS idx_acli_plugin_deployment_plugin ON acli_plugin_deployment (plugin_name, created_at DESC);
+-- 旧下发链路（环境表/下发任务表）随链路收口 D1 删除；DROP 供已初始化库收敛。
+DROP TABLE IF EXISTS acli_plugin_deployment;
+DROP TABLE IF EXISTS acli_plugin_environment;
+ALTER TABLE acli_plugin DROP COLUMN IF EXISTS current_spec_hash;
+ALTER TABLE acli_plugin DROP COLUMN IF EXISTS last_deploy_status;
+ALTER TABLE acli_plugin DROP COLUMN IF EXISTS last_deploy_at;
 
 -- ------------------------------------------------------------
 -- 日志收集唯一调用链索引（2026-11-14，PR #1510）
