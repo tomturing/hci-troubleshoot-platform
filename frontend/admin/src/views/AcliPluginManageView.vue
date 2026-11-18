@@ -2,9 +2,9 @@
 /**
  * acli 插件管理页。
  *
- * 这是配置管理页，不是调试面板：只维护插件规格，保存后由平台服务端自动
- * 编排下发。页面全程不出现 node_ip / SSH 口令 / 私钥 / bridge 地址 / 部署命令，
- * 也不建立任何 WebSocket 连接。
+ * 页面维护插件规格；保存后服务端返回部署命令，命令由**本页面经桥连接**在
+ * 已登录的 SSH 会话上执行（与 custom-ui 的 acli_sync / log_collect 同一模型），
+ * 执行结果再回报服务端落库。页面始终不接触 SSH 口令 / 私钥，也不新建 SSH 连接。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -14,15 +14,16 @@ import {
   getDeployment,
   getTemplate,
   listDeployments,
-  listSessions,
   listPlugins,
   publishPlugin,
+  reportDeployResult,
   type AcliPluginDeployment,
   type AcliPluginSession,
   type AcliPluginItem,
   type AcliPluginSpec,
   type AcliPluginTemplateResponse,
 } from '@/api/acliPlugin'
+import { executeDeployPlan, listBridgeSessions } from '@/api/acliPluginBridge'
 
 type TagType = 'success' | 'warning' | 'danger' | 'info'
 
@@ -127,7 +128,7 @@ async function loadPlugins() {
 /** 会话是 bridge 进程内的实时状态：登录/退出都会变，打开抽屉与展开下拉时都要重取。 */
 async function loadSessions() {
   try {
-    sessions.value = await listSessions()
+    sessions.value = await listBridgeSessions()
     if (!sessions.value.some(item => item.key === selectedSessionKey.value)) {
       // 原选项已失效（会话退出）或从未选择：回落到首个可用会话，避免提交过期 key。
       selectedSessionKey.value = sessions.value.length ? sessions.value[0].key : ''
@@ -256,7 +257,31 @@ async function handlePublish() {
     currentDeployment.value = null
     formVisible.value = false
     progressVisible.value = true
-    await pollDeployment(result.deploy_id)
+    const plan = result.plan
+    if (!plan || (result.idempotent && result.status === 'succeeded')) {
+      // 幂等命中：节点已是该规格，无需再次执行。
+      await pollDeployment(result.deploy_id)
+      await loadPlugins()
+      return
+    }
+    // 浏览器在桥连接上逐条执行；服务端不参与执行，只接收回执。
+    ElMessage.info('正在通过本机 terminal_bridge 执行部署命令…')
+    const outcome = await executeDeployPlan(plan)
+    const deployment = await reportDeployResult(result.deploy_id, {
+      exec_id: plan.exec_id,
+      exit_code: outcome.exitCode,
+      stdout: outcome.stdout,
+      stderr: outcome.stderr,
+      timed_out: outcome.timedOut,
+      duration_ms: outcome.durationMs,
+      bridge_instance_id: outcome.bridgeInstanceId,
+    })
+    currentDeployment.value = deployment
+    if (deployment?.status === 'succeeded') {
+      ElMessage.success('插件已在目标环境实时生效')
+    } else {
+      ElMessage.error(`下发失败：${deployment?.error_code || '设备侧自检未通过'}`)
+    }
     await loadPlugins()
   } catch (error: any) {
     const errors = error?.response?.data?.detail?.errors

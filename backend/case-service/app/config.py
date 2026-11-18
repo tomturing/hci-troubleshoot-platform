@@ -87,22 +87,10 @@ class Settings(BaseSettings):
     # 又能避免一个异常文件把内存吃穿。
     DSH_SESSIONS_MAX_BYTES: int = 16 * 1024 * 1024
 
-    # ── acli 插件管理：服务端编排下发 ────────────────────────────────────────
-    # 页面永不下发这些值：bridge 地址、目标节点与 SSH 凭据都由服务端环境表 +
-    # Secret 注入。默认连集群内 terminal-bridge Service（cluster 模式允许空 Origin
-    # 的非浏览器客户端，鉴权交给 NetworkPolicy 边界）。
-    ACLI_PLUGIN_RELAY_ENABLED: bool = True
-    ACLI_PLUGIN_BRIDGE_URL: str = "ws://terminal-bridge:9999"
-    # 凭据字典 JSON：{"24": {"auth_type": "key", "username": "root", "private_key": "..."}}
-    # 由 K8s Secret 注入；口令认证只填去掉 sangfornetwork 后缀的前缀（bridge 自动补全）。
-    # 明文永不写入数据库、日志或 API 响应。
-    ACLI_PLUGIN_CREDENTIALS_JSON: str = ""
-    ACLI_PLUGIN_CREDENTIALS_FILE: str = ""
-    ACLI_PLUGIN_DEPLOY_TIMEOUT_SECONDS: int = 180
-    ACLI_PLUGIN_RELAY_INTERVAL_SECONDS: float = 5.0
-    ACLI_PLUGIN_LEASE_SECONDS: int = 180
-    ACLI_PLUGIN_MAX_ATTEMPTS: int = 3
-
+    # ── acli 插件管理：由浏览器直连桥执行 ────────────────────────────────────
+    # 服务端不再持有 bridge 地址、SSH 凭据、下发超时与租约参数：
+    # 部署命令由服务端生成，执行与回执由持有 SSH 会话的浏览器承担
+    # （与 acli_sync / log_collect 同一条链路模型）。
     model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
