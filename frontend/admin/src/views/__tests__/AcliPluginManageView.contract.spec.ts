@@ -5,8 +5,9 @@
  *   页面只维护规格（列表/新建/编辑/模板下载）→ 服务端校验并落不可变 revision；
  *   插件到达节点完全由客户侧 acli_sync 第二阶段（票据拉平台 manifest）驱动。
  *
- * 因此这里锁死的是「页面不再出现任何下发/连桥/任务轮询形态」，
- * 以及「服务端 acli 插件模块不再出现连桥客户端」——上两版分别在两个方向上跑偏过。
+ * 因此这里锁死的是「页面不再出现任何下发/连桥/任务轮询形态」；而「服务端 acli
+ * 插件模块不再出现连桥客户端」那条住在 case-service 单测里（见下）——上两版分别在
+ * 两个方向上跑偏过。
  *
  * 守卫按**形态**扫描而不是按被删文件的名字断言：旧链路的标识符必须在代码里 0 命中。
  */
@@ -104,15 +105,10 @@ describe('acli 插件管理页架构契约', () => {
     expect(apiSource).not.toContain('bridge_url')
   })
 
-  it('服务端 acli 插件模块里不存在「主动连桥」的任何形态', () => {
-    const appRoot = locate('backend/case-service/app')
-    // 扫不到目录就让守卫直接失败：静默空转的守卫比没有守卫更糟。
-    expect(appRoot).toBeTruthy()
-    const modules = listSources(appRoot!).filter((file) => /acli|plugin_ticket/.test(basename(file)))
-    // 规格 / 管理端服务 / 路由 / 票据 四份都必须在扫描范围内。
-    expect(modules.length).toBeGreaterThanOrEqual(4)
-    expect(findOutboundTokens(modules)).toEqual([])
-  })
+  // 服务端形态扫描不在本文件：前端门禁 job 是 sparse-checkout（只检出 frontend/），
+  // 从这里去读 backend/ 在 CI 里拿不到源文件。同一条不变量住在
+  // backend/case-service/tests/unit/test_acli_plugin_admin.py
+  // 的 test_server_acli_plugin_modules_contain_no_outbound_bridge_forms。
 
   it('管理端插件页面与 API 不重新长出浏览器直连桥的通道', () => {
     const srcRoot = locate('frontend/admin/src')

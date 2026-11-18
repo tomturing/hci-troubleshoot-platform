@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from pathlib import Path
 
 import pytest
 from app.domain.acli_plugin_spec import TEMPLATE_SPEC, SpecValidationError
@@ -210,3 +211,41 @@ def test_admin_store_exposes_exactly_the_spec_maintenance_api():
     """
     public = {name for name in dir(AcliPluginAdminStore) if not name.startswith("_")}
     assert public == {"save_spec", "list_plugins", "list_desired"}
+
+
+# ---- D1 结构边界：服务端 acli 插件模块里不存在「主动连桥」的任何形态 ----
+
+# 用通用协议与动词而不是被删模块的文件名：旧名字留在断言里反而成了它存续的理由。
+# 本断言住在后端而不是管理端契约里，这不是偏好而是硬约束：前端门禁 job 用
+# sparse-checkout（只检出 frontend/），跨目录读 backend/ 的测试在那个环境里拿不到源
+# 文件——要么必然空跑，要么必然假失败（CI 实测：expected null to be truthy）。
+OUTBOUND_BRIDGE_FORMS = (
+    "ssh_connect",
+    "ws://",
+    "wss://",
+    "paramiko",
+    "websockets",
+    "deploy",
+    "relay",
+    "lease",
+)
+
+
+def test_server_acli_plugin_modules_contain_no_outbound_bridge_forms():
+    """插件到节点的唯一驱动是客户侧 acli_sync；服务端不得再持有任何连桥形态。"""
+    app_root = Path(__file__).resolve().parents[2] / "app"
+    assert app_root.is_dir(), app_root
+    modules = [
+        path
+        for path in app_root.rglob("*.py")
+        if re.search(r"acli|plugin_ticket", path.name) and "__pycache__" not in path.parts
+    ]
+    # 规格 / 管理端服务 / 路由 / 票据 四份都必须在扫描范围内，扫不到就是守卫空转。
+    assert len(modules) >= 4, modules
+    offenders = [
+        f"{path.name} → {token}"
+        for path in modules
+        for token in OUTBOUND_BRIDGE_FORMS
+        if token in path.read_text(encoding="utf-8").lower()
+    ]
+    assert offenders == []
