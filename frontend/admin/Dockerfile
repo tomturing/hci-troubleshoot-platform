@@ -50,6 +50,7 @@ ENV ADMIN_API_AUTHORIZATION=\$http_authorization \
     DSH_UPSTREAM=http://127.0.0.1:9998 \
     DSH_OFFLINE_UPSTREAM=http://127.0.0.1:9997 \
     TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999 \
+    WEKNORA_UPSTREAM=http://127.0.0.1:9996 \
     TICKET_SYNC_UPSTREAM=http://192.168.0.4:18080
 
 COPY --from=build /app/admin/dist /usr/share/nginx/html

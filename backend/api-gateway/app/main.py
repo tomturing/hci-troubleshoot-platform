@@ -47,6 +47,7 @@ from app.routes import (
     simulations,
     terminal,
     websocket,
+    weknora,
 )
 from app.security.jwt_verify import JwtVerifier  # 阶段1：auth-service JWT 验签
 from app.services.session import SessionManager
@@ -244,6 +245,7 @@ app.include_router(log_collect_admin.tasks_router)
 app.include_router(signal_dry_run.router)
 app.include_router(diagnosis.router)
 app.include_router(dsh.router)
+app.include_router(weknora.router)
 app.include_router(auth.router)
 
 

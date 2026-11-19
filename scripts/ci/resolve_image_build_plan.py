@@ -200,6 +200,9 @@ def select_services(paths: Iterable[str], *, force_all: bool) -> tuple[set[str],
                     add_service(selected, "hci-sim")
                 elif is_under(path, "dsh/"):
                     add_service(selected, "dsh")
+                elif is_under(path, "weknora/"):
+                    # 只重建 UI；app/docreader/postgres/redis 是上游镜像副本。
+                    add_service(selected, "weknora-ui")
 
     return selected, db_migrate
 

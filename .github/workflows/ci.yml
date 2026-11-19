@@ -105,6 +105,8 @@ jobs:
               # DSH 是独立 chart，由 ArgoCD 以 selfHeal 直推集群；一旦渲染坏了
               # 没有人工拦截的机会，必须在 CI 里先渲一遍。
               - 'deploy/helm/hci-platform-dsh/**'
+              # WeKnora 知识库 chart 同样由 ArgoCD selfHeal 直推 hci-weknora。
+              - 'deploy/helm/hci-platform-weknora/**'
               # 观测栈同样由 ArgoCD selfHeal 直推 hci-observability：渲染坏了
               # 等于监控/日志整体缺失，而且不会报错。不纳入过滤器的话，
               # 本 job 里针对 obs 的断言永远跑不到（就是死代码）。
@@ -822,6 +824,7 @@ jobs:
         run: |
           helm lint deploy/helm/hci-platform
           helm lint deploy/helm/hci-platform-dsh
+          helm lint deploy/helm/hci-platform-weknora
           helm lint deploy/helm/hci-platform-obs
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" ]]; then
             helm lint deploy/helm/hci-sim
@@ -849,7 +852,7 @@ jobs:
           fi
 
           # 正向：Alloy 日志白名单必须覆盖现有全部环境命名空间
-          for ns in hci-staging hci-sim-staging hci-dsh hci-observability argocd; do
+          for ns in hci-staging hci-sim-staging hci-dsh hci-weknora hci-observability argocd; do
             if ! grep -q "$ns" /tmp/obs-rendered.yaml; then
               echo "Alloy 日志白名单缺少命名空间：$ns"
               exit 1
@@ -1127,6 +1130,26 @@ jobs:
 
           if [ ! -s /tmp/hci-platform-dsh-rendered.yaml ]; then
             echo "DSH chart 渲染结果为空"
+            exit 1
+          fi
+
+          # WeKnora chart：四个必填密钥缺一个就渲染失败，必须显式给占位值。
+          # 同时验证镜像坐标带 registry 前缀（CI 回写 tag 时依赖这一形态）。
+          helm template weknora deploy/helm/hci-platform-weknora \
+            --namespace hci-weknora \
+            --set global.imageRegistry=ghcr.io/example/hci/ \
+            --set secrets.dbPassword=ci-only \
+            --set secrets.redisPassword=ci-only \
+            --set secrets.jwtSecret=ci-only \
+            --set secrets.systemAesKey=ci-only-32-bytes-placeholder-key \
+            >/tmp/hci-platform-weknora-rendered.yaml
+
+          if [ ! -s /tmp/hci-platform-weknora-rendered.yaml ]; then
+            echo "WeKnora chart 渲染结果为空"
+            exit 1
+          fi
+          if ! grep -q "ghcr.io/example/hci/weknora-ui" /tmp/hci-platform-weknora-rendered.yaml; then
+            echo "WeKnora 镜像地址未正确拼接 global.imageRegistry"
             exit 1
           fi
 

@@ -595,6 +595,10 @@ services:
       # 发布端口回环导致 host.docker.internal 的 IPv6/IPv4 选择和端口转发差异。
       - DSH_UPSTREAM=${DSH_UPSTREAM:-http://dsh:8080}
       - DSH_OFFLINE_UPSTREAM=${DSH_OFFLINE_UPSTREAM:-http://dsh-offline:8080}
+      # WeKnora 知识库：本地默认指向 compose 服务名；未启动该服务时
+      # /weknora/ 只会在访问时 502，不影响 admin-ui 自身启动。
+      # 集群部署由 chart 注入 frontend.hci-weknora.svc.cluster.local:80。
+      - WEKNORA_UPSTREAM=${WEKNORA_UPSTREAM:-http://weknora:80}
       # Admin 仿真页面固定使用同源 /terminal-bridge；Nginx 在本地转发到桌面 Bridge。
       - TERMINAL_BRIDGE_UPSTREAM=http://host.docker.internal:9999
       # 本地管理入口由 Nginx 服务端注入开发身份，禁止把内部令牌打包进浏览器静态资源。

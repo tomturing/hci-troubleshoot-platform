@@ -41,6 +41,13 @@ non_compose:
   - SCHEDULER_SERVICE_PORT
   - VITE_API_BASE_URL
   - WARM_POOL_SIZE
+  # WeKnora 由独立 Chart 部署，本地 Compose 不启动该实例；网关侧参数只在
+  # Helm 形态下注入（admin-ui 的 WEKNORA_UPSTREAM 除外，Compose 也用它）。
+  - WEKNORA_EMBED_CHANNEL_ID
+  - WEKNORA_EMBED_ORIGIN
+  - WEKNORA_EMBED_PUBLISH_TOKEN
+  - WEKNORA_PUBLIC_PATH
+  - WEKNORA_SERVICE_URL
 
 # DSH 的 profile/LLM/plugin 启动参数由独立 Chart
 # deploy/helm/hci-platform-dsh 管理；主业务 Chart 不复制这些字段。
@@ -291,6 +298,24 @@ helm_equivalents:
     value_paths: [adminUI.dshUpstream]
   DSH_OFFLINE_UPSTREAM:
     value_paths: [adminUI.dshOfflineUpstream]
+  WEKNORA_UPSTREAM:
+    value_paths: [adminUI.weknoraUpstream]
+  # WeKnora 知识库：网关侧入口参数。前缀与服务地址必须成对改动。
+  WEKNORA_SERVICE_URL:
+    value_paths: [apiGateway.weknoraServiceUrl]
+    template_env: [WEKNORA_SERVICE_URL]
+  WEKNORA_PUBLIC_PATH:
+    value_paths: [apiGateway.weknoraPublicPath]
+    template_env: [WEKNORA_PUBLIC_PATH]
+  WEKNORA_EMBED_CHANNEL_ID:
+    value_paths: [apiGateway.weknoraEmbedChannelId]
+    template_env: [WEKNORA_EMBED_CHANNEL_ID]
+  WEKNORA_EMBED_ORIGIN:
+    value_paths: [apiGateway.weknoraEmbedOrigin]
+    template_env: [WEKNORA_EMBED_ORIGIN]
+  # 长期发布令牌只落 Secret，不参与 ConfigMap 渲染。
+  WEKNORA_EMBED_PUBLISH_TOKEN:
+    value_paths: [secrets.weknoraEmbedPublishToken]
   DIAGNOSIS_IDENTITY_MODE:
     value_paths: [diagnosisService.identityMode]
   DIAGNOSIS_DIRECT_UPLOAD_BASE_URL:

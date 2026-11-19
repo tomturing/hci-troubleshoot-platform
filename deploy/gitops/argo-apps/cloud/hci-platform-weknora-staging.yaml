@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-weknora-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: 'staging WeKnora 知识库 — 同源内嵌进 admin-ui（namespace: hci-weknora）'
+    # 与 hci-platform-staging 同波次：admin-ui 的 /weknora 反代在 WeKnora
+    # Service 出现前会 502，但 Nginx 是请求期解析，不会阻塞自身启动。
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-weknora
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-weknora
+      helm:
+        releaseName: hci-platform-weknora
+        valueFiles:
+          # WeKnora 是 vendored 第三方 chart，参数全部收敛到专属 values：
+          # 混入主 values.yaml 会让上游同名字段（frontend/app/redis/postgresql）
+          # 被平台配置意外覆盖。
+          - $values/environments/staging/weknora-values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      # 与平台其余 Application 一致：不 prune，避免 values 误删导致 PVC/Secret
+      # 被连带回收（WeKnora 的 SYSTEM_AES_KEY 丢失会让已加密的模型 Key 不可恢复）。
+      prune: false
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m
+    syncOptions:
+      - CreateNamespace=true

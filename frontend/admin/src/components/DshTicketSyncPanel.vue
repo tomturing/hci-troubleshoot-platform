@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowDown, ArrowRight } from '@element-plus/icons-vue'
 import {
   cancelSyncJob,
   cleanupKindText,
@@ -29,6 +30,15 @@ const artifactQuery = ref('')
 const syncBusy = ref(false)
 const syncTip = ref('')
 const syncRoot = ref('')
+// 默认收起：本面板约占 300px 高度，而它下面才是页面主体（DSH 工作台）。
+// 进入页面第一诉求是看工作台，工单同步是按需动作，因此默认让出空间，
+// 需要时点标题栏展开；同步中的状态徽标在收起态仍可见，不会漏掉进度。
+const collapsed = ref(true)
+
+// 有提示就必须让人看到：收起态下静默报错等于没报，所以提示出现时自动展开。
+watch(syncTip, (value) => {
+  if (value) collapsed.value = false
+})
 const cleanupDialogVisible = ref(false)
 const cleanupEvents = ref<CleanupEvent[]>([])
 const cleanupThresholds = ref<CleanupThresholds | null>(null)
@@ -219,7 +229,18 @@ onUnmounted(() => {
 <template>
   <el-card class="sync-card">
     <div class="sync-bar">
-      <span class="sync-title">工单日志同步</span>
+      <button
+        type="button"
+        class="sync-toggle"
+        :aria-expanded="!collapsed"
+        :title="collapsed ? '展开工单同步与本地工单目录' : '收起，给下方工作台让出空间'"
+        @click="collapsed = !collapsed"
+      >
+        <el-icon><ArrowDown v-if="!collapsed" /><ArrowRight v-else /></el-icon>
+        <span class="sync-title">工单日志同步</span>
+      </button>
+      <!-- 收起后状态不能一起消失：正在同步/失败时用户要能一眼看到，否则会以为没跑 -->
+      <el-tag v-if="collapsed && job" :type="tagType" size="small">{{ phaseText(job.phase) }}</el-tag>
       <el-input
         v-model="ticketInput"
         class="sync-input"
@@ -252,7 +273,7 @@ onUnmounted(() => {
       <span v-else-if="job.phase === 'failed'" class="sync-error">{{ errorText(job.errorCode, job.message) }}</span>
     </div>
 
-    <div class="artifact-panel">
+    <div v-show="!collapsed" class="artifact-panel">
       <div class="artifact-panel-header">
         <span class="artifact-panel-title">本地工单目录</span>
         <span class="artifact-panel-tip">自动同步每 30 秒检查，页面每 2 秒刷新状态</span>
@@ -339,6 +360,18 @@ onUnmounted(() => {
 .sync-card { border-radius: 8px; margin-bottom: 12px; }
 .sync-bar { display: flex; align-items: center; gap: 12px; }
 .sync-title { font-size: 14px; color: #606266; font-weight: 500; flex: none; }
+.sync-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  flex: none;
+}
+.sync-toggle:hover .sync-title { color: #409eff; }
 .sync-input { max-width: 320px; }
 .sync-status { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 .sync-meta { font-size: 13px; color: #606266; }
