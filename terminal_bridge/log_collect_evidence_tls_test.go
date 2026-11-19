@@ -1,11 +1,11 @@
 package main
 
 import (
-	"terminal_bridge/internal/shared/uplink"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
+	"terminal_bridge/internal/shared/uplink"
 	"testing"
 	"time"
 )

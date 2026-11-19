@@ -1,7 +1,6 @@
 package main
 
 import (
-	bruntime "terminal_bridge/internal/shared/runtime"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	bruntime "terminal_bridge/internal/shared/runtime"
 	"time"
 )
 
@@ -27,8 +27,6 @@ type runtimeConfig struct {
 
 // bridgeSelfPort 记录启动时最终生效的监听端口，供对端不可达辅助探测回查 bridge 自身 /health/live（修复 E）。
 var bridgeSelfPort int
-
-
 
 func normalizeRuntimeConfig(mode, listenAddress string, port int, allowedOrigins string) (runtimeConfig, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))

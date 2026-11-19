@@ -12,10 +12,10 @@ package main
 //   3. 不得静默降级（PTY/解析失败必须出码）。
 
 import (
-	"terminal_bridge/internal/sshx"
 	"context"
 	"errors"
 	"strings"
+	"terminal_bridge/internal/sshx"
 )
 
 const (

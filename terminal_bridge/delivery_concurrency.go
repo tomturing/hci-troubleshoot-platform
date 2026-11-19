@@ -16,9 +16,9 @@ package main
 // 只有高配机才允许 2。
 
 import (
-	bruntime "terminal_bridge/internal/shared/runtime"
 	"runtime"
 	"strings"
+	bruntime "terminal_bridge/internal/shared/runtime"
 )
 
 const (

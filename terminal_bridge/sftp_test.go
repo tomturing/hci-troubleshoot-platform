@@ -1,7 +1,6 @@
 package main
 
 import (
-	"terminal_bridge/internal/sshx"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -13,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 )
@@ -195,11 +195,11 @@ type fakeSftpRemote struct {
 	err   error
 }
 
-func (f *fakeSftpRemote) ListDir(string) ([]os.FileInfo, error) { return f.infos, f.err }
-func (f *fakeSftpRemote) Stat(string) (os.FileInfo, error)      { return nil, f.err }
-func (f *fakeSftpRemote) Open(string) (sshx.SftpSeekReader, error)   { return nil, f.err }
-func (f *fakeSftpRemote) Getwd() (string, error)                { return f.wd, f.err }
-func (f *fakeSftpRemote) Close() error                          { return nil }
+func (f *fakeSftpRemote) ListDir(string) ([]os.FileInfo, error)    { return f.infos, f.err }
+func (f *fakeSftpRemote) Stat(string) (os.FileInfo, error)         { return nil, f.err }
+func (f *fakeSftpRemote) Open(string) (sshx.SftpSeekReader, error) { return nil, f.err }
+func (f *fakeSftpRemote) Getwd() (string, error)                   { return f.wd, f.err }
+func (f *fakeSftpRemote) Close() error                             { return nil }
 
 type fakeFileInfo struct {
 	name  string

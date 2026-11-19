@@ -10,8 +10,6 @@ package main
 //  5. 节点事实优先：判定只看设备侧探测结果，绝不因为"上次装过"就 Skip（B4 根治）。
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -22,7 +20,9 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -359,7 +359,7 @@ func (b *Bridge) reconcileAcliPluginOnHost(
 func runAcliPluginOnHost(s *sshx.SSHSession, ctx context.Context,
 	target acliPluginTarget,
 	command string,
-	timeout time.Duration,) (string, string, int, error) {
+	timeout time.Duration) (string, string, int, error) {
 	full := command
 	if !target.Local {
 		full = buildSpcSSHCommand(target.IP, command)

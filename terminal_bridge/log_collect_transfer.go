@@ -11,8 +11,6 @@ package main
 //  4. 分片与整包均计算 SHA-256，供平台側 complete 校验，避免弱网静默损坏。
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -28,7 +26,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"golang.org/x/net/websocket"
@@ -182,7 +182,7 @@ func pullArchive(s *sshx.SSHSession, ctx context.Context,
 	remotePath string,
 	localPath string,
 	totalSize int64,
-	onProgress func(written, total int64),) (int64, string, error) {
+	onProgress func(written, total int64)) (int64, string, error) {
 	result, err := remote.Pull(ctx, sshx.NewSSHRunner(s), remote.PullSpec{
 		RemotePath: remotePath,
 		LocalPath:  localPath,

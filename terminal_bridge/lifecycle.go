@@ -12,15 +12,15 @@ package main
 // 因此把连接与会话的生命周期收敛到本文件，统一产出 conn.* / session.* 事件。
 
 import (
-	"terminal_bridge/internal/sshx"
-	bruntime "terminal_bridge/internal/shared/runtime"
-	"terminal_bridge/internal/logpush"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
+	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/sshx"
 	"time"
 )
 
@@ -245,7 +245,6 @@ func sessionIdleTTL() time.Duration {
 	seconds := bruntime.EnvIntOrDefault("HCI_BRIDGE_SESSION_IDLE_TTL_SECONDS", int(defaultSessionIdleTTL/time.Second))
 	return time.Duration(seconds) * time.Second
 }
-
 
 // detachSession 把会话摘出路由表，但**保留底层 SSH 连接**。
 //

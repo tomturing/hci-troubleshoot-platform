@@ -9,7 +9,6 @@ package main
 //     所以"写没写对、路径在不在"只能由 bridge 在下发前显式证明。
 
 import (
-	"terminal_bridge/internal/sshx"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -17,6 +16,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/sshx"
 
 	"terminal_bridge/internal/shared/reconcile"
 )

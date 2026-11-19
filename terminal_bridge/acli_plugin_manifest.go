@@ -10,7 +10,6 @@ package main
 // 会被触发（阶段二不执行），阶段一与终端/日志业务不受影响。
 
 import (
-	"terminal_bridge/internal/shared/uplink"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -21,6 +20,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/shared/uplink"
 	"time"
 )
 

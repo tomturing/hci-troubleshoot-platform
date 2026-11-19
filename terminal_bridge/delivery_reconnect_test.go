@@ -1,9 +1,9 @@
 package main
 
 import (
-	"terminal_bridge/internal/sshx"
 	"io"
 	"strings"
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 )

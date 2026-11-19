@@ -1,8 +1,8 @@
 package main
 
 import (
-	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"testing"
 )
 
@@ -59,7 +59,7 @@ func TestResolveInputSessionPrefersActiveKey(t *testing.T) {
 func TestSessionKeyCase(t *testing.T) {
 	cases := map[string]string{
 		"Q1":                     "Q1",
-		"Q1@192.0.2.21":       "Q1",
+		"Q1@192.0.2.21":          "Q1",
 		"Q1@host@weird.name":     "Q1",
 		"terminal-only@10.1.1.1": "terminal-only",
 	}

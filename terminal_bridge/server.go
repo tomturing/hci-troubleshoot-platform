@@ -1,7 +1,6 @@
 package main
 
 import (
-	"terminal_bridge/internal/logpush"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
 
 	"runtime/debug"
 
@@ -233,15 +233,15 @@ bridge_log_file_bytes %d
 }
 
 type serviceStatus struct {
-	Status        string       `json:"status"`
-	Service       string       `json:"service"`
-	Version       string       `json:"version"`
-	Commit        string       `json:"commit"`
-	BuildTime     string       `json:"build_time"`
-	Mode          string       `json:"mode"`
-	ListenAddress string       `json:"listen_address"`
-	WebSockets    int64        `json:"websocket_connections"`
-	Bridge        bridgeStatus `json:"bridge"`
+	Status        string               `json:"status"`
+	Service       string               `json:"service"`
+	Version       string               `json:"version"`
+	Commit        string               `json:"commit"`
+	BuildTime     string               `json:"build_time"`
+	Mode          string               `json:"mode"`
+	ListenAddress string               `json:"listen_address"`
+	WebSockets    int64                `json:"websocket_connections"`
+	Bridge        bridgeStatus         `json:"bridge"`
 	Logs          logpush.LogHubStatus `json:"logs"`
 	// logpush.LogUpload 暴露日志直传状态：现场第一句话往往是"到底有没有直传"，
 	// 没有这个字段就只能靠猜（浏览器关掉后是否还有日志进来）。

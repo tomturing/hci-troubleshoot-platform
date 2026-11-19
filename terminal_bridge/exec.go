@@ -1,9 +1,6 @@
 package main
 
 import (
-	"terminal_bridge/internal/sshx"
-	bruntime "terminal_bridge/internal/shared/runtime"
-	"terminal_bridge/internal/logpush"
 	"bufio"
 	"context"
 	"errors"
@@ -14,7 +11,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/sshx"
 	"time"
 	"unicode/utf8"
 
@@ -481,16 +481,12 @@ func commandTimeout(seconds int) time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-
-
-
-
 func on_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 	stdout io.ReadCloser,
 	caseID string,
 	// onExit 带上结束原因：调用方据此区分「远端退出」与「我们主动关闭」，
 	// 只有前者才需要记 session.destroyed（主动关闭已由 destroySession 留痕）。
-	onExit func(reason string),) {
+	onExit func(reason string)) {
 	go func() {
 		buf := make([]byte, 4096)
 		for {
@@ -662,4 +658,3 @@ func formatOutputPreview(raw string, headBytes, tailBytes int) string {
 }
 
 // sshx.TruncateString 截断字符串到指定长度
-

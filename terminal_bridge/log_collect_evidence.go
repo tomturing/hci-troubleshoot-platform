@@ -10,9 +10,6 @@ package main
 //   - 所有上报都是尽力而为：证据链路失败不得影响采集与交付主流程。
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
-	"terminal_bridge/internal/shared/uplink"
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
@@ -31,7 +28,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/uplink"
+	"terminal_bridge/internal/sshx"
 	"time"
 )
 

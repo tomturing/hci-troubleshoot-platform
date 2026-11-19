@@ -1,14 +1,14 @@
 package main
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"go.opentelemetry.io/otel"

@@ -7,8 +7,8 @@ package main
 // 旧 `transfer` 保留为兼容路径（老前端仍可用）。
 
 import (
-	"terminal_bridge/internal/logpush"
 	"strings"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"time"
 

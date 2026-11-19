@@ -10,9 +10,6 @@ package main
 // 前端只通过 job_status 轮询进度，重连后继续轮询即可。
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
-	"terminal_bridge/internal/shared/uplink"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,7 +25,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/uplink"
+	"terminal_bridge/internal/sshx"
 	"time"
 )
 

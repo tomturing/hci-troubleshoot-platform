@@ -1,8 +1,6 @@
 package main
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
 	"context"
 	"errors"
 	"fmt"
@@ -11,7 +9,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"golang.org/x/net/websocket"
@@ -22,12 +22,11 @@ import (
 
 const (
 	defaultWSPort        = 9999
-	backupWSPort         = 47324 // 主端口被陌生进程占用时的固定回退端口；与前端探测的已知端口一致
+	backupWSPort         = 47324            // 主端口被陌生进程占用时的固定回退端口；与前端探测的已知端口一致
 	websocketPingInteval = 30 * time.Second // WebSocket 心跳间隔：每 30 秒发送 ping，防止空闲超时断开
 	// inputRejectNoticeInterval 输入无法路由时的提示节流窗口：
 	// 用户连按回车会连续产生同样失败，留痕一次足够，避免刷屏与刷库。
 	inputRejectNoticeInterval = 3 * time.Second
-
 )
 
 // portBindRetryAttempts 端口被短暂占用（如崩溃重启后的 TIME_WAIT）时的 bind 重试次数；

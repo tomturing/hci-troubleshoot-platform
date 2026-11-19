@@ -1,8 +1,6 @@
 package main
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -17,7 +15,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -427,7 +427,7 @@ func runVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req vmCons
 
 // runVMConsoleWake 执行固定唤醒操作（sendkey down），不做任何上传。
 func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext,
-	span trace.Span, failResult func(string, int, bool), sendResult func(models.OutMessage),) {
+	span trace.Span, failResult func(string, int, bool), sendResult func(models.OutMessage)) {
 	_, stderrText, exitCode, _, err := runner.run(ctx, vmConsoleWakeArgv(req.HostNodeID, req.VMID), vmConsoleMaxStderrBytes)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if err != nil {
@@ -465,7 +465,7 @@ func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 // screendump → 有界轮询探测 → base64 读取 → 本地解码 + SHA-256 → HTTP 直传 → 无条件清理。
 // cleanup 在发送结果前执行，保证 cleanup_failed 标记可进入最终 error_type。
 func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext,
-	span trace.Span, sendResult func(models.OutMessage),) {
+	span trace.Span, sendResult func(models.OutMessage)) {
 	result, errorType, timedOut := captureBaselineSteps(s, ctx, runner, req, logReq, span)
 
 	// cleanup 无条件执行：无论成功失败都尝试删除宿主机临时文件，失败仅附加标记不阻断结果。
@@ -492,7 +492,7 @@ func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner
 }
 
 // captureBaselineSteps 顺序执行基线截图各子步骤，返回 (部分结果, error_type, timed_out)。
-func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext, span trace.Span,) (models.OutMessage, string, bool) {
+func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext, span trace.Span) (models.OutMessage, string, bool) {
 	result := vmConsoleResultMessage(req, 0, "", "", 0)
 
 	// 步骤 1：固定 screendump 命令。

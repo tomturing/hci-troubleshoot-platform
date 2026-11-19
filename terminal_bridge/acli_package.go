@@ -24,7 +24,6 @@ package main
 //     把"没校验"伪装成"校验通过"。
 
 import (
-	"terminal_bridge/internal/sshx"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -38,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"terminal_bridge/internal/shared/reconcile"

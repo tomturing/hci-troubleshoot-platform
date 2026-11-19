@@ -22,8 +22,6 @@ package main
 //   - 每个任务都能取消，WebSocket 断开时按连接回收，防止 goroutine 与远程 channel 泄漏。
 
 import (
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/logpush"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -37,7 +35,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 	"unicode"
 
@@ -116,9 +116,6 @@ type sftpTransferPayload struct {
 	DownloadDir   string `json:"download_dir,omitempty"`
 	DurationMSecs int64  `json:"duration_ms,omitempty"`
 }
-
-
-
 
 // dropSftpRemoteClientIfIdle 在没有其他并发任务时才丢弃通道。
 //
