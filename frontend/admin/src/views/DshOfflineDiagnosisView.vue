@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { createApiClient } from '@hci/shared'
 import { getAccessToken } from '@/utils/auth'
 import DshTicketSyncPanel from '@/components/DshTicketSyncPanel.vue'
+import { useFullscreen } from '@/composables/useFullscreen'
 
 // 新版 DSH 独立实例的 launch token 仍由网关以管理员身份代持下发；浏览器不直接
 // 访问集群 Service，也不把 token 固化到前端静态资源。
 const apiClient = createApiClient('/api', undefined, getAccessToken)
+
+// 全屏作用于整个页面容器（含工具栏），退出入口始终可见
+const pageRef = ref<HTMLElement | null>(null)
+const { isFullscreen, supported: fullscreenSupported, toggle: toggleFullscreen } = useFullscreen(pageRef)
 const dshUrl = ref('')
 const dshReady = ref(false)
 const dshLoading = ref(true)
@@ -39,7 +44,7 @@ onMounted(loadDshUrl)
 </script>
 
 <template>
-  <div class="dsh-offline-container">
+  <div ref="pageRef" class="dsh-offline-container">
     <DshTicketSyncPanel />
     <el-card class="dsh-offline-card">
       <div v-loading="dshLoading" class="dsh-offline-content">
@@ -48,10 +53,16 @@ onMounted(loadDshUrl)
             <div class="dsh-title">HCI 单 Agent 离线诊断</div>
             <div class="dsh-subtitle">deepseek-harness-wecom + session-bi + HCI 离线诊断</div>
           </div>
-          <el-button type="primary" size="small" @click="loadDshUrl">
-            <el-icon style="margin-right: 4px"><Refresh /></el-icon>
-            重新连接
-          </el-button>
+          <div class="dsh-offline-actions">
+            <el-button v-if="fullscreenSupported" size="small" @click="toggleFullscreen">
+              <el-icon style="margin-right: 4px"><FullScreen /></el-icon>
+              {{ isFullscreen ? '退出全屏' : '全屏' }}
+            </el-button>
+            <el-button type="primary" size="small" @click="loadDshUrl">
+              <el-icon style="margin-right: 4px"><Refresh /></el-icon>
+              重新连接
+            </el-button>
+          </div>
         </div>
 
         <div class="iframe-wrapper">
@@ -87,16 +98,35 @@ onMounted(loadDshUrl)
 </template>
 
 <style scoped>
+/* 高度链同 DshDiagnosisView：flex 逐级传递，保留外层滚动条作为溢出兜底。 */
 .dsh-offline-container {
-  padding: 20px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .dsh-offline-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border-radius: 8px;
 }
 
+/* 限定到本页卡片：:deep 会穿透子组件，无前缀会改到工单同步面板里的 el-card */
+.dsh-offline-card :deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .dsh-offline-content {
-  min-height: 700px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .dsh-actions-bar {
@@ -108,6 +138,7 @@ onMounted(loadDshUrl)
   margin-bottom: 12px;
   border-left: 4px solid #67c23a;
   background: #f8fff5;
+  flex: none;
 }
 
 .dsh-title {
@@ -122,9 +153,22 @@ onMounted(loadDshUrl)
   font-size: 12px;
 }
 
+.dsh-offline-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+/* 原生全屏下容器脱离文档流，必须自带背景色 */
+.dsh-offline-container:fullscreen {
+  background: #f0f2f5;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
 .iframe-wrapper {
+  flex: 1;
   width: 100%;
-  height: calc(100vh - 300px);
   min-height: 520px;
   overflow: hidden;
   background: #fff;
@@ -135,9 +179,11 @@ onMounted(loadDshUrl)
 
 .iframe-wrapper iframe {
   display: block;
+  border: 0;
 }
 
 .dsh-alert {
   margin-top: 12px;
+  flex: none;
 }
 </style>
