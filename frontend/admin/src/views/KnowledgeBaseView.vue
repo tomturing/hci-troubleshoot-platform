@@ -150,7 +150,9 @@ onMounted(loadLaunch)
   border-radius: 8px;
 }
 
-:deep(.el-card__body) {
+/* 必须限定到本页卡片：:deep 会穿透所有子组件，无前缀会连工具栏里嵌套的
+   el-card（如工单同步面板）一起改掉 */
+.weknora-card :deep(.el-card__body) {
   flex: 1;
   display: flex;
   flex-direction: column;

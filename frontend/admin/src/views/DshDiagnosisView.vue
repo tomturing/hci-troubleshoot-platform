@@ -112,7 +112,8 @@ onMounted(loadDshUrl)
   border-radius: 8px;
 }
 
-:deep(.el-card__body) {
+/* 限定到本页卡片：:deep 会穿透子组件，无前缀会改到工单同步面板里的 el-card */
+.dsh-card :deep(.el-card__body) {
   flex: 1;
   display: flex;
   flex-direction: column;
