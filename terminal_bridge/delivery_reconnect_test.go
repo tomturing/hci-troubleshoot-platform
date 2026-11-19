@@ -1,10 +1,10 @@
 package main
 
 import (
-	"terminal_bridge/internal/terminal"
 	"io"
 	"strings"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/terminal"
 	"testing"
 	"time"
 )

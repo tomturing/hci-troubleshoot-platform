@@ -11,7 +11,6 @@ package main
 //      所有外部输入必须白名单校验 + 单引号转义。
 
 import (
-	"terminal_bridge/internal/terminal"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/terminal"
 	"time"
 
 	"golang.org/x/crypto/ssh"

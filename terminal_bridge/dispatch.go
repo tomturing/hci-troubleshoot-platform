@@ -1,7 +1,6 @@
 package main
 
 import (
-	"terminal_bridge/internal/terminal"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/terminal"
 	"time"
 
 	"go.opentelemetry.io/otel"

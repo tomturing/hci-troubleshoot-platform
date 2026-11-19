@@ -1,7 +1,6 @@
 package main
 
 import (
-	"terminal_bridge/internal/terminal"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -21,6 +20,7 @@ import (
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/terminal"
 	"testing"
 	"time"
 

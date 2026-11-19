@@ -60,7 +60,6 @@ const (
 	connRolePanel    = "panel"
 )
 
-
 // defaultSessionIdleTTL 是空闲租约的默认时长：WS 断开后给会话的宽限期。
 //
 // 必须长到覆盖"浏览器刷新→重连"与"短暂网络抖动"，又不能长到让孤儿会话久留占用远端 shell。
@@ -327,7 +326,6 @@ func logSessionCreated(session *sshx.SSHSession, key, connID, role, source strin
 		"simulation": session.Simulation,
 	})
 }
-
 
 // resourceSnapshot 采集进程级资源事实，用于启动/退出/定时采样。
 //

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"terminal_bridge/internal/terminal"
 	"strings"
+	"terminal_bridge/internal/terminal"
 	"testing"
 	"unicode/utf8"
 
