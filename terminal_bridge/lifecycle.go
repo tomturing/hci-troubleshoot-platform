@@ -60,15 +60,6 @@ const (
 	connRolePanel    = "panel"
 )
 
-// 会话销毁原因：写入 session.destroyed.reason，供云端按原因聚合与告警。
-const (
-	sessionReasonWSClosed         = "ws_closed"         // 拥有它的浏览器连接关闭（连坐清理）
-	sessionReasonReconnect        = "reconnect"         // 同键再次 ssh_connect 覆盖
-	sessionReasonRemoteEOF        = "remote_eof"        // 远端 shell 退出
-	sessionReasonClientDisconnect = "client_disconnect" // 前端显式 ssh_disconnect
-	sessionReasonKeepAlive        = "keepalive_failed"  // 保活探测判定链路失效
-	sessionReasonIdleTTL          = "idle_ttl"          // 空闲租约超时，被 reaper 回收
-)
 
 // defaultSessionIdleTTL 是空闲租约的默认时长：WS 断开后给会话的宽限期。
 //
@@ -130,7 +121,7 @@ func (b *Bridge) destroySession(key, reason, byConn string) bool {
 		})
 		return false
 	}
-	ownerConn, ageSeconds := session.OwnerConn, int64(ageSeconds(session))
+	ownerConn, ageSeconds := session.OwnerConn, int64(sshx.AgeSeconds(session))
 	session.Close()
 	b.remove(key)
 	// 租约簿记必须随会话一起清理，否则 reaper 会反复命中已不存在的键。
@@ -234,7 +225,7 @@ func (b *Bridge) reapIdleSessions(ttl time.Duration) int {
 	b.mu.Unlock()
 
 	for _, key := range victims {
-		b.destroySession(key, sessionReasonIdleTTL, "")
+		b.destroySession(key, sshx.SessionReasonIdleTTL, "")
 	}
 	return len(victims)
 }
@@ -264,7 +255,7 @@ func (b *Bridge) detachSession(key, reason, byConn string) bool {
 		})
 		return false
 	}
-	ownerConn, ageSeconds := session.OwnerConn, int64(ageSeconds(session))
+	ownerConn, ageSeconds := session.OwnerConn, int64(sshx.AgeSeconds(session))
 	session.MarkOrphaned()
 	b.remove(key)
 	b.forgetLease(key)
@@ -337,13 +328,6 @@ func logSessionCreated(session *sshx.SSHSession, key, connID, role, source strin
 	})
 }
 
-// ageSeconds 返回会话存活秒数；未记录建立时间时返回 0。
-func ageSeconds(s *sshx.SSHSession) float64 {
-	if s == nil || s.CreatedAt.IsZero() {
-		return 0
-	}
-	return time.Since(s.CreatedAt).Seconds()
-}
 
 // resourceSnapshot 采集进程级资源事实，用于启动/退出/定时采样。
 //

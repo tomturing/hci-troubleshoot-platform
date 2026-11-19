@@ -1,4 +1,4 @@
-package main
+package terminal
 
 import (
 	"encoding/json"
@@ -92,11 +92,11 @@ func TestCRLFNormalizingReader(t *testing.T) {
 }
 
 func TestNormalizePtyOutputIdempotent(t *testing.T) {
-	once := normalizePtyOutput("a\r\nb\r\n")
+	once := NormalizePtyOutput("a\r\nb\r\n")
 	if once != "a\nb\n" {
 		t.Fatalf("首次归一化结果 %q", once)
 	}
-	if twice := normalizePtyOutput(once); twice != once {
+	if twice := NormalizePtyOutput(once); twice != once {
 		t.Fatalf("归一化不幂等: %q -> %q", once, twice)
 	}
 }

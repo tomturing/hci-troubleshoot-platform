@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/terminal"
 	"io"
 	"strings"
 	"terminal_bridge/internal/sshx"
@@ -8,7 +9,7 @@ import (
 	"time"
 )
 
-// TestOnOutputStartNilWSNoPanic 守护 on_output_start 在 ws==nil 时不 panic：
+// TestOnOutputStartNilWSNoPanic 守护 terminal.On_output_start 在 ws==nil 时不 panic：
 // 交付后台自动重连节点走的就是 nil ws 路径，若 models.SendMsg(nil, ...) 未被保护就会崩。
 // 同时验证 exec 完成标记仍能被正常解析并回环给监听者（runCommand 依赖这条链路）。
 func TestOnOutputStartNilWSNoPanic(t *testing.T) {
@@ -31,7 +32,7 @@ func TestOnOutputStartNilWSNoPanic(t *testing.T) {
 		_ = w.Close()
 	}()
 
-	on_output_start(s, nil, r, "case1", func(reason string) {})
+	terminal.On_output_start(s, nil, r, "case1", func(reason string) {})
 
 	select {
 	case res := <-resCh:
@@ -39,7 +40,7 @@ func TestOnOutputStartNilWSNoPanic(t *testing.T) {
 			t.Fatalf("期望 exit 0，得到 %d", res.ExitCode)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("监听未收到 exec 结果：on_output_start 在 ws==nil 时可能提前返回或 panic")
+		t.Fatal("监听未收到 exec 结果：terminal.On_output_start 在 ws==nil 时可能提前返回或 panic")
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/terminal"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -73,6 +74,8 @@ func main() {
 	logpush.VersionFunc = getVersion
 	sshx.IsLiveBridgeFunc = isLiveBridge
 	sshx.SelfPortFunc = func() int { return bridgeSelfPort }
+	terminal.MetricsExecErrors = func(n uint64) { atomic.AddUint64(&promMetrics.ExecCommandErrors, n) }
+	terminal.MetricsVmConsoleOpErrors = func(n uint64) { atomic.AddUint64(&promMetrics.VmConsoleOpErrors, n) }
 	showVersion := flag.Bool("version", false, "打印版本与 commit 信息后退出")
 	mode := flag.String("mode", bruntime.EnvOrDefault("HCI_BRIDGE_MODE", bruntime.DesktopMode), "运行模式：desktop 或 cluster")
 	listenAddress := flag.String("listen-address", strings.TrimSpace(os.Getenv("HCI_BRIDGE_LISTEN_ADDRESS")), "监听地址；默认 desktop=127.0.0.1，cluster=0.0.0.0")

@@ -52,7 +52,7 @@ func TestDestroySessionEmitsLifecycleEvent(t *testing.T) {
 	b.set(key, session)
 
 	seq := ringSeq()
-	if !b.destroySession(key, sessionReasonWSClosed, "c2-2") {
+	if !b.destroySession(key, sshx.SessionReasonWSClosed, "c2-2") {
 		t.Fatal("首次销毁应返回 true")
 	}
 	if b.get(key) != nil {
@@ -66,8 +66,8 @@ func TestDestroySessionEmitsLifecycleEvent(t *testing.T) {
 	if entry == nil {
 		t.Fatal("未记录 session.destroyed 事件")
 	}
-	if got := entry.Extra["reason"]; got != sessionReasonWSClosed {
-		t.Fatalf("reason 期望 %s，实际 %v", sessionReasonWSClosed, got)
+	if got := entry.Extra["reason"]; got != sshx.SessionReasonWSClosed {
+		t.Fatalf("reason 期望 %s，实际 %v", sshx.SessionReasonWSClosed, got)
 	}
 	if got := entry.Extra["by_conn"]; got != "c2-2" {
 		t.Fatalf("by_conn 期望 c2-2，实际 %v", got)
@@ -91,7 +91,7 @@ func TestDestroySessionMissIsLogged(t *testing.T) {
 	key := "Q1@10.0.0.1"
 	seq := ringSeq()
 
-	if b.destroySession(key, sessionReasonWSClosed, "c1-1") {
+	if b.destroySession(key, sshx.SessionReasonWSClosed, "c1-1") {
 		t.Fatal("键不存在时应返回 false")
 	}
 	if findLogEventSince(t, seq, "session.destroy_miss") == nil {

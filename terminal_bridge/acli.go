@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/terminal"
 	"context"
 	"errors"
 	"fmt"
@@ -297,7 +298,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 		// B7：df 失败/输出不可解析不得静默跳过空间检查：留痕并降级继续安装，
 		// 回执如实标注"空间未验证"。旧实现 availableMB=0 让检查条件短路，无人察觉。
 		logpush.Blog("WARN", "acli_sync.disk_probe_failed", "磁盘空间探测失败，降级继续安装（可用空间未验证）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": spaceCode, "error": errString(spaceErr), "output_preview": formatOutputPreview(spaceOut, 256, 256),
+			"exit_code": spaceCode, "error": errString(spaceErr), "output_preview": terminal.FormatOutputPreview(spaceOut, 256, 256),
 		})
 	}
 
@@ -702,7 +703,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 	// 安装命令成功但版本探测失败：包是完整的、装也装完了，问题在可执行入口，
 	// 因此给 verify 阶段码并允许「重试安装」（重跑安装会重建 /sf/bin 软链）。
 	logpush.Blog("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-		"exit_code": verifyCode, "output_preview": formatOutputPreview(verifyOut, 512, 512),
+		"exit_code": verifyCode, "output_preview": terminal.FormatOutputPreview(verifyOut, 512, 512),
 		"dest_path": destPath, "integrity_state": integrity,
 	})
 	models.SendMsg(ws, models.OutMessage{
@@ -712,7 +713,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 		PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
 		InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
 		Message: fmt.Sprintf("acli 安装完成但 acli --version 验证失败（exit=%d）：%s。可点击「重试安装」重新执行安装。",
-			verifyCode, formatOutputPreview(verifyOut, 512, 512)),
+			verifyCode, terminal.FormatOutputPreview(verifyOut, 512, 512)),
 	})
 }
 
@@ -944,7 +945,7 @@ func acliDecisionOutcome(plan reconcile.Plan, currentVer string, force bool) (bo
 	}
 }
 
-// normalizeOutputText 把命令输出规整为合法 UTF-8。
+// NormalizeOutputText 把命令输出规整为合法 UTF-8。
 //
 // acli 安装器在部分版本按本地代码页输出（GBK），原始字节直接进 JSON 会被编码成 U+FFFD，
 // 排障时关键报错变成一串"�"。这里先校验 UTF-8，不合法再按 GB18030（GBK 超集）解码。

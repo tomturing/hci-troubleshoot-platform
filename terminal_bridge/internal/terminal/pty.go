@@ -1,4 +1,4 @@
-package main
+package terminal
 
 import (
 	"io"
@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	ptyTerminalHeight = 40
-	ptyTerminalWidth  = 160
+	PtyTerminalHeight = 40
+	PtyTerminalWidth  = 160
 )
 
 // shouldUsePty 判定是否为本条命令分配伪终端。
@@ -25,10 +25,10 @@ func shouldUsePty(command string, explicit bool) bool {
 	return trimmed == "acli" || strings.HasPrefix(trimmed, "acli ")
 }
 
-// ptyTerminalModes 关闭回显与输出换行转换：
+// PtyTerminalModes 关闭回显与输出换行转换：
 //   - ECHO=0：避免输入被回显进 stdout；
 //   - OPOST=0 / ONLCR=0：禁止把 \n 改写成 \r\n，从源头减少 CRLF。
-func ptyTerminalModes() ssh.TerminalModes {
+func PtyTerminalModes() ssh.TerminalModes {
 	return ssh.TerminalModes{
 		ssh.ECHO:  0,
 		ssh.OPOST: 0,
@@ -109,11 +109,11 @@ func (r *crlfNormalizingReader) flushPending() {
 	}
 }
 
-// normalizePtyOutput 对最终输出做幂等归一化（reader 已处理流式场景，这里是兜底）。
-func normalizePtyOutput(s string) string {
+// NormalizePtyOutput 对最终输出做幂等归一化（reader 已处理流式场景，这里是兜底）。
+func NormalizePtyOutput(s string) string {
 	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
-// execCommandIsolated 独立建立 SSH 连接与 Session 执行命令（双通道事务执行设计）。
+// ExecCommandIsolated 独立建立 SSH 连接与 Session 执行命令（双通道事务执行设计）。
 // 独立连接是硬超时的必要条件：仅关闭共享连接上的 Session 时，部分 SSH 服务端会等待
 // 远端进程自然退出，导致 deadline 已触发但调用仍被阻塞；关闭独立连接才能确定性中止。

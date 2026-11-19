@@ -24,6 +24,7 @@ package main
 //     把"没校验"伪装成"校验通过"。
 
 import (
+	"terminal_bridge/internal/terminal"
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -403,7 +404,7 @@ func acliOutputForLog(outcome acliInstallOutcome) (preview string, bytesStdout, 
 	if strings.TrimSpace(outcome.Stderr) != "" {
 		combined += "\n[stderr]\n" + outcome.Stderr
 	}
-	return formatOutputPreview(combined, 2048, 2048), bytesStdout, bytesStderr
+	return terminal.FormatOutputPreview(combined, 2048, 2048), bytesStdout, bytesStderr
 }
 
 // ── 安装后逐节点插件落盘校验 ─────────────────────────────────────────────────

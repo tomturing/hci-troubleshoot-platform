@@ -1,4 +1,4 @@
-package main
+package terminal
 
 import (
 	"bufio"
@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
@@ -28,7 +27,7 @@ import (
 	"golang.org/x/text/transform"
 )
 
-func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.ExecRequestContext, requestedTimeout time.Duration, outputFilters []models.OutputFilter) {
+func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.ExecRequestContext, requestedTimeout time.Duration, outputFilters []models.OutputFilter) {
 	// 模拟属性固定于连接创建时验证的认证上下文，host/DNS 名不会改变其语义。
 	sim, execMode, simBackend := s.Simulation, s.ExecutionMode, s.SimulationBackend
 
@@ -41,9 +40,9 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 
 	timeout := requestedTimeout
 	if timeout <= 0 {
-		timeout = commandTimeout(bruntime.EnvIntOrDefault("HCI_BRIDGE_EXEC_TIMEOUT_SECONDS", 120))
+		timeout = CommandTimeout(bruntime.EnvIntOrDefault("HCI_BRIDGE_EXEC_TIMEOUT_SECONDS", 120))
 	}
-	if err := validateOutputFilters(outputFilters); err != nil {
+	if err := ValidateOutputFilters(outputFilters); err != nil {
 		errType := "invalid_output_filter"
 		logpush.BlogContext(req.Context, "ERROR", "exec.error", "输出筛选参数无效", req, map[string]any{
 			"error": err.Error(), "error_type": errType,
@@ -85,7 +84,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "session_creation_failed")
-		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 连接失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 连接失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
 		return
@@ -96,7 +95,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "session_creation_failed")
-		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 会话失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 会话失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
 		return
@@ -105,10 +104,10 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	// PTY 必须在 Start 之前申请。申请失败不允许降级：acli 插件在非 TTY 下会以
 	// "input is not a terminal" 失败但退出码仍为 0，降级等于把失败伪装成成功。
 	if req.Pty {
-		if err := session.RequestPty("xterm-256color", ptyTerminalHeight, ptyTerminalWidth, ptyTerminalModes()); err != nil {
+		if err := session.RequestPty("xterm-256color", PtyTerminalHeight, PtyTerminalWidth, PtyTerminalModes()); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "pty_request_failed")
-			atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+			MetricsExecErrors(1)
 			logpush.BlogContext(ctx, "ERROR", "exec.error", "申请伪终端失败", req, map[string]any{"error": err.Error(), "error_type": "pty_request_failed"})
 			models.SendMsg(ws, models.OutMessage{
 				Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
@@ -134,7 +133,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 			if err := session.Setenv(name, value); err != nil {
 				span.RecordError(err)
 				span.SetStatus(codes.Error, "simulation_env_rejected")
-				atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+				MetricsExecErrors(1)
 				logpush.BlogContext(ctx, "ERROR", "exec.error", "hci-sim 拒绝执行上下文", req, map[string]any{"error": err.Error(), "error_type": "simulation_env_rejected", "env_name": name})
 				models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "hci-sim 拒绝执行上下文", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "simulation_env_rejected"})
 				return
@@ -146,7 +145,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "stdout_pipe_failed")
-		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "获取 StdoutPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stdout_pipe_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准输出失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stdout_pipe_failed"})
 		return
@@ -160,7 +159,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "stderr_pipe_failed")
-			atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+			MetricsExecErrors(1)
 			logpush.BlogContext(ctx, "ERROR", "exec.error", "获取 StderrPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stderr_pipe_failed"})
 			models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准错误失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stderr_pipe_failed", PtyMode: ptyMode})
 			return
@@ -170,7 +169,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	if err := session.Start(req.Command); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "command_start_failed")
-		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "启动命令失败", req, map[string]any{"error": err.Error(), "error_type": "command_start_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "启动命令失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "command_start_failed"})
 		return
@@ -178,8 +177,8 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 
 	stdoutCapture := sshx.NewBoundedCapture(maxOutputBytes)
 	stderrCapture := sshx.NewBoundedCapture(maxOutputBytes)
-	stdoutFiltered := len(filtersForSource(outputFilters, "stdout")) > 0
-	stderrFiltered := len(filtersForSource(outputFilters, "stderr")) > 0
+	stdoutFiltered := len(FiltersForSource(outputFilters, "stdout")) > 0
+	stderrFiltered := len(FiltersForSource(outputFilters, "stderr")) > 0
 	stdoutStats := sshx.NewStreamStats(stdoutFiltered)
 	stderrStats := sshx.NewStreamStats(stderrFiltered)
 	var readers sync.WaitGroup
@@ -196,16 +195,16 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		models.SendMsg(ws, models.OutMessage{Type: "exec_stderr", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: chunk, TraceID: traceID})
 	}
 	if stdoutFiltered {
-		go drainExecPipeFiltered(stdoutReader, stdoutCapture, stdoutStats, stdoutEmit, &readers, "stdout", outputFilters)
+		go DrainExecPipeFiltered(stdoutReader, stdoutCapture, stdoutStats, stdoutEmit, &readers, "stdout", outputFilters)
 	} else {
-		go drainExecPipe(stdoutReader, stdoutCapture, stdoutStats, stdoutEmit, &readers)
+		go DrainExecPipe(stdoutReader, stdoutCapture, stdoutStats, stdoutEmit, &readers)
 	}
 	if !req.Pty {
 		readers.Add(1)
 		if stderrFiltered {
-			go drainExecPipeFiltered(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers, "stderr", outputFilters)
+			go DrainExecPipeFiltered(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers, "stderr", outputFilters)
 		} else {
-			go drainExecPipe(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers)
+			go DrainExecPipe(stderrPipe, stderrCapture, stderrStats, stderrEmit, &readers)
 		}
 	}
 
@@ -254,7 +253,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		sshx.RunUnreachabilityProbes(ctx, s, req, artifactID)
 	}
 	if exitCode != 0 {
-		atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+		MetricsExecErrors(1)
 		span.SetStatus(codes.Error, errorType)
 	}
 
@@ -319,7 +318,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	finalStdout := stdoutCapture.String()
 	if req.Pty {
 		// reader 已归一化，此处幂等兜底，防止实现变更后 CRLF 泄漏到上层解析。
-		finalStdout = normalizePtyOutput(finalStdout)
+		finalStdout = NormalizePtyOutput(finalStdout)
 	}
 	models.SendMsg(ws, models.OutMessage{
 		Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
@@ -335,7 +334,7 @@ func execCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	resultSpan.End()
 }
 
-func drainExecPipe(pipe io.Reader, capture *sshx.BoundedCapture, stats *sshx.StreamStats, emit func(string), wg *sync.WaitGroup) {
+func DrainExecPipe(pipe io.Reader, capture *sshx.BoundedCapture, stats *sshx.StreamStats, emit func(string), wg *sync.WaitGroup) {
 	defer wg.Done()
 	buffer := make([]byte, 4096)
 	for {
@@ -352,7 +351,7 @@ func drainExecPipe(pipe io.Reader, capture *sshx.BoundedCapture, stats *sshx.Str
 	}
 }
 
-func filtersForSource(filters []models.OutputFilter, source string) []models.OutputFilter {
+func FiltersForSource(filters []models.OutputFilter, source string) []models.OutputFilter {
 	selected := make([]models.OutputFilter, 0, len(filters))
 	for _, filter := range filters {
 		if filter.Source == source && (len(filter.Include) > 0 || len(filter.Exclude) > 0) {
@@ -362,7 +361,7 @@ func filtersForSource(filters []models.OutputFilter, source string) []models.Out
 	return selected
 }
 
-func lineMatchesOutputFilter(line string, filter models.OutputFilter) bool {
+func LineMatchesOutputFilter(line string, filter models.OutputFilter) bool {
 	candidate := line
 	includes := filter.Include
 	excludes := filter.Exclude
@@ -416,10 +415,10 @@ func lineMatchesOutputFilter(line string, filter models.OutputFilter) bool {
 	return !excludeHit
 }
 
-// drainExecPipeFiltered 在 Bridge 本地逐行筛选，原始大输出不会进入 WebSocket 和浏览器。
-func drainExecPipeFiltered(pipe io.Reader, capture *sshx.BoundedCapture, stats *sshx.StreamStats, emit func(string), wg *sync.WaitGroup, source string, filters []models.OutputFilter) {
+// DrainExecPipeFiltered 在 Bridge 本地逐行筛选，原始大输出不会进入 WebSocket 和浏览器。
+func DrainExecPipeFiltered(pipe io.Reader, capture *sshx.BoundedCapture, stats *sshx.StreamStats, emit func(string), wg *sync.WaitGroup, source string, filters []models.OutputFilter) {
 	defer wg.Done()
-	selected := filtersForSource(filters, source)
+	selected := FiltersForSource(filters, source)
 	reader := bufio.NewReader(pipe)
 	for {
 		line, err := reader.ReadString('\n')
@@ -427,7 +426,7 @@ func drainExecPipeFiltered(pipe io.Reader, capture *sshx.BoundedCapture, stats *
 			stats.RecordRaw([]byte(line))
 			keep := false
 			for _, filter := range selected {
-				if lineMatchesOutputFilter(line, filter) {
+				if LineMatchesOutputFilter(line, filter) {
 					keep = true
 					break
 				}
@@ -445,7 +444,7 @@ func drainExecPipeFiltered(pipe io.Reader, capture *sshx.BoundedCapture, stats *
 	}
 }
 
-func validateOutputFilters(filters []models.OutputFilter) error {
+func ValidateOutputFilters(filters []models.OutputFilter) error {
 	if len(filters) > 8 {
 		return fmt.Errorf("output_filters 最多允许 8 项")
 	}
@@ -474,14 +473,14 @@ func validateOutputFilters(filters []models.OutputFilter) error {
 	return nil
 }
 
-func commandTimeout(seconds int) time.Duration {
+func CommandTimeout(seconds int) time.Duration {
 	if seconds < 1 || seconds > 300 {
 		seconds = 60
 	}
 	return time.Duration(seconds) * time.Second
 }
 
-func on_output_start(s *sshx.SSHSession, ws *websocket.Conn,
+func On_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 	stdout io.ReadCloser,
 	caseID string,
 	// onExit 带上结束原因：调用方据此区分「远端退出」与「我们主动关闭」，
@@ -562,7 +561,7 @@ func on_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 		// 区分「谁结束了这条 SSH 连接」：local_close 是我们主动关的（连坐清理/重连覆盖/
 		// 显式断开），remote_eof 是远端 shell 自己退出的。历史实现把两者都写成一行
 		// "SSH 会话退出"，导致现场无法判断是节点断的、还是 bridge 自己清的。
-		reason := sessionReasonRemoteEOF
+		reason := sshx.SessionReasonRemoteEOF
 		if s.IsClosed() {
 			reason = "local_close"
 		}
@@ -574,7 +573,7 @@ func on_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 		logpush.Blog("WARN", "ssh.disconnected", "SSH 连接已结束", "", caseID, "", "", map[string]any{
 			"reason":           reason,
 			"exit_error":       exitErr,
-			"duration_seconds": int64(ageSeconds(s)),
+			"duration_seconds": int64(sshx.AgeSeconds(s)),
 		})
 
 		// 主交互 shell 退出（HCI TMOUT=600）不等于整条 SSH 连接失效：
@@ -585,14 +584,14 @@ func on_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 		// 采集中被摘表则表现为后续 progress 全部 session_missing（2026-10-28 现场：
 		// 600s EOF → 摘表 → 前端干等 60s 报"progress 超时（60s）"）。
 		// 因此只要还有长任务占用 exec 通道，或刚才还在被业务使用，就只摘掉 shell，保留连接。
-		if reason == sessionReasonRemoteEOF && (s.HasLongTask() || s.IsBusy()) {
+		if reason == sshx.SessionReasonRemoteEOF && (s.HasLongTask() || s.IsBusy()) {
 			// 连接没坏，坏的是被 TMOUT 踢掉的 shell。优先在同一条连接上重建：
 			// 用户可能只是去查资料了，不该被判"已断开、请重新认证"。
 			if s.ShellRespawns.Load() < sshx.MaxShellRespawns {
 				if reader, respawnErr := s.RespawnShell(); respawnErr == nil {
 					respawnCount := s.ShellRespawns.Add(1)
 					logpush.Blog("WARN", "session.shell_respawned", "交互 shell 被设备空闲超时踢出，已在同一条连接上重建", "", caseID, "", "", map[string]any{
-						"duration_seconds":   int64(ageSeconds(s)),
+						"duration_seconds":   int64(sshx.AgeSeconds(s)),
 						"respawns":           respawnCount,
 						"long_tasks":         s.LongTasks.Load(),
 						"busy_age_seconds":   int64(s.BusyAgeSeconds()),
@@ -601,12 +600,12 @@ func on_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 					models.SendMsg(ws, models.OutMessage{Type: "ssh_output", CaseID: caseID, Output: sshx.ShellRespawnNotice})
 					// 继续转发新 shell 的输出。递归而非另起循环：onExit 语义保持不变，
 					// 真正的连接结束仍会走到最外层那条路径。
-					on_output_start(s, ws, reader, caseID, onExit)
+					On_output_start(s, ws, reader, caseID, onExit)
 					return
 				}
 			}
 			logpush.Blog("WARN", "session.shell_eof_detached", "交互式 shell 已退出，连接保留给进行中的业务", "", caseID, "", "", map[string]any{
-				"duration_seconds":   int64(ageSeconds(s)),
+				"duration_seconds":   int64(sshx.AgeSeconds(s)),
 				"long_tasks":         s.LongTasks.Load(),
 				"busy_age_seconds":   int64(s.BusyAgeSeconds()),
 				"busy_grace_seconds": int(sshx.SessionBusyGrace().Seconds()),
@@ -624,7 +623,7 @@ func on_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 	}()
 }
 
-func normalizeOutputText(raw string) string {
+func NormalizeOutputText(raw string) string {
 	if raw == "" || utf8.ValidString(raw) {
 		return raw
 	}
@@ -652,9 +651,9 @@ func truncateKeepTail(s string, headBytes, tailBytes int) string {
 	return head + fmt.Sprintf("\n…[省略 %d 字节]…\n", len(s)-len(head)-len(tail)) + tail
 }
 
-// formatOutputPreview 预览统一出口：先修编码，再按头尾保留截断。
-func formatOutputPreview(raw string, headBytes, tailBytes int) string {
-	return truncateKeepTail(normalizeOutputText(raw), headBytes, tailBytes)
+// FormatOutputPreview 预览统一出口：先修编码，再按头尾保留截断。
+func FormatOutputPreview(raw string, headBytes, tailBytes int) string {
+	return truncateKeepTail(NormalizeOutputText(raw), headBytes, tailBytes)
 }
 
 // sshx.TruncateString 截断字符串到指定长度

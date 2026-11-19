@@ -11,6 +11,7 @@ package main
 //      所有外部输入必须白名单校验 + 单引号转义。
 
 import (
+	"terminal_bridge/internal/terminal"
 	"context"
 	"encoding/json"
 	"errors"
@@ -191,7 +192,7 @@ var (
 // 插件的 -s/-p/-u 最终会被拼进 shell 命令，禁止直接使用用户输入。
 //
 // S1 收口：唯一实现在 remote.ShellQuote。全仓曾有两份转义（本函数与
-// main.go 的 vmConsoleShellQuote），意味着两个注入面各自演化；现在只剩一份。
+// main.go 的 terminal.VmConsoleShellQuote），意味着两个注入面各自演化；现在只剩一份。
 func shellQuote(value string) string {
 	return remote.ShellQuote(value)
 }
@@ -363,7 +364,7 @@ func runCommandPty(s *sshx.SSHSession, ctx context.Context, command string, time
 	}
 	defer session.Close()
 
-	if err := session.RequestPty("xterm-256color", ptyTerminalHeight, ptyTerminalWidth, ptyTerminalModes()); err != nil {
+	if err := session.RequestPty("xterm-256color", terminal.PtyTerminalHeight, terminal.PtyTerminalWidth, terminal.PtyTerminalModes()); err != nil {
 		return "", -1, fmt.Errorf("request pty: %w", err)
 	}
 
@@ -395,7 +396,7 @@ func runCommandPty(s *sshx.SSHSession, ctx context.Context, command string, time
 				exitCode = -1
 			}
 		}
-		return normalizePtyOutput(string(outcome.output)), exitCode, nil
+		return terminal.NormalizePtyOutput(string(outcome.output)), exitCode, nil
 	}
 }
 
@@ -1931,7 +1932,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 		// 头尾保留 + 票据脱敏：既留住尾部异常，也不能把 Bearer 写进日志和 DB。
 		// 输出上限 64KiB，避免异常刷屏把日志与 WS 报文变成无界存储。
 		safeOutput := stripAnsi(redactUploadTicket(logpush.RedactSensitiveText(output), msg.UploadTicket))
-		createEvidence := formatOutputPreview(safeOutput, 48*1024, 16*1024)
+		createEvidence := terminal.FormatOutputPreview(safeOutput, 48*1024, 16*1024)
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: createEvidence, ErrorCode: code,

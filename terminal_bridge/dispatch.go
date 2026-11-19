@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/terminal"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -146,14 +147,14 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				// 长任务进行中禁止腰斩：用户看到"终端断开"就会去重连，而重连必然走到这里。
 				// 无条件 destroySession 会把正在进行的 12.8 GiB 拉取直接打断到 needs_reauth，
 				// 因此改为只摘表、保留连接，由长任务结束时的自愈逻辑关闭。
-				b.destroyOrDetachSession(key, sessionReasonReconnect, connID)
+				b.destroyOrDetachSession(key, sshx.SessionReasonReconnect, connID)
 				ownedSessions.remove(key)
 			}
 			// 如果没指定 nodeIP，也清理默认会话
 			if msg.NodeIP == "" {
 				defaultKey := sessionKey(msg.CaseID, "")
 				if old := b.get(defaultKey); old != nil {
-					b.destroyOrDetachSession(defaultKey, sessionReasonReconnect, connID)
+					b.destroyOrDetachSession(defaultKey, sshx.SessionReasonReconnect, connID)
 					ownedSessions.remove(defaultKey)
 				}
 			}
@@ -205,9 +206,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			go b.recoverSpcRestoreIntents(session, msg.TraceID, msg.CaseID, msg.NodeIP, cui)
 
 			caseID := msg.CaseID
-			on_output_start(session, ws, stdout, caseID, func(reason string) {
-				if reason == sessionReasonRemoteEOF {
-					b.destroySession(key, sessionReasonRemoteEOF, "")
+			terminal.On_output_start(session, ws, stdout, caseID, func(reason string) {
+				if reason == sshx.SessionReasonRemoteEOF {
+					b.destroySession(key, sshx.SessionReasonRemoteEOF, "")
 					ownedSessions.remove(key)
 					return
 				}
@@ -282,7 +283,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				if current := b.get(key); current == owned {
 					// 显式断开与"页面被关掉"在日志里必须区分：前者是用户意图，
 					// 后者是事故；两者都走同一入口，靠 reason 区分。
-					b.destroySession(key, sessionReasonClientDisconnect, connID)
+					b.destroySession(key, sshx.SessionReasonClientDisconnect, connID)
 				}
 			}
 			models.SendMsg(ws, models.OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
@@ -497,20 +498,20 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 			var requestedTimeout time.Duration
 			if msg.Timeout > 0 {
-				requestedTimeout = commandTimeout(msg.Timeout)
+				requestedTimeout = terminal.CommandTimeout(msg.Timeout)
 			}
-			go execCommandIsolated(s, ws, req, requestedTimeout, msg.OutputFilters)
+			go terminal.ExecCommandIsolated(s, ws, req, requestedTimeout, msg.OutputFilters)
 
 		case "vm_console_op":
 			// 虚拟机控制台截图固定操作通道：入口即校验，任何非法输入都不触发命令执行。
 			// 刻意不复用 sub.CaseID 兜底会话——截图必须精确落在 node_ip 指定的宿主机上，
 			// 找不到目标会话时 fail-closed，绝不把截图命令发到错误节点。
-			vmReq, errType := parseVMConsoleRequest(msg, cui)
+			vmReq, errType := terminal.ParseVMConsoleRequest(msg, cui)
 			if errType != "" {
 				logpush.Blog("ERROR", "vm_console.rejected", "vm_console_op 入口校验失败，已拒绝执行", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"exec_id": msg.ExecID, "operation": msg.Operation, "capture_id": msg.CaptureID, "error_type": errType,
 				})
-				rejected := vmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
+				rejected := terminal.VmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
 				rejected.TraceID = msg.TraceID
 				rejected.ErrorType = errType
 				models.SendMsg(ws, rejected)
@@ -528,9 +529,9 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				logpush.Blog("ERROR", "vm_console.session_missing", "SSH 会话不存在，无法执行控制台固定操作", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"exec_id": msg.ExecID, "operation": msg.Operation, "key": sessionKey(msg.CaseID, msg.NodeIP),
 				})
-				missing := vmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
+				missing := terminal.VmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
 				missing.TraceID = msg.TraceID
-				missing.ErrorType = vmConsoleErrSessionMissing
+				missing.ErrorType = terminal.VmConsoleErrSessionMissing
 				models.SendMsg(ws, missing)
 				continue
 			}
@@ -541,7 +542,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				"timeout_seconds": vmReq.TimeoutSeconds,
 			})
 			atomic.AddUint64(&promMetrics.VmConsoleOpsTotal, 1)
-			go runVMConsoleOp(s, func(result models.OutMessage) { models.SendMsg(ws, result) }, vmReq)
+			go terminal.RunVMConsoleOp(s, func(result models.OutMessage) { models.SendMsg(ws, result) }, vmReq)
 
 		case "acli_sync":
 			go b.handleAcliSync(ws, msg, cui)

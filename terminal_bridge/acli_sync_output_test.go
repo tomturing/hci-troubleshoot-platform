@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/terminal"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -70,11 +71,11 @@ func TestNormalizeOutputTextDecodesGBK(t *testing.T) {
 	if utf8.ValidString(gbk) {
 		t.Skip("样本恰好是合法 UTF-8，跳过编码断言")
 	}
-	if got := normalizeOutputText(gbk); got != text {
+	if got := terminal.NormalizeOutputText(gbk); got != text {
 		t.Fatalf("GBK 解码结果不符: %q", got)
 	}
 	// 合法 UTF-8 必须原样返回，避免二次转码
-	if got := normalizeOutputText(text); got != text {
+	if got := terminal.NormalizeOutputText(text); got != text {
 		t.Fatalf("合法 UTF-8 被改写: %q", got)
 	}
 }
@@ -82,7 +83,7 @@ func TestNormalizeOutputTextDecodesGBK(t *testing.T) {
 // 只截头部会丢掉安装结论（成功/失败、节点数都在尾部）。
 func TestFormatOutputPreviewKeepsTail(t *testing.T) {
 	body := strings.Repeat("A", 2000) + "节点 172.28.24.132 安装成功"
-	got := formatOutputPreview(body, 128, 128)
+	got := terminal.FormatOutputPreview(body, 128, 128)
 	if !utf8.ValidString(got) {
 		t.Fatalf("预览不是合法 UTF-8")
 	}
@@ -96,7 +97,7 @@ func TestFormatOutputPreviewKeepsTail(t *testing.T) {
 		t.Fatalf("缺少截断标记")
 	}
 	// 短输出不应被改动
-	if short := formatOutputPreview("ok", 128, 128); short != "ok" {
+	if short := terminal.FormatOutputPreview("ok", 128, 128); short != "ok" {
 		t.Fatalf("短输出被改写: %q", short)
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package terminal
 
 import (
 	"bytes"
@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -31,8 +30,8 @@ import (
 
 const (
 	// vm_console 固定操作枚举（设计文档 §5.2），未知 operation 一律 Fail Closed。
-	vmConsoleOpCaptureBaseline = "capture_baseline"
-	vmConsoleOpWakeDownKey     = "wake_down_key"
+	VmConsoleOpCaptureBaseline = "capture_baseline"
+	VmConsoleOpWakeDownKey     = "wake_down_key"
 
 	// 固定路径与命令常量（设计文档 §3.2/§6.1）：vtpsh 可执行名、Monitor URI 模板、
 	// screendump 临时目录全部固定在代码中，平台确认后只改常量。
@@ -46,27 +45,27 @@ const (
 	vmConsoleProbeInterval    = time.Second      // 文件探测轮询间隔
 	vmConsoleCleanupTimeout   = 15 * time.Second // 操作预算耗尽后清理步骤的独立短超时
 	vmConsoleUploadTimeout    = 60 * time.Second // PPM 直传独立超时
-	vmConsoleMaxTimeoutSecs   = 60               // 单次操作总预算上限（秒）
-	vmConsoleDefaultTimeout   = 60               // 未指定 timeout 时的默认预算（秒）
+	VmConsoleMaxTimeoutSecs   = 60               // 单次操作总预算上限（秒）
+	VmConsoleDefaultTimeout   = 60               // 未指定 timeout 时的默认预算（秒）
 
 	// upload_status 枚举
-	vmConsoleUploadOK            = "uploaded"
-	vmConsoleUploadDisabled      = "artifact_upload_disabled"
-	vmConsoleUploadFailed        = "upload_failed"
-	vmConsoleUploadNotApplicable = "not_applicable"
+	VmConsoleUploadOK            = "uploaded"
+	VmConsoleUploadDisabled      = "artifact_upload_disabled"
+	VmConsoleUploadFailed        = "upload_failed"
+	VmConsoleUploadNotApplicable = "not_applicable"
 
 	// error_type 枚举（失败分类不得压缩为同一种"采集失败"）
-	vmConsoleErrTargetInvalid    = "target_invalid"
-	vmConsoleErrOperationInvalid = "operation_invalid"
-	vmConsoleErrSessionMissing   = "session_missing"
+	VmConsoleErrTargetInvalid    = "target_invalid"
+	VmConsoleErrOperationInvalid = "operation_invalid"
+	VmConsoleErrSessionMissing   = "session_missing"
 	vmConsoleErrSessionCreate    = "session_creation_failed"
-	vmConsoleErrCaptureFailed    = "capture_failed"
+	VmConsoleErrCaptureFailed    = "capture_failed"
 	vmConsoleErrCaptureMissing   = "capture_file_missing"
 	vmConsoleErrReadFailed       = "capture_read_failed"
 	vmConsoleErrDecodeFailed     = "capture_decode_failed"
 	vmConsoleErrTooLarge         = "capture_too_large"
-	vmConsoleErrWakeFailed       = "wake_failed"
-	vmConsoleErrUploadFailed     = "upload_failed"
+	VmConsoleErrWakeFailed       = "wake_failed"
+	VmConsoleErrUploadFailed     = "upload_failed"
 	vmConsoleErrTimeout          = "timeout"
 	vmConsoleErrCleanupFailed    = "cleanup_failed"
 )
@@ -80,8 +79,8 @@ var (
 	vmConsoleCaptureIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 )
 
-// vmConsoleRequest 是通过入口校验后的固定操作请求，字段均不可再参与 shell 语义。
-type vmConsoleRequest struct {
+// VmConsoleRequest 是通过入口校验后的固定操作请求，字段均不可再参与 shell 语义。
+type VmConsoleRequest struct {
 	CaseID         string
 	NodeIP         string
 	ExecID         string
@@ -97,11 +96,11 @@ type vmConsoleRequest struct {
 	CustomUI       string
 }
 
-// parseVMConsoleRequest 在入口即完成全部校验，返回 (请求, error_type)。
+// ParseVMConsoleRequest 在入口即完成全部校验，返回 (请求, error_type)。
 // error_type 为空表示校验通过；任何校验失败都不会触发命令执行。
 // 校验顺序：operation 白名单（operation_invalid）→ 目标与标识字符校验（target_invalid）。
-func parseVMConsoleRequest(msg models.InMessage, customUI string) (vmConsoleRequest, string) {
-	req := vmConsoleRequest{
+func ParseVMConsoleRequest(msg models.InMessage, customUI string) (VmConsoleRequest, string) {
+	req := VmConsoleRequest{
 		CaseID:         strings.TrimSpace(msg.CaseID),
 		NodeIP:         strings.TrimSpace(msg.NodeIP),
 		ExecID:         strings.TrimSpace(msg.ExecID),
@@ -117,21 +116,21 @@ func parseVMConsoleRequest(msg models.InMessage, customUI string) (vmConsoleRequ
 		TimeoutSeconds: vmConsoleTimeoutSeconds(msg.Timeout),
 	}
 	// operation 白名单：只允许两个固定操作，未知值独立分类为 operation_invalid。
-	if req.Operation != vmConsoleOpCaptureBaseline && req.Operation != vmConsoleOpWakeDownKey {
-		return req, vmConsoleErrOperationInvalid
+	if req.Operation != VmConsoleOpCaptureBaseline && req.Operation != VmConsoleOpWakeDownKey {
+		return req, VmConsoleErrOperationInvalid
 	}
 	// 目标字段逐项严格校验：任一不满足 → target_invalid，不执行任何命令。
 	if req.CaseID == "" || req.ExecID == "" || req.NodeIP == "" {
-		return req, vmConsoleErrTargetInvalid
+		return req, VmConsoleErrTargetInvalid
 	}
 	if !vmConsoleHostNodeIDPattern.MatchString(req.HostNodeID) {
-		return req, vmConsoleErrTargetInvalid
+		return req, VmConsoleErrTargetInvalid
 	}
 	if !vmConsoleVMIDPattern.MatchString(req.VMID) {
-		return req, vmConsoleErrTargetInvalid
+		return req, VmConsoleErrTargetInvalid
 	}
 	if !vmConsoleCaptureIDPattern.MatchString(req.CaptureID) {
-		return req, vmConsoleErrTargetInvalid
+		return req, VmConsoleErrTargetInvalid
 	}
 	return req, ""
 }
@@ -139,17 +138,17 @@ func parseVMConsoleRequest(msg models.InMessage, customUI string) (vmConsoleRequ
 // vmConsoleTimeoutSeconds 把 1-60 秒范围外的 timeout 收敛为安全默认值。
 func vmConsoleTimeoutSeconds(seconds int) int {
 	if seconds <= 0 {
-		return vmConsoleDefaultTimeout
+		return VmConsoleDefaultTimeout
 	}
-	if seconds > vmConsoleMaxTimeoutSecs {
-		return vmConsoleMaxTimeoutSecs
+	if seconds > VmConsoleMaxTimeoutSecs {
+		return VmConsoleMaxTimeoutSecs
 	}
 	return seconds
 }
 
 // ── 固定 argv 常量表 ──
 // 以下函数只做字符串拼接，所有可变部分（host_node_id/vm_id/capture_id）均已通过
-// 严格字符校验，不可能携带 shell 控制字符；拼接结果再经 vmConsoleShellQuote
+// 严格字符校验，不可能携带 shell 控制字符；拼接结果再经 VmConsoleShellQuote
 // 安全引用后交给远端 shell，双层防御确保 argv 逐 token 固定。
 
 // vmConsoleMonitorPath 返回 vtpsh Monitor URI：/nodes/<host_node_id>/qemu/<vm_id>/monitor
@@ -157,8 +156,8 @@ func vmConsoleMonitorPath(hostNodeID, vmID string) string {
 	return "/nodes/" + hostNodeID + "/qemu/" + vmID + "/monitor"
 }
 
-// vmConsoleCapturePath 返回截图临时文件路径：/sf/data/local/hci-diagnosis/<capture_id>.ppm
-func vmConsoleCapturePath(captureID string) string {
+// VmConsoleCapturePath 返回截图临时文件路径：/sf/data/local/hci-diagnosis/<capture_id>.ppm
+func VmConsoleCapturePath(captureID string) string {
 	return vmConsoleCaptureDir + "/" + captureID + ".ppm"
 }
 
@@ -167,49 +166,49 @@ func vmConsoleMonitorArgv(hostNodeID, vmID, monitorCommand string) []string {
 	return []string{vmConsoleVtpshBinary, "create", vmConsoleMonitorPath(hostNodeID, vmID), "--command", monitorCommand}
 }
 
-// vmConsoleScreendumpArgv 基线截图 argv：
+// VmConsoleScreendumpArgv 基线截图 argv：
 // vtpsh create /nodes/<host>/qemu/<vmid>/monitor --command "screendump /sf/data/local/hci-diagnosis/<capture-id>.ppm"
-func vmConsoleScreendumpArgv(hostNodeID, vmID, captureID string) []string {
-	return vmConsoleMonitorArgv(hostNodeID, vmID, "screendump "+vmConsoleCapturePath(captureID))
+func VmConsoleScreendumpArgv(hostNodeID, vmID, captureID string) []string {
+	return vmConsoleMonitorArgv(hostNodeID, vmID, "screendump "+VmConsoleCapturePath(captureID))
 }
 
-// vmConsoleWakeArgv 固定唤醒 argv：同 Monitor 路径 --command "sendkey down"。
+// VmConsoleWakeArgv 固定唤醒 argv：同 Monitor 路径 --command "sendkey down"。
 // 唤醒是受控 Guest 交互（controlled_interaction），不是只读操作。
-func vmConsoleWakeArgv(hostNodeID, vmID string) []string {
+func VmConsoleWakeArgv(hostNodeID, vmID string) []string {
 	return vmConsoleMonitorArgv(hostNodeID, vmID, "sendkey down")
 }
 
-// vmConsoleProbeArgv 文件探测 argv：test -f <path>
-func vmConsoleProbeArgv(captureID string) []string {
-	return []string{"test", "-f", vmConsoleCapturePath(captureID)}
+// VmConsoleProbeArgv 文件探测 argv：test -f <path>
+func VmConsoleProbeArgv(captureID string) []string {
+	return []string{"test", "-f", VmConsoleCapturePath(captureID)}
 }
 
-// vmConsoleReadArgv 读取 argv：base64 -w0 <path>（单行输出，Go 本地解码）
-func vmConsoleReadArgv(captureID string) []string {
-	return []string{"base64", "-w0", vmConsoleCapturePath(captureID)}
+// VmConsoleReadArgv 读取 argv：base64 -w0 <path>（单行输出，Go 本地解码）
+func VmConsoleReadArgv(captureID string) []string {
+	return []string{"base64", "-w0", VmConsoleCapturePath(captureID)}
 }
 
-// vmConsoleCleanupArgv 清理 argv：rm -f <path>（无条件执行）
-func vmConsoleCleanupArgv(captureID string) []string {
-	return []string{"rm", "-f", vmConsoleCapturePath(captureID)}
+// VmConsoleCleanupArgv 清理 argv：rm -f <path>（无条件执行）
+func VmConsoleCleanupArgv(captureID string) []string {
+	return []string{"rm", "-f", VmConsoleCapturePath(captureID)}
 }
 
-// vmConsoleShellQuote 对单个 argv token 做安全单引号引用。
+// VmConsoleShellQuote 对单个 argv token 做安全单引号引用。
 // 输入已通过字符校验；此处仍按 POSIX 规则引用，防止任何未来放宽校验时的注入回归。
 //
 // S1 收口：唯一实现在 remote.ShellQuote。旧实现对"安全字符"省略引号，
 // 与加引号在 shell 里行为等价（base64 与 'base64' 是同一个词），但两套
 // 转义意味着两个注入面各自演化。统一为总是加引号后，本函数单测的
 // 断言随之改为带引号形态——这是调用方适配，不是安全语义变更。
-func vmConsoleShellQuote(arg string) string {
+func VmConsoleShellQuote(arg string) string {
 	return remote.ShellQuote(arg)
 }
 
-// vmConsoleCommandFromArgv 把固定 argv 拼接为交给远端 shell 的命令字符串。
-func vmConsoleCommandFromArgv(argv []string) string {
+// VmConsoleCommandFromArgv 把固定 argv 拼接为交给远端 shell 的命令字符串。
+func VmConsoleCommandFromArgv(argv []string) string {
 	quoted := make([]string, len(argv))
 	for i, arg := range argv {
-		quoted[i] = vmConsoleShellQuote(arg)
+		quoted[i] = VmConsoleShellQuote(arg)
 	}
 	return strings.Join(quoted, " ")
 }
@@ -217,16 +216,16 @@ func vmConsoleCommandFromArgv(argv []string) string {
 // ── 隔离执行 runner（复用 ssh_exec_process 的隔离连接路径，不走 PTY marker 通道）──
 
 // vmConsoleRunner 在独立 SSH 连接上顺序执行固定操作子步骤。
-// 独立连接是硬超时的必要条件（与 execCommandIsolated 同理）；每个子步骤使用
+// 独立连接是硬超时的必要条件（与 ExecCommandIsolated 同理）；每个子步骤使用
 // 独立 Session，stdout/stderr 有界捕获，不向 WebSocket 流式转发大输出。
 type vmConsoleRunner struct {
 	session *sshx.SSHSession
-	req     vmConsoleRequest
+	req     VmConsoleRequest
 	client  *ssh.Client
 }
 
 // startVMConsoleRunner 使用会话既有连接参数（含模拟认证上下文）建立隔离连接。
-func startVMConsoleRunner(s *sshx.SSHSession, req vmConsoleRequest) (*vmConsoleRunner, error) {
+func startVMConsoleRunner(s *sshx.SSHSession, req VmConsoleRequest) (*vmConsoleRunner, error) {
 	client, err := ssh.Dial("tcp", s.Address, s.ClientConfig)
 	if err != nil {
 		return nil, err
@@ -240,7 +239,7 @@ func (r *vmConsoleRunner) close() { _ = r.client.Close() }
 // truncated 表示 stdout 捕获是否因超过 maxStdout 被截断（读取步骤据此判定超限）。
 // 超时通过 ctx 强制：deadline 触发时关闭连接确定性中止远端命令。
 func (r *vmConsoleRunner) run(ctx context.Context, argv []string, maxStdout int) (stdout []byte, stderrText string, exitCode int, truncated bool, err error) {
-	// 模拟会话透传执行上下文（与 execCommandIsolated 的 Setenv 约定一致）。
+	// 模拟会话透传执行上下文（与 ExecCommandIsolated 的 Setenv 约定一致）。
 	traceparent := logpush.TraceparentFromContext(ctx)
 	// 新建 Session 前先检查 ctx，避免无谓拨号。
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -275,7 +274,7 @@ func (r *vmConsoleRunner) run(ctx context.Context, argv []string, maxStdout int)
 	if err != nil {
 		return nil, "", -1, false, err
 	}
-	command := vmConsoleCommandFromArgv(argv)
+	command := VmConsoleCommandFromArgv(argv)
 	if err := session.Start(command); err != nil {
 		return nil, "", -1, false, err
 	}
@@ -317,7 +316,7 @@ func (r *vmConsoleRunner) run(ctx context.Context, argv []string, maxStdout int)
 	select {
 	case waitErr = <-waitCh:
 	case <-ctx.Done():
-		// 关闭隔离连接确定性中止命令（同 execCommandIsolated 超时语义）。
+		// 关闭隔离连接确定性中止命令（同 ExecCommandIsolated 超时语义）。
 		_ = session.Close()
 		_ = r.client.Close()
 		waitErr = <-waitCh
@@ -340,8 +339,8 @@ func (r *vmConsoleRunner) run(ctx context.Context, argv []string, maxStdout int)
 
 // ── 主流程与结果回传 ──
 
-// vmConsoleResultMessage 组装 vm_console_result 元数据消息（WS 只回元数据）。
-func vmConsoleResultMessage(req vmConsoleRequest, exitCode int, traceID, traceparent string, durationMS int64) models.OutMessage {
+// VmConsoleResultMessage 组装 vm_console_result 元数据消息（WS 只回元数据）。
+func VmConsoleResultMessage(req VmConsoleRequest, exitCode int, traceID, traceparent string, durationMS int64) models.OutMessage {
 	return models.OutMessage{
 		Type: "vm_console_result", CaseID: req.CaseID, ExecID: req.ExecID,
 		CaptureID: req.CaptureID, Operation: req.Operation,
@@ -350,10 +349,10 @@ func vmConsoleResultMessage(req vmConsoleRequest, exitCode int, traceID, tracepa
 	}
 }
 
-// runVMConsoleOp 执行一次固定操作（capture_baseline 或 wake_down_key）并回传元数据。
+// RunVMConsoleOp 执行一次固定操作（capture_baseline 或 wake_down_key）并回传元数据。
 // 必须在 goroutine 中调用：文件探测轮询与 HTTP 直传可能阻塞数十秒。
 // send 为结果回传函数（生产路径封装 models.SendMsg(ws, ...)，测试可注入记录器）。
-func runVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req vmConsoleRequest) {
+func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmConsoleRequest) {
 	startTime := time.Now()
 	baseCtx := logpush.ContextFromMessage(models.InMessage{Traceparent: req.Traceparent, Tracestate: req.Tracestate})
 	ctx, cancel := context.WithTimeout(baseCtx, time.Duration(req.TimeoutSeconds)*time.Second)
@@ -395,10 +394,10 @@ func runVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req vmCons
 	}
 	failResult := func(errorType string, exitCode int, timedOut bool) {
 		if errorType != "" {
-			atomic.AddUint64(&promMetrics.VmConsoleOpErrors, 1)
+			MetricsVmConsoleOpErrors(1)
 			span.SetStatus(codes.Error, errorType)
 		}
-		result := vmConsoleResultMessage(req, exitCode, traceID, logpush.TraceparentFromContext(ctx), time.Since(startTime).Milliseconds())
+		result := VmConsoleResultMessage(req, exitCode, traceID, logpush.TraceparentFromContext(ctx), time.Since(startTime).Milliseconds())
 		result.ErrorType = errorType
 		result.TimedOut = timedOut
 		send(result)
@@ -418,7 +417,7 @@ func runVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req vmCons
 	}
 	defer runner.close()
 
-	if req.Operation == vmConsoleOpWakeDownKey {
+	if req.Operation == VmConsoleOpWakeDownKey {
 		runVMConsoleWake(s, ctx, runner, req, logReq, span, failResult, func(result models.OutMessage) { sendResult(result) })
 		return
 	}
@@ -426,36 +425,36 @@ func runVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req vmCons
 }
 
 // runVMConsoleWake 执行固定唤醒操作（sendkey down），不做任何上传。
-func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext,
+func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext,
 	span trace.Span, failResult func(string, int, bool), sendResult func(models.OutMessage)) {
-	_, stderrText, exitCode, _, err := runner.run(ctx, vmConsoleWakeArgv(req.HostNodeID, req.VMID), vmConsoleMaxStderrBytes)
+	_, stderrText, exitCode, _, err := runner.run(ctx, VmConsoleWakeArgv(req.HostNodeID, req.VMID), vmConsoleMaxStderrBytes)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if err != nil {
 		span.RecordError(err)
 		logpush.BlogContext(ctx, "ERROR", "vm_console.wake_failed", "固定唤醒操作失败", logReq, map[string]any{
-			"error": err.Error(), "error_type": vmConsoleErrWakeFailed, "timed_out": timedOut,
+			"error": err.Error(), "error_type": VmConsoleErrWakeFailed, "timed_out": timedOut,
 		})
 		if timedOut {
 			failResult(vmConsoleErrTimeout, -1, true)
 			return
 		}
-		failResult(vmConsoleErrWakeFailed, -1, false)
+		failResult(VmConsoleErrWakeFailed, -1, false)
 		return
 	}
 	errorType := ""
 	if exitCode != 0 {
-		errorType = vmConsoleErrWakeFailed
+		errorType = VmConsoleErrWakeFailed
 		logpush.BlogContext(ctx, "ERROR", "vm_console.wake_failed", "固定唤醒操作退出码非零", logReq, map[string]any{
 			"exit_code": exitCode, "stderr_len": len(stderrText),
 		})
 	} else {
 		logpush.BlogContext(ctx, "INFO", "vm_console.wake_done", "固定唤醒操作完成", logReq, map[string]any{"exit_code": 0})
 	}
-	result := vmConsoleResultMessage(req, exitCode, "", "", 0)
-	result.UploadStatus = vmConsoleUploadNotApplicable
+	result := VmConsoleResultMessage(req, exitCode, "", "", 0)
+	result.UploadStatus = VmConsoleUploadNotApplicable
 	result.ErrorType = errorType
 	if errorType != "" {
-		atomic.AddUint64(&promMetrics.VmConsoleOpErrors, 1)
+		MetricsVmConsoleOpErrors(1)
 		span.SetStatus(codes.Error, errorType)
 	}
 	sendResult(result)
@@ -464,7 +463,7 @@ func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 // runVMConsoleCaptureBaseline 执行基线截图全流程：
 // screendump → 有界轮询探测 → base64 读取 → 本地解码 + SHA-256 → HTTP 直传 → 无条件清理。
 // cleanup 在发送结果前执行，保证 cleanup_failed 标记可进入最终 error_type。
-func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext,
+func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext,
 	span trace.Span, sendResult func(models.OutMessage)) {
 	result, errorType, timedOut := captureBaselineSteps(s, ctx, runner, req, logReq, span)
 
@@ -480,7 +479,7 @@ func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner
 	result.ErrorType = errorType
 	result.TimedOut = timedOut
 	if errorType != "" {
-		atomic.AddUint64(&promMetrics.VmConsoleOpErrors, 1)
+		MetricsVmConsoleOpErrors(1)
 		span.SetStatus(codes.Error, errorType)
 	}
 	logpush.BlogContext(ctx, "INFO", "vm_console.capture_done", "基线截图流程结束", logReq, map[string]any{
@@ -492,11 +491,11 @@ func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner
 }
 
 // captureBaselineSteps 顺序执行基线截图各子步骤，返回 (部分结果, error_type, timed_out)。
-func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext, span trace.Span) (models.OutMessage, string, bool) {
-	result := vmConsoleResultMessage(req, 0, "", "", 0)
+func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext, span trace.Span) (models.OutMessage, string, bool) {
+	result := VmConsoleResultMessage(req, 0, "", "", 0)
 
 	// 步骤 1：固定 screendump 命令。
-	_, stderrText, exitCode, _, err := runner.run(ctx, vmConsoleScreendumpArgv(req.HostNodeID, req.VMID, req.CaptureID), vmConsoleMaxStderrBytes)
+	_, stderrText, exitCode, _, err := runner.run(ctx, VmConsoleScreendumpArgv(req.HostNodeID, req.VMID, req.CaptureID), vmConsoleMaxStderrBytes)
 	if err != nil {
 		span.RecordError(err)
 		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
@@ -508,14 +507,14 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 			return result, vmConsoleErrTimeout, true
 		}
 		result.ExitCode = -1
-		return result, vmConsoleErrCaptureFailed, false
+		return result, VmConsoleErrCaptureFailed, false
 	}
 	if exitCode != 0 {
 		logpush.BlogContext(ctx, "ERROR", "vm_console.capture_failed", "screendump 命令退出码非零", logReq, map[string]any{
 			"exit_code": exitCode, "stderr_len": len(stderrText),
 		})
 		result.ExitCode = exitCode
-		return result, vmConsoleErrCaptureFailed, false
+		return result, VmConsoleErrCaptureFailed, false
 	}
 
 	// 步骤 2：固定有界轮询探测截图文件（最多 10 次、每次间隔 1s，总等待受操作预算约束）。
@@ -524,7 +523,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 		if ctx.Err() != nil {
 			break
 		}
-		_, _, probeCode, _, probeErr := runner.run(ctx, vmConsoleProbeArgv(req.CaptureID), vmConsoleMaxStderrBytes)
+		_, _, probeCode, _, probeErr := runner.run(ctx, VmConsoleProbeArgv(req.CaptureID), vmConsoleMaxStderrBytes)
 		if probeErr == nil && probeCode == 0 {
 			found = true
 			break
@@ -550,7 +549,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	}
 
 	// 步骤 3：固定 base64 读取（BoundedCapture 上限 16MiB，不向 WS 转发）。
-	stdoutBytes, readStderr, readCode, readTruncated, readErr := runner.run(ctx, vmConsoleReadArgv(req.CaptureID), vmConsoleMaxBase64Bytes)
+	stdoutBytes, readStderr, readCode, readTruncated, readErr := runner.run(ctx, VmConsoleReadArgv(req.CaptureID), vmConsoleMaxBase64Bytes)
 	if readErr != nil {
 		span.RecordError(readErr)
 		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
@@ -601,7 +600,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 
 	// 步骤 5：PPM 直传平台制品服务（独立超时 ~60s，不占用操作预算）。
 	// PLATFORM_ARTIFACT_URL 未配置 → fail-closed artifact_upload_disabled，不降级 base64 over WS。
-	uploadStatus, uploadErr := uploadVMConsolePPM(context.Background(), req.CaptureID, req.CaseID, decoded, result.SHA256)
+	uploadStatus, uploadErr := UploadVMConsolePPM(context.Background(), req.CaptureID, req.CaseID, decoded, result.SHA256)
 	if uploadErr != nil {
 		logpush.BlogContext(ctx, "ERROR", "vm_console.upload_failed", "PPM 直传失败", logReq, map[string]any{
 			"error": uploadErr.Error(), "sha256": result.SHA256, "size_bytes": result.SizeBytes,
@@ -614,17 +613,17 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	}
 	result.UploadStatus = uploadStatus
 	switch uploadStatus {
-	case vmConsoleUploadFailed:
-		return result, vmConsoleErrUploadFailed, false
-	case vmConsoleUploadDisabled:
+	case VmConsoleUploadFailed:
+		return result, VmConsoleErrUploadFailed, false
+	case VmConsoleUploadDisabled:
 		// fail-closed：未配置制品服务时截图不可用，同时落入 error_type 便于编排识别。
-		return result, vmConsoleUploadDisabled, false
+		return result, VmConsoleUploadDisabled, false
 	}
 	return result, "", false
 }
 
 // vmConsoleCleanup 无条件删除宿主机临时截图文件；失败返回错误供上层附加标记。
-func vmConsoleCleanup(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req vmConsoleRequest, logReq models.ExecRequestContext) error {
+func vmConsoleCleanup(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext) error {
 	// 清理使用独立短超时，避免占用已耗尽的操作预算；ctx 已取消时使用后台上下文。
 	cleanupCtx := ctx
 	if cleanupCtx.Err() != nil {
@@ -632,7 +631,7 @@ func vmConsoleCleanup(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 		cleanupCtx, cleanupCancel = context.WithTimeout(context.Background(), vmConsoleCleanupTimeout)
 		defer cleanupCancel()
 	}
-	_, stderrText, exitCode, _, err := runner.run(cleanupCtx, vmConsoleCleanupArgv(req.CaptureID), vmConsoleMaxStderrBytes)
+	_, stderrText, exitCode, _, err := runner.run(cleanupCtx, VmConsoleCleanupArgv(req.CaptureID), vmConsoleMaxStderrBytes)
 	if err != nil {
 		logpush.BlogContext(ctx, "WARN", "vm_console.cleanup_failed", "清理临时截图文件失败", logReq, map[string]any{"error": err.Error()})
 		return err
@@ -652,15 +651,15 @@ func base64Decode(encoded []byte) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(string(encoded))
 }
 
-// uploadVMConsolePPM 将原始 PPM 直传平台制品服务（conversation-service 基址）。
+// UploadVMConsolePPM 将原始 PPM 直传平台制品服务（conversation-service 基址）。
 // 返回 (upload_status, error)：
 //   - PLATFORM_ARTIFACT_URL 未配置 → (artifact_upload_disabled, nil)，fail-closed 不降级；
 //   - 上传成功（2xx）→ (uploaded, nil)；
 //   - 其他失败 → (upload_failed, err)。
-func uploadVMConsolePPM(parent context.Context, captureID, caseID string, data []byte, sha256Hex string) (string, error) {
+func UploadVMConsolePPM(parent context.Context, captureID, caseID string, data []byte, sha256Hex string) (string, error) {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("PLATFORM_ARTIFACT_URL")), "/")
 	if base == "" {
-		return vmConsoleUploadDisabled, nil
+		return VmConsoleUploadDisabled, nil
 	}
 	query := url.Values{}
 	query.Set("kind", "ppm")
@@ -671,7 +670,7 @@ func uploadVMConsolePPM(parent context.Context, captureID, caseID string, data [
 	defer cancel()
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(data))
 	if err != nil {
-		return vmConsoleUploadFailed, err
+		return VmConsoleUploadFailed, err
 	}
 	httpReq.Header.Set("Content-Type", "application/octet-stream")
 	httpReq.Header.Set("X-Capture-Sha256", sha256Hex)
@@ -680,15 +679,15 @@ func uploadVMConsolePPM(parent context.Context, captureID, caseID string, data [
 	}
 	response, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
-		return vmConsoleUploadFailed, err
+		return VmConsoleUploadFailed, err
 	}
 	defer response.Body.Close()
 	// 有界排空响应体，便于连接复用并避免悬挂。
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		return vmConsoleUploadOK, nil
+		return VmConsoleUploadOK, nil
 	}
-	return vmConsoleUploadFailed, fmt.Errorf("制品服务返回 HTTP %d", response.StatusCode)
+	return VmConsoleUploadFailed, fmt.Errorf("制品服务返回 HTTP %d", response.StatusCode)
 }
 
 // ── acli 自动检查与更新（acli_sync）──────────────────────────────────────────

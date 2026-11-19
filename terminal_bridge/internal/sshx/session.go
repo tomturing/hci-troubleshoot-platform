@@ -718,7 +718,7 @@ func probeRemote(client *ssh.Client, command string) (string, int) {
 // 探测以独立 goroutine 异步运行、自带短超时，绝不阻塞主结果回传；任何探测异常都安全降级为一条记录。
 func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.ExecRequestContext, artifactID string) {
 	go func() {
-		// 主 exec ctx 在 execCommandIsolated 返回时会被 cancel，探测 goroutine 必须使用去耦合的
+		// 主 exec ctx 在 ExecCommandIsolated 返回时会被 cancel，探测 goroutine 必须使用去耦合的
 		// 派生上下文（保留 trace 值、忽略取消），并自带总体超时，否则 DialContext 会因取消立即失败。
 		probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 		defer probeCancel()
@@ -1154,7 +1154,7 @@ func isShellOperator(ch rune) bool {
 //  1. 本通道只接受代码枚举的固定操作 capture_baseline 与 wake_down_key，不接受任何
 //     自由文本 command、路径或键名；全部 argv 由代码常量表构造，host_node_id/vm_id/
 //     capture_id 在进入拼接前完成严格字符校验（fail-closed）。
-//  2. 执行一律走隔离 SSH 连接（与 ssh_exec_process 的 execCommandIsolated 同款通道），
+//  2. 执行一律走隔离 SSH 连接（与 ssh_exec_process 的 ExecCommandIsolated 同款通道），
 //     不经过 PTY marker 通道；目标为宿主机直连（host 直连，不做容器包装）。
 //  3. 截图文件经固定 base64 命令读取，BoundedCapture 上限 16MiB；base64 解码在 Go
 //     本地进行，解码后计算 SHA-256；原始 PPM 经 HTTP 直传平台制品服务，WS 只回
@@ -1262,3 +1262,21 @@ func (s *SSHSession) RunQuickCommandBytes(ctx context.Context, cmd string) ([]by
 // S1 收口：解析唯一实现在 remote.ParseVersionOutput。acli 特有的
 // `__ACLI_BIN__=` / `__ACLI_ABSENT__` 契约由 buildAcliVersionCommand 产出，
 // 原语只负责如实解析（包括"未安装"这一结论）。
+
+// AgeSeconds 返回会话存活秒数；未记录建立时间时返回 0。
+func AgeSeconds(s *SSHSession) float64 {
+	if s == nil || s.CreatedAt.IsZero() {
+		return 0
+	}
+	return time.Since(s.CreatedAt).Seconds()
+}
+
+// 会话销毁原因：写入 session.destroyed.reason，供云端按原因聚合与告警。
+const (
+	SessionReasonWSClosed         = "ws_closed"         // 拥有它的浏览器连接关闭（连坐清理）
+	SessionReasonReconnect        = "reconnect"         // 同键再次 ssh_connect 覆盖
+	SessionReasonRemoteEOF        = "remote_eof"        // 远端 shell 退出
+	SessionReasonClientDisconnect = "client_disconnect" // 前端显式 ssh_disconnect
+	SessionReasonKeepAlive        = "keepalive_failed"  // 保活探测判定链路失效
+	SessionReasonIdleTTL          = "idle_ttl"          // 空闲租约超时，被 reaper 回收
+)

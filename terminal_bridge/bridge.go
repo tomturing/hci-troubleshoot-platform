@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/terminal"
 	"fmt"
 	"log"
 	"net"
@@ -389,9 +390,9 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 	// 事后无法区分，只能靠 source 字段。
 	logSessionCreated(session, key, connID, role, "auto_connect")
 
-	go on_output_start(session, ws, stdout, msg.CaseID, func(reason string) {
-		if reason == sessionReasonRemoteEOF {
-			b.destroySession(key, sessionReasonRemoteEOF, connID)
+	go terminal.On_output_start(session, ws, stdout, msg.CaseID, func(reason string) {
+		if reason == sshx.SessionReasonRemoteEOF {
+			b.destroySession(key, sshx.SessionReasonRemoteEOF, connID)
 			ownedSessions.remove(key)
 			return
 		}
@@ -410,7 +411,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 // 完全能在会话掉线后自动重连并续传，无需人工介入。
 //
 // 与 autoConnectNode 的区别：后者要给终端面板回发 ssh_output / exec_result，必须持 ws；
-// 交付是后台作业，没有也不该绑定某个浏览器连接，所以输出监控走 nil ws（on_output_start
+// 交付是后台作业，没有也不该绑定某个浏览器连接，所以输出监控走 nil ws（terminal.On_output_start
 // 已对 nil ws 做保护，只保留 exec 结果回环与 EOF 销毁）。
 func (b *Bridge) reconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSHSession, error) {
 	if strings.TrimSpace(nodeIP) == "" {
@@ -448,9 +449,9 @@ func (b *Bridge) reconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 	})
 	// 与 autoConnectNode 同构：远端 EOF 时销毁会话（下一轮 advance 会再次自动重连），
 	// 其余原因只摘键不销毁。
-	go on_output_start(session, nil, stdout, caseID, func(reason string) {
-		if reason == sessionReasonRemoteEOF {
-			b.destroySession(key, sessionReasonRemoteEOF, connID)
+	go terminal.On_output_start(session, nil, stdout, caseID, func(reason string) {
+		if reason == sshx.SessionReasonRemoteEOF {
+			b.destroySession(key, sshx.SessionReasonRemoteEOF, connID)
 		} else {
 			b.remove(key)
 		}

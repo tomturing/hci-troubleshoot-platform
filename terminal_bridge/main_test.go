@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/terminal"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -52,20 +53,20 @@ func TestOwnedSessionTrackerDrainCaseIncludesNodeSessions(t *testing.T) {
 
 func TestLineMatchesOutputFilterAllAndExclude(t *testing.T) {
 	filter := models.OutputFilter{Source: "stdout", Include: []string{"4359974862144", "qcow2"}, Exclude: []string{"grep"}, IncludeMode: "all", CaseSensitive: true}
-	if !lineMatchesOutputFilter("qemu 123 /images/4359974862144.vm/disk.qcow2\n", filter) {
+	if !terminal.LineMatchesOutputFilter("qemu 123 /images/4359974862144.vm/disk.qcow2\n", filter) {
 		t.Fatal("expected the VM image line to match")
 	}
-	if lineMatchesOutputFilter("grep 4359974862144 qcow2\n", filter) {
+	if terminal.LineMatchesOutputFilter("grep 4359974862144 qcow2\n", filter) {
 		t.Fatal("exclude must win over include")
 	}
 }
 
 func TestLineMatchesOutputFilterAnyCaseInsensitive(t *testing.T) {
 	filter := models.OutputFilter{Source: "stdout", Include: []string{"server-img", "4359974862144"}, IncludeMode: "any", CaseSensitive: false}
-	if !lineMatchesOutputFilter("SERVER-IMG is busy\n", filter) {
+	if !terminal.LineMatchesOutputFilter("SERVER-IMG is busy\n", filter) {
 		t.Fatal("case-insensitive any mode should match")
 	}
-	if lineMatchesOutputFilter("unrelated process\n", filter) {
+	if terminal.LineMatchesOutputFilter("unrelated process\n", filter) {
 		t.Fatal("unrelated line must not match")
 	}
 }
@@ -75,17 +76,17 @@ func TestLineMatchesOutputFilterExcludeAll(t *testing.T) {
 		Source: "stdout", Include: []string{"检测到IP", "冲突"}, IncludeMode: "all",
 		Exclude: []string{"测试数据", "模拟冲突"}, ExcludeMode: "all", CaseSensitive: true,
 	}
-	if !lineMatchesOutputFilter("检测到IP 发生冲突 测试数据\n", filter) {
+	if !terminal.LineMatchesOutputFilter("检测到IP 发生冲突 测试数据\n", filter) {
 		t.Fatal("exclude=all 时只出现一个排除词不应排除")
 	}
-	if lineMatchesOutputFilter("检测到IP 发生冲突 测试数据 模拟冲突\n", filter) {
+	if terminal.LineMatchesOutputFilter("检测到IP 发生冲突 测试数据 模拟冲突\n", filter) {
 		t.Fatal("exclude=all 时全部排除词同时出现必须排除")
 	}
 }
 
 func TestFiltersForSourceIgnoresEmptyAndOtherStream(t *testing.T) {
 	filters := []models.OutputFilter{{Source: "stdout", Include: []string{"VM"}}, {Source: "stderr", Include: []string{"error"}}, {Source: "stdout"}}
-	selected := filtersForSource(filters, "stdout")
+	selected := terminal.FiltersForSource(filters, "stdout")
 	if len(selected) != 1 || selected[0].Include[0] != "VM" {
 		t.Fatalf("unexpected stdout filters: %#v", selected)
 	}
@@ -93,15 +94,15 @@ func TestFiltersForSourceIgnoresEmptyAndOtherStream(t *testing.T) {
 
 func TestValidateOutputFilters(t *testing.T) {
 	valid := []models.OutputFilter{{Source: "stdout", Include: []string{"4359974862144"}, IncludeMode: "all", CaseSensitive: true}}
-	if err := validateOutputFilters(valid); err != nil {
+	if err := terminal.ValidateOutputFilters(valid); err != nil {
 		t.Fatalf("valid literal filter rejected: %v", err)
 	}
 	invalid := []models.OutputFilter{{Source: "invalid", Include: []string{"VM"}, IncludeMode: "all"}}
-	if err := validateOutputFilters(invalid); err == nil {
+	if err := terminal.ValidateOutputFilters(invalid); err == nil {
 		t.Fatal("invalid source must be rejected")
 	}
 	invalidExcludeMode := []models.OutputFilter{{Source: "stdout", Include: []string{"VM"}, IncludeMode: "all", ExcludeMode: "none"}}
-	if err := validateOutputFilters(invalidExcludeMode); err == nil {
+	if err := terminal.ValidateOutputFilters(invalidExcludeMode); err == nil {
 		t.Fatal("invalid exclude_mode must be rejected")
 	}
 }
@@ -117,7 +118,7 @@ func TestDrainExecPipeFilteredTracksRawAndFilteredStats(t *testing.T) {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 
-	go drainExecPipeFiltered(
+	go terminal.DrainExecPipeFiltered(
 		strings.NewReader(input), capture, stats, func(chunk string) { emitted.WriteString(chunk) }, &wg, "stdout", []models.OutputFilter{filter},
 	)
 	wg.Wait()
@@ -150,7 +151,7 @@ func TestDrainExecPipeTracksUnfilteredStats(t *testing.T) {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 
-	go drainExecPipe(strings.NewReader(input), capture, stats, func(string) {}, &wg)
+	go terminal.DrainExecPipe(strings.NewReader(input), capture, stats, func(string) {}, &wg)
 	wg.Wait()
 	stats.Finish()
 
@@ -415,8 +416,8 @@ func validVMConsoleMessage(operation string) models.InMessage {
 
 // TestParseVMConsoleRequestAcceptsValidOperations 合法消息必须通过校验并收敛 timeout。
 func TestParseVMConsoleRequestAcceptsValidOperations(t *testing.T) {
-	for _, operation := range []string{vmConsoleOpCaptureBaseline, vmConsoleOpWakeDownKey} {
-		req, errType := parseVMConsoleRequest(validVMConsoleMessage(operation), "hci.local")
+	for _, operation := range []string{terminal.VmConsoleOpCaptureBaseline, terminal.VmConsoleOpWakeDownKey} {
+		req, errType := terminal.ParseVMConsoleRequest(validVMConsoleMessage(operation), "hci.local")
 		if errType != "" {
 			t.Fatalf("合法 %s 请求被拒绝: %s", operation, errType)
 		}
@@ -428,14 +429,14 @@ func TestParseVMConsoleRequestAcceptsValidOperations(t *testing.T) {
 		}
 	}
 	// timeout 越界收敛
-	outOfRange := validVMConsoleMessage(vmConsoleOpCaptureBaseline)
+	outOfRange := validVMConsoleMessage(terminal.VmConsoleOpCaptureBaseline)
 	outOfRange.Timeout = 600
-	if req, errType := parseVMConsoleRequest(outOfRange, ""); errType != "" || req.TimeoutSeconds != vmConsoleMaxTimeoutSecs {
-		t.Fatalf("超范围 timeout 应收敛为 %d: errType=%s seconds=%d", vmConsoleMaxTimeoutSecs, errType, req.TimeoutSeconds)
+	if req, errType := terminal.ParseVMConsoleRequest(outOfRange, ""); errType != "" || req.TimeoutSeconds != terminal.VmConsoleMaxTimeoutSecs {
+		t.Fatalf("超范围 timeout 应收敛为 %d: errType=%s seconds=%d", terminal.VmConsoleMaxTimeoutSecs, errType, req.TimeoutSeconds)
 	}
 	outOfRange.Timeout = 0
-	if req, errType := parseVMConsoleRequest(outOfRange, ""); errType != "" || req.TimeoutSeconds != vmConsoleDefaultTimeout {
-		t.Fatalf("缺省 timeout 应为 %d: errType=%s seconds=%d", vmConsoleDefaultTimeout, errType, req.TimeoutSeconds)
+	if req, errType := terminal.ParseVMConsoleRequest(outOfRange, ""); errType != "" || req.TimeoutSeconds != terminal.VmConsoleDefaultTimeout {
+		t.Fatalf("缺省 timeout 应为 %d: errType=%s seconds=%d", terminal.VmConsoleDefaultTimeout, errType, req.TimeoutSeconds)
 	}
 }
 
@@ -443,14 +444,14 @@ func TestParseVMConsoleRequestAcceptsValidOperations(t *testing.T) {
 func TestParseVMConsoleRequestRejectsUnknownOperation(t *testing.T) {
 	for _, operation := range []string{"", "screendump", "sendkey", "capture_wake", "run_command"} {
 		msg := validVMConsoleMessage(operation)
-		if _, errType := parseVMConsoleRequest(msg, ""); errType != vmConsoleErrOperationInvalid {
-			t.Fatalf("operation=%q 应返回 %s，实际 %q", operation, vmConsoleErrOperationInvalid, errType)
+		if _, errType := terminal.ParseVMConsoleRequest(msg, ""); errType != terminal.VmConsoleErrOperationInvalid {
+			t.Fatalf("operation=%q 应返回 %s，实际 %q", operation, terminal.VmConsoleErrOperationInvalid, errType)
 		}
 	}
 }
 
 // TestParseVMConsoleRequestRejectsInvalidTargets 非法目标标识全部 target_invalid，
-// 校验发生在任何命令构造之前（parseVMConsoleRequest 为纯函数，不触发执行）。
+// 校验发生在任何命令构造之前（terminal.ParseVMConsoleRequest 为纯函数，不触发执行）。
 func TestParseVMConsoleRequestRejectsInvalidTargets(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -474,10 +475,10 @@ func TestParseVMConsoleRequestRejectsInvalidTargets(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msg := validVMConsoleMessage(vmConsoleOpCaptureBaseline)
+			msg := validVMConsoleMessage(terminal.VmConsoleOpCaptureBaseline)
 			tt.mutate(&msg)
-			if _, errType := parseVMConsoleRequest(msg, ""); errType != vmConsoleErrTargetInvalid {
-				t.Fatalf("应返回 %s，实际 %q", vmConsoleErrTargetInvalid, errType)
+			if _, errType := terminal.ParseVMConsoleRequest(msg, ""); errType != terminal.VmConsoleErrTargetInvalid {
+				t.Fatalf("应返回 %s，实际 %q", terminal.VmConsoleErrTargetInvalid, errType)
 			}
 		})
 	}
@@ -485,7 +486,7 @@ func TestParseVMConsoleRequestRejectsInvalidTargets(t *testing.T) {
 
 // TestVMConsoleFixedArgvTokens 断言固定 argv 逐 token 精确匹配设计文档 §3.2 形态。
 func TestVMConsoleFixedArgvTokens(t *testing.T) {
-	screendump := vmConsoleScreendumpArgv("SIM-HCI-NODE-01", "271230001", testVMConsoleCaptureID)
+	screendump := terminal.VmConsoleScreendumpArgv("SIM-HCI-NODE-01", "271230001", testVMConsoleCaptureID)
 	wantScreendump := []string{
 		"vtpsh", "create", "/nodes/SIM-HCI-NODE-01/qemu/271230001/monitor",
 		"--command", "screendump /sf/data/local/hci-diagnosis/" + testVMConsoleCaptureID + ".ppm",
@@ -499,7 +500,7 @@ func TestVMConsoleFixedArgvTokens(t *testing.T) {
 		}
 	}
 
-	wake := vmConsoleWakeArgv("SIM-HCI-NODE-01", "271230001")
+	wake := terminal.VmConsoleWakeArgv("SIM-HCI-NODE-01", "271230001")
 	wantWake := []string{
 		"vtpsh", "create", "/nodes/SIM-HCI-NODE-01/qemu/271230001/monitor",
 		"--command", "sendkey down",
@@ -513,15 +514,15 @@ func TestVMConsoleFixedArgvTokens(t *testing.T) {
 		}
 	}
 
-	if got := vmConsoleProbeArgv(testVMConsoleCaptureID)[1:]; got[0] != "-f" || got[1] != vmConsoleCapturePath(testVMConsoleCaptureID) {
-		t.Fatalf("探测 argv 异常: %#v", vmConsoleProbeArgv(testVMConsoleCaptureID))
+	if got := terminal.VmConsoleProbeArgv(testVMConsoleCaptureID)[1:]; got[0] != "-f" || got[1] != terminal.VmConsoleCapturePath(testVMConsoleCaptureID) {
+		t.Fatalf("探测 argv 异常: %#v", terminal.VmConsoleProbeArgv(testVMConsoleCaptureID))
 	}
-	readArgv := vmConsoleReadArgv(testVMConsoleCaptureID)
-	if readArgv[0] != "base64" || readArgv[1] != "-w0" || readArgv[2] != vmConsoleCapturePath(testVMConsoleCaptureID) {
+	readArgv := terminal.VmConsoleReadArgv(testVMConsoleCaptureID)
+	if readArgv[0] != "base64" || readArgv[1] != "-w0" || readArgv[2] != terminal.VmConsoleCapturePath(testVMConsoleCaptureID) {
 		t.Fatalf("读取 argv 异常: %#v", readArgv)
 	}
-	cleanupArgv := vmConsoleCleanupArgv(testVMConsoleCaptureID)
-	if cleanupArgv[0] != "rm" || cleanupArgv[1] != "-f" || cleanupArgv[2] != vmConsoleCapturePath(testVMConsoleCaptureID) {
+	cleanupArgv := terminal.VmConsoleCleanupArgv(testVMConsoleCaptureID)
+	if cleanupArgv[0] != "rm" || cleanupArgv[1] != "-f" || cleanupArgv[2] != terminal.VmConsoleCapturePath(testVMConsoleCaptureID) {
 		t.Fatalf("清理 argv 异常: %#v", cleanupArgv)
 	}
 }
@@ -529,22 +530,22 @@ func TestVMConsoleFixedArgvTokens(t *testing.T) {
 // TestVMConsoleCommandQuoting 命令拼接只产生固定形态；Monitor 指令整体被单引号包裹，
 // 且经入口校验的输入不可能携带 shell 控制字符（非法输入已被 parse 层拒绝）。
 //
-// S1 收口后的形态变更：vmConsoleShellQuote 已统一为 remote.ShellQuote（总是加引号）。
+// S1 收口后的形态变更：terminal.VmConsoleShellQuote 已统一为 remote.ShellQuote（总是加引号）。
 // `vtpsh` 与 `'vtpsh'` 在 shell 里是同一个词，因此这是**调用方适配**而非安全语义
 // 变更；旧实现按"安全字符"省略引号，等于全仓存在两套转义、两个注入面。
 func TestVMConsoleCommandQuoting(t *testing.T) {
-	command := vmConsoleCommandFromArgv(vmConsoleScreendumpArgv("SIM-HCI-NODE-01", "271230001", testVMConsoleCaptureID))
+	command := terminal.VmConsoleCommandFromArgv(terminal.VmConsoleScreendumpArgv("SIM-HCI-NODE-01", "271230001", testVMConsoleCaptureID))
 	want := "'vtpsh' 'create' '/nodes/SIM-HCI-NODE-01/qemu/271230001/monitor' " +
 		"'--command' 'screendump /sf/data/local/hci-diagnosis/" + testVMConsoleCaptureID + ".ppm'"
 	if command != want {
 		t.Fatalf("拼接命令不一致:\n got %q\nwant %q", command, want)
 	}
 	// 收口后一律加引号：与省略引号 shell 等价，但只留下一份转义实现
-	if got := vmConsoleShellQuote("base64"); got != "'base64'" {
+	if got := terminal.VmConsoleShellQuote("base64"); got != "'base64'" {
 		t.Fatalf("token 应被统一引用: %q", got)
 	}
 	// 即使未来校验放宽，含单引号的输入也会被 POSIX 安全引用
-	if got := vmConsoleShellQuote("a'b c"); got != `'a'\''b c'` {
+	if got := terminal.VmConsoleShellQuote("a'b c"); got != `'a'\''b c'` {
 		t.Fatalf("单引号引用异常: %q", got)
 	}
 }
@@ -646,12 +647,12 @@ func newFakeSSHSession(t *testing.T, host string, port int) *sshx.SSHSession {
 }
 
 // runVMConsoleOpSync 同步执行固定操作并收集结果（超时兜底防止测试悬挂）。
-func runVMConsoleOpSync(t *testing.T, session *sshx.SSHSession, req vmConsoleRequest) models.OutMessage {
+func runVMConsoleOpSync(t *testing.T, session *sshx.SSHSession, req terminal.VmConsoleRequest) models.OutMessage {
 	t.Helper()
 	var result models.OutMessage
 	done := make(chan struct{})
 	go func() {
-		runVMConsoleOp(session, func(message models.OutMessage) {
+		terminal.RunVMConsoleOp(session, func(message models.OutMessage) {
 			result = message
 			close(done)
 		}, req)
@@ -665,9 +666,9 @@ func runVMConsoleOpSync(t *testing.T, session *sshx.SSHSession, req vmConsoleReq
 	}
 }
 
-func parseVMConsoleRequestOrFail(t *testing.T, msg models.InMessage) vmConsoleRequest {
+func parseVMConsoleRequestOrFail(t *testing.T, msg models.InMessage) terminal.VmConsoleRequest {
 	t.Helper()
-	req, errType := parseVMConsoleRequest(msg, "hci.local")
+	req, errType := terminal.ParseVMConsoleRequest(msg, "hci.local")
 	if errType != "" {
 		t.Fatalf("测试消息校验失败: %s", errType)
 	}
@@ -715,19 +716,19 @@ func TestVMConsoleCaptureBaselineEndToEnd(t *testing.T) {
 
 	host, port := startFakeSSHServer(t, execHandler)
 	session := newFakeSSHSession(t, host, port)
-	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(vmConsoleOpCaptureBaseline))
+	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(terminal.VmConsoleOpCaptureBaseline))
 	req.NodeIP = host
 
 	result := runVMConsoleOpSync(t, session, req)
 
-	if result.Type != "vm_console_result" || result.Operation != vmConsoleOpCaptureBaseline {
+	if result.Type != "vm_console_result" || result.Operation != terminal.VmConsoleOpCaptureBaseline {
 		t.Fatalf("结果消息类型/操作异常: %#v", result)
 	}
 	if result.ErrorType != "" || result.ExitCode != 0 || result.TimedOut {
 		t.Fatalf("基线截图应成功: error_type=%q exit_code=%d timed_out=%v", result.ErrorType, result.ExitCode, result.TimedOut)
 	}
-	if result.UploadStatus != vmConsoleUploadOK {
-		t.Fatalf("upload_status = %q, want %q", result.UploadStatus, vmConsoleUploadOK)
+	if result.UploadStatus != terminal.VmConsoleUploadOK {
+		t.Fatalf("upload_status = %q, want %q", result.UploadStatus, terminal.VmConsoleUploadOK)
 	}
 	if result.SHA256 != wantSHA256 || result.SizeBytes != int64(len(ppm)) {
 		t.Fatalf("sha256/size 不一致: sha256=%q size=%d", result.SHA256, result.SizeBytes)
@@ -790,11 +791,11 @@ func TestVMConsoleCaptureDisabledUploadFailsClosed(t *testing.T) {
 
 	host, port := startFakeSSHServer(t, handler)
 	session := newFakeSSHSession(t, host, port)
-	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(vmConsoleOpCaptureBaseline))
+	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(terminal.VmConsoleOpCaptureBaseline))
 
 	result := runVMConsoleOpSync(t, session, req)
 
-	if result.UploadStatus != vmConsoleUploadDisabled || result.ErrorType != vmConsoleUploadDisabled {
+	if result.UploadStatus != terminal.VmConsoleUploadDisabled || result.ErrorType != terminal.VmConsoleUploadDisabled {
 		t.Fatalf("未配置制品服务应 fail-closed: upload_status=%q error_type=%q", result.UploadStatus, result.ErrorType)
 	}
 	// 元数据仍保留 sha256/size（截图本身已成功捕获）
@@ -825,11 +826,11 @@ func TestVMConsoleCaptureUploadFailedKeepsMetadata(t *testing.T) {
 
 	host, port := startFakeSSHServer(t, handler)
 	session := newFakeSSHSession(t, host, port)
-	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(vmConsoleOpCaptureBaseline))
+	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(terminal.VmConsoleOpCaptureBaseline))
 
 	result := runVMConsoleOpSync(t, session, req)
 
-	if result.UploadStatus != vmConsoleUploadFailed || result.ErrorType != vmConsoleErrUploadFailed {
+	if result.UploadStatus != terminal.VmConsoleUploadFailed || result.ErrorType != terminal.VmConsoleErrUploadFailed {
 		t.Fatalf("上传失败分类异常: upload_status=%q error_type=%q", result.UploadStatus, result.ErrorType)
 	}
 	if result.SHA256 == "" || result.SizeBytes != int64(len(ppm)) {
@@ -854,11 +855,11 @@ func TestVMConsoleCaptureCommandFailureStillCleansUp(t *testing.T) {
 
 	host, port := startFakeSSHServer(t, handler)
 	session := newFakeSSHSession(t, host, port)
-	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(vmConsoleOpCaptureBaseline))
+	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(terminal.VmConsoleOpCaptureBaseline))
 
 	result := runVMConsoleOpSync(t, session, req)
 
-	if result.ErrorType != vmConsoleErrCaptureFailed || result.ExitCode != 1 {
+	if result.ErrorType != terminal.VmConsoleErrCaptureFailed || result.ExitCode != 1 {
 		t.Fatalf("screendump 失败分类异常: error_type=%q exit_code=%d", result.ErrorType, result.ExitCode)
 	}
 	mu.Lock()
@@ -889,14 +890,14 @@ func TestVMConsoleWakeEndToEnd(t *testing.T) {
 
 	host, port := startFakeSSHServer(t, handler)
 	session := newFakeSSHSession(t, host, port)
-	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(vmConsoleOpWakeDownKey))
+	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(terminal.VmConsoleOpWakeDownKey))
 
 	result := runVMConsoleOpSync(t, session, req)
 
 	if result.ErrorType != "" || result.ExitCode != 0 {
 		t.Fatalf("唤醒应成功: error_type=%q exit_code=%d", result.ErrorType, result.ExitCode)
 	}
-	if result.UploadStatus != vmConsoleUploadNotApplicable {
+	if result.UploadStatus != terminal.VmConsoleUploadNotApplicable {
 		t.Fatalf("唤醒的 upload_status 应为 not_applicable: %q", result.UploadStatus)
 	}
 	if uploadRequests != 0 {
@@ -918,14 +919,14 @@ func TestVMConsoleWakeFailureClassified(t *testing.T) {
 	t.Setenv("PLATFORM_ARTIFACT_URL", "")
 	host, port := startFakeSSHServer(t, handler)
 	session := newFakeSSHSession(t, host, port)
-	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(vmConsoleOpWakeDownKey))
+	req := parseVMConsoleRequestOrFail(t, validVMConsoleMessage(terminal.VmConsoleOpWakeDownKey))
 
 	result := runVMConsoleOpSync(t, session, req)
 
-	if result.ErrorType != vmConsoleErrWakeFailed || result.ExitCode != 1 {
+	if result.ErrorType != terminal.VmConsoleErrWakeFailed || result.ExitCode != 1 {
 		t.Fatalf("唤醒失败分类异常: error_type=%q exit_code=%d", result.ErrorType, result.ExitCode)
 	}
-	if result.UploadStatus != vmConsoleUploadNotApplicable {
+	if result.UploadStatus != terminal.VmConsoleUploadNotApplicable {
 		t.Fatalf("唤醒失败的 upload_status 仍应为 not_applicable: %q", result.UploadStatus)
 	}
 }
@@ -950,8 +951,8 @@ func TestUploadVMConsolePPMContract(t *testing.T) {
 	t.Setenv("PLATFORM_ARTIFACT_URL", server.URL)
 	t.Setenv("PLATFORM_INTERNAL_API_TOKEN", "unit-token")
 
-	status, err := uploadVMConsolePPM(context.Background(), testVMConsoleCaptureID, "CASE-1", data, sha256Hex)
-	if err != nil || status != vmConsoleUploadOK {
+	status, err := terminal.UploadVMConsolePPM(context.Background(), testVMConsoleCaptureID, "CASE-1", data, sha256Hex)
+	if err != nil || status != terminal.VmConsoleUploadOK {
 		t.Fatalf("上传应成功: status=%q err=%v", status, err)
 	}
 	if gotMethod != http.MethodPost || gotURL != "/internal/vm-console/artifacts/"+testVMConsoleCaptureID+"?case_id=CASE-1&kind=ppm&mode=online" {
@@ -966,9 +967,9 @@ func TestUploadVMConsolePPMContract(t *testing.T) {
 
 	// 未配置 PLATFORM_ARTIFACT_URL → fail-closed，不降级
 	t.Setenv("PLATFORM_ARTIFACT_URL", "")
-	status, err = uploadVMConsolePPM(context.Background(), testVMConsoleCaptureID, "CASE-1", data, sha256Hex)
-	if err != nil || status != vmConsoleUploadDisabled {
-		t.Fatalf("未配置制品服务应返回 %s: status=%q err=%v", vmConsoleUploadDisabled, status, err)
+	status, err = terminal.UploadVMConsolePPM(context.Background(), testVMConsoleCaptureID, "CASE-1", data, sha256Hex)
+	if err != nil || status != terminal.VmConsoleUploadDisabled {
+		t.Fatalf("未配置制品服务应返回 %s: status=%q err=%v", terminal.VmConsoleUploadDisabled, status, err)
 	}
 
 	// 制品服务非 2xx → upload_failed
@@ -977,9 +978,9 @@ func TestUploadVMConsolePPMContract(t *testing.T) {
 	}))
 	defer failing.Close()
 	t.Setenv("PLATFORM_ARTIFACT_URL", failing.URL)
-	status, err = uploadVMConsolePPM(context.Background(), testVMConsoleCaptureID, "CASE-1", data, sha256Hex)
-	if err == nil || status != vmConsoleUploadFailed {
-		t.Fatalf("非 2xx 应返回 %s: status=%q err=%v", vmConsoleUploadFailed, status, err)
+	status, err = terminal.UploadVMConsolePPM(context.Background(), testVMConsoleCaptureID, "CASE-1", data, sha256Hex)
+	if err == nil || status != terminal.VmConsoleUploadFailed {
+		t.Fatalf("非 2xx 应返回 %s: status=%q err=%v", terminal.VmConsoleUploadFailed, status, err)
 	}
 }
 
@@ -1027,7 +1028,7 @@ func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := receiveVMConsoleResult()
-	if response.ErrorType != vmConsoleErrOperationInvalid {
+	if response.ErrorType != terminal.VmConsoleErrOperationInvalid {
 		t.Fatalf("非法 operation 应被入口拒绝: %#v", response)
 	}
 	if response.ExitCode != -1 {
@@ -1035,14 +1036,14 @@ func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
 	}
 
 	// 非法 host_node_id 同样 target_invalid 拒绝
-	msg = validVMConsoleMessage(vmConsoleOpCaptureBaseline)
+	msg = validVMConsoleMessage(terminal.VmConsoleOpCaptureBaseline)
 	msg.HostNodeID = "node;reboot"
 	payload, _ = json.Marshal(msg)
 	if err := websocket.Message.Send(conn, string(payload)); err != nil {
 		t.Fatal(err)
 	}
 	response = receiveVMConsoleResult()
-	if response.ErrorType != vmConsoleErrTargetInvalid {
+	if response.ErrorType != terminal.VmConsoleErrTargetInvalid {
 		t.Fatalf("非法 host_node_id 应被入口拒绝: %#v", response)
 	}
 }

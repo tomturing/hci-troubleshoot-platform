@@ -83,7 +83,7 @@ func TestDetachSessionKeepsConnectionForLongTask(t *testing.T) {
 	bridge.set(key, session)
 	session.BeginLongTask()
 
-	if !bridge.destroyOrDetachSession(key, sessionReasonReconnect, "c2-2") {
+	if !bridge.destroyOrDetachSession(key, sshx.SessionReasonReconnect, "c2-2") {
 		t.Fatal("重连覆盖应命中已有会话")
 	}
 	if bridge.get(key) != nil {
@@ -112,7 +112,7 @@ func TestDestroyOrDetachDestroysIdleSession(t *testing.T) {
 	session := newTestSession()
 	bridge.set(key, session)
 
-	if !bridge.destroyOrDetachSession(key, sessionReasonReconnect, "c2-2") {
+	if !bridge.destroyOrDetachSession(key, sshx.SessionReasonReconnect, "c2-2") {
 		t.Fatal("重连覆盖应命中已有会话")
 	}
 	if !session.IsClosed() {
