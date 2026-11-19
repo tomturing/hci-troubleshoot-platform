@@ -826,7 +826,8 @@ watch(activeTab, (tab) => {
 }
 
 .observability-card :deep(.el-card__body) {
-  padding: 20px;
+  /* 内嵌场景：上下内边距直接吃掉 iframe 高度，收紧到 12px */
+  padding: 12px;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -854,7 +855,7 @@ watch(activeTab, (tab) => {
 /* 原生全屏下容器脱离文档流，必须自带背景色 */
 .observability-container:fullscreen {
   background: #f0f2f5;
-  padding: 16px !important;
+  padding: 12px !important;
   box-sizing: border-box;
 }
 
