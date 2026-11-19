@@ -40,7 +40,8 @@ admin-ui 侧对应页面：`frontend/admin/src/views/KnowledgeBaseView.vue`，
 
 > 上游 tag 是 `v0.9.0`，**不是** `0.9.0`（后者在 Docker Hub 上不存在，会 404）。
 
-`weknora/scripts/sync-upstream-images.sh` 用 `crane copy` 把上游四个镜像搬进私有 registry。
+`weknora/scripts/sync-upstream-images.sh` 用 `crane copy` 把上游四个镜像搬进私有 registry；
+线上入口是 `.github/workflows/weknora-images.yml`（Actions 手动 Run workflow，按版本幂等）。
 集群节点的 Docker Hub 加速器对第三方 namespace 返回 403，因此**不能**依赖直连
 Docker Hub，镜像必须先同步。
 
