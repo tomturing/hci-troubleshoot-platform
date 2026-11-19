@@ -10,9 +10,13 @@ package main
 //   - 旧前端不带凭据 → 阶段二整条路径不执行（验收 11）。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -333,6 +337,80 @@ func TestParseAcliPluginProbeOutput(t *testing.T) {
 	failed := parseAcliPluginProbeOutput("10.0.0.1", "", 255, nil)
 	if failed.DigestComparable {
 		t.Fatalf("非零退出应不可比：%+v", failed)
+	}
+}
+
+// TestProbeCommandRealShellRoundTrip 把生成的探测脚本交给**真实本地 shell** 跑一遍，
+// 再把输出喂回解析端：脚本与解析的契约必须由真实执行证明，手工拼的 stdout 暴露不了
+// “脚本多打一遍 REG 前缀”这类缺陷（2026-11-19 端到端实测：恒判
+// register_json_unparsable → 永远覆盖、永不跳过）。
+func TestProbeCommandRealShellRoundTrip(t *testing.T) {
+	for _, tool := range []string{"jq", "sha256sum"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("本地缺 %s，无法跑真实探测脚本", tool)
+		}
+	}
+	desired := newTestPluginDesired()
+	base := t.TempDir()
+	regPath := filepath.Join(base, "plugin_register.json")
+	// 铺“已收敛”事实：注册项与逐文件内容都与期望态一致。
+	regItem, err := json.Marshal(desired.RegisterItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(regPath, []byte("["+string(regItem)+"]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range desired.Files {
+		rel := strings.TrimPrefix(file.Path, desired.Name+"/")
+		p := filepath.Join(base, desired.Name, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(file.Content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 只把硬编码的节点路径换成夹具目录，脚本其余部分逐字不动。
+	command := buildAcliPluginProbeCommand(desired)
+	command = strings.Replace(command, "BASE="+shellQuote(acliPluginBaseDir), "BASE="+shellQuote(base), 1)
+	command = strings.Replace(command, "REG="+shellQuote(acliPluginRegisterPath), "REG="+shellQuote(regPath), 1)
+
+	runProbe := func() acliPluginHostState {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		cmd := exec.Command("/bin/sh", "-c", command)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		runErr := cmd.Run()
+		code := 0
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else if runErr != nil {
+			t.Fatalf("探测脚本无法执行：%v", runErr)
+		}
+		return parseAcliPluginProbeOutput("127.0.0.1", stdout.String(), code, runErr)
+	}
+
+	// 已收敛：注册项可解析 + 逐文件摘要一致 → 必须能判 Skip。
+	state := runProbe()
+	if state.ProbeErr != "" || !state.DigestComparable {
+		t.Fatalf("已收敛事实不应记错：%+v", state)
+	}
+	if action, reason := compareAcliPluginState(desired, state); action != acliPluginActionSkip {
+		t.Fatalf("已收敛应判 Skip，实际 %s/%s（state=%+v）", action, reason, state)
+	}
+
+	// 注册项被删：凭事实判新增，而不是探测失败。
+	if err := os.WriteFile(regPath, []byte("[]"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state = runProbe()
+	if state.ProbeErr != "" {
+		t.Fatalf("空注册表是合法事实，不应记错：%+v", state)
+	}
+	if action, reason := compareAcliPluginState(desired, state); action != acliPluginActionInstall || reason != "register_entry_missing" {
+		t.Fatalf("注册项缺失应判新增，实际 %s/%s", action, reason)
 	}
 }
 

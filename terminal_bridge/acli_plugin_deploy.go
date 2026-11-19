@@ -131,7 +131,9 @@ func buildAcliPluginProbeCommand(desired acliPluginDesired) string {
 	builder.WriteString(`if [ ! -f "$REG" ]; then printf '` + acliPluginRegNoFile + `\n'; `)
 	builder.WriteString(`elif ! command -v jq >/dev/null 2>&1; then printf '` + acliPluginRegNoJQ + `\n'; `)
 	builder.WriteString(`else REGJSON=$(jq -c --arg n "$NAME" '(. // []) | map(select(.name==$n)) | .[0] // empty' "$REG" 2>/dev/null) || REGJSON=` + acliPluginRegBad + `; `)
-	builder.WriteString(`[ -z "$REGJSON" ] && REGJSON=` + acliPluginRegMissing + `; printf 'REG` + "\t" + `%s\n' "$REGJSON"; fi; `)
+	// 行首的 REG\t 前缀已在上面统一打印，这里只补值；再打一遍前缀会让解析端
+	// 把第二个 "REG" 当注册项 JSON，恒判 register_json_unparsable → 永远覆盖、永不跳过。
+	builder.WriteString(`[ -z "$REGJSON" ] && REGJSON=` + acliPluginRegMissing + `; printf '%s\n' "$REGJSON"; fi; `)
 	// 逐文件：missing / no_sha256sum / read_failed / ok+摘要。
 	for _, rel := range relPaths {
 		builder.WriteString(`printf 'F` + "\t" + rel + `	'; `)
