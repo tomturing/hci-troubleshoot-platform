@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"terminal_bridge/internal/shared/remote"
 )
 
 const (
@@ -149,7 +151,7 @@ func validateSpcContent(raw string) error {
 	return nil
 }
 
-// buildSpcWriteCommand 直接写入原文，只用 shell 内建 printf。
+// buildSpcWriteCommand 把原文写进目标路径，只用 shell 内建 printf 填充。
 //
 // 为什么不再走 base64（2026-11-17 Q2026110302166 现场）：
 // bridge 通过 SSH 登录的是 HCI 宿主机，宿主机是极简系统，**没有 base64**
@@ -158,8 +160,24 @@ func validateSpcContent(raw string) error {
 //
 // 为什么不用 heredoc：heredoc 会在末尾追加换行，写入字节比 spc_sha256 多 1 字节，
 // 破坏摘要自洽。shellQuote 用单引号包裹后 $、反引号、双引号、* 都不会展开。
+//
+// S3 收口：填充仍是 printf，但校验/替换委托 remote.BuildArgvWriteCommand
+// （先写确定性 tmp → 大小/摘要校验 → mv 原子替换，失败只删 tmp）。
+// 旧实现 printf 直写正式路径，SSH 断链会留半截清单，而 acli 对坏清单
+// 静默跳过——任务报成功、数据却没采到。不能用 cat 收 stdin 的
+// BuildWriteCommand：spc 脚本还要再经一跳 ssh 送到目标节点，那一跳
+// 没有可用的 stdin 通道。内容上限 512KB 中超过单参数 128KB 的部分
+// 会被 argv 写入协议拒绝（exit 20 → write_rejected），与旧实现同样
+// 受 MAX_ARG_STRLEN 约束，不是新增限制。
 func buildSpcWriteCommand(path, raw string) string {
-	return fmt.Sprintf("printf '%%s' %s > %s", shellQuote(raw), shellQuote(path))
+	return remote.BuildArgvWriteCommand(remote.WriteSpec{
+		Path:   path,
+		Data:   []byte(raw),
+		Size:   int64(len(raw)),
+		SHA256: spcSHA256(raw),
+		// 清单是普通 JSON 文件，不是可执行产物；不指定会落到协议默认 0755。
+		Mode: "0644",
+	})
 }
 
 func buildSpcBackupCommand(path, backup string) string {

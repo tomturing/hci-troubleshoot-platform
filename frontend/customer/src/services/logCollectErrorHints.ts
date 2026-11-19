@@ -311,6 +311,11 @@ const HINTS: Record<string, LogCollectErrorHint> = {
     check: ["任务详情 detail.spc_hosts 里逐台查看 error_code 与 error_detail。", "先区分 SSH/认证类与目录/写入类。"],
     fix: ["按逐台原因分别修复后再重新下发。", "不要只按聚合码排查，每台原因可能不同。"],
   },
+  "LC-SPC-011": {
+    title: "目标节点场景写入进行中",
+    check: ["任务详情 detail.spc_hosts 里确认该节点 error_code 为 LC-SPC-011。", "核对该节点是否有并发的自定义场景采集任务。"],
+    fix: ["等待进行中的写入完成后重新下发。", "不要并发下发写同一节点的自定义场景任务。"],
+  },
   "LC-TRANSFER-001": {
     title: "压缩包不存在",
     check: ["按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"],

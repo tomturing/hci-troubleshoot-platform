@@ -547,16 +547,20 @@ func TestVMConsoleFixedArgvTokens(t *testing.T) {
 
 // TestVMConsoleCommandQuoting 命令拼接只产生固定形态；Monitor 指令整体被单引号包裹，
 // 且经入口校验的输入不可能携带 shell 控制字符（非法输入已被 parse 层拒绝）。
+//
+// S1 收口后的形态变更：vmConsoleShellQuote 已统一为 remote.ShellQuote（总是加引号）。
+// `vtpsh` 与 `'vtpsh'` 在 shell 里是同一个词，因此这是**调用方适配**而非安全语义
+// 变更；旧实现按"安全字符"省略引号，等于全仓存在两套转义、两个注入面。
 func TestVMConsoleCommandQuoting(t *testing.T) {
 	command := vmConsoleCommandFromArgv(vmConsoleScreendumpArgv("SIM-HCI-NODE-01", "271230001", testVMConsoleCaptureID))
-	want := "vtpsh create /nodes/SIM-HCI-NODE-01/qemu/271230001/monitor " +
-		"--command 'screendump /sf/data/local/hci-diagnosis/" + testVMConsoleCaptureID + ".ppm'"
+	want := "'vtpsh' 'create' '/nodes/SIM-HCI-NODE-01/qemu/271230001/monitor' " +
+		"'--command' 'screendump /sf/data/local/hci-diagnosis/" + testVMConsoleCaptureID + ".ppm'"
 	if command != want {
 		t.Fatalf("拼接命令不一致:\n got %q\nwant %q", command, want)
 	}
-	// 安全字符不额外加引号
-	if got := vmConsoleShellQuote("base64"); got != "base64" {
-		t.Fatalf("安全 token 不应被引用: %q", got)
+	// 收口后一律加引号：与省略引号 shell 等价，但只留下一份转义实现
+	if got := vmConsoleShellQuote("base64"); got != "'base64'" {
+		t.Fatalf("token 应被统一引用: %q", got)
 	}
 	// 即使未来校验放宽，含单引号的输入也会被 POSIX 安全引用
 	if got := vmConsoleShellQuote("a'b c"); got != `'a'\''b c'` {
@@ -704,11 +708,11 @@ func TestVMConsoleCaptureBaselineEndToEnd(t *testing.T) {
 		switch {
 		case strings.Contains(command, "screendump"):
 			return "", 0
-		case strings.HasPrefix(command, "test -f"):
+		case strings.HasPrefix(command, "'test' '-f'"):
 			return "", 0
-		case strings.HasPrefix(command, "base64 -w0"):
+		case strings.HasPrefix(command, "'base64' '-w0'"):
 			return base64.StdEncoding.EncodeToString(ppm) + "\n", 0
-		case strings.HasPrefix(command, "rm -f"):
+		case strings.HasPrefix(command, "'rm' '-f'"):
 			return "", 0
 		}
 		return "", 127
@@ -779,8 +783,8 @@ func TestVMConsoleCaptureBaselineEndToEnd(t *testing.T) {
 	if len(commands) != 4 {
 		t.Fatalf("命令数 = %d, want 4: %#v", len(commands), commands)
 	}
-	if !strings.Contains(commands[0], "screendump") || !strings.HasPrefix(commands[1], "test -f") ||
-		!strings.HasPrefix(commands[2], "base64 -w0") || !strings.HasPrefix(commands[3], "rm -f") {
+	if !strings.Contains(commands[0], "screendump") || !strings.HasPrefix(commands[1], "'test' '-f'") ||
+		!strings.HasPrefix(commands[2], "'base64' '-w0'") || !strings.HasPrefix(commands[3], "'rm' '-f'") {
 		t.Fatalf("固定操作顺序异常: %#v", commands)
 	}
 }
@@ -795,7 +799,7 @@ func TestVMConsoleCaptureDisabledUploadFailsClosed(t *testing.T) {
 		mu.Lock()
 		commands++
 		mu.Unlock()
-		if strings.HasPrefix(command, "base64 -w0") {
+		if strings.HasPrefix(command, "'base64' '-w0'") {
 			return base64.StdEncoding.EncodeToString(ppm) + "\n", 0
 		}
 		return "", 0
@@ -826,7 +830,7 @@ func TestVMConsoleCaptureDisabledUploadFailsClosed(t *testing.T) {
 func TestVMConsoleCaptureUploadFailedKeepsMetadata(t *testing.T) {
 	ppm := []byte("P6\n1 1\n255\n\x20\x20\x20")
 	handler := func(command string) (string, int) {
-		if strings.HasPrefix(command, "base64 -w0") {
+		if strings.HasPrefix(command, "'base64' '-w0'") {
 			return base64.StdEncoding.EncodeToString(ppm) + "\n", 0
 		}
 		return "", 0
@@ -878,7 +882,7 @@ func TestVMConsoleCaptureCommandFailureStillCleansUp(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(commands) != 2 || !strings.HasPrefix(commands[1], "rm -f") {
+	if len(commands) != 2 || !strings.HasPrefix(commands[1], "'rm' '-f'") {
 		t.Fatalf("失败后未无条件清理: %#v", commands)
 	}
 }
@@ -919,7 +923,7 @@ func TestVMConsoleWakeEndToEnd(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(commands) != 1 || !strings.Contains(commands[0], "--command 'sendkey down'") {
+	if len(commands) != 1 || !strings.Contains(commands[0], "'--command' 'sendkey down'") {
 		t.Fatalf("唤醒只能执行固定 sendkey down: %#v", commands)
 	}
 	if strings.Contains(commands[0], "screendump") {

@@ -22,6 +22,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
+
+	"terminal_bridge/internal/shared/remote"
 )
 
 const (
@@ -164,9 +166,9 @@ var (
 	// 中文「总进度：63% - 2/3（已收集完成/收集总数）」、英文
 	// 「Overall progress: 100% - 5/5(Collected/Total collected)」。
 	logCollectProgressRe = regexp.MustCompile(`^(?:总进度|Overall progress)\s*[:：]\s*(\d+)%\s*-\s*(\d+)\s*/\s*(\d+)`)
-	// logCollectAnsiRe 匹配终端颜色/样式转义。acli 失败时会输出 `\x1b[31mFATA\x1b[0m...`，
-	// 不清洗会让状态行前缀带转义、解析失配，前端也会把乱码直接展示给用户。
-	logCollectAnsiRe = regexp.MustCompile("\u001b\\[[0-9;]*m")
+	// 终端颜色/样式转义的清洗已收口到 remote.StripANSI（唯一实现）。
+	// acli 失败时会输出 `\x1b[31mFATA\x1b[0m...`，不清洗会让状态行前缀带转义、
+	// 解析失配，前端也会把乱码直接展示给用户。
 	// 只用于剥掉 acli 日志行前面的时间戳，避免把日志头当成失败原因。
 	// 兼容 `2026/11/12 10:00:00`、`2026-11-12T10:00:00.123Z`、`2026-11-12 10:00:00+08:00`。
 	logCollectTimestampRe = regexp.MustCompile(`^\d{4}[/-]\d{2}[/-]\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
@@ -184,8 +186,11 @@ var (
 
 // shellQuote 用单引号包裹并按 POSIX 规则转义内部单引号。
 // 插件的 -s/-p/-u 最终会被拼进 shell 命令，禁止直接使用用户输入。
+//
+// S1 收口：唯一实现在 remote.ShellQuote。全仓曾有两份转义（本函数与
+// main.go 的 vmConsoleShellQuote），意味着两个注入面各自演化；现在只剩一份。
 func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+	return remote.ShellQuote(value)
 }
 
 // buildLogCollectCreateCommand 校验参数并返回 acli 之后的参数串（不含 acli 本体）。
@@ -1461,11 +1466,9 @@ func archiveStaleLogCollectArchive(ctx context.Context, s *SSHSession, caseID, t
 }
 
 // stripAnsi 去掉终端转义序列：保留可读文本，避免解析与展示被颜色码污染。
+// 唯一实现在 remote.StripANSI（正则与收口前逐字一致）。
 func stripAnsi(text string) string {
-	if text == "" {
-		return text
-	}
-	return logCollectAnsiRe.ReplaceAllString(text, "")
+	return remote.StripANSI(text)
 }
 
 func errString(err error) string {
