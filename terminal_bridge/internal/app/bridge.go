@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"fmt"
@@ -16,15 +16,15 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-func sessionKey(caseID, nodeIP string) string {
+func SessionKey(caseID, nodeIP string) string {
 	if nodeIP == "" {
 		return caseID
 	}
 	return caseID + "@" + nodeIP
 }
 
-// sessionKeyCase 从会话键里取回工单号（`caseID@nodeIP` → `caseID`）。
-func sessionKeyCase(key string) string {
+// SessionKeyCase 从会话键里取回工单号（`caseID@nodeIP` → `caseID`）。
+func SessionKeyCase(key string) string {
 	if idx := strings.Index(key, "@"); idx >= 0 {
 		return key[:idx]
 	}
@@ -33,13 +33,13 @@ func sessionKeyCase(key string) string {
 
 type Bridge struct {
 	mu       sync.Mutex
-	sessions map[string]*sshx.SSHSession // key: caseID@nodeIP
+	Sessions map[string]*sshx.SSHSession // key: caseID@nodeIP
 	// 保存每个 caseID 最近一次 ssh_connect 的认证信息，用于自动连接新节点
 	lastAuth map[string]models.InMessage // key: caseID
 	// sftpTasks 登记进行中的文件下载任务（key: caseID|taskID），
 	// 用于取消、去重与并发上限；由 sftpTasksMu 保护。
-	sftpTasksMu sync.Mutex
-	sftpTasks   map[string]*sftpTask
+	SftpTasksMu sync.Mutex
+	SftpTasks   map[string]any // R0 缝：任务实体归 sftp 域，类型断言取回
 	// 会话引用计数与空闲租约簿记：WS 关闭只 release 不销毁，会话在 TTL 内仍可被复用
 	// （日志面板借用的会话、以及刷新页面后准备接上的会话都不应被连坐清理）。
 	sessionRefs   map[string]int
@@ -48,34 +48,44 @@ type Bridge struct {
 	// acli 安装包传输互斥与已校验包缓存（见 acli_package.go）。
 	// 互斥不是性能优化而是正确性要求：并发的两个上传会各自 cat>tmp 再 mv 到
 	// 同一个 destPath，谁最后落盘完全取决于时序——这正是「包不对」的成因之一。
-	acliMu    sync.Mutex
-	acliBusy  map[string]bool
-	acliCache *acliPackageCache
+	AcliMu    sync.Mutex
+	AcliBusy  map[string]bool
+	AcliCache any // R0 缝：缓存实体归 acli 域，类型断言取回
 }
 
-func newBridge() *Bridge {
+func NewBridge() *Bridge {
 	return &Bridge{
-		sessions:      make(map[string]*sshx.SSHSession),
+		Sessions:      make(map[string]*sshx.SSHSession),
 		lastAuth:      make(map[string]models.InMessage),
-		sftpTasks:     make(map[string]*sftpTask),
+		SftpTasks:     make(map[string]any),
 		sessionRefs:   make(map[string]int),
 		sessionIdleAt: make(map[string]time.Time),
 	}
 }
 
-func (b *Bridge) get(key string) *sshx.SSHSession {
+// SetSessionIdleAt 覆写会话空闲租约起点（测试注入过期租约用；正常路径由 release 维护）。
+func (b *Bridge) SetSessionIdleAt(key string, at time.Time) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.sessions[key]
+	if b.sessionIdleAt == nil {
+		b.sessionIdleAt = make(map[string]time.Time)
+	}
+	b.sessionIdleAt[key] = at
 }
 
-// sessionByNodeIP 在同一 bridge 实例内按节点 IP 查找任意工单下的会话。
+func (b *Bridge) Get(key string) *sshx.SSHSession {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Sessions[key]
+}
+
+// SessionByNodeIP 在同一 bridge 实例内按节点 IP 查找任意工单下的会话。
 //
 // 为什么需要：SSH 会话的真实归属是「操作者 + 节点」，工单号只决定采集结果归档到哪张单。
 // 历史实现只按 caseID@nodeIP 精确匹配，于是"在 SSH 终端或旧工单里登录过、换到新工单再采集"
 // 会直接报 session_missing（LC-ENV-006），用户已经看到绿色"已连接"却无法采集。
 // 这里仅做读取回退，不改变会话创建语义；bridge 是单用户本地进程，不存在跨用户越权。
-func (b *Bridge) sessionByNodeIP(nodeIP string) (*sshx.SSHSession, string) {
+func (b *Bridge) SessionByNodeIP(nodeIP string) (*sshx.SSHSession, string) {
 	nodeIP = strings.TrimSpace(nodeIP)
 	if nodeIP == "" {
 		return nil, ""
@@ -84,7 +94,7 @@ func (b *Bridge) sessionByNodeIP(nodeIP string) (*sshx.SSHSession, string) {
 	defer b.mu.Unlock()
 	// 精确后缀匹配，避免 10.1.1.1 命中 10.1.1.11 这类前缀误判
 	suffix := "@" + nodeIP
-	for key, session := range b.sessions {
+	for key, session := range b.Sessions {
 		if session != nil && strings.HasSuffix(key, suffix) {
 			return session, key
 		}
@@ -92,19 +102,19 @@ func (b *Bridge) sessionByNodeIP(nodeIP string) (*sshx.SSHSession, string) {
 	return nil, ""
 }
 
-// sessionByAddressHost 按会话实际连到的主机名/IP 匹配。
+// SessionByAddressHost 按会话实际连到的主机名/IP 匹配。
 //
 // 为什么需要：`ssh_connect` 历史上不带 node_ip，会话键只落成 `caseID`（没有 @IP），
 // 于是"在 SSH 终端里连好、命令都能跑"的情况下，日志收集按 `caseID@nodeIP` 仍然查不到。
 // 会话对象的 address 记录了真实目标地址，用它兜底可以覆盖这类存量会话。
-func (b *Bridge) sessionByAddressHost(nodeIP string) (*sshx.SSHSession, string) {
+func (b *Bridge) SessionByAddressHost(nodeIP string) (*sshx.SSHSession, string) {
 	nodeIP = strings.TrimSpace(nodeIP)
 	if nodeIP == "" {
 		return nil, ""
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for key, session := range b.sessions {
+	for key, session := range b.Sessions {
 		if session == nil {
 			continue
 		}
@@ -119,22 +129,22 @@ func (b *Bridge) sessionByAddressHost(nodeIP string) (*sshx.SSHSession, string) 
 	return nil, ""
 }
 
-func (b *Bridge) set(key string, s *sshx.SSHSession) {
+func (b *Bridge) Set(key string, s *sshx.SSHSession) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.sessions[key] = s
+	b.Sessions[key] = s
 	// 入表即登记一个持有者：引用计数从 1 开始，WS 关闭时由 releaseSession 减回 0。
 	// 必须用 Locked 版本：本函数已持有 b.mu，而 Go 的 Mutex 不可重入。
 	b.holdSessionLocked(key)
 }
 
-func (b *Bridge) remove(key string) {
+func (b *Bridge) Remove(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.sessions, key)
+	delete(b.Sessions, key)
 }
 
-func (b *Bridge) setLastAuth(caseID string, msg models.InMessage) {
+func (b *Bridge) SetLastAuth(caseID string, msg models.InMessage) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.lastAuth[caseID] = msg
@@ -147,7 +157,7 @@ func (b *Bridge) getLastAuth(caseID string) (models.InMessage, bool) {
 	return msg, ok
 }
 
-func (b *Bridge) clearLastAuth(caseID string) {
+func (b *Bridge) ClearLastAuth(caseID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	delete(b.lastAuth, caseID)
@@ -157,19 +167,19 @@ func (b *Bridge) clearLastAuth(caseID string) {
 //
 // 用途：日志收集报 session_missing 时区分两件本质不同的事——
 // 数量为 0 说明连接生命周期已结束（断连/远端退出），数量 >0 说明是键或地址没对上。
-func (b *Bridge) sessionCount() int {
+func (b *Bridge) SessionCount() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.sessions)
+	return len(b.Sessions)
 }
 
-// sessionKeyList 返回当前会话键快照（最多 limit 个，0 表示不限）。
+// SessionKeyList 返回当前会话键快照（最多 limit 个，0 表示不限）。
 // 键形如 `caseID@nodeIP`，是判断「会话在、但键不匹配」的唯一客观依据。
-func (b *Bridge) sessionKeyList(limit int) []string {
+func (b *Bridge) SessionKeyList(limit int) []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	keys := make([]string, 0, len(b.sessions))
-	for key := range b.sessions {
+	keys := make([]string, 0, len(b.Sessions))
+	for key := range b.Sessions {
 		if limit > 0 && len(keys) >= limit {
 			break
 		}
@@ -181,12 +191,12 @@ func (b *Bridge) sessionKeyList(limit int) []string {
 // models.BridgeSessionInfo 是「当前已登录、可下发」的环境摘要。
 // 只暴露会话键与连接地址，不含用户名、口令、私钥等任何凭据字段。
 
-// listSessions 返回当前所有活跃 SSH 会话，供管理端枚举「custom-ui + bridge 已登录」的环境。
-func (b *Bridge) listSessions() []models.BridgeSessionInfo {
+// ListSessions 返回当前所有活跃 SSH 会话，供管理端枚举「custom-ui + bridge 已登录」的环境。
+func (b *Bridge) ListSessions() []models.BridgeSessionInfo {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	items := make([]models.BridgeSessionInfo, 0, len(b.sessions))
-	for key, s := range b.sessions {
+	items := make([]models.BridgeSessionInfo, 0, len(b.Sessions))
+	for key, s := range b.Sessions {
 		if s == nil {
 			continue
 		}
@@ -217,17 +227,17 @@ func (b *Bridge) status() bridgeStatus {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return bridgeStatus{
-		ActiveSessions:  len(b.sessions),
+		ActiveSessions:  len(b.Sessions),
 		CachedAuthCases: len(b.lastAuth),
 	}
 }
 
 // resolveSession 根据 caseID + nodeIP 解析 SSH 会话
 // 有 nodeIP 时只精确匹配，不 fallback 到默认会话（避免命令在错误节点执行）
-func (b *Bridge) resolveSession(msg models.InMessage) (*sshx.SSHSession, string) {
+func (b *Bridge) ResolveSession(msg models.InMessage) (*sshx.SSHSession, string) {
 	if msg.NodeIP != "" {
-		key := sessionKey(msg.CaseID, msg.NodeIP)
-		if s := b.get(key); s != nil {
+		key := SessionKey(msg.CaseID, msg.NodeIP)
+		if s := b.Get(key); s != nil {
 			log.Printf("[Bridge] resolveSession: 精确匹配 key=%s", key)
 			return s, key
 		}
@@ -237,8 +247,8 @@ func (b *Bridge) resolveSession(msg models.InMessage) (*sshx.SSHSession, string)
 	}
 
 	// 无 nodeIP → 使用默认会话
-	defaultKey := sessionKey(msg.CaseID, "")
-	if s := b.get(defaultKey); s != nil {
+	defaultKey := SessionKey(msg.CaseID, "")
+	if s := b.Get(defaultKey); s != nil {
 		log.Printf("[Bridge] resolveSession: 使用默认会话 key=%s", defaultKey)
 		return s, defaultKey
 	}
@@ -253,21 +263,21 @@ func (b *Bridge) resolveSession(msg models.InMessage) (*sshx.SSHSession, string)
 // 为什么必须兜底：历史上这里只做「键为 caseID」的默认匹配，而 ssh_connect 落库的键是
 // `caseID@nodeIP`，只要调用方没带 node_ip 就恒定 session_missing——表现为
 // 「环境明明没装 acli，却从来没有下载/安装日志」，链路根本没启动过。
-func (b *Bridge) resolveAcliSyncSession(msg models.InMessage) (*sshx.SSHSession, string) {
-	if s, key := b.resolveSession(msg); s != nil {
+func (b *Bridge) ResolveAcliSyncSession(msg models.InMessage) (*sshx.SSHSession, string) {
+	if s, key := b.ResolveSession(msg); s != nil {
 		return s, key
 	}
 	if msg.NodeIP != "" {
-		if s, key := b.sessionByNodeIP(msg.NodeIP); s != nil {
+		if s, key := b.SessionByNodeIP(msg.NodeIP); s != nil {
 			log.Printf("[Bridge] resolveAcliSyncSession: 按节点 IP 复用会话 key=%s", key)
 			return s, key
 		}
-		if s, key := b.sessionByAddressHost(msg.NodeIP); s != nil {
+		if s, key := b.SessionByAddressHost(msg.NodeIP); s != nil {
 			log.Printf("[Bridge] resolveAcliSyncSession: 按会话实际地址复用 key=%s", key)
 			return s, key
 		}
 	}
-	if s, key := b.onlySessionForCase(msg.CaseID); s != nil {
+	if s, key := b.OnlySessionForCase(msg.CaseID); s != nil {
 		log.Printf("[Bridge] resolveAcliSyncSession: 工单唯一会话兜底 key=%s", key)
 		return s, key
 	}
@@ -282,13 +292,13 @@ func (b *Bridge) resolveAcliSyncSession(msg models.InMessage) (*sshx.SSHSession,
 //
 // 输入不触发自动建连（建连属于 exec 的语义），只做只读解析；
 // 顺序：精确键 → 本连接最近一次 ssh_connect 的会话 → 本工单唯一会话（多节点时不猜）。
-func (b *Bridge) resolveInputSession(msg models.InMessage, activeKey string, ownedSessions *ownedSessionTracker) (*sshx.SSHSession, string) {
-	if s, key := b.resolveSession(msg); s != nil {
+func (b *Bridge) ResolveInputSession(msg models.InMessage, activeKey string, ownedSessions *ownedSessionTracker) (*sshx.SSHSession, string) {
+	if s, key := b.ResolveSession(msg); s != nil {
 		return s, key
 	}
 	// 同一块终端：输入天然属于本连接刚建立的那个会话，即便消息里没带 node_ip。
-	if activeKey != "" && (msg.CaseID == "" || sessionKeyCase(activeKey) == msg.CaseID) {
-		if s := b.get(activeKey); s != nil {
+	if activeKey != "" && (msg.CaseID == "" || SessionKeyCase(activeKey) == msg.CaseID) {
+		if s := b.Get(activeKey); s != nil {
 			log.Printf("[Bridge] resolveInputSession: 命中本连接活动会话 key=%s", activeKey)
 			return s, activeKey
 		}
@@ -297,22 +307,22 @@ func (b *Bridge) resolveInputSession(msg models.InMessage, activeKey string, own
 	if msg.CaseID != "" {
 		for key, session := range ownedSessions.sessionsSnapshot() {
 			if session != nil && (key == msg.CaseID || strings.HasPrefix(key, msg.CaseID+"@")) {
-				if current := b.get(key); current == session {
+				if current := b.Get(key); current == session {
 					log.Printf("[Bridge] resolveInputSession: 命中本连接所属工单会话 key=%s", key)
 					return session, key
 				}
 			}
 		}
 	}
-	if s, key := b.onlySessionForCase(msg.CaseID); s != nil {
+	if s, key := b.OnlySessionForCase(msg.CaseID); s != nil {
 		log.Printf("[Bridge] resolveInputSession: 工单唯一会话兜底 key=%s", key)
 		return s, key
 	}
 	return nil, ""
 }
 
-// onlySessionForCase 返回该工单唯一的 SSH 会话；有多条时返回 nil（宁可不装，也不猜节点）。
-func (b *Bridge) onlySessionForCase(caseID string) (*sshx.SSHSession, string) {
+// OnlySessionForCase 返回该工单唯一的 SSH 会话；有多条时返回 nil（宁可不装，也不猜节点）。
+func (b *Bridge) OnlySessionForCase(caseID string) (*sshx.SSHSession, string) {
 	caseID = strings.TrimSpace(caseID)
 	if caseID == "" {
 		return nil, ""
@@ -324,7 +334,7 @@ func (b *Bridge) onlySessionForCase(caseID string) (*sshx.SSHSession, string) {
 		foundKey string
 	)
 	prefix := caseID + "@"
-	for key, session := range b.sessions {
+	for key, session := range b.Sessions {
 		if session == nil || (key != caseID && !strings.HasPrefix(key, prefix)) {
 			continue
 		}
@@ -338,7 +348,7 @@ func (b *Bridge) onlySessionForCase(caseID string) (*sshx.SSHSession, string) {
 
 // autoConnectNode 使用已保存的认证信息自动连接新节点
 // connID/role 由调用方传入并写入 session.created：自动建连同样需要"谁建的"这一事实。
-func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg models.InMessage, ownedSessions *ownedSessionTracker, connID, role string) *sshx.SSHSession {
+func (b *Bridge) AutoConnectNode(ws *websocket.Conn, msg models.InMessage, ownedSessions *ownedSessionTracker, connID, role string) *sshx.SSHSession {
 	if msg.NodeIP == "" {
 		log.Printf("[Bridge] autoConnect: nodeIP 为空，跳过")
 		return nil
@@ -363,7 +373,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 		msg.NodeIP, msg.CaseID, auth.Username)
 	session, err := sshx.NewSSHSession(connectMsg)
 	if err != nil {
-		atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
+		atomic.AddUint64(&PromMetrics.SshConnectionErrors, 1)
 		message, detail := sshx.BuildSSHError(err)
 		models.SendMsg(ws, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 		log.Printf("[Bridge] autoConnect: 连接失败 node=%s case=%s err=%v", msg.NodeIP, msg.CaseID, err)
@@ -372,7 +382,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 
 	stdout, err := session.Start()
 	if err != nil {
-		atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
+		atomic.AddUint64(&PromMetrics.SshConnectionErrors, 1)
 		session.Close()
 		message, detail := sshx.BuildSSHError(err)
 		models.SendMsg(ws, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
@@ -380,29 +390,29 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 		return nil
 	}
 
-	key := sessionKey(msg.CaseID, msg.NodeIP)
-	b.set(key, session)
-	ownedSessions.set(key, session)
-	atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
+	key := SessionKey(msg.CaseID, msg.NodeIP)
+	b.Set(key, session)
+	ownedSessions.Set(key, session)
+	atomic.AddUint64(&PromMetrics.SshConnectionsTotal, 1)
 	// 自动连接的节点会话同样要保活：它常被日志采集挑中，长跑期间最容易撞上半开连接。
 	session.StartKeepAlive(sshx.SshKeepAliveInterval())
 	// 自动建连也必须留痕：现场出现过"会话不是用户点出来的、而是 autoConnect 建的"，
 	// 事后无法区分，只能靠 source 字段。
-	logSessionCreated(session, key, connID, role, "auto_connect")
+	LogSessionCreated(session, key, connID, role, "auto_connect")
 
 	go terminal.On_output_start(session, ws, stdout, msg.CaseID, func(reason string) {
 		if reason == sshx.SessionReasonRemoteEOF {
-			b.destroySession(key, sshx.SessionReasonRemoteEOF, connID)
-			ownedSessions.remove(key)
+			b.DestroySession(key, sshx.SessionReasonRemoteEOF, connID)
+			ownedSessions.Remove(key)
 			return
 		}
-		b.remove(key)
-		ownedSessions.remove(key)
+		b.Remove(key)
+		ownedSessions.Remove(key)
 	})
 	return session
 }
 
-// reconnectDeliveryNode 用已保存的认证信息后台重建到节点的 SSH 会话，不依赖任何浏览器连接。
+// ReconnectDeliveryNode 用已保存的认证信息后台重建到节点的 SSH 会话，不依赖任何浏览器连接。
 //
 // 为什么需要：交付（pull + 上传到平台）常跑十几分钟，而节点 SSH 存在 10 分钟会话上限
 // （remote_eof），或面板 WebSocket 抖动也会导致会话随持有连接一起被释放。会话一旦消失，
@@ -413,7 +423,7 @@ func (b *Bridge) autoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 // 与 autoConnectNode 的区别：后者要给终端面板回发 ssh_output / exec_result，必须持 ws；
 // 交付是后台作业，没有也不该绑定某个浏览器连接，所以输出监控走 nil ws（terminal.On_output_start
 // 已对 nil ws 做保护，只保留 exec 结果回环与 EOF 销毁）。
-func (b *Bridge) reconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSHSession, error) {
+func (b *Bridge) ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSHSession, error) {
 	if strings.TrimSpace(nodeIP) == "" {
 		return nil, fmt.Errorf("nodeIP 为空，无法自动重连")
 	}
@@ -437,12 +447,12 @@ func (b *Bridge) reconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 		session.Close()
 		return nil, fmt.Errorf("自动重连节点启动失败: %w", err)
 	}
-	key := sessionKey(caseID, nodeIP)
-	b.set(key, session)
-	atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
+	key := SessionKey(caseID, nodeIP)
+	b.Set(key, session)
+	atomic.AddUint64(&PromMetrics.SshConnectionsTotal, 1)
 	// 后台重连的会话同样要保活：它最容易在长跑期间撞上半开连接。
 	session.StartKeepAlive(sshx.SshKeepAliveInterval())
-	logSessionCreated(session, key, connID, "delivery", "delivery_auto_reconnect")
+	LogSessionCreated(session, key, connID, "delivery", "delivery_auto_reconnect")
 	logpush.Blog("WARN", "delivery.session_reconnected", "交付期间节点会话掉线，已用已存认证自动重连", "", caseID, nodeIP, "", map[string]any{
 		"key":     key,
 		"conn_id": connID,
@@ -451,9 +461,9 @@ func (b *Bridge) reconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 	// 其余原因只摘键不销毁。
 	go terminal.On_output_start(session, nil, stdout, caseID, func(reason string) {
 		if reason == sshx.SessionReasonRemoteEOF {
-			b.destroySession(key, sshx.SessionReasonRemoteEOF, connID)
+			b.DestroySession(key, sshx.SessionReasonRemoteEOF, connID)
 		} else {
-			b.remove(key)
+			b.Remove(key)
 		}
 	})
 	return session, nil
@@ -461,54 +471,54 @@ func (b *Bridge) reconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 
 type ownedSessionTracker struct {
 	mu       sync.Mutex
-	sessions map[string]*sshx.SSHSession
+	Sessions map[string]*sshx.SSHSession
 }
 
-func newOwnedSessionTracker() *ownedSessionTracker {
-	return &ownedSessionTracker{sessions: make(map[string]*sshx.SSHSession)}
+func NewOwnedSessionTracker() *ownedSessionTracker {
+	return &ownedSessionTracker{Sessions: make(map[string]*sshx.SSHSession)}
 }
 
-func (t *ownedSessionTracker) set(key string, session *sshx.SSHSession) {
+func (t *ownedSessionTracker) Set(key string, session *sshx.SSHSession) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.sessions[key] = session
+	t.Sessions[key] = session
 }
 
-func (t *ownedSessionTracker) remove(key string) {
+func (t *ownedSessionTracker) Remove(key string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	delete(t.sessions, key)
+	delete(t.Sessions, key)
 }
 
 // drainCase 取出当前 WebSocket 所拥有的指定工单全部会话，包括自动建立的节点会话。
-func (t *ownedSessionTracker) drainCase(caseID string) map[string]*sshx.SSHSession {
+func (t *ownedSessionTracker) DrainCase(caseID string) map[string]*sshx.SSHSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	sessions := make(map[string]*sshx.SSHSession)
-	for key, session := range t.sessions {
+	Sessions := make(map[string]*sshx.SSHSession)
+	for key, session := range t.Sessions {
 		if key == caseID || strings.HasPrefix(key, caseID+"@") {
-			sessions[key] = session
-			delete(t.sessions, key)
+			Sessions[key] = session
+			delete(t.Sessions, key)
 		}
 	}
-	return sessions
+	return Sessions
 }
 
 // sessionsSnapshot 返回当前连接所拥有会话的浅拷贝，供只读遍历（持锁时间最短）。
 func (t *ownedSessionTracker) sessionsSnapshot() map[string]*sshx.SSHSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	snapshot := make(map[string]*sshx.SSHSession, len(t.sessions))
-	for key, session := range t.sessions {
+	snapshot := make(map[string]*sshx.SSHSession, len(t.Sessions))
+	for key, session := range t.Sessions {
 		snapshot[key] = session
 	}
 	return snapshot
 }
 
-func (t *ownedSessionTracker) drain() map[string]*sshx.SSHSession {
+func (t *ownedSessionTracker) Drain() map[string]*sshx.SSHSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	sessions := t.sessions
-	t.sessions = make(map[string]*sshx.SSHSession)
-	return sessions
+	Sessions := t.Sessions
+	t.Sessions = make(map[string]*sshx.SSHSession)
+	return Sessions
 }

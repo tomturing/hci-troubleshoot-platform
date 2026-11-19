@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/shared/models"
 	"testing"
 	"time"
@@ -534,11 +535,11 @@ func TestAcliPluginStageDisabledForOldFrontend(t *testing.T) {
 		t.Fatalf("两个字段齐备时应启用阶段二")
 	}
 	// 未启用时连“拉期望态”这一步都不发生（不发 HTTP、不留 plan），回执也不得产出。
-	plan := (&Bridge{}).prepareAcliPluginStage(models.InMessage{}, "", "")
+	plan := prepareAcliPluginStage(&app.Bridge{}, models.InMessage{}, "", "")
 	if plan != nil {
 		t.Fatalf("无凭据时不应有阶段二计划：%+v", plan)
 	}
-	if receipt := (&Bridge{}).runAcliPluginStage(nil, models.InMessage{}, plan, "", ""); receipt != nil {
+	if receipt := runAcliPluginStage(&app.Bridge{}, nil, models.InMessage{}, plan, "", ""); receipt != nil {
 		t.Fatalf("未启用时不应产出回执：%+v", receipt)
 	}
 }
@@ -560,7 +561,7 @@ func TestAcliPluginStageFetchFailureKeepsReasonCode(t *testing.T) {
 		started:  time.Now(),
 		fetchErr: newAcliPluginError("plugin_ticket_rejected", "平台返回 401"),
 	}
-	receipt := (&Bridge{}).syncAcliPluginsFromPlatform(context.Background(), nil, models.InMessage{}, plan, "", "")
+	receipt := syncAcliPluginsFromPlatform(&app.Bridge{}, context.Background(), nil, models.InMessage{}, plan, "", "")
 	if receipt.OK || receipt.Reason != "plugin_ticket_rejected" {
 		t.Fatalf("拉取失败必须带原因码上报：%+v", receipt)
 	}

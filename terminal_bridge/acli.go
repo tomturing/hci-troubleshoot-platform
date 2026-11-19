@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -21,13 +22,13 @@ import (
 	"terminal_bridge/internal/shared/remote"
 )
 
+// ── 消息结构 ─────────────────────────────────────────────────────────────────
+
+// models.SpcFile 是平台签发的一份槽位清单原文；摘要由桥独立复算，不信任调用方。
 const (
-	defaultWSPort        = 9999
-	backupWSPort         = 47324            // 主端口被陌生进程占用时的固定回退端口；与前端探测的已知端口一致
-	websocketPingInteval = 30 * time.Second // WebSocket 心跳间隔：每 30 秒发送 ping，防止空闲超时断开
-	// inputRejectNoticeInterval 输入无法路由时的提示节流窗口：
-	// 用户连按回车会连续产生同样失败，留痕一次足够，避免刷屏与刷库。
-	inputRejectNoticeInterval = 3 * time.Second
+	defaultAcliDownloadURLX86 = "http://acli.sangfor.com.cn:1110/api/public/download/4jotgyfk/latest?architecture=x86_64&api_key=QRlZXabZ8sOrFKtgs1VIfkHJZYQ3QNrcETXgsJaiX9Svz1pjFj"
+	defaultAcliDownloadURLARM = "http://acli.sangfor.com.cn:1110/api/public/download/4jotgyfk/latest?architecture=aarch64&api_key=QRlZXabZ8sOrFKtgs1VIfkHJZYQ3QNrcETXgsJaiX9Svz1pjFj"
+	defaultMinDiskMB          = 100
 )
 
 // portBindRetryAttempts 端口被短暂占用（如崩溃重启后的 TIME_WAIT）时的 bind 重试次数；
@@ -74,7 +75,7 @@ func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filenam
 	return filename, buildTime, version, downloadURL, nil
 }
 
-func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui string) {
+func handleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
 	// 安装链路必须可观测：远端排障需要看到架构判定、版本比较、下载、上传与安装结果。
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
@@ -92,7 +93,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 		retryStage = "all"
 	}
 
-	s, key := b.resolveAcliSyncSession(msg)
+	s, key := b.ResolveAcliSyncSession(msg)
 	if s == nil {
 		models.SendMsg(ws, models.OutMessage{
 			Type:    "acli_sync_result",
@@ -112,7 +113,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 	// 阶段二的期望态必须在阶段一开工**前**取定：票据 TTL 只有 10 分钟，而阶段一
 	// 最长要跑 660s，装完再去拉 manifest 会拿着过期票据吃 401。
 	// 旧前端不带凭据 → 返回 nil，后面两个成功出口都不进阶段二。
-	pluginPlan := b.prepareAcliPluginStage(msg, cui, traceID)
+	pluginPlan := prepareAcliPluginStage(b, msg, cui, traceID)
 
 	// 总预算是三段独立预算之和再加余量：下载 120s + 上传 300s + 安装 240s。
 	// 历史实现用单一 180s 总超时，导致任何一段变慢都会表现成“另一段超时”，
@@ -258,7 +259,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 				Status: "plugins", TraceID: traceID,
 				Message: "acli 工具已就绪，正在按平台期望态收敛插件...",
 			})
-			pluginReceipt = b.runAcliPluginStage(s, msg, pluginPlan, cui, traceID)
+			pluginReceipt = runAcliPluginStage(b, s, msg, pluginPlan, cui, traceID)
 			upToDateMessage += pluginReceipt.SummaryText()
 		}
 		models.SendMsg(ws, models.OutMessage{
@@ -325,7 +326,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 	// 并发的两个上传会各自写 tmp 再 mv 到同一个 destPath，谁最后落盘完全取决于时序——
 	// 这正是“上传到 HCI 的包不对”的可行成因之一。宁可显式拒绝（可重试），
 	// 也不要让两次传输互相覆盖。
-	release, acquired := b.acquireAcliTransfer(key)
+	release, acquired := acquireAcliTransfer(b, key)
 	if !acquired {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
@@ -359,7 +360,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 		"retry_stage": retryStage, "dest_path": destPath, "package_filename": pkgName,
 	})
 
-	cache := b.packageCache()
+	cache := packageCache(b)
 
 	// 8. 「只重跑安装 / 只重传」：先验证节点上那份包与本地基线是否一致。
 	// 不一致就不复用——上一轮正是因为“盘上那份包不对”才失败的，
@@ -639,7 +640,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 		// 集群分发可能静默留下空目录（Q2026111700614）。缺失只如实警示，
 		// 不把本地已成功的安装整体判失败，保留「重试安装」入口。
 		pluginCtx, cancelPlugin := context.WithTimeout(ctx, 2*time.Minute)
-		pluginStates := b.verifyClusterPluginLanding(pluginCtx, s)
+		pluginStates := verifyClusterPluginLanding(b, pluginCtx, s)
 		cancelPlugin()
 		installedMessage := "acli 工具安装并集群分发成功！"
 		if !diskProbed {
@@ -674,7 +675,7 @@ func (b *Bridge) handleAcliSync(ws *websocket.Conn, msg models.InMessage, cui st
 				Status: "plugins", TraceID: traceID,
 				Message: "acli 工具安装完成，正在按平台期望态收敛插件...",
 			})
-			pluginReceipt = b.runAcliPluginStage(s, msg, pluginPlan, cui, traceID)
+			pluginReceipt = runAcliPluginStage(b, s, msg, pluginPlan, cui, traceID)
 			installedMessage += pluginReceipt.SummaryText()
 		}
 

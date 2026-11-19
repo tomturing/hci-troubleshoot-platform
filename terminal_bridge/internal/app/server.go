@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/json"
@@ -10,16 +10,14 @@ import (
 	"sync/atomic"
 	"terminal_bridge/internal/logpush"
 
-	"runtime/debug"
-
 	"golang.org/x/net/websocket"
 )
 
 func (b *Bridge) corsWebSocketHandler(config runtimeConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if !config.originAllowed(origin, r.Host) {
-			logpush.Blog("WARNING", "websocket.origin_rejected", "拒绝非授权 Origin 的 WebSocket 请求", "", "", "", customUIHost(origin), map[string]any{
+		if !config.OriginAllowed(origin, r.Host) {
+			logpush.Blog("WARNING", "websocket.origin_rejected", "拒绝非授权 Origin 的 WebSocket 请求", "", "", "", CustomUIHost(origin), map[string]any{
 				"origin": origin,
 				"host":   r.Host,
 				"mode":   config.Mode,
@@ -45,14 +43,14 @@ func (b *Bridge) corsWebSocketHandler(config runtimeConfig) http.Handler {
 		wsHandler := websocket.Handler(func(ws *websocket.Conn) {
 			atomic.AddInt64(&activeWebSockets, 1)
 			defer atomic.AddInt64(&activeWebSockets, -1)
-			b.handle(ws, origin)
+			WSHandlerFunc(b, ws, origin)
 		})
 		wsHandler.ServeHTTP(w, r)
 	})
 }
 
-// customUIHost 从完整 Origin 中提取可识别的标识（去 scheme），用于日志标签与回采关联。
-func customUIHost(origin string) string {
+// CustomUIHost 从完整 Origin 中提取可识别的标识（去 scheme），用于日志标签与回采关联。
+func CustomUIHost(origin string) string {
 	if origin == "" || origin == "*" {
 		return "unknown"
 	}
@@ -63,59 +61,8 @@ func customUIHost(origin string) string {
 	return o
 }
 
-var (
-	Version   = "v2.16.0-dev"
-	CommitID  = "unknown" // 构建时通过 -X main.CommitID 注入 git commit
-	BuildTime = "unknown" // 构建时通过 -X main.BuildTime 注入构建时间
-)
-
-func getVersion() string {
-	if !strings.HasSuffix(Version, "-dev") {
-		return Version
-	}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return Version
-	}
-	var revision string
-	var modified bool
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = setting.Value
-		case "vcs.modified":
-			modified = setting.Value == "true"
-		}
-	}
-	if revision == "" {
-		return Version
-	}
-	if len(revision) > 8 {
-		revision = revision[:8]
-	}
-	dirty := ""
-	if modified {
-		dirty = "-dirty"
-	}
-	return fmt.Sprintf("%s-g%s%s", Version, revision, dirty)
-}
-
 // P2-8: Prometheus 指标（简化实现 - 无外部依赖）
 var (
-	promMetrics = struct {
-		LogsCollectedTotal  uint64
-		LogsCollectErrors   uint64
-		LogsReplayedTotal   uint64
-		LogsDroppedTotal    uint64
-		ExecCommandsTotal   uint64
-		ExecCommandErrors   uint64
-		SshConnectionsTotal uint64
-		SshConnectionErrors uint64
-		VmConsoleOpsTotal   uint64
-		VmConsoleOpErrors   uint64
-		SftpDownloadsTotal  uint64
-		SftpDownloadErrors  uint64
-	}{}
 	activeWebSockets int64
 )
 
@@ -188,7 +135,7 @@ bridge_build_info{version="%s",commit="%s",mode="%s"} 1
 # TYPE bridge_websocket_connections_active gauge
 bridge_websocket_connections_active %d
 
-# HELP bridge_ssh_sessions_active Current active SSH sessions
+# HELP bridge_ssh_sessions_active Current active SSH Sessions
 # TYPE bridge_ssh_sessions_active gauge
 bridge_ssh_sessions_active %d
 
@@ -208,20 +155,20 @@ bridge_log_pending_entries %d
 # TYPE bridge_log_file_bytes gauge
 bridge_log_file_bytes %d
 `,
-		atomic.LoadUint64(&promMetrics.LogsCollectedTotal),
-		atomic.LoadUint64(&promMetrics.LogsCollectErrors),
-		atomic.LoadUint64(&promMetrics.LogsReplayedTotal),
-		atomic.LoadUint64(&promMetrics.LogsDroppedTotal),
-		atomic.LoadUint64(&promMetrics.ExecCommandsTotal),
-		atomic.LoadUint64(&promMetrics.ExecCommandErrors),
-		atomic.LoadUint64(&promMetrics.SshConnectionsTotal),
-		atomic.LoadUint64(&promMetrics.SshConnectionErrors),
-		atomic.LoadUint64(&promMetrics.VmConsoleOpsTotal),
-		atomic.LoadUint64(&promMetrics.VmConsoleOpErrors),
-		atomic.LoadUint64(&promMetrics.SftpDownloadsTotal),
-		atomic.LoadUint64(&promMetrics.SftpDownloadErrors),
-		prometheusLabelValue(getVersion()),
-		prometheusLabelValue(CommitID),
+		atomic.LoadUint64(&PromMetrics.LogsCollectedTotal),
+		atomic.LoadUint64(&PromMetrics.LogsCollectErrors),
+		atomic.LoadUint64(&PromMetrics.LogsReplayedTotal),
+		atomic.LoadUint64(&PromMetrics.LogsDroppedTotal),
+		atomic.LoadUint64(&PromMetrics.ExecCommandsTotal),
+		atomic.LoadUint64(&PromMetrics.ExecCommandErrors),
+		atomic.LoadUint64(&PromMetrics.SshConnectionsTotal),
+		atomic.LoadUint64(&PromMetrics.SshConnectionErrors),
+		atomic.LoadUint64(&PromMetrics.VmConsoleOpsTotal),
+		atomic.LoadUint64(&PromMetrics.VmConsoleOpErrors),
+		atomic.LoadUint64(&PromMetrics.SftpDownloadsTotal),
+		atomic.LoadUint64(&PromMetrics.SftpDownloadErrors),
+		prometheusLabelValue(GetVersion()),
+		prometheusLabelValue(CommitIDFunc()),
 		prometheusLabelValue(config.Mode),
 		atomic.LoadInt64(&activeWebSockets),
 		bridgeState.ActiveSessions,
@@ -252,11 +199,11 @@ func buildServiceStatus(bridge *Bridge, config runtimeConfig) serviceStatus {
 	return serviceStatus{
 		Status:        "ok",
 		Service:       "terminal_bridge",
-		Version:       getVersion(),
-		Commit:        CommitID,
-		BuildTime:     BuildTime,
+		Version:       GetVersion(),
+		Commit:        CommitIDFunc(),
+		BuildTime:     BuildTimeFunc(),
 		Mode:          config.Mode,
-		ListenAddress: config.address(),
+		ListenAddress: config.Address(),
 		WebSockets:    atomic.LoadInt64(&activeWebSockets),
 		Bridge:        bridge.status(),
 		Logs:          logpush.DefaultHub.Status(),
@@ -268,11 +215,11 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		atomic.AddUint64(&promMetrics.LogsCollectErrors, 1)
+		atomic.AddUint64(&PromMetrics.LogsCollectErrors, 1)
 	}
 }
 
-func newHTTPHandler(bridge *Bridge, config runtimeConfig) http.Handler {
+func NewHTTPHandler(bridge *Bridge, config runtimeConfig) http.Handler {
 	mux := http.NewServeMux()
 	liveHandler := func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

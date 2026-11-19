@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
 	"testing"
@@ -46,9 +47,9 @@ func TestOnOutputStartNilWSNoPanic(t *testing.T) {
 
 // TestDeliverySessionForLiveSession 守护：已有会话时直接复用，不触发自动重连。
 func TestDeliverySessionForLiveSession(t *testing.T) {
-	b := newBridge()
+	b := app.NewBridge()
 	sess := &sshx.SSHSession{CaseID: "case-x", CreatedAt: time.Now()}
-	b.set(sessionKey("case-x", "10.0.0.1"), sess)
+	b.Set(app.SessionKey("case-x", "10.0.0.1"), sess)
 	r := &deliveryRunner{bridge: b}
 	job := &deliveryJob{CaseID: "case-x", NodeIP: "10.0.0.1", Phase: phasePulling}
 	if got := r.sessionFor(job); got != sess {
@@ -60,7 +61,7 @@ func TestDeliverySessionForLiveSession(t *testing.T) {
 // 不尝试连接、不 panic，返回 nil（由调用方转为 needs_reauth，走人工重连）。
 // 这是「裸」交付的正确退路——不能因为没有节点就假装能自动恢复。
 func TestDeliverySessionForNoAuthReturnsNil(t *testing.T) {
-	r := &deliveryRunner{bridge: newBridge()}
+	r := &deliveryRunner{bridge: app.NewBridge()}
 	job := &deliveryJob{CaseID: "case-x", NodeIP: "10.0.0.1", Phase: phasePulling}
 	if got := r.sessionFor(job); got != nil {
 		t.Fatalf("期望无会话返回 nil，得到 %v", got)

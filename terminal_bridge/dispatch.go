@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync/atomic"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -19,13 +20,13 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
-	cui := customUIHost(customUI)
+func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
+	cui := app.CustomUIHost(customUI)
 	// connID 是本连接的唯一标识：没有它，connected/disconnected 与业务消息无法配对，
 	// 现场只能看到"19 次连、17 次断"却不知道哪次断掉了哪条会话。
-	connID := newConnID()
+	connID := app.NewConnID()
 	// role 由首条业务消息确定；端口探测连接永远停在 unknown（这是它们的正常形态）。
-	role := connRoleUnknown
+	role := app.ConnRoleUnknown
 	openedAt := time.Now()
 	// 订阅必须先于 logpush.Blog：否则"浏览器已连接"这条事件发生时本连接还不在 h.subs 里，
 	// 它自己的处理函数都收不到，浏览器也就永远无法把它回采入库（实测丢过 14 条同类事件）。
@@ -41,14 +42,14 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 	// 没有它令牌只能绑定工单，无法阻止令牌被复制到另一台桥。
 	models.SendMsg(ws, models.OutMessage{Type: "bridge_hello", Message: getVersion(), Detail: logpush.DefaultHub.InstanceID, CustomUI: cui})
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
-	ownedSessions := newOwnedSessionTracker()
+	ownedSessions := app.NewOwnedSessionTracker()
 
 	// WebSocket 保活心跳：定期发送 ping，防止中间层（负载均衡器、Traefik）空闲超时断开
 	pingCtx, pingCancel := context.WithCancel(context.Background())
 	pingDone := make(chan struct{})
 	go func() {
 		defer close(pingDone)
-		ticker := time.NewTicker(websocketPingInteval)
+		ticker := time.NewTicker(app.WebsocketPingInteval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -65,14 +66,14 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		<-pingDone   // 等待心跳 goroutine 退出
 		// 先摘会话再记断连：own_keys 必须反映"这次断连真正带走了哪些会话"。
 		// 2026-10-27 现场只能靠"报错比断连晚 266ms"反推，就是因为这里没有留痕。
-		owned := ownedSessions.drain()
+		owned := ownedSessions.Drain()
 		releasedKeys := make([]string, 0, len(owned))
 		for key, ownedSession := range owned {
-			if current := b.get(key); current == ownedSession {
+			if current := b.Get(key); current == ownedSession {
 				// 不再销毁：改为释放持有权，会话进入空闲租约，等 TTL 回收。
 				// WS 抖动/刷新不应带走正在被日志面板使用的会话
 				//（2026-10-27 14:37:49 故障链的根因）。
-				b.releaseSession(key, connID)
+				b.ReleaseSession(key, connID)
 				releasedKeys = append(releasedKeys, key)
 			}
 		}
@@ -82,14 +83,14 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			"conn_id": connID, "role": role,
 			"duration_seconds": int64(time.Since(openedAt).Seconds()),
 			"owned_keys":       releasedKeys,
-			"active_sessions":  b.sessionCount(),
+			"active_sessions":  b.SessionCount(),
 		})
 		logpush.DefaultHub.RemoveSubscriber(ws)
 		models.WebsocketWriteLocks.Delete(ws)
 		// 浏览器断开后立即清理凭据缓存，缩短密码/私钥在内存中的生命周期。
-		b.clearLastAuth(sub.CaseID)
+		b.ClearLastAuth(sub.CaseID)
 		// 本连接发起的下载一并取消：浏览器都关了还继续拉完整个文件，白占客户带宽。
-		if cancelled := b.cancelSftpTasksForConn(connID); cancelled > 0 {
+		if cancelled := cancelSftpTasksForConn(b, connID); cancelled > 0 {
 			logpush.Blog("INFO", "sftp.tasks_cancelled_on_disconnect", "连接断开，已取消未完成的下载任务", "", sub.CaseID, "", cui, map[string]any{
 				"conn_id": connID, "cancelled": cancelled,
 			})
@@ -124,7 +125,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 		}
 		// 连接角色只在首条业务消息时确定一次：探测连接停在 unknown 是正确结果，
 		// 不能因为探测也发了 pong 就把它当成业务连接。
-		if assigned := roleOfMessageType(msg.Type); assigned != "" && role == connRoleUnknown {
+		if assigned := app.RoleOfMessageType(msg.Type); assigned != "" && role == app.ConnRoleUnknown {
 			role = assigned
 			logpush.Blog("INFO", "conn.role", "连接用途已确定", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"conn_id": connID, "role": role,
@@ -140,22 +141,22 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				trace.WithAttributes(attribute.String("case.id", msg.CaseID), attribute.String("server.Address", msg.Host)),
 			)
 			_ = connectCtx
-			key := sessionKey(msg.CaseID, msg.NodeIP)
+			key := app.SessionKey(msg.CaseID, msg.NodeIP)
 			// 同键覆盖必须走统一销毁入口：否则「旧会话被新连接顶掉」这件事
 			// 在日志里完全不可见（只剩两条同键 ssh.connected，无法判断谁活了多久）。
-			if old := b.get(key); old != nil {
+			if old := b.Get(key); old != nil {
 				// 长任务进行中禁止腰斩：用户看到"终端断开"就会去重连，而重连必然走到这里。
 				// 无条件 destroySession 会把正在进行的 12.8 GiB 拉取直接打断到 needs_reauth，
 				// 因此改为只摘表、保留连接，由长任务结束时的自愈逻辑关闭。
-				b.destroyOrDetachSession(key, sshx.SessionReasonReconnect, connID)
-				ownedSessions.remove(key)
+				b.DestroyOrDetachSession(key, sshx.SessionReasonReconnect, connID)
+				ownedSessions.Remove(key)
 			}
 			// 如果没指定 nodeIP，也清理默认会话
 			if msg.NodeIP == "" {
-				defaultKey := sessionKey(msg.CaseID, "")
-				if old := b.get(defaultKey); old != nil {
-					b.destroyOrDetachSession(defaultKey, sshx.SessionReasonReconnect, connID)
-					ownedSessions.remove(defaultKey)
+				defaultKey := app.SessionKey(msg.CaseID, "")
+				if old := b.Get(defaultKey); old != nil {
+					b.DestroyOrDetachSession(defaultKey, sshx.SessionReasonReconnect, connID)
+					ownedSessions.Remove(defaultKey)
 				}
 			}
 
@@ -164,7 +165,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				connectSpan.RecordError(err)
 				connectSpan.SetStatus(codes.Error, "ssh_connect_failed")
 				connectSpan.End()
-				atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
+				atomic.AddUint64(&app.PromMetrics.SshConnectionErrors, 1)
 				message, detail := sshx.BuildSSHError(err)
 				models.SendMsg(ws, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 				continue
@@ -174,28 +175,28 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				connectSpan.RecordError(err)
 				connectSpan.SetStatus(codes.Error, "ssh_start_failed")
 				connectSpan.End()
-				atomic.AddUint64(&promMetrics.SshConnectionErrors, 1)
+				atomic.AddUint64(&app.PromMetrics.SshConnectionErrors, 1)
 				session.Close()
 				message, detail := sshx.BuildSSHError(err)
 				models.SendMsg(ws, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 				continue
 			}
-			b.set(key, session)
+			b.Set(key, session)
 			connectSpan.End()
-			atomic.AddUint64(&promMetrics.SshConnectionsTotal, 1)
-			ownedSessions.set(key, session)
+			atomic.AddUint64(&app.PromMetrics.SshConnectionsTotal, 1)
+			ownedSessions.Set(key, session)
 			// 启动应用层保活：终端空闲、日志采集长跑期间都要能尽早发现半开连接。
 			session.StartKeepAlive(sshx.SshKeepAliveInterval())
 			// 本连接的键盘输入默认落到刚建立的这个会话（键含 @nodeIP）
 			activeKey = key
 			// 保存认证信息，供后续自动连接其他节点使用
-			b.setLastAuth(msg.CaseID, msg)
+			b.SetLastAuth(msg.CaseID, msg)
 			// 归属工单并回放近期日志（异常重传）
 			logpush.DefaultHub.SetCase(sub, msg.CaseID)
 			models.SendMsg(ws, models.OutMessage{Type: "ssh_connected", CaseID: msg.CaseID, CustomUI: cui})
 			// 会话建立事件与会话销毁事件成对出现：只有销毁没有建立时，
 			// 无法区分「会话从没建过」和「建了又被清掉」——这两种处置完全不同。
-			logSessionCreated(session, key, connID, role, "ssh_connect")
+			app.LogSessionCreated(session, key, connID, role, "ssh_connect")
 			logpush.Blog("INFO", "ssh.connected", "SSH 认证成功", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"user": msg.Username, "host": msg.Host, "port": msg.Port, "key": key,
 				"conn_id": connID, "role": role,
@@ -203,29 +204,29 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			// 抗崩溃（收口设计 §3.2）：bridge 重启后 spc 终态还原的 watcher 没了，
 			// 凭持久意图账本把原件放回去。放进协程：集合性还原可能几十秒，
 			// 不能阻塞连接回包；无意图时几乎零开销。
-			go b.recoverSpcRestoreIntents(session, msg.TraceID, msg.CaseID, msg.NodeIP, cui)
+			go recoverSpcRestoreIntents(b, session, msg.TraceID, msg.CaseID, msg.NodeIP, cui)
 
 			caseID := msg.CaseID
 			terminal.On_output_start(session, ws, stdout, caseID, func(reason string) {
 				if reason == sshx.SessionReasonRemoteEOF {
-					b.destroySession(key, sshx.SessionReasonRemoteEOF, "")
-					ownedSessions.remove(key)
+					b.DestroySession(key, sshx.SessionReasonRemoteEOF, "")
+					ownedSessions.Remove(key)
 					return
 				}
-				b.remove(key)
-				ownedSessions.remove(key)
+				b.Remove(key)
+				ownedSessions.Remove(key)
 			})
 
 		case "ssh_input":
-			s, key := b.resolveInputSession(msg, activeKey, ownedSessions)
+			s, key := b.ResolveInputSession(msg, activeKey, ownedSessions)
 			if s == nil {
 				// 以前这里查不到会话就静默返回，表现为"字打进去了、什么都不到、日志也干净"。
 				// 现在必须留痕：先入库，再（节流）提示前端，避免再次无声无息。
-				if lastInputRejectAt.IsZero() || time.Since(lastInputRejectAt) >= inputRejectNoticeInterval {
+				if lastInputRejectAt.IsZero() || time.Since(lastInputRejectAt) >= app.InputRejectNoticeInterval {
 					lastInputRejectAt = time.Now()
 					logpush.Blog("ERROR", "ssh_input.session_missing", "SSH 会话不存在，键盘输入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 						"input_type": "ssh_input", "active_key": activeKey,
-						"exact_key": sessionKey(msg.CaseID, msg.NodeIP), "data_len": len(msg.Data),
+						"exact_key": app.SessionKey(msg.CaseID, msg.NodeIP), "data_len": len(msg.Data),
 					})
 					models.SendMsg(ws, models.OutMessage{
 						Type:    "ssh_input_rejected",
@@ -235,7 +236,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				}
 				continue
 			}
-			if key != sessionKey(msg.CaseID, "") && key != sessionKey(msg.CaseID, msg.NodeIP) {
+			if key != app.SessionKey(msg.CaseID, "") && key != app.SessionKey(msg.CaseID, msg.NodeIP) {
 				log.Printf("[Bridge] ssh_input 兜底命中会话: case=%s key=%s active=%s", msg.CaseID, key, activeKey)
 			}
 			// 键盘输入本身就是最强的使用证据：用户刚敲过键，shell 被 TMOUT 踢掉时
@@ -244,13 +245,13 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			s.Send(msg.Data)
 
 		case "ssh_inject_command":
-			s, key := b.resolveInputSession(msg, activeKey, ownedSessions)
+			s, key := b.ResolveInputSession(msg, activeKey, ownedSessions)
 			if s == nil {
-				if lastInputRejectAt.IsZero() || time.Since(lastInputRejectAt) >= inputRejectNoticeInterval {
+				if lastInputRejectAt.IsZero() || time.Since(lastInputRejectAt) >= app.InputRejectNoticeInterval {
 					lastInputRejectAt = time.Now()
 					logpush.Blog("ERROR", "ssh_input.session_missing", "SSH 会话不存在，命令注入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 						"input_type": "ssh_inject_command", "active_key": activeKey,
-						"exact_key": sessionKey(msg.CaseID, msg.NodeIP),
+						"exact_key": app.SessionKey(msg.CaseID, msg.NodeIP),
 					})
 					models.SendMsg(ws, models.OutMessage{
 						Type:    "ssh_input_rejected",
@@ -260,7 +261,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				}
 				continue
 			}
-			if key != sessionKey(msg.CaseID, "") && key != sessionKey(msg.CaseID, msg.NodeIP) {
+			if key != app.SessionKey(msg.CaseID, "") && key != app.SessionKey(msg.CaseID, msg.NodeIP) {
 				log.Printf("[Bridge] ssh_inject_command 兜底命中会话: case=%s key=%s active=%s", msg.CaseID, key, activeKey)
 			}
 			s.InjectCommand(msg.Command)
@@ -279,28 +280,28 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 
 		case "ssh_disconnect":
 			// 关闭当前 WebSocket 所拥有的该工单全部会话，防止自动节点会话泄漏。
-			for key, owned := range ownedSessions.drainCase(msg.CaseID) {
-				if current := b.get(key); current == owned {
+			for key, owned := range ownedSessions.DrainCase(msg.CaseID) {
+				if current := b.Get(key); current == owned {
 					// 显式断开与"页面被关掉"在日志里必须区分：前者是用户意图，
 					// 后者是事故；两者都走同一入口，靠 reason 区分。
-					b.destroySession(key, sshx.SessionReasonClientDisconnect, connID)
+					b.DestroySession(key, sshx.SessionReasonClientDisconnect, connID)
 				}
 			}
 			models.SendMsg(ws, models.OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
 
 		case "ssh_exec_command":
 			// 根据 nodeIP 路由到正确的 SSH 会话
-			s, key := b.resolveSession(msg)
+			s, key := b.ResolveSession(msg)
 			if s == nil && msg.NodeIP != "" {
 				// 自动连接新节点
-				s = b.autoConnectNode(ws, msg, ownedSessions, connID, role)
-				key = sessionKey(msg.CaseID, msg.NodeIP)
+				s = b.AutoConnectNode(ws, msg, ownedSessions, connID, role)
+				key = app.SessionKey(msg.CaseID, msg.NodeIP)
 			}
 			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话
 			if s == nil && sub.CaseID != "" {
-				if fb := b.get(sessionKey(sub.CaseID, "")); fb != nil {
+				if fb := b.Get(app.SessionKey(sub.CaseID, "")); fb != nil {
 					s = fb
-					key = sessionKey(sub.CaseID, "")
+					key = app.SessionKey(sub.CaseID, "")
 					log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", sub.CaseID, key)
 					// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
 					logpush.Blog("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, sub.CaseID, msg.NodeIP, cui, map[string]any{
@@ -310,7 +311,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 			if s == nil {
 				logpush.Blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"exec_id": msg.ExecID, "key": sessionKey(msg.CaseID, msg.NodeIP),
+					"exec_id": msg.ExecID, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
 					"sub_case_id": sub.CaseID, "has_fallback_target": sub.CaseID != "",
 				})
 				models.SendMsg(ws, models.OutMessage{
@@ -356,7 +357,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			log.Printf("[Bridge] EXEC_CMD: sha256=%s redacted=%q", logpush.CommandSHA256(wrappedCmd), logpush.RedactCommand(wrappedCmd))
 
 			resultChan := s.ExecCommand(wrappedCmd, msg.ExecID, 60*time.Second)
-			atomic.AddUint64(&promMetrics.ExecCommandsTotal, 1)
+			atomic.AddUint64(&app.PromMetrics.ExecCommandsTotal, 1)
 			go func() {
 				result := <-resultChan
 				output := result.Output
@@ -365,7 +366,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 					output = "execution timeout"
 				}
 				if result.Timeout || exitCode != 0 {
-					atomic.AddUint64(&promMetrics.ExecCommandErrors, 1)
+					atomic.AddUint64(&app.PromMetrics.ExecCommandErrors, 1)
 				}
 				outLen := len(output)
 				exitInfo := fmt.Sprintf("exit=%d", exitCode)
@@ -412,18 +413,18 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			// 会话路由与 log_collect/acli_sync 对齐：custom-ui 登录建会话时用的
 			// case_id 可能是工单号或 terminal-only，管理端下发只需要按 node_ip
 			// 复用同一 bridge 进程里已存在的 SSH 会话，不再新建连接。
-			s, key, _ := b.resolveLogCollectSession(msg)
+			s, key, _ := resolveLogCollectSession(b, msg)
 			if s == nil && msg.NodeIP != "" {
-				s = b.autoConnectNode(ws, msg, ownedSessions, connID, role)
-				key = sessionKey(msg.CaseID, msg.NodeIP)
+				s = b.AutoConnectNode(ws, msg, ownedSessions, connID, role)
+				key = app.SessionKey(msg.CaseID, msg.NodeIP)
 			}
 			// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话。
 			// 因为一次 WebSocket 连接在 ssh_connect 后只存在一个会话，可据此兜底，
 			// 避免空 case_id 导致 exec.session_missing、回采失败且无 DB 记录。
 			if s == nil && sub.CaseID != "" {
-				if fb := b.get(sessionKey(sub.CaseID, "")); fb != nil {
+				if fb := b.Get(app.SessionKey(sub.CaseID, "")); fb != nil {
 					s = fb
-					key = sessionKey(sub.CaseID, "")
+					key = app.SessionKey(sub.CaseID, "")
 					log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", sub.CaseID, key)
 					// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
 					logpush.Blog("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, sub.CaseID, msg.NodeIP, cui, map[string]any{
@@ -433,7 +434,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 			}
 			if s == nil {
 				logpush.Blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令(隔离通道)", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"exec_id": msg.ExecID, "key": sessionKey(msg.CaseID, msg.NodeIP),
+					"exec_id": msg.ExecID, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
 					"sub_case_id": sub.CaseID, "has_fallback_target": sub.CaseID != "",
 				})
 				models.SendMsg(ws, models.OutMessage{
@@ -482,7 +483,7 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				"trace_id":         msg.TraceID,
 			})
 
-			atomic.AddUint64(&promMetrics.ExecCommandsTotal, 1)
+			atomic.AddUint64(&app.PromMetrics.ExecCommandsTotal, 1)
 			receiveCtx, receiveSpan := otel.Tracer("terminal_bridge").Start(
 				logpush.ContextFromMessage(msg), "terminal_bridge.websocket.receive",
 				trace.WithAttributes(attribute.String("exec.id", msg.ExecID), attribute.String("message.type", msg.Type)),
@@ -518,16 +519,16 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				continue
 			}
 
-			s, key := b.resolveSession(msg)
+			s, key := b.ResolveSession(msg)
 			if s == nil && msg.NodeIP != "" {
 				// 复用既有自动连接：使用最近一次 ssh_connect 的认证信息连接目标节点。
-				s = b.autoConnectNode(ws, msg, ownedSessions, connID, role)
-				key = sessionKey(msg.CaseID, msg.NodeIP)
+				s = b.AutoConnectNode(ws, msg, ownedSessions, connID, role)
+				key = app.SessionKey(msg.CaseID, msg.NodeIP)
 			}
 			if s == nil {
-				atomic.AddUint64(&promMetrics.VmConsoleOpErrors, 1)
+				atomic.AddUint64(&app.PromMetrics.VmConsoleOpErrors, 1)
 				logpush.Blog("ERROR", "vm_console.session_missing", "SSH 会话不存在，无法执行控制台固定操作", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"exec_id": msg.ExecID, "operation": msg.Operation, "key": sessionKey(msg.CaseID, msg.NodeIP),
+					"exec_id": msg.ExecID, "operation": msg.Operation, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
 				})
 				missing := terminal.VmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
 				missing.TraceID = msg.TraceID
@@ -541,18 +542,18 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 				"host_node_id": vmReq.HostNodeID, "vm_id": vmReq.VMID, "key": key,
 				"timeout_seconds": vmReq.TimeoutSeconds,
 			})
-			atomic.AddUint64(&promMetrics.VmConsoleOpsTotal, 1)
+			atomic.AddUint64(&app.PromMetrics.VmConsoleOpsTotal, 1)
 			go terminal.RunVMConsoleOp(s, func(result models.OutMessage) { models.SendMsg(ws, result) }, vmReq)
 
 		case "acli_sync":
-			go b.handleAcliSync(ws, msg, cui)
+			go handleAcliSync(b, ws, msg, cui)
 
 		case "list_sessions":
 			// 管理端枚举「custom-ui + bridge 已登录」的环境；只回会话摘要，不回凭据。
 			logpush.Blog("INFO", "session.list", "管理端查询已登录 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{})
 			models.SendMsg(ws, models.OutMessage{
 				Type: "list_sessions_result", CaseID: msg.CaseID,
-				Sessions: b.listSessions(), TraceID: msg.TraceID, CustomUI: cui,
+				Sessions: b.ListSessions(), TraceID: msg.TraceID, CustomUI: cui,
 			})
 
 		case "bridge_log_token":
@@ -567,23 +568,23 @@ func (b *Bridge) handle(ws *websocket.Conn, customUI string) {
 
 		case "delivery_submit":
 			// 交付作业化：立刻返回 job_id，执行权交给 bridge，前端只轮询进度。
-			go b.handleDeliverySubmit(ws, msg, cui)
+			go handleDeliverySubmit(b, ws, msg, cui)
 
 		case "delivery_status":
-			go b.handleDeliveryStatus(ws, msg, cui)
+			go handleDeliveryStatus(b, ws, msg, cui)
 
 		case "delivery_resume":
-			go b.handleDeliveryResume(ws, msg, cui)
+			go handleDeliveryResume(b, ws, msg, cui)
 
 		case "delivery_cancel":
-			go b.handleDeliveryCancel(ws, msg, cui)
+			go handleDeliveryCancel(b, ws, msg, cui)
 
 		case "log_collect":
-			go b.handleLogCollect(ws, msg, cui)
+			go handleLogCollect(b, ws, msg, cui)
 
 		case "sftp_op":
 			// 下载在独立 goroutine 里跑：一个 5 GiB 的流不能把交互式 shell 的消息循环堵住。
-			go b.handleSftpOp(ws, msg, cui, connID)
+			go handleSftpOp(b, ws, msg, cui, connID)
 		}
 	}
 }

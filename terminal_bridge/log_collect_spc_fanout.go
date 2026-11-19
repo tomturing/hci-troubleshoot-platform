@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -669,7 +670,7 @@ func parseSpcFiles(msg models.InMessage) ([]spcSlotFile, *spcRejection) {
 //
 // 任何一台、任一槽位写不进去都回滚并拒绝：宁可这一次不发任务，也不能让节点之间
 // 用不同的清单收集——那种结果事后无法从采集结果里看出来。
-func (b *Bridge) prepareSpcScenario(ctx context.Context, s *sshx.SSHSession, msg models.InMessage, traceID, customUI string) (*spcTaskState, *spcRejection) {
+func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, msg models.InMessage, traceID, customUI string) (*spcTaskState, *spcRejection) {
 	files, rejection := parseSpcFiles(msg)
 	if rejection != nil {
 		return nil, rejection
@@ -741,7 +742,7 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *sshx.SSHSession, msg
 		"spc_digests": digests, "hosts_count": len(targets), "ips_all": all, "spc_bytes": spcBytes,
 	})
 
-	results, writtenSet := b.applySpcAll(ctx, s, state, spec)
+	results, writtenSet := applySpcAll(b, ctx, s, state, spec)
 	state.setHosts(results)
 	state.written = writtenSet
 
@@ -773,7 +774,7 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *sshx.SSHSession, msg
 		// 只回滚已写入的主机：从未写入的节点不需要恢复，把它计入 restore_failed
 		// 会推导出"可能残留平台清单"的假告警（2026-11-17 Q2026110302166 现场：
 		// 192.0.2.11 SSH 认证失败、written=false，却被报成回滚失败）。
-		restored, restoreFailed := b.rollbackSpcAll(s, state, "写入未通过，已回滚", spcWrittenTargets(results))
+		restored, restoreFailed := rollbackSpcAll(b, s, state, "写入未通过，已回滚", spcWrittenTargets(results))
 		if restoreFailed > 0 {
 			// 主因码保持不变：回滚失败是叠加风险，覆盖主因会让用户按错误的码排查。
 			rejection.Message = sshx.TruncateString(rejection.Message+
@@ -793,7 +794,7 @@ func (b *Bridge) prepareSpcScenario(ctx context.Context, s *sshx.SSHSession, msg
 	spcTaskStore.put(state)
 	// 抗崩溃（§3.2）：终态还原的责任先落盘再交给内存 watcher。
 	// bridge 被杀后 watcher 消失，重启时凭意图 + 自描述备份名收尾。
-	b.persistSpcRestoreIntent(state, traceID, msg.CaseID, msg.NodeIP, customUI)
+	persistSpcRestoreIntent(b, state, traceID, msg.CaseID, msg.NodeIP, customUI)
 	logpush.Blog("INFO", "log_collect.spc_fanout", "场景已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "spc_sha256": digest,
 		"written": written, "failed_hosts": spcHostAuditTrail(failed),
@@ -934,9 +935,9 @@ func (st *spcTaskState) writtenTargets() []string {
 // applySpcAll 并发把场景写到全部目标节点（S3：编排委托 reconcile.Fanout）。
 // 并发上限、主机键互斥、written-set 跟踪由骨架维护；逐台动作内部的
 // 探测/备份/写入/回读校验仍是产品语义，留在 applySpcToHost。
-func (b *Bridge) applySpcAll(ctx context.Context, s *sshx.SSHSession, state *spcTaskState, spec spcApplySpec) ([]spcHostState, reconcile.WrittenSet) {
+func applySpcAll(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, state *spcTaskState, spec spcApplySpec) ([]spcHostState, reconcile.WrittenSet) {
 	results, written := spcWriteFanout().WriteAll(ctx, state.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
-		host := b.applySpcToHost(ctx, s, spec, ip, state.LocalIPs[ip], state.activator)
+		host := applySpcToHost(b, ctx, s, spec, ip, state.LocalIPs[ip], state.activator)
 		return reconcile.HostResult{
 			Host: host.IP, Written: host.Written,
 			ErrorCode: host.ErrorCode, ErrorDetail: host.ErrorDetail, Value: host,
@@ -973,7 +974,7 @@ func spcHostFromResult(result reconcile.HostResult) spcHostState {
 //
 // 多槽位下任一槽位失败即把整台标为失败：写不全就绝不能下发，
 // 否则部分模块用平台清单、部分用节点原清单，产物无法解释。
-func (b *Bridge) applySpcToHost(ctx context.Context, s *sshx.SSHSession, spec spcApplySpec, ip string, local bool, activator *reconcile.Activator) spcHostState {
+func applySpcToHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, spec spcApplySpec, ip string, local bool, activator *reconcile.Activator) spcHostState {
 	state := spcHostState{IP: ip, RestoreState: "pending"}
 
 	output, errOut, _, err := runSpcOnHostStreams(s, ctx, ip, local, buildSpcDirCommand(""))
@@ -990,7 +991,7 @@ func (b *Bridge) applySpcToHost(ctx context.Context, s *sshx.SSHSession, spec sp
 
 	files := spec.files()
 	for _, file := range files {
-		slotState := b.applySpcSlotToHost(ctx, s, ip, local, dir, spec.TaskID, file, activator)
+		slotState := applySpcSlotToHost(b, ctx, s, ip, local, dir, spec.TaskID, file, activator)
 		if len(files) > 1 {
 			state.Slots = append(state.Slots, slotState)
 		}
@@ -1012,7 +1013,7 @@ func (b *Bridge) applySpcToHost(ctx context.Context, s *sshx.SSHSession, spec sp
 }
 
 // applySpcSlotToHost 在已探测到的目录里完成一个槽位的完整写入闭环。
-func (b *Bridge) applySpcSlotToHost(ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID string, file spcSlotFile, activator *reconcile.Activator) spcHostSlotState {
+func applySpcSlotToHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID string, file spcSlotFile, activator *reconcile.Activator) spcHostSlotState {
 	state := spcHostSlotState{Slot: file.Slot}
 	target, pathErr := spcFilePath(dir, file.Slot)
 	if pathErr != nil {
@@ -1077,7 +1078,7 @@ func spcWrittenTargets(results []spcHostState) []string {
 // rollbackSpcAll 对已写入主机执行回滚，返回 (恢复成功台数, 恢复失败台数)。
 // 回滚范围以骨架维护的 written-set 为准：从未写入的节点没有需要撤销的改动，
 // 把它们纳入回滚只会制造"可能残留平台清单"的假告警（Q2026110302166）。
-func (b *Bridge) rollbackSpcAll(s *sshx.SSHSession, st *spcTaskState, reason string, targets []string) (int, int) {
+func rollbackSpcAll(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason string, targets []string) (int, int) {
 	// B1 门：回滚前提 = 已登记写入集 ∧ 备份名非空（判定部分）；
 	// "备份确实存在"由设备脚本在同一条命令里保证（if [ ! -f ] → skip）。
 	// 门不过就一条命令都不发：fail-closed 报还原失败，绝不凭猜测碰现场。
@@ -1098,7 +1099,7 @@ func (b *Bridge) rollbackSpcAll(s *sshx.SSHSession, st *spcTaskState, reason str
 		LocalIPs: st.LocalIPs, Dirs: st.dirs(),
 	}
 	results := spcRestoreFanout().RollbackWritten(ctx, st.written, func(ctx context.Context, ip string) reconcile.HostResult {
-		return spcRestoreResult(b.restoreSpcOnHost(ctx, s, plan, ip))
+		return spcRestoreResult(restoreSpcOnHost(b, ctx, s, plan, ip))
 	})
 	hosts := make([]spcHostState, 0, len(results))
 	for _, result := range results {
@@ -1158,9 +1159,9 @@ func spcRestoreHostFromResult(result reconcile.HostResult) spcHostState {
 }
 
 // restoreSpcHosts 并发恢复全部目标节点（S3：编排委托 reconcile.Fanout.Each）。
-func (b *Bridge) restoreSpcHosts(ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan) []spcHostState {
+func restoreSpcHosts(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan) []spcHostState {
 	results := spcRestoreFanout().Each(ctx, plan.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
-		return spcRestoreResult(b.restoreSpcOnHost(ctx, s, plan, ip))
+		return spcRestoreResult(restoreSpcOnHost(b, ctx, s, plan, ip))
 	})
 	hosts := make([]spcHostState, 0, len(results))
 	for _, result := range results {
@@ -1169,7 +1170,7 @@ func (b *Bridge) restoreSpcHosts(ctx context.Context, s *sshx.SSHSession, plan s
 	return hosts
 }
 
-func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan, ip string) spcHostState {
+func restoreSpcOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan, ip string) spcHostState {
 	state := spcHostState{IP: ip}
 	local := plan.LocalIPs[ip]
 	dir := plan.Dirs[ip]
@@ -1187,7 +1188,7 @@ func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *sshx.SSHSession, plan 
 	restored, skipped, failed := 0, 0, 0
 	firstErr := ""
 	for _, slot := range slots {
-		slotState := b.restoreSpcSlotOnHost(ctx, s, ip, local, dir, plan.TaskID, slot)
+		slotState := restoreSpcSlotOnHost(b, ctx, s, ip, local, dir, plan.TaskID, slot)
 		if len(slots) > 1 {
 			state.Slots = append(state.Slots, slotState)
 		}
@@ -1221,7 +1222,7 @@ func (b *Bridge) restoreSpcOnHost(ctx context.Context, s *sshx.SSHSession, plan 
 }
 
 // restoreSpcSlotOnHost 恢复单个槽位：备份不存在返回 skipped，幂等重放不误报。
-func (b *Bridge) restoreSpcSlotOnHost(ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID, slot string) spcHostSlotState {
+func restoreSpcSlotOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID, slot string) spcHostSlotState {
 	state := spcHostSlotState{Slot: slot}
 	target, pathErr := spcFilePath(dir, slot)
 	if pathErr != nil {
@@ -1276,7 +1277,7 @@ func spcCountRestore(results []spcHostState) (int, int) {
 // 为什么不把恢复完全交给平台：平台侧的轮询只发生在页面打开时，操作员一关页面
 // 就没人收尾；bridge 是常驻进程，是"节点文件状态"最合适的责任方。
 // 平台侧仍保留 restore_spc 作为重试入口，两条路都幂等。
-func (b *Bridge) watchSpcRestore(s *sshx.SSHSession, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
+func watchSpcRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -1290,7 +1291,7 @@ func (b *Bridge) watchSpcRestore(s *sshx.SSHSession, st *spcTaskState, traceID, 
 		for {
 			time.Sleep(spcRestorePollInterval)
 			if s == nil || s.IsClosed() {
-				b.restoreSpcTask(s, st, "session_closed", traceID, caseID, nodeIP, customUI)
+				restoreSpcTask(b, s, st, "session_closed", traceID, caseID, nodeIP, customUI)
 				return
 			}
 			// 采集期间键盘零输入，不打戳会被 TMOUT=600 踢掉（与 create/progress 同因）。
@@ -1318,11 +1319,11 @@ func (b *Bridge) watchSpcRestore(s *sshx.SSHSession, st *spcTaskState, traceID, 
 				idlePolls = 0
 			}
 			if due, reason := spcRestoreDue(nodeState, st.hasRun(), idlePolls); due {
-				b.restoreSpcTask(s, st, reason, traceID, caseID, nodeIP, customUI)
+				restoreSpcTask(b, s, st, reason, traceID, caseID, nodeIP, customUI)
 				return
 			}
 			if time.Now().After(deadline) {
-				b.restoreSpcTask(s, st, "timeout", traceID, caseID, nodeIP, customUI)
+				restoreSpcTask(b, s, st, "timeout", traceID, caseID, nodeIP, customUI)
 				return
 			}
 		}
@@ -1330,13 +1331,13 @@ func (b *Bridge) watchSpcRestore(s *sshx.SSHSession, st *spcTaskState, traceID, 
 }
 
 // restoreSpcTask 执行一次恢复并落日志；beginRestore 保证同任务只跑一次。
-func (b *Bridge) restoreSpcTask(s *sshx.SSHSession, st *spcTaskState, reason, traceID, caseID, nodeIP, customUI string) {
+func restoreSpcTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason, traceID, caseID, nodeIP, customUI string) {
 	if st == nil || !st.beginRestore() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), spcRestoreActionBudget)
 	defer cancel()
-	results := b.restoreSpcHosts(ctx, s, spcRestorePlan{
+	results := restoreSpcHosts(b, ctx, s, spcRestorePlan{
 		Slot: st.Slot, Slots: st.Slots, TaskID: st.TaskID, Targets: st.Targets,
 		LocalIPs: st.LocalIPs, Dirs: st.dirs(),
 	})
@@ -1368,7 +1369,7 @@ func (b *Bridge) restoreSpcTask(s *sshx.SSHSession, st *spcTaskState, reason, tr
 //
 // 现场可能已经不在内存里（bridge 重启过）：仍按「探测目录 + 拼备份名」恢复，
 // 备份不存在时返回 skipped，绝不把"没有备份"说成"已恢复"。
-func (b *Bridge) handleSpcRestore(ctx context.Context, s *sshx.SSHSession, msg models.InMessage) (map[string]any, string, string) {
+func handleSpcRestore(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, msg models.InMessage) (map[string]any, string, string) {
 	taskID := strings.TrimSpace(msg.ExecID)
 	if !spcTaskIDRe.MatchString(taskID) {
 		return nil, "invalid_task_id", "缺少合法的任务 ID，无法定位备份"
@@ -1425,7 +1426,7 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *sshx.SSHSession, msg m
 		plan.Targets = targets
 		plan.LocalIPs = spcLocalAddresses(s, ctx)
 	}
-	results := b.restoreSpcHosts(ctx, s, plan)
+	results := restoreSpcHosts(b, ctx, s, plan)
 	restored, failed := spcCountRestore(results)
 	status := "success"
 	if failed > 0 {
@@ -1458,7 +1459,7 @@ func (b *Bridge) handleSpcRestore(ctx context.Context, s *sshx.SSHSession, msg m
 // 意图内容是产品语义（哪些节点/槽位/目录），由消费者给；骨架只管形状与读写。
 // 落盘失败不阻断下发：内存 watcher 与显式 restore_spc 仍是两条活路，
 // 但必须留痕——静默丢意图会把抗崩溃变成运气。
-func (b *Bridge) persistSpcRestoreIntent(st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
+func persistSpcRestoreIntent(b *app.Bridge, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
 	slots := st.Slots
 	if len(slots) == 0 {
 		slots = []string{st.Slot}
@@ -1545,7 +1546,7 @@ func findSpcRestoreIntent(taskID string) *reconcile.RestoreIntent {
 // 这里凭意图把原件放回去，还原全部成功才删意图；失败保留，
 // 等下次重连或显式 restore_spc 重试。必须由调用方放进协程：
 // 集合性还原可能几十秒，不能阻塞 ssh_connect 回包。
-func (b *Bridge) recoverSpcRestoreIntents(s *sshx.SSHSession, traceID, caseID, nodeIP, customUI string) {
+func recoverSpcRestoreIntents(b *app.Bridge, s *sshx.SSHSession, traceID, caseID, nodeIP, customUI string) {
 	intents, err := reconcile.LoadIntents()
 	if err != nil {
 		logpush.Blog("WARN", "log_collect.spc_intent_load_failed", "还原意图读取失败", traceID, caseID, nodeIP, customUI, map[string]any{
@@ -1573,7 +1574,7 @@ func (b *Bridge) recoverSpcRestoreIntents(s *sshx.SSHSession, traceID, caseID, n
 		// 还原期间键盘零输入，不打戳会被 TMOUT=600 踢掉（与 watcher 同因）。
 		s.MarkBusy()
 		ctx, cancel := context.WithTimeout(context.Background(), spcRestoreActionBudget)
-		results := b.restoreSpcHosts(ctx, s, spcRestorePlan{
+		results := restoreSpcHosts(b, ctx, s, spcRestorePlan{
 			Slot: slot, Slots: intent.Slots, TaskID: intent.TaskKey,
 			Targets: intent.NodeIPs, LocalIPs: intent.LocalIPs, Dirs: intent.Dirs,
 		})

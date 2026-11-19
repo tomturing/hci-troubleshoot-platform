@@ -1,4 +1,4 @@
-package main
+package app
 
 // 生命周期事件的单测。
 //
@@ -40,7 +40,7 @@ func ringSeq() uint64 {
 
 // 销毁会话必须同时完成三件事：摘表、关闭、留痕（含原因/行为者/存活时长）。
 func TestDestroySessionEmitsLifecycleEvent(t *testing.T) {
-	b := newBridge()
+	b := NewBridge()
 	key := "Q2026102700862@10.0.11.100"
 	session := &sshx.SSHSession{
 		CaseID:    "Q2026102700862",
@@ -49,13 +49,13 @@ func TestDestroySessionEmitsLifecycleEvent(t *testing.T) {
 		OwnerConn: "c1-1",
 		CreatedAt: time.Now().Add(-90 * time.Second),
 	}
-	b.set(key, session)
+	b.Set(key, session)
 
 	seq := ringSeq()
-	if !b.destroySession(key, sshx.SessionReasonWSClosed, "c2-2") {
+	if !b.DestroySession(key, sshx.SessionReasonWSClosed, "c2-2") {
 		t.Fatal("首次销毁应返回 true")
 	}
-	if b.get(key) != nil {
+	if b.Get(key) != nil {
 		t.Fatal("销毁后会话仍在表中")
 	}
 	if !session.IsClosed() {
@@ -87,11 +87,11 @@ func TestDestroySessionEmitsLifecycleEvent(t *testing.T) {
 // 重复销毁必须留下 destroy_miss：它证明清理链路被走了两次，
 // 是判断"连坐清理 + 远端 EOF 双重清理"的唯一依据。
 func TestDestroySessionMissIsLogged(t *testing.T) {
-	b := newBridge()
+	b := NewBridge()
 	key := "Q1@10.0.0.1"
 	seq := ringSeq()
 
-	if b.destroySession(key, sshx.SessionReasonWSClosed, "c1-1") {
+	if b.DestroySession(key, sshx.SessionReasonWSClosed, "c1-1") {
 		t.Fatal("键不存在时应返回 false")
 	}
 	if findLogEventSince(t, seq, "session.destroy_miss") == nil {
@@ -105,17 +105,17 @@ func TestDestroySessionMissIsLogged(t *testing.T) {
 // 连接角色决定"探测连接"与"业务连接"能否区分，映射错了会把端口探测误判成事故。
 func TestRoleOfMessageType(t *testing.T) {
 	cases := map[string]string{
-		"ssh_connect":  connRoleTerminal,
-		"ssh_input":    connRoleTerminal,
-		"log_collect":  connRolePanel,
-		"acli_sync":    connRolePanel,
+		"ssh_connect":  ConnRoleTerminal,
+		"ssh_input":    ConnRoleTerminal,
+		"log_collect":  ConnRolePanel,
+		"acli_sync":    ConnRolePanel,
 		"resume":       "",
 		"ping":         "",
 		"unknown_type": "",
 	}
 	for msgType, want := range cases {
-		if got := roleOfMessageType(msgType); got != want {
-			t.Fatalf("roleOfMessageType(%q) 期望 %q，实际 %q", msgType, want, got)
+		if got := RoleOfMessageType(msgType); got != want {
+			t.Fatalf("RoleOfMessageType(%q) 期望 %q，实际 %q", msgType, want, got)
 		}
 	}
 }

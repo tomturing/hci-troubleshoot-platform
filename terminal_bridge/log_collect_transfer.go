@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -327,7 +328,7 @@ func uploadArchiveParts(
 //
 // 平台的 init / complete 由前端调用（需要客户身份），bridge 只拿到数据面 token，
 // 因此这里不接触控制面接口，职责边界清晰。
-func (b *Bridge) handleLogCollectTransfer(
+func handleLogCollectTransfer(b *app.Bridge,
 	ctx context.Context,
 	ws *websocket.Conn,
 	s *sshx.SSHSession,

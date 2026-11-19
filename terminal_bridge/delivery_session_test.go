@@ -1,6 +1,9 @@
 package main
 
-import "terminal_bridge/internal/sshx"
+import (
+	"terminal_bridge/internal/sshx"
+	"testing"
+)
 
 // 交付阶段与会话依赖的回归护栏。
 //
@@ -8,8 +11,6 @@ import "terminal_bridge/internal/sshx"
 // SSH 会话被回收，第 5 次重试在"上传/收尾"阶段被当成凭据失效直接判死。
 // 但上传只用本地副本、收尾只访问平台 HTTP，这两个阶段根本不需要节点。
 // 一刀切地要求会话，等于让"节点连接掉了"去否决一件与节点无关的事。
-
-import "testing"
 
 func TestDeliveryPhaseNeedsNode(t *testing.T) {
 	cases := map[deliveryPhase]bool{

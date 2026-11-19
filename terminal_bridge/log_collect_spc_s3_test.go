@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/app"
 	"testing"
 	"time"
 
@@ -89,8 +90,8 @@ func TestRollbackSpcAllGateRefusesWithoutRegistration(t *testing.T) {
 		activator:    activator,
 		restoreState: "pending",
 	}
-	b := &Bridge{}
-	restored, failed := b.rollbackSpcAll(nil, st, "写入未通过，已回滚", []string{"172.28.24.1"})
+	b := &app.Bridge{}
+	restored, failed := rollbackSpcAll(b, nil, st, "写入未通过，已回滚", []string{"172.28.24.1"})
 	if restored != 0 || failed != 1 {
 		t.Fatalf("门不过必须零恢复、全失败：%d %d", restored, failed)
 	}
@@ -126,8 +127,8 @@ func TestRollbackSpcAllEmptyWrittenSetSendsNothing(t *testing.T) {
 		restoreState: "pending",
 		// written 零值 = 空写入集
 	}
-	b := &Bridge{}
-	restored, failed := b.rollbackSpcAll(nil, st, "写入未通过，已回滚", []string{"172.28.24.1"})
+	b := &app.Bridge{}
+	restored, failed := rollbackSpcAll(b, nil, st, "写入未通过，已回滚", []string{"172.28.24.1"})
 	if restored != 0 || failed != 0 {
 		t.Fatalf("空写入集必须零命令零失败：%d %d", restored, failed)
 	}
@@ -164,7 +165,7 @@ func TestSpcHostFromResultBusyAndOverlay(t *testing.T) {
 // 只有这里触达它，因此 t.Setenv 一次即可；各阶段共用同一临时目录。
 func TestSpcRestoreIntentLifecycle(t *testing.T) {
 	t.Setenv("HCI_BRIDGE_LOG_DIR", t.TempDir())
-	b := &Bridge{}
+	b := &app.Bridge{}
 
 	// ── 落盘与读回：只登记真正写成功的节点 ──────────────────────────
 	st := &spcTaskState{
@@ -175,7 +176,7 @@ func TestSpcRestoreIntentLifecycle(t *testing.T) {
 		{IP: "172.28.24.1", Written: true, Dir: spcDeployDir},
 		{IP: "172.28.25.1", Written: false}, // 未写入节点不得进入还原范围
 	})
-	b.persistSpcRestoreIntent(st, "trace", "case", "172.28.24.1", "")
+	persistSpcRestoreIntent(b, st, "trace", "case", "172.28.24.1", "")
 	intent := findSpcRestoreIntent("task-a")
 	if intent == nil {
 		t.Fatal("意图必须落盘且可按任务键读回（模拟重启后内存现场丢失）")
@@ -229,7 +230,7 @@ func TestSpcRestoreIntentLifecycle(t *testing.T) {
 
 	// ── 重启消费：空意图直接清理（无需会话）─────────────────────────
 	mustSave("task-empty", nil, []string{"core"})
-	b.recoverSpcRestoreIntents(nil, "trace", "case", "172.28.24.1", "")
+	recoverSpcRestoreIntents(b, nil, "trace", "case", "172.28.24.1", "")
 	if findSpcRestoreIntent("task-empty") != nil {
 		t.Fatal("无还原范围的意图必须直接清理")
 	}
@@ -238,7 +239,7 @@ func TestSpcRestoreIntentLifecycle(t *testing.T) {
 	spcTaskStore.put(&spcTaskState{TaskID: "task-live", CreatedAt: time.Now()})
 	defer spcTaskStore.reset()
 	mustSave("task-live", []string{"172.28.24.1"}, []string{"core"})
-	b.recoverSpcRestoreIntents(nil, "trace", "case", "172.28.24.1", "")
+	recoverSpcRestoreIntents(b, nil, "trace", "case", "172.28.24.1", "")
 	if findSpcRestoreIntent("task-live") == nil {
 		t.Fatal("watcher 活着时意图必须保留（还原责任归 watcher，不双头接管）")
 	}

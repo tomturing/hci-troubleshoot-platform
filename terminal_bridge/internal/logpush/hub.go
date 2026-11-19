@@ -841,4 +841,4 @@ func ContextFromMessage(msg models.InMessage) context.Context {
 
 // ── WebSocket Handler ─────────────────────────────────────────────────────────
 
-// sessionKey 生成多节点会话的唯一键
+// SessionKey 生成多节点会话的唯一键

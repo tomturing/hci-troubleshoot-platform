@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"encoding/json"
@@ -15,6 +15,15 @@ import (
 	"time"
 )
 
+const (
+	DefaultWSPort        = 9999
+	BackupWSPort         = 47324            // 主端口被陌生进程占用时的固定回退端口；与前端探测的已知端口一致
+	WebsocketPingInteval = 30 * time.Second // WebSocket 心跳间隔：每 30 秒发送 ping，防止空闲超时断开
+	// InputRejectNoticeInterval 输入无法路由时的提示节流窗口：
+	// 用户连按回车会连续产生同样失败，留痕一次足够，避免刷屏与刷库。
+	InputRejectNoticeInterval = 3 * time.Second
+)
+
 const portBindRetryAttempts = 3
 
 type runtimeConfig struct {
@@ -25,10 +34,10 @@ type runtimeConfig struct {
 	AllowedOriginsRaw string
 }
 
-// bridgeSelfPort 记录启动时最终生效的监听端口，供对端不可达辅助探测回查 bridge 自身 /health/live（修复 E）。
-var bridgeSelfPort int
+// BridgeSelfPort 记录启动时最终生效的监听端口，供对端不可达辅助探测回查 bridge 自身 /health/live（修复 E）。
+var BridgeSelfPort int
 
-func normalizeRuntimeConfig(mode, listenAddress string, port int, allowedOrigins string) (runtimeConfig, error) {
+func NormalizeRuntimeConfig(mode, listenAddress string, port int, allowedOrigins string) (runtimeConfig, error) {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
 		mode = bruntime.DesktopMode
@@ -77,7 +86,7 @@ func normalizeRuntimeConfig(mode, listenAddress string, port int, allowedOrigins
 	}, nil
 }
 
-func (c runtimeConfig) address() string {
+func (c runtimeConfig) Address() string {
 	return net.JoinHostPort(c.ListenAddress, strconv.Itoa(c.Port))
 }
 
@@ -127,10 +136,10 @@ func listenWithRetry(network, address string, attempts int) (net.Listener, error
 	return nil, lastErr
 }
 
-// isLiveBridge 探测给定地址上是否已有一个存活的 terminal_bridge。
+// IsLiveBridge 探测给定地址上是否已有一个存活的 terminal_bridge。
 // 通过 Bridge 自带的 /health/live 端点判定，用于把"重复启动/上一个没退净"
 // 与"陌生进程占用端口"区分开。任何探测失败都安全地视为"非存活 Bridge"。
-func isLiveBridge(address string) bool {
+func IsLiveBridge(address string) bool {
 	client := &http.Client{Timeout: 800 * time.Millisecond}
 	resp, err := client.Get("http://" + address + "/health/live")
 	if err != nil {
@@ -151,9 +160,9 @@ func isLiveBridge(address string) bool {
 	return fmt.Sprint(payload["status"]) == "ok"
 }
 
-// findPortHolders 尽力探测占用某 TCP 端口的进程 PID，仅用于 fail-fast 诊断提示。
+// FindPortHolders 尽力探测占用某 TCP 端口的进程 PID，仅用于 fail-fast 诊断提示。
 // 跨平台 best-effort：任何失败都返回空切片，绝不阻断启动主流程。
-func findPortHolders(port int) []string {
+func FindPortHolders(port int) []string {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
@@ -202,13 +211,13 @@ func findPortHolders(port int) []string {
 	return holders
 }
 
-// acquireListener 按"主端口 → 存活检测幂等 → 备用端口回退 → fail-fast"策略确定监听器。
-// allowBackup 为真（默认端口的桌面模式）时，主端口被陌生进程占用则回退到 backupWSPort；
+// AcquireListener 按"主端口 → 存活检测幂等 → 备用端口回退 → fail-fast"策略确定监听器。
+// allowBackup 为真（默认端口的桌面模式）时，主端口被陌生进程占用则回退到 BackupWSPort；
 // 否则或主备皆占时返回错误，由调用方输出诊断并退出。返回值 resolved 为最终生效配置（端口
 // 可能已切到备用），alreadyRunning 表示同机已有存活 Bridge（应幂等退出而非报错）。
-func acquireListener(config runtimeConfig, allowBackup bool) (listener net.Listener, resolved runtimeConfig, alreadyRunning bool, err error) {
+func AcquireListener(config runtimeConfig, allowBackup bool) (listener net.Listener, resolved runtimeConfig, alreadyRunning bool, err error) {
 	resolved = config
-	listener, err = listenWithRetry("tcp", config.address(), portBindRetryAttempts)
+	listener, err = listenWithRetry("tcp", config.Address(), portBindRetryAttempts)
 	if err == nil {
 		return listener, resolved, false, nil
 	}
@@ -217,21 +226,21 @@ func acquireListener(config runtimeConfig, allowBackup bool) (listener net.Liste
 	}
 
 	// 主端口不可绑定：先判断占用者是否为存活的 Bridge（重复启动场景）。
-	if isLiveBridge(config.address()) {
+	if IsLiveBridge(config.Address()) {
 		return nil, resolved, true, nil
 	}
 
-	if allowBackup && config.Port != backupWSPort {
+	if allowBackup && config.Port != BackupWSPort {
 		backupConfig := config
-		backupConfig.Port = backupWSPort
-		backupListener, backupErr := listenWithRetry("tcp", backupConfig.address(), portBindRetryAttempts)
+		backupConfig.Port = BackupWSPort
+		backupListener, backupErr := listenWithRetry("tcp", backupConfig.Address(), portBindRetryAttempts)
 		if backupErr == nil {
 			return backupListener, backupConfig, false, nil
 		}
 		if isAddressInUse(backupErr) {
 			// 文案用"不可绑定"而非"被占用"：WSAEACCES(10013) 的成因可能是端口落在系统/WinNAT
 			// 保留段，此时 netstat 里根本看不到占用者，写"被占用"会把现场引向错误方向。
-			return nil, resolved, false, fmt.Errorf("主端口 %d 与备用端口 %d 均不可绑定（被占用或被系统保留）: %w", config.Port, backupWSPort, backupErr)
+			return nil, resolved, false, fmt.Errorf("主端口 %d 与备用端口 %d 均不可绑定（被占用或被系统保留）: %w", config.Port, BackupWSPort, backupErr)
 		}
 		return nil, resolved, false, backupErr
 	}
@@ -239,7 +248,7 @@ func acquireListener(config runtimeConfig, allowBackup bool) (listener net.Liste
 	return nil, resolved, false, fmt.Errorf("端口 %d 不可绑定（被占用或被系统保留）: %w", config.Port, err)
 }
 
-func (c runtimeConfig) originAllowed(origin, requestHost string) bool {
+func (c runtimeConfig) OriginAllowed(origin, requestHost string) bool {
 	if origin == "" {
 		// 非浏览器客户端可能不发送 Origin；鉴权和访问控制由上层网络边界负责。
 		return true
@@ -262,12 +271,3 @@ func (c runtimeConfig) originAllowed(origin, requestHost string) bool {
 	}
 	return false
 }
-
-// ── 消息结构 ─────────────────────────────────────────────────────────────────
-
-// models.SpcFile 是平台签发的一份槽位清单原文；摘要由桥独立复算，不信任调用方。
-const (
-	defaultAcliDownloadURLX86 = "http://acli.sangfor.com.cn:1110/api/public/download/4jotgyfk/latest?architecture=x86_64&api_key=QRlZXabZ8sOrFKtgs1VIfkHJZYQ3QNrcETXgsJaiX9Svz1pjFj"
-	defaultAcliDownloadURLARM = "http://acli.sangfor.com.cn:1110/api/public/download/4jotgyfk/latest?architecture=aarch64&api_key=QRlZXabZ8sOrFKtgs1VIfkHJZYQ3QNrcETXgsJaiX9Svz1pjFj"
-	defaultMinDiskMB          = 100
-)

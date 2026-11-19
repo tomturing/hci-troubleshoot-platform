@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
 	"testing"
@@ -576,12 +577,12 @@ func TestSessionByNodeIP(t *testing.T) {
 	target := &sshx.SSHSession{}
 	prefixTrap := &sshx.SSHSession{}
 	other := &sshx.SSHSession{}
-	bridge := &Bridge{sessions: map[string]*sshx.SSHSession{}}
-	bridge.sessions["terminal-only@192.0.2.10"] = target
-	bridge.sessions["Q2026101401684@192.0.2.101"] = prefixTrap // 前缀相同的另一台主机，不得被误命中
-	bridge.sessions["Q2026101401684@192.0.2.110"] = other
+	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{}}
+	bridge.Sessions["terminal-only@192.0.2.10"] = target
+	bridge.Sessions["Q2026101401684@192.0.2.101"] = prefixTrap // 前缀相同的另一台主机，不得被误命中
+	bridge.Sessions["Q2026101401684@192.0.2.110"] = other
 
-	got, key := bridge.sessionByNodeIP("192.0.2.10")
+	got, key := bridge.SessionByNodeIP("192.0.2.10")
 	if got != target {
 		t.Fatalf("应按节点 IP 复用会话，实际 got=%v key=%s", got, key)
 	}
@@ -589,13 +590,13 @@ func TestSessionByNodeIP(t *testing.T) {
 		t.Fatalf("应返回命中的原始键，实际：%s", key)
 	}
 
-	if got, _ := bridge.sessionByNodeIP("192.0.2.101"); got != prefixTrap {
+	if got, _ := bridge.SessionByNodeIP("192.0.2.101"); got != prefixTrap {
 		t.Fatal("前缀相同的主机必须精确匹配")
 	}
-	if got, _ := bridge.sessionByNodeIP("172.28.25.99"); got != nil {
+	if got, _ := bridge.SessionByNodeIP("172.28.25.99"); got != nil {
 		t.Fatal("不存在的节点必须返回 nil，由调用方报 session_missing")
 	}
-	if got, _ := bridge.sessionByNodeIP("  "); got != nil {
+	if got, _ := bridge.SessionByNodeIP("  "); got != nil {
 		t.Fatal("空节点不得命中任何会话")
 	}
 }
@@ -692,33 +693,33 @@ func TestClassifyLogCollectNodeState(t *testing.T) {
 
 func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 	single := &sshx.SSHSession{Address: "192.168.33.89:22"}
-	bridge := &Bridge{sessions: map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single}}
+	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single}}
 
-	got, key, match := bridge.resolveLogCollectSession(models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
+	got, key, match := resolveLogCollectSession(bridge, models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
 	if got != single || key != "Q2026102601505@192.168.33.89" || match != "only_session_for_case" {
 		t.Fatalf("唯一会话应被兜底命中，实际 got=%v key=%s match=%s", got, key, match)
 	}
 
 	// 多节点时不猜：猜错会取消另一台机器上的采集任务
-	multi := &Bridge{sessions: map[string]*sshx.SSHSession{
+	multi := &app.Bridge{Sessions: map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1": {Address: "10.0.0.1:22"},
 		"Q1@10.0.0.2": {Address: "10.0.0.2:22"},
 	}}
-	if got, _, _ := multi.resolveLogCollectSession(models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
+	if got, _, _ := resolveLogCollectSession(multi, models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
 		t.Fatal("多节点且无 node_ip 时不得兜底，必须返回 nil 由调用方报 session_missing")
 	}
 
 	// 带了 node_ip 就走精确键，命中原因要能被日志区分
-	if got, key, match := multi.resolveLogCollectSession(models.InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
+	if got, key, match := resolveLogCollectSession(multi, models.InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
 		t.Fatalf("精确键应优先命中，实际 key=%s match=%s", key, match)
 	}
 
 	// 同节点其他工单的会话：按节点复用，不应落到 only_session_for_case
-	reuse := &Bridge{sessions: map[string]*sshx.SSHSession{
+	reuse := &app.Bridge{Sessions: map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1":            {Address: "10.0.0.1:22"},
 		"terminal-only@10.9.9.9": {Address: "10.9.9.9:22"},
 	}}
-	got2, key2, match2 := reuse.resolveLogCollectSession(models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
+	got2, key2, match2 := resolveLogCollectSession(reuse, models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
 	if got2 == nil || key2 != "terminal-only@10.9.9.9" || match2 != "node_ip_suffix" {
 		t.Fatalf("应按节点复用其他工单会话，实际 key=%s match=%s", key2, match2)
 	}
@@ -730,24 +731,24 @@ func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 func TestSessionByAddressHost(t *testing.T) {
 	legacy := &sshx.SSHSession{Address: "192.0.2.10:22"}
 	otherPort := &sshx.SSHSession{Address: "192.0.2.12:2222"}
-	bridge := &Bridge{sessions: map[string]*sshx.SSHSession{}}
+	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{}}
 	// 键故意不带 @IP，复现现场：终端连好了，但键只有 caseID
-	bridge.sessions["terminal-only"] = legacy
-	bridge.sessions["Q2026101401684@192.0.2.12"] = otherPort
+	bridge.Sessions["terminal-only"] = legacy
+	bridge.Sessions["Q2026101401684@192.0.2.12"] = otherPort
 
-	got, key := bridge.sessionByAddressHost("192.0.2.10")
+	got, key := bridge.SessionByAddressHost("192.0.2.10")
 	if got != legacy || key != "terminal-only" {
 		t.Fatalf("应按会话地址命中存量会话，实际 got=%v key=%s", got, key)
 	}
-	if got, _ := bridge.sessionByAddressHost(" 192.0.2.12 "); got != otherPort {
+	if got, _ := bridge.SessionByAddressHost(" 192.0.2.12 "); got != otherPort {
 		t.Fatal("地址匹配应忽略首尾空格与端口差异")
 	}
-	if got, _ := bridge.sessionByAddressHost("172.28.25.99"); got != nil {
+	if got, _ := bridge.SessionByAddressHost("172.28.25.99"); got != nil {
 		t.Fatal("未连接过的主机必须返回 nil")
 	}
 	// 无 address 的空会话不得被误命中
-	bridge.sessions["broken"] = &sshx.SSHSession{}
-	if got, _ := bridge.sessionByAddressHost(""); got != nil {
+	bridge.Sessions["broken"] = &sshx.SSHSession{}
+	if got, _ := bridge.SessionByAddressHost(""); got != nil {
 		t.Fatal("空节点不得命中")
 	}
 }

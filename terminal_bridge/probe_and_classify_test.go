@@ -1,8 +1,9 @@
 package main
 
-import "terminal_bridge/internal/sshx"
-
-import "testing"
+import (
+	"terminal_bridge/internal/sshx"
+	"testing"
+)
 
 // TestClassifyExecFailure 覆盖修复 D：非零退出必须细分语义 error_type，
 // 禁止把 jq 缺 ONIGURUMA / 命令缺失归为笼统错误（Q2026100812343 复盘）。

@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
 	"time"
@@ -478,7 +479,7 @@ type nodePluginState struct {
 // S4b：探测目标改由 acliLandingDescriptor 声明（B8），不再只验 log_collect。
 // HostTimeout 取负禁用主机级超时，单条命令的 30s 预算已在
 // runSpcOnHostStreams 内部强制（与旧实现一致）。
-func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *sshx.SSHSession) []nodePluginState {
+func verifyClusterPluginLanding(b *app.Bridge, ctx context.Context, s *sshx.SSHSession) []nodePluginState {
 	hosts := spcNodeList(s, ctx)
 	if len(hosts) == 0 {
 		return nil
@@ -789,31 +790,32 @@ func verifyReusedRemotePackage(pkg *acliPackage, size int64, algo, digest string
 // 返回的 release 必须 defer 调用；ok=false 表示已有同会话传输在进行，
 // 调用方应直接回 LC-INSTALL-009（可重试），而不是排队——排队会让用户
 // 连点变成串行重传，同一 destPath 仍可能被后来的旧字节覆盖。
-func (b *Bridge) acquireAcliTransfer(key string) (release func(), ok bool) {
-	b.acliMu.Lock()
-	defer b.acliMu.Unlock()
-	if b.acliBusy == nil {
-		b.acliBusy = make(map[string]bool)
+func acquireAcliTransfer(b *app.Bridge, key string) (release func(), ok bool) {
+	b.AcliMu.Lock()
+	defer b.AcliMu.Unlock()
+	if b.AcliBusy == nil {
+		b.AcliBusy = make(map[string]bool)
 	}
-	if b.acliBusy[key] {
+	if b.AcliBusy[key] {
 		return nil, false
 	}
-	b.acliBusy[key] = true
+	b.AcliBusy[key] = true
 	return func() {
-		b.acliMu.Lock()
-		delete(b.acliBusy, key)
-		b.acliMu.Unlock()
+		b.AcliMu.Lock()
+		delete(b.AcliBusy, key)
+		b.AcliMu.Unlock()
 	}, true
 }
 
 // packageCache 惰性初始化缓存（Bridge 可能在测试中零值构造）。
 // 基线账本与 reconcile 状态同目录（PVC/HCI_BRIDGE_LOG_DIR 同源），桥重启不丢。
-func (b *Bridge) packageCache() *acliPackageCache {
-	b.acliMu.Lock()
-	defer b.acliMu.Unlock()
-	if b.acliCache == nil {
-		b.acliCache = newAcliPackageCache()
-		b.acliCache.store = reconcile.NewStore(reconcile.DefaultStateDir())
+func packageCache(b *app.Bridge) *acliPackageCache {
+	b.AcliMu.Lock()
+	defer b.AcliMu.Unlock()
+	if b.AcliCache == nil {
+		c := newAcliPackageCache()
+		c.store = reconcile.NewStore(reconcile.DefaultStateDir())
+		b.AcliCache = c
 	}
-	return b.acliCache
+	return b.AcliCache.(*acliPackageCache)
 }

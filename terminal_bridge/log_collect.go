@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -1574,29 +1575,29 @@ func firstNonEmpty(values ...string) string {
 // 最后一级是 2026-10-26 补的：cancel 这类动作曾经漏传 node_ip，前三级的 node_ip 匹配
 // 全部失效，bridge 直接回 session_missing——表现是平台已标记取消、节点上采集任务仍在跑，
 // 后续 create 被插件互斥一直拒绝。多节点时绝不猜，猜错会取消另一台机器上的任务。
-func (b *Bridge) resolveLogCollectSession(msg models.InMessage) (session *sshx.SSHSession, key string, match string) {
-	if s, k := b.resolveSession(msg); s != nil {
+func resolveLogCollectSession(b *app.Bridge, msg models.InMessage) (session *sshx.SSHSession, key string, match string) {
+	if s, k := b.ResolveSession(msg); s != nil {
 		return s, k, "exact"
 	}
 	if msg.CaseID != "" {
-		if s := b.get(sessionKey(msg.CaseID, "")); s != nil {
-			return s, sessionKey(msg.CaseID, ""), "default_key"
+		if s := b.Get(app.SessionKey(msg.CaseID, "")); s != nil {
+			return s, app.SessionKey(msg.CaseID, ""), "default_key"
 		}
 	}
-	if s, k := b.sessionByNodeIP(msg.NodeIP); s != nil {
+	if s, k := b.SessionByNodeIP(msg.NodeIP); s != nil {
 		return s, k, "node_ip_suffix"
 	}
-	if s, k := b.sessionByAddressHost(msg.NodeIP); s != nil {
+	if s, k := b.SessionByAddressHost(msg.NodeIP); s != nil {
 		return s, k, "address_host"
 	}
-	if s, k := b.onlySessionForCase(msg.CaseID); s != nil {
+	if s, k := b.OnlySessionForCase(msg.CaseID); s != nil {
 		return s, k, "only_session_for_case"
 	}
 	return nil, "", ""
 }
 
 // handleLogCollect 处理 log_collect 消息族。
-func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui string) {
+func handleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
 	// 链路 ID 先算：会话缺失这类失败同样要能按链路检索与聚合。
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
@@ -1604,7 +1605,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 	}
 	msg.TraceID = traceID
 
-	s, key, match := b.resolveLogCollectSession(msg)
+	s, key, match := resolveLogCollectSession(b, msg)
 	// 业务活跃打戳：交互 shell 有 TMOUT=600，一次采集常常跑十几分钟且期间零键盘输入，
 	// shell 必然在 600s 被踢。没有这个戳，EOF 会被当成整条连接失效并 destroySession，
 	// 之后每次 progress 都是 session_missing——前端只能干等到 60s 超时，
@@ -1626,9 +1627,9 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 			"log_action": msg.LogAction, "task_id": msg.ExecID,
 			// 定性字段：会话数为 0 = 连接生命周期已结束；会话数 >0 但键对不上 = 路由/键问题。
 			// 历史日志只有 action + task_id，两种情况看起来一模一样，只能靠猜。
-			"requested_key":   sessionKey(msg.CaseID, msg.NodeIP),
-			"active_sessions": b.sessionCount(),
-			"session_keys":    b.sessionKeyList(8),
+			"requested_key":   app.SessionKey(msg.CaseID, msg.NodeIP),
+			"active_sessions": b.SessionCount(),
+			"session_keys":    b.SessionKeyList(8),
 		})
 		return
 	}
@@ -1720,7 +1721,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 		// 中途失败时也不会留下指向空文件的清单。
 		var scriptState *spcTaskState
 		if len(msg.ScriptFiles) > 0 {
-			state, rejection := b.prepareScriptScenario(ctx, s, msg, traceID, cui)
+			state, rejection := prepareScriptScenario(b, ctx, s, msg, traceID, cui)
 			if rejection != nil {
 				rejectConfigWithCode(rejection.ErrType, rejection.Code, rejection.Message)
 				return
@@ -1744,14 +1745,14 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 				rejectConfig("spc_path_conflict", "spc 场景与额外路径不能同时下发，请升级客户端")
 				return
 			}
-			state, rejection := b.prepareSpcScenario(ctx, s, msg, traceID, cui)
+			state, rejection := prepareSpcScenario(b, ctx, s, msg, traceID, cui)
 			if rejection != nil {
 				// 带规范码回包：前端按码给出检查/修复建议，不再只显示"日志收集失败"。
 				rejectConfigWithCode(rejection.ErrType, rejection.Code, rejection.Message)
 				// 脚本已经写进去了但清单没通过：任务不会建立，脚本必须立刻还原，
 				// 否则节点会长期跑一份"平台写了但平台不承认"的脚本。
 				if scriptState != nil {
-					go b.restoreScriptTask(s, scriptState, "spc_rejected", traceID, msg.CaseID, msg.NodeIP, cui)
+					go restoreScriptTask(b, s, scriptState, "spc_rejected", traceID, msg.CaseID, msg.NodeIP, cui)
 				}
 				return
 			}
@@ -1805,10 +1806,10 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 			// 必须就地还原，否则 core 槽位会被它长期占住。回包已先发出，
 			// 恢复不占用动作预算（多节点串行可能要几十秒）。
 			if spcState != nil {
-				go b.restoreSpcTask(s, spcState, "create_rejected", traceID, msg.CaseID, msg.NodeIP, cui)
+				go restoreSpcTask(b, s, spcState, "create_rejected", traceID, msg.CaseID, msg.NodeIP, cui)
 			}
 			if scriptState != nil {
-				go b.restoreScriptTask(s, scriptState, "create_rejected", traceID, msg.CaseID, msg.NodeIP, cui)
+				go restoreScriptTask(b, s, scriptState, "create_rejected", traceID, msg.CaseID, msg.NodeIP, cui)
 			}
 			return
 		}
@@ -1966,18 +1967,18 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 			if status != "ok" {
 				// 任务没建立就没有终态可等：立刻还原，别让平台清单占着槽位。
 				// 回包已发出，恢复是集合性串行操作，放进协程不占动作预算。
-				go b.restoreSpcTask(s, spcState, "create_failed", traceID, msg.CaseID, msg.NodeIP, cui)
+				go restoreSpcTask(b, s, spcState, "create_failed", traceID, msg.CaseID, msg.NodeIP, cui)
 			} else {
 				// 终态恢复交给常驻进程：平台侧轮询只在页面打开时发生，
 				// 操作员一关页面就没人收尾，节点会一直挂着平台清单。
-				b.watchSpcRestore(s, spcState, traceID, msg.CaseID, msg.NodeIP, cui)
+				watchSpcRestore(b, s, spcState, traceID, msg.CaseID, msg.NodeIP, cui)
 			}
 		}
 		if scriptState != nil {
 			if status != "ok" {
-				go b.restoreScriptTask(s, scriptState, "create_failed", traceID, msg.CaseID, msg.NodeIP, cui)
+				go restoreScriptTask(b, s, scriptState, "create_failed", traceID, msg.CaseID, msg.NodeIP, cui)
 			} else {
-				b.watchScriptRestore(s, scriptState, traceID, msg.CaseID, msg.NodeIP, cui)
+				watchScriptRestore(b, s, scriptState, traceID, msg.CaseID, msg.NodeIP, cui)
 			}
 		}
 
@@ -2153,7 +2154,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 		// 传输可能持续数十分钟，不沿用 180s 的动作超时，单独给 2 小时预算。
 		transferCtx, transferCancel := context.WithTimeout(context.Background(), logCollectTransferTimeout)
 		defer transferCancel()
-		if err := b.handleLogCollectTransfer(transferCtx, ws, s, msg, cui, traceID); err != nil {
+		if err := handleLogCollectTransfer(b, transferCtx, ws, s, msg, cui, traceID); err != nil {
 			logpush.Blog("ERROR", "log_collect.transfer", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"task_id": msg.ExecID, "error": err.Error(),
 			})
@@ -2186,7 +2187,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 		// 平台侧兜底入口：bridge 进程被杀/重启后内存态丢失，终态恢复协程也就没了。
 		// 备份名自描述（<file>.platform.<task_id>.bak），因此不需要内存也能重放恢复。
 		// 双路径都幂等：备份不存在返回 skipped，绝不把"没备份"报成"已恢复"。
-		logData, restoreErrType, restoreErrMsg := b.handleSpcRestore(ctx, s, msg)
+		logData, restoreErrType, restoreErrMsg := handleSpcRestore(b, ctx, s, msg)
 		restoreStatus := "ok"
 		restoreCode := ""
 		if restoreErrType != "" {
@@ -2209,7 +2210,7 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg models.InMessage, cui 
 		// 平台侧兜底入口：bridge 进程被杀/重启后内存态丢失，终态恢复协程也就没了。
 		// 备份名自描述（<file>.platform.<task_id>.bak），created 标记也按任务隔离，
 		// 因此不需要内存也能重放恢复；备份/标记都不存在时返回 skipped。
-		logData, restoreErrType, restoreErrMsg := b.handleScriptRestore(ctx, s, msg)
+		logData, restoreErrType, restoreErrMsg := handleScriptRestore(b, ctx, s, msg)
 		restoreStatus := "ok"
 		restoreCode := ""
 		if restoreErrType != "" {

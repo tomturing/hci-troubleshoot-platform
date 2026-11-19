@@ -9,6 +9,7 @@ package main
 import (
 	"errors"
 	"strings"
+	"terminal_bridge/internal/app"
 	"testing"
 	"time"
 )
@@ -390,26 +391,26 @@ func TestAcliPackageCache(t *testing.T) {
 }
 
 func TestAcquireAcliTransfer(t *testing.T) {
-	b := &Bridge{}
-	release, ok := b.acquireAcliTransfer("case@1.1.1.1")
+	b := &app.Bridge{}
+	release, ok := acquireAcliTransfer(b, "case@1.1.1.1")
 	if !ok {
 		t.Fatal("首次抢占应成功")
 	}
 
 	// 同一会话重复抢占必须被拒：并发写同一 destPath 会互相覆盖。
-	if _, second := b.acquireAcliTransfer("case@1.1.1.1"); second {
+	if _, second := acquireAcliTransfer(b, "case@1.1.1.1"); second {
 		t.Fatal("并发抢占应被拒绝")
 	}
 
 	// 不同会话互不影响。
-	releaseOther, okOther := b.acquireAcliTransfer("case@2.2.2.2")
+	releaseOther, okOther := acquireAcliTransfer(b, "case@2.2.2.2")
 	if !okOther {
 		t.Fatal("不同会话应可并行")
 	}
 	releaseOther()
 
 	release()
-	_, again := b.acquireAcliTransfer("case@1.1.1.1")
+	_, again := acquireAcliTransfer(b, "case@1.1.1.1")
 	if !again {
 		t.Fatal("释放后应可再次抢占")
 	}

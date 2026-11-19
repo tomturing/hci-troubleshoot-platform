@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/uplink"
@@ -85,7 +86,7 @@ const (
 
 // deliveryRunner 是进程级单例。
 type deliveryRunner struct {
-	bridge      *Bridge
+	bridge      *app.Bridge
 	store       *deliveryStore
 	concurrency deliveryConcurrency
 
@@ -100,7 +101,7 @@ type deliveryRunner struct {
 var deliveryRunnerInstance *deliveryRunner
 
 // newDeliveryRunner 构造执行器；store 目录来自日志目录（与 job 文件同级，便于现场打包取证）。
-func newDeliveryRunner(bridge *Bridge) *deliveryRunner {
+func newDeliveryRunner(bridge *app.Bridge) *deliveryRunner {
 	runner := &deliveryRunner{
 		bridge:      bridge,
 		store:       newDeliveryStore(logpush.DefaultHub.LogDir),
@@ -672,19 +673,19 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 }
 
 // sessionFor 按 case+node 解析会话；会话掉线但桥持有该工单的认证信息时，
-// 后台自动重连并续传，把"需要人工回面板重连"变成自愈（见 reconnectDeliveryNode）。
+// 后台自动重连并续传，把"需要人工回面板重连"变成自愈（见 ReconnectDeliveryNode）。
 // 仅当本阶段确实需要节点时才尝试重连：上传/收尾只读本地副本与平台，不该为它们
 // 去敲一条 SSH 连接（否则会在不需要时开连接、甚至因节点不可达而误报 needs_reauth）。
 // 两个分支都落空才返回 nil（由调用方转成 needs_reauth）。
 func (r *deliveryRunner) sessionFor(job *deliveryJob) *sshx.SSHSession {
-	session, _, _ := r.bridge.resolveLogCollectSession(models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
+	session, _, _ := resolveLogCollectSession(r.bridge, models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
 	if session != nil {
 		return session
 	}
 	if !deliveryPhaseNeedsNode(job.Phase) {
 		return nil
 	}
-	if reconnected, err := r.bridge.reconnectDeliveryNode(job.CaseID, job.NodeIP, "delivery-auto"); err == nil {
+	if reconnected, err := r.bridge.ReconnectDeliveryNode(job.CaseID, job.NodeIP, "delivery-auto"); err == nil {
 		return reconnected
 	}
 	return nil

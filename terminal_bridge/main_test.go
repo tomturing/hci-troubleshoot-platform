@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
@@ -33,19 +34,19 @@ import (
 )
 
 func TestOwnedSessionTrackerDrainCaseIncludesNodeSessions(t *testing.T) {
-	tracker := newOwnedSessionTracker()
+	tracker := app.NewOwnedSessionTracker()
 	defaultSession := &sshx.SSHSession{}
 	nodeSession := &sshx.SSHSession{}
 	otherSession := &sshx.SSHSession{}
-	tracker.set("CASE-1", defaultSession)
-	tracker.set("CASE-1@node-a", nodeSession)
-	tracker.set("CASE-10@node-b", otherSession)
+	tracker.Set("CASE-1", defaultSession)
+	tracker.Set("CASE-1@node-a", nodeSession)
+	tracker.Set("CASE-10@node-b", otherSession)
 
-	drained := tracker.drainCase("CASE-1")
+	drained := tracker.DrainCase("CASE-1")
 	if len(drained) != 2 || drained["CASE-1"] != defaultSession || drained["CASE-1@node-a"] != nodeSession {
 		t.Fatalf("drainCase 未返回工单全部会话: %#v", drained)
 	}
-	remaining := tracker.drain()
+	remaining := tracker.Drain()
 	if len(remaining) != 1 || remaining["CASE-10@node-b"] != otherSession {
 		t.Fatalf("drainCase 错误清理了其他工单会话: %#v", remaining)
 	}
@@ -176,9 +177,9 @@ func TestNormalizeRuntimeConfigDefaults(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			config, err := normalizeRuntimeConfig(test.mode, "", defaultWSPort, "")
+			config, err := app.NormalizeRuntimeConfig(test.mode, "", app.DefaultWSPort, "")
 			if err != nil {
-				t.Fatalf("normalizeRuntimeConfig() error = %v", err)
+				t.Fatalf("NormalizeRuntimeConfig() error = %v", err)
 			}
 			if config.ListenAddress != test.wantAddress {
 				t.Fatalf("ListenAddress = %q, want %q", config.ListenAddress, test.wantAddress)
@@ -191,24 +192,26 @@ func TestNormalizeRuntimeConfigDefaults(t *testing.T) {
 }
 
 func TestClusterModeOriginPolicy(t *testing.T) {
-	config, err := normalizeRuntimeConfig(bruntime.ClusterMode, "", defaultWSPort, "")
+	config, err := app.NormalizeRuntimeConfig(bruntime.ClusterMode, "", app.DefaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.originAllowed("http://hci.local", "hci.local") {
+	if !config.OriginAllowed("http://hci.local", "hci.local") {
 		t.Fatal("同源 Origin 应被允许")
 	}
-	if config.originAllowed("https://evil.example", "hci.local") {
+	if config.OriginAllowed("https://evil.example", "hci.local") {
 		t.Fatal("非同源 Origin 不应被允许")
 	}
 }
 
 func TestClusterModeRejectsCrossOriginWebSocketRequest(t *testing.T) {
-	config, err := normalizeRuntimeConfig(bruntime.ClusterMode, "", defaultWSPort, "")
+	config, err := app.NormalizeRuntimeConfig(bruntime.ClusterMode, "", app.DefaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHTTPHandler(newBridge(), config)
+	// R0 装配缝：测试直接起 server，需自行接线 WS 派发入口（生产路径在 main 接线）。
+	app.WSHandlerFunc = handle
+	handler := app.NewHTTPHandler(app.NewBridge(), config)
 	request := httptest.NewRequest(http.MethodGet, "http://hci.local/terminal-bridge", nil)
 	request.Host = "hci.local"
 	request.Header.Set("Origin", "https://evil.example")
@@ -340,11 +343,13 @@ func TestBuildAuthMethodsAcceptsLease(t *testing.T) {
 }
 
 func TestHealthAndStatusEndpoints(t *testing.T) {
-	config, err := normalizeRuntimeConfig(bruntime.ClusterMode, "", defaultWSPort, "")
+	config, err := app.NormalizeRuntimeConfig(bruntime.ClusterMode, "", app.DefaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHTTPHandler(newBridge(), config)
+	// R0 装配缝：测试直接起 server，需自行接线 WS 派发入口（生产路径在 main 接线）。
+	app.WSHandlerFunc = handle
+	handler := app.NewHTTPHandler(app.NewBridge(), config)
 
 	for _, path := range []string{
 		"/health/live",
@@ -987,11 +992,13 @@ func TestUploadVMConsolePPMContract(t *testing.T) {
 // TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket 经 WebSocket 派发入口：
 // 非法 operation 直接回 vm_console_result 拒绝，不建立任何 SSH 执行。
 func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
-	config, err := normalizeRuntimeConfig(bruntime.DesktopMode, "", defaultWSPort, "")
+	config, err := app.NormalizeRuntimeConfig(bruntime.DesktopMode, "", app.DefaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := newHTTPHandler(newBridge(), config)
+	// R0 装配缝：测试直接起 server，需自行接线 WS 派发入口（生产路径在 main 接线）。
+	app.WSHandlerFunc = handle
+	handler := app.NewHTTPHandler(app.NewBridge(), config)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -1147,19 +1154,19 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 // acli_sync 曾因为不带 node_ip 而恒定 session_missing：会话键是 caseID@nodeIP，
 // 而旧逻辑只找键为 caseID 的会话。这里锁定三层兜底与"不猜节点"的边界。
 func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
-	b := &Bridge{sessions: map[string]*sshx.SSHSession{
+	b := &app.Bridge{Sessions: map[string]*sshx.SSHSession{
 		"Q2026101401684@192.0.2.21": {Address: "192.0.2.21:22"},
 	}}
 
 	// 1) 带 node_ip：精确命中
-	if s, key := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684", NodeIP: "192.0.2.21"}); s == nil {
+	if s, key := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684", NodeIP: "192.0.2.21"}); s == nil {
 		t.Fatalf("node_ip 精确匹配失败")
 	} else if key != "Q2026101401684@192.0.2.21" {
 		t.Fatalf("精确匹配键不符: %s", key)
 	}
 
 	// 2) 不带 node_ip：线上故障场景，必须兜底到该工单唯一会话
-	s, key := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"})
+	s, key := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"})
 	if s == nil {
 		t.Fatalf("缺少 node_ip 时未兜底到唯一会话")
 	}
@@ -1168,13 +1175,13 @@ func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
 	}
 
 	// 3) 同工单两条会话且不带 node_ip：宁可不装，也不猜节点
-	b.sessions["Q2026101401684@192.0.2.22"] = &sshx.SSHSession{Address: "192.0.2.22:22"}
-	if s, _ := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"}); s != nil {
+	b.Sessions["Q2026101401684@192.0.2.22"] = &sshx.SSHSession{Address: "192.0.2.22:22"}
+	if s, _ := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"}); s != nil {
 		t.Fatalf("多会话时不应猜测节点")
 	}
 
 	// 4) 不串工单
-	if s, _ := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101499999"}); s != nil {
+	if s, _ := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101499999"}); s != nil {
 		t.Fatalf("不应命中其它工单的会话")
 	}
 }

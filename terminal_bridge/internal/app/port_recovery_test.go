@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"errors"
@@ -118,7 +118,7 @@ func TestIsLiveBridge(t *testing.T) {
 	}))
 	defer srv.Close()
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	if !isLiveBridge(addr) {
+	if !IsLiveBridge(addr) {
 		t.Fatalf("应将返回 status:ok 的端点识别为存活 Bridge")
 	}
 
@@ -127,7 +127,7 @@ func TestIsLiveBridge(t *testing.T) {
 		io.WriteString(w, `{"status":"not-a-bridge"}`)
 	}))
 	defer bad.Close()
-	if isLiveBridge(strings.TrimPrefix(bad.URL, "http://")) {
+	if IsLiveBridge(strings.TrimPrefix(bad.URL, "http://")) {
 		t.Fatalf("非 Bridge 响应不应被判为存活 Bridge")
 	}
 
@@ -138,7 +138,7 @@ func TestIsLiveBridge(t *testing.T) {
 	}
 	closedAddr := closedListener.Addr().String()
 	closedListener.Close()
-	if isLiveBridge(closedAddr) {
+	if IsLiveBridge(closedAddr) {
 		t.Fatalf("不可达地址不应被判为存活 Bridge")
 	}
 }
@@ -149,7 +149,7 @@ func TestAcquireListenerFreePrimary(t *testing.T) {
 	// 立即释放，使端口空闲（loopback 上 TIME_WAIT 由重试兜底）。
 	holder.Close()
 	cfg := desktopConfig(freePort)
-	listener, resolved, alreadyRunning, err := acquireListener(cfg, true)
+	listener, resolved, alreadyRunning, err := AcquireListener(cfg, true)
 	if err != nil {
 		t.Fatalf("空闲主端口应成功监听: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestAcquireListenerAlreadyRunning(t *testing.T) {
 	defer cleanup()
 
 	cfg := desktopConfig(port)
-	listener, _, alreadyRunning, err := acquireListener(cfg, true)
+	listener, _, alreadyRunning, err := AcquireListener(cfg, true)
 	if err != nil {
 		t.Fatalf("存活 Bridge 场景不应报错: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestAcquireListenerCustomPortNoBackupFailsFast(t *testing.T) {
 	port, holder := occupyPort(t)
 	defer holder.Close()
 	cfg := desktopConfig(port)
-	listener, resolved, alreadyRunning, err := acquireListener(cfg, false)
+	listener, resolved, alreadyRunning, err := AcquireListener(cfg, false)
 	if err == nil {
 		if listener != nil {
 			listener.Close()
@@ -206,19 +206,19 @@ func TestAcquireListenerCustomPortNoBackupFailsFast(t *testing.T) {
 }
 
 func TestAcquireListenerFallbackToBackup(t *testing.T) {
-	// 主端口被“非 Bridge”占用 + allowBackup=true → 回退到 backupWSPort。
+	// 主端口被“非 Bridge”占用 + allowBackup=true → 回退到 BackupWSPort。
 	primaryPort, holder := occupyPort(t)
 	defer holder.Close()
 
-	// 预占 backupWSPort 检测其是否可用；可用才继续，否则跳过（避免 CI 端口冲突误报）。
-	probe, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(backupWSPort))
+	// 预占 BackupWSPort 检测其是否可用；可用才继续，否则跳过（避免 CI 端口冲突误报）。
+	probe, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(BackupWSPort))
 	if err != nil {
-		t.Skipf("备用端口 %d 在本环境不可用，跳过回退用例: %v", backupWSPort, err)
+		t.Skipf("备用端口 %d 在本环境不可用，跳过回退用例: %v", BackupWSPort, err)
 	}
 	probe.Close()
 
 	cfg := desktopConfig(primaryPort)
-	listener, resolved, alreadyRunning, err := acquireListener(cfg, true)
+	listener, resolved, alreadyRunning, err := AcquireListener(cfg, true)
 	if err != nil {
 		t.Fatalf("应回退到备用端口成功: %v", err)
 	}
@@ -229,8 +229,8 @@ func TestAcquireListenerFallbackToBackup(t *testing.T) {
 	if alreadyRunning {
 		t.Fatalf("非 Bridge 占用不应判为已运行")
 	}
-	if resolved.Port != backupWSPort {
-		t.Fatalf("应回退到备用端口 %d, 实际 %d", backupWSPort, resolved.Port)
+	if resolved.Port != BackupWSPort {
+		t.Fatalf("应回退到备用端口 %d, 实际 %d", BackupWSPort, resolved.Port)
 	}
 }
 
@@ -239,14 +239,14 @@ func TestAcquireListenerBothPortsOccupied(t *testing.T) {
 	primaryPort, primaryHolder := occupyPort(t)
 	defer primaryHolder.Close()
 
-	backupHolder, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(backupWSPort))
+	backupHolder, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(BackupWSPort))
 	if err != nil {
-		t.Skipf("备用端口 %d 在本环境不可用，跳过主备皆占用例: %v", backupWSPort, err)
+		t.Skipf("备用端口 %d 在本环境不可用，跳过主备皆占用例: %v", BackupWSPort, err)
 	}
 	defer backupHolder.Close()
 
 	cfg := desktopConfig(primaryPort)
-	listener, _, alreadyRunning, err := acquireListener(cfg, true)
+	listener, _, alreadyRunning, err := AcquireListener(cfg, true)
 	if err == nil {
 		if listener != nil {
 			listener.Close()
@@ -257,16 +257,16 @@ func TestAcquireListenerBothPortsOccupied(t *testing.T) {
 		t.Fatalf("非 Bridge 占用不应判为已运行")
 	}
 	if !strings.Contains(err.Error(), strconv.Itoa(primaryPort)) ||
-		!strings.Contains(err.Error(), strconv.Itoa(backupWSPort)) {
-		t.Fatalf("错误信息应同时提及主端口 %d 与备用端口 %d, 实际: %v", primaryPort, backupWSPort, err)
+		!strings.Contains(err.Error(), strconv.Itoa(BackupWSPort)) {
+		t.Fatalf("错误信息应同时提及主端口 %d 与备用端口 %d, 实际: %v", primaryPort, BackupWSPort, err)
 	}
 }
 
 func TestFindPortHoldersDoesNotPanic(t *testing.T) {
-	// findPortHolders 为 best-effort 诊断，任何环境下都不得 panic；结果可为空。
+	// FindPortHolders 为 best-effort 诊断，任何环境下都不得 panic；结果可为空。
 	port, holder := occupyPort(t)
 	defer holder.Close()
-	holders := findPortHolders(port)
+	holders := FindPortHolders(port)
 	if holders == nil {
 		t.Fatalf("应返回非 nil 切片（可为空）")
 	}

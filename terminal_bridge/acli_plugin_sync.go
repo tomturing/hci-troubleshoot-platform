@@ -20,6 +20,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -75,7 +76,7 @@ type acliPluginStagePlan struct {
 }
 
 // prepareAcliPluginStage 在阶段一开工前用票据换取期望态。返回 nil 表示未启用。
-func (b *Bridge) prepareAcliPluginStage(msg models.InMessage, cui, traceID string) *acliPluginStagePlan {
+func prepareAcliPluginStage(b *app.Bridge, msg models.InMessage, cui, traceID string) *acliPluginStagePlan {
 	if !acliPluginStageRequested(msg) {
 		// 契约兼容：没有 platform_url / plugin_ticket 就是没启用阶段二，
 		// 这不是失败，后续也不会发回执（旧前端不会因为多一个 null 字段出错）。
@@ -88,7 +89,7 @@ func (b *Bridge) prepareAcliPluginStage(msg models.InMessage, cui, traceID strin
 	plan := &acliPluginStagePlan{started: time.Now()}
 	fetchCtx, cancel := context.WithTimeout(context.Background(), acliPluginFetchTimeout)
 	defer cancel()
-	manifest, err := b.fetchAcliPluginManifest(
+	manifest, err := fetchAcliPluginManifest(b,
 		fetchCtx,
 		strings.TrimSpace(msg.PlatformURL),
 		strings.TrimSpace(msg.PluginTicket),
@@ -119,7 +120,7 @@ func (b *Bridge) prepareAcliPluginStage(msg models.InMessage, cui, traceID strin
 // 上下文必须与阶段一的 720s 总预算**脱钩**：S4a 明确不动阶段一的外壳与预算，
 // 插件同步不能反过来把阶段一的预算账改歪。会话被关掉时不必特意中断：
 // SSH 通道一断，逐节点操作会立刻以 unreachable 收口，不会进入无限等待。
-func (b *Bridge) runAcliPluginStage(
+func runAcliPluginStage(b *app.Bridge,
 	s *sshx.SSHSession,
 	msg models.InMessage,
 	plan *acliPluginStagePlan,
@@ -130,11 +131,11 @@ func (b *Bridge) runAcliPluginStage(
 	}
 	stageCtx, cancel := context.WithTimeout(context.Background(), acliPluginStageBudget)
 	defer cancel()
-	return b.syncAcliPluginsFromPlatform(stageCtx, s, msg, plan, cui, traceID)
+	return syncAcliPluginsFromPlatform(b, stageCtx, s, msg, plan, cui, traceID)
 }
 
 // syncAcliPluginsFromPlatform 执行第二阶段（期望态已由 prepare 取定）。
-func (b *Bridge) syncAcliPluginsFromPlatform(
+func syncAcliPluginsFromPlatform(b *app.Bridge,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	msg models.InMessage,
@@ -189,7 +190,7 @@ func (b *Bridge) syncAcliPluginsFromPlatform(
 	//   - 串行让"某插件失败只回滚该插件"这条不变量在编排层也成立；
 	//   - 设备侧 flock 已经把同节点并发安装互斥掉了，插件间并发只会加长锁等待。
 	for _, desired := range plugins {
-		result := b.reconcileAcliPlugin(ctx, s, desired, targets, cui, traceID, caseID)
+		result := reconcileAcliPlugin(b, ctx, s, desired, targets, cui, traceID, caseID)
 		receipt.Plugins = append(receipt.Plugins, result)
 		for _, outcome := range result.Hosts {
 			switch outcome.Action {
@@ -228,7 +229,7 @@ type acliPluginTarget struct {
 }
 
 // reconcileAcliPlugin 对单个插件做逐节点差量判定与执行。
-func (b *Bridge) reconcileAcliPlugin(
+func reconcileAcliPlugin(b *app.Bridge,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	desired acliPluginDesired,
@@ -250,7 +251,7 @@ func (b *Bridge) reconcileAcliPlugin(
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			outcomes[index] = b.reconcileAcliPluginOnHost(ctx, s, desired, target, cui, traceID, caseID)
+			outcomes[index] = reconcileAcliPluginOnHost(b, ctx, s, desired, target, cui, traceID, caseID)
 			if acliPluginActionRank(outcomes[index].Action) > acliPluginActionRank(result.Action) {
 				result.Action = outcomes[index].Action
 			}
@@ -265,7 +266,7 @@ func (b *Bridge) reconcileAcliPlugin(
 type acliPluginHostStatus = acliPluginTarget
 
 // reconcileAcliPluginOnHost 在单台节点上完成"探测→判定→（必要时）部署→自检"。
-func (b *Bridge) reconcileAcliPluginOnHost(
+func reconcileAcliPluginOnHost(b *app.Bridge,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	desired acliPluginDesired,
@@ -303,7 +304,7 @@ func (b *Bridge) reconcileAcliPluginOnHost(
 		return outcome
 	}
 	scriptPath := acliPluginScriptPath(deployID)
-	if writeErr := b.writeAcliPluginScript(ctx, s, target, scriptPath, []byte(script)); writeErr != nil {
+	if writeErr := writeAcliPluginScript(b, ctx, s, target, scriptPath, []byte(script)); writeErr != nil {
 		outcome.Action = acliPluginActionFailed
 		outcome.Reason = acliPluginErrorCode(writeErr)
 		outcome.Error = writeErr.Error()
@@ -375,7 +376,7 @@ func runAcliPluginOnHost(s *sshx.SSHSession, ctx context.Context,
 // 为什么不用 printf 分片塞 argv：netdoctor 一类插件的脚本近 1MB，Linux 单参数
 // 上限约 128KB，旧实现只能按 48KB 分片下发（每条命令一次 WS/SSH 往返）。
 // stdin 通道一次成型，且落盘后仍有摘要复核，不牺牲完整性。
-func (b *Bridge) writeAcliPluginScript(
+func writeAcliPluginScript(b *app.Bridge,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	target acliPluginTarget,

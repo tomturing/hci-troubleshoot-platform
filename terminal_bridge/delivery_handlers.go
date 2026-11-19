@@ -8,6 +8,7 @@ package main
 
 import (
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"time"
@@ -62,7 +63,7 @@ func toDeliveryJobView(job *deliveryJob) deliveryJobView {
 }
 
 // handleDeliverySubmit 接收交付请求：校验参数、落盘、入队，立即返回 job_id。
-func (b *Bridge) handleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) {
+func handleDeliverySubmit(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
 	traceID := strings.TrimSpace(msg.TraceID)
 	taskID := strings.TrimSpace(msg.ExecID)
 	sourcePath, err := normalizeArchivePath(msg.TransferSourcePath)
@@ -136,7 +137,7 @@ func (b *Bridge) handleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, 
 }
 
 // handleDeliveryStatus 返回 job 快照；前端断线重连后靠它继续显示。
-func (b *Bridge) handleDeliveryStatus(ws *websocket.Conn, msg models.InMessage, cui string) {
+func handleDeliveryStatus(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
 	jobID := strings.TrimSpace(msg.JobID)
 	status := "error"
 	view := deliveryJobView{}
@@ -155,7 +156,7 @@ func (b *Bridge) handleDeliveryStatus(ws *websocket.Conn, msg models.InMessage, 
 }
 
 // handleDeliveryResume 在用户重连后唤醒 needs_reauth 的作业。
-func (b *Bridge) handleDeliveryResume(ws *websocket.Conn, msg models.InMessage, cui string) {
+func handleDeliveryResume(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
 	jobID := strings.TrimSpace(msg.JobID)
 	ok := deliveryRunnerInstance != nil && deliveryRunnerInstance.resume(jobID)
 	status := "error"
@@ -172,7 +173,7 @@ func (b *Bridge) handleDeliveryResume(ws *websocket.Conn, msg models.InMessage, 
 }
 
 // handleDeliveryCancel 取消作业（用户显式取消）。
-func (b *Bridge) handleDeliveryCancel(ws *websocket.Conn, msg models.InMessage, cui string) {
+func handleDeliveryCancel(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
 	jobID := strings.TrimSpace(msg.JobID)
 	ok := deliveryRunnerInstance != nil && deliveryRunnerInstance.cancel(jobID)
 	logpush.Blog("WARN", "delivery.cancel", "取消交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{

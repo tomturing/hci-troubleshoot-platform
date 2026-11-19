@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
@@ -65,36 +66,40 @@ func main() {
 		logpush.Blog("ERROR", "ws.send_failed", "WebSocket 发送失败", msg.TraceID, msg.CaseID, "", msg.CustomUI, map[string]any{
 			"out_type": msg.Type, "exec_id": msg.ExecID, "error": err.Error(),
 		})
-		atomic.AddUint64(&promMetrics.LogsCollectErrors, 1)
+		atomic.AddUint64(&app.PromMetrics.LogsCollectErrors, 1)
 	}
-	logpush.MetricsReplayed = func(n uint64) { atomic.AddUint64(&promMetrics.LogsReplayedTotal, n) }
-	logpush.MetricsDropped = func(n uint64) { atomic.AddUint64(&promMetrics.LogsDroppedTotal, n) }
-	logpush.MetricsCollectErrors = func(n uint64) { atomic.AddUint64(&promMetrics.LogsCollectErrors, n) }
-	logpush.MetricsCollected = func(n uint64) { atomic.AddUint64(&promMetrics.LogsCollectedTotal, n) }
+	logpush.MetricsReplayed = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsReplayedTotal, n) }
+	logpush.MetricsDropped = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsDroppedTotal, n) }
+	logpush.MetricsCollectErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectErrors, n) }
+	logpush.MetricsCollected = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectedTotal, n) }
 	logpush.VersionFunc = getVersion
-	sshx.IsLiveBridgeFunc = isLiveBridge
-	sshx.SelfPortFunc = func() int { return bridgeSelfPort }
-	terminal.MetricsExecErrors = func(n uint64) { atomic.AddUint64(&promMetrics.ExecCommandErrors, n) }
-	terminal.MetricsVmConsoleOpErrors = func(n uint64) { atomic.AddUint64(&promMetrics.VmConsoleOpErrors, n) }
+	sshx.IsLiveBridgeFunc = app.IsLiveBridge
+	sshx.SelfPortFunc = func() int { return app.BridgeSelfPort }
+	app.WSHandlerFunc = handle
+	app.VersionFunc = func() string { return Version }
+	app.CommitIDFunc = func() string { return CommitID }
+	app.BuildTimeFunc = func() string { return BuildTime }
+	terminal.MetricsExecErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.ExecCommandErrors, n) }
+	terminal.MetricsVmConsoleOpErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.VmConsoleOpErrors, n) }
 	showVersion := flag.Bool("version", false, "打印版本与 commit 信息后退出")
 	mode := flag.String("mode", bruntime.EnvOrDefault("HCI_BRIDGE_MODE", bruntime.DesktopMode), "运行模式：desktop 或 cluster")
 	listenAddress := flag.String("listen-address", strings.TrimSpace(os.Getenv("HCI_BRIDGE_LISTEN_ADDRESS")), "监听地址；默认 desktop=127.0.0.1，cluster=0.0.0.0")
-	port := flag.Int("port", bruntime.EnvIntOrDefault("HCI_BRIDGE_PORT", defaultWSPort), "HTTP/WebSocket 监听端口")
+	port := flag.Int("port", bruntime.EnvIntOrDefault("HCI_BRIDGE_PORT", app.DefaultWSPort), "HTTP/WebSocket 监听端口")
 	allowedOrigins := flag.String("allowed-origins", strings.TrimSpace(os.Getenv("HCI_BRIDGE_ALLOWED_ORIGINS")), "允许的 Origin，逗号分隔；支持 * 和 same-origin")
 	flag.Parse()
 	if *showVersion {
 		fmt.Printf("terminal_bridge %s (commit: %s, built: %s)\n", getVersion(), CommitID, BuildTime)
 		return
 	}
-	config, err := normalizeRuntimeConfig(*mode, *listenAddress, *port, *allowedOrigins)
+	config, err := app.NormalizeRuntimeConfig(*mode, *listenAddress, *port, *allowedOrigins)
 	if err != nil {
 		log.Fatalf("[Bridge] 配置无效: %v", err)
 	}
 
-	bridge := newBridge()
-	// processStartedAt / bridgeSingleton 供退出事件与资源采样读取（生命周期事实只有一处真源）。
-	processStartedAt = time.Now()
-	bridgeSingleton = bridge
+	bridge := app.NewBridge()
+	// app.ProcessStartedAt / app.BridgeSingleton 供退出事件与资源采样读取（生命周期事实只有一处真源）。
+	app.ProcessStartedAt = time.Now()
+	app.BridgeSingleton = bridge
 	// 把所有标准库日志重定向为结构化日志并回采（统一可观测性）
 	log.SetOutput(logpush.BridgeLogWriter{})
 	log.SetFlags(0)
@@ -104,7 +109,7 @@ func main() {
 	logpush.DefaultHub.ApplyRuntimeMode(config.Mode)
 	// stderr 重定向必须晚于 applyRuntimeMode：cluster 模式的日志目录由 Helm 注入，
 	// 提前重定向会把 panic 栈写到 desktop 默认目录。
-	redirectStderrToFile()
+	app.RedirectStderrToFile()
 	// 云端/集群桥没有浏览器给它下发直传令牌：部署期注入了端点与令牌就自行建通道，
 	// 并把"进程崩溃前只落在本地文件、还没确认上传"的区间补传（按实例水位过滤）。
 	// 必须早于 bridge.startup 日志，否则启动事件本身不会进队列。
@@ -115,10 +120,10 @@ func main() {
 		)
 	}
 	// 5 分钟一条资源采样：Atom 级机器上采样本身也必须廉价（一天约 58KB）。
-	startResourceSampler(5 * time.Minute)
+	app.StartResourceSampler(5 * time.Minute)
 	// 空闲会话回收器：WS 关闭只 release 不销毁，超时无人复用的会话由 reaper 兜底回收，
 	// 回收间隔取 TTL 的 1/4（最少 15 秒），避免过期会话久留或 Atom 机器频繁抢锁。
-	startSessionReaper(bridge, sessionIdleTTL())
+	app.StartSessionReaper(bridge, app.SessionIdleTTL())
 	// 交付执行器：启动即扫描并恢复未完成作业。执行权在 bridge，
 	// 浏览器是否在线不影响；前端只通过 job_status 轮询进度。
 	deliveryRunnerInstance = newDeliveryRunner(bridge)
@@ -128,7 +133,7 @@ func main() {
 		"commit":          CommitID,
 		"built":           BuildTime,
 		"mode":            config.Mode,
-		"listen":          config.address(),
+		"listen":          config.Address(),
 		"allowed_origins": config.AllowedOriginsRaw,
 		"log_dir":         logpush.DefaultHub.LogDir,
 		"log_path":        logpush.DefaultHub.LogPath,
@@ -139,7 +144,7 @@ func main() {
 		// 起跑线资源快照：与 resource.sample / bridge.shutdown 对齐，
 		// 才能回答"是不是一路涨到崩溃"。
 		"goroutines": runtime.NumGoroutine(),
-		"sys_mb":     currentSysMB(),
+		"sys_mb":     app.CurrentSysMB(),
 	})
 	shutdownTelemetry, telemetryErr := initTelemetry(context.Background())
 	if telemetryErr != nil {
@@ -157,14 +162,14 @@ func main() {
 	// 端口自愈：仅默认端口的桌面模式启用 9999↔47324 双端口回退；显式自定义端口或
 	// cluster 模式（同源/受管 Service）只绑该端口，冲突即 fail-fast，避免与浏览器
 	// 探测契约（只认 9999/47324 两个已知端口）脱节。
-	allowBackup := config.Mode == bruntime.DesktopMode && config.Port == defaultWSPort
-	listener, resolved, alreadyRunning, listenErr := acquireListener(config, allowBackup)
+	allowBackup := config.Mode == bruntime.DesktopMode && config.Port == app.DefaultWSPort
+	listener, resolved, alreadyRunning, listenErr := app.AcquireListener(config, allowBackup)
 	if listenErr != nil {
-		holders := findPortHolders(config.Port)
+		holders := app.FindPortHolders(config.Port)
 		logpush.Blog("ERROR", "bridge.port_conflict", "监听端口不可用，启动失败", "", "", "", "", map[string]any{
-			"requested_listen": config.address(),
+			"requested_listen": config.Address(),
 			"port":             config.Port,
-			"backup_port":      backupWSPort,
+			"backup_port":      app.BackupWSPort,
 			"allow_backup":     allowBackup,
 			"holder_pids":      holders,
 			"error":            listenErr.Error(),
@@ -176,41 +181,41 @@ func main() {
 		// 探不到"能杀的进程"（http.sys 注册、系统/WinNAT 保留段、独占绑定），只给一条
 		// netstat 会把人带偏，现场会反复重启同一个端口。
 		if runtime.GOOS == "windows" {
-			log.Printf("[Bridge] 处置指引：1) netstat -ano | findstr :%d 查占用 PID；2) netsh int ipv4 show excludedportrange protocol=tcp 确认 %d 未被系统/WinNAT 保留；3) 结束残留进程后重试，或用 --port %d 启动", config.Port, config.Port, backupWSPort)
+			log.Printf("[Bridge] 处置指引：1) netstat -ano | findstr :%d 查占用 PID；2) netsh int ipv4 show excludedportrange protocol=tcp 确认 %d 未被系统/WinNAT 保留；3) 结束残留进程后重试，或用 --port %d 启动", config.Port, config.Port, app.BackupWSPort)
 		} else {
-			log.Printf("[Bridge] 处置指引：lsof -nP -iTCP:%d -sTCP:LISTEN 定位占用者；或改用 --port %d 启动", config.Port, backupWSPort)
+			log.Printf("[Bridge] 处置指引：lsof -nP -iTCP:%d -sTCP:LISTEN 定位占用者；或改用 --port %d 启动", config.Port, app.BackupWSPort)
 		}
 		log.Fatalf("[Bridge] 启动失败: %v", listenErr)
 	}
 	if alreadyRunning {
 		// 同机已有一个存活 Bridge：这是"双击重复启动/上一个没退净"，非故障，幂等退出。
 		logpush.Blog("INFO", "bridge.already_running", "检测到本机已有存活的 terminal_bridge，无需重复启动", "", "", "", "", map[string]any{
-			"listen": config.address(),
+			"listen": config.Address(),
 			"pid":    os.Getpid(),
 		})
-		log.Printf("[Bridge] 检测到本机 %s 已有存活的 terminal_bridge，本次启动幂等退出（无需重复打开）", config.address())
+		log.Printf("[Bridge] 检测到本机 %s 已有存活的 terminal_bridge，本次启动幂等退出（无需重复打开）", config.Address())
 		return
 	}
 
 	server := &http.Server{
-		Addr:              resolved.address(),
-		Handler:           newHTTPHandler(bridge, resolved),
+		Addr:              resolved.Address(),
+		Handler:           app.NewHTTPHandler(bridge, resolved),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if resolved.Port != config.Port {
 		logpush.Blog("WARN", "bridge.backup_port_activated", "主端口被占用，已回退至备用端口", "", "", "", "", map[string]any{
 			"primary_port": config.Port,
 			"backup_port":  resolved.Port,
-			"listen":       resolved.address(),
+			"listen":       resolved.Address(),
 		})
 	}
 	logpush.Blog("INFO", "bridge.listening", "terminal_bridge 监听已就绪", "", "", "", "", map[string]any{
-		"listen": resolved.address(),
+		"listen": resolved.Address(),
 		"port":   resolved.Port,
 	})
-	bridgeSelfPort = resolved.Port // 供对端不可达辅助探测回查自身 /health/live（修复 E）
+	app.BridgeSelfPort = resolved.Port // 供对端不可达辅助探测回查自身 /health/live（修复 E）
 	log.Printf("[Bridge] HCI SSH Bridge 已启动: version=%s commit=%s built=%s mode=%s listen=ws://%s",
-		getVersion(), CommitID, BuildTime, resolved.Mode, resolved.address())
+		getVersion(), CommitID, BuildTime, resolved.Mode, resolved.Address())
 	log.Printf("[Bridge] Origin 策略已启用: allowed_origins=%s；结构化日志与状态指标已开启", resolved.AllowedOriginsRaw)
 
 	// 优雅退出：覆盖 Ctrl+C 与 SIGTERM。
@@ -223,8 +228,8 @@ func main() {
 		sig := <-signalCh
 		logpush.Blog("WARN", "bridge.shutdown", "terminal_bridge 收到退出信号，开始优雅退出", "", "", "", "", map[string]any{
 			"signal":          sig.String(),
-			"uptime_seconds":  int64(time.Since(processStartedAt).Seconds()),
-			"active_sessions": bridge.sessionCount(),
+			"uptime_seconds":  int64(time.Since(app.ProcessStartedAt).Seconds()),
+			"active_sessions": bridge.SessionCount(),
 		})
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

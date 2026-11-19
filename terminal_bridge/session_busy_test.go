@@ -14,6 +14,7 @@ package main
 //  3. 重连覆盖不再腰斩进行中的长任务（摘表但保留连接，作业结束自愈关闭）。
 
 import (
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
@@ -54,39 +55,39 @@ func TestBusyWindowExpires(t *testing.T) {
 
 // 采集中会话不得被空闲租约回收：浏览器关闭（refs=0）是长时采集的常态。
 func TestReaperKeepsBusySession(t *testing.T) {
-	bridge := newBridge()
+	bridge := app.NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
-	bridge.set(key, session)
-	bridge.releaseSession(key, "conn-1")
+	bridge.Set(key, session)
+	bridge.ReleaseSession(key, "conn-1")
 
 	session.MarkBusy()
-	if reaped := bridge.reapIdleSessions(time.Nanosecond); reaped != 0 {
+	if reaped := bridge.ReapIdleSessions(time.Nanosecond); reaped != 0 {
 		t.Fatalf("业务活跃期内的会话不应被空闲租约回收，实际回收 %d 条", reaped)
 	}
-	if bridge.get(key) == nil {
+	if bridge.Get(key) == nil {
 		t.Fatal("会话被误回收，后续 progress 将全部 session_missing")
 	}
 
 	// 窗口过期后必须恢复回收，否则孤儿会话永久占用远端 shell。
 	session.LastBusyAt.Store(time.Now().Add(-time.Hour).UnixMilli())
-	if reaped := bridge.reapIdleSessions(time.Nanosecond); reaped != 1 {
+	if reaped := bridge.ReapIdleSessions(time.Nanosecond); reaped != 1 {
 		t.Fatalf("业务窗口过期后应恢复常规回收，实际回收 %d 条", reaped)
 	}
 }
 
 // 重连覆盖不得腰斩进行中的长任务：只摘表，连接留给作业。
 func TestDetachSessionKeepsConnectionForLongTask(t *testing.T) {
-	bridge := newBridge()
+	bridge := app.NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
-	bridge.set(key, session)
+	bridge.Set(key, session)
 	session.BeginLongTask()
 
-	if !bridge.destroyOrDetachSession(key, sshx.SessionReasonReconnect, "c2-2") {
+	if !bridge.DestroyOrDetachSession(key, sshx.SessionReasonReconnect, "c2-2") {
 		t.Fatal("重连覆盖应命中已有会话")
 	}
-	if bridge.get(key) != nil {
+	if bridge.Get(key) != nil {
 		t.Fatal("摘表后路由表里不应再有该键（新会话必须能入表）")
 	}
 	if session.IsClosed() {
@@ -107,12 +108,12 @@ func TestDetachSessionKeepsConnectionForLongTask(t *testing.T) {
 
 // 没有长任务时重连覆盖仍是常规销毁：摘表 + 关闭，不留连接。
 func TestDestroyOrDetachDestroysIdleSession(t *testing.T) {
-	bridge := newBridge()
+	bridge := app.NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
-	bridge.set(key, session)
+	bridge.Set(key, session)
 
-	if !bridge.destroyOrDetachSession(key, sshx.SessionReasonReconnect, "c2-2") {
+	if !bridge.DestroyOrDetachSession(key, sshx.SessionReasonReconnect, "c2-2") {
 		t.Fatal("重连覆盖应命中已有会话")
 	}
 	if !session.IsClosed() {
@@ -124,33 +125,29 @@ func TestDestroyOrDetachDestroysIdleSession(t *testing.T) {
 // 立刻回收。2026-10-28 现场：终端 10:18:11 断开进入空闲租约，拉取 10:28:34 完成，
 // 10:28:48 会话就被 idle_ttl 销毁，交付卡在 uploading 并被判 needs_reauth。
 func TestReaperRestartsIdleClockWhileProtected(t *testing.T) {
-	bridge := newBridge()
+	bridge := app.NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
-	bridge.set(key, session)
-	bridge.releaseSession(key, "conn-1")
+	bridge.Set(key, session)
+	bridge.ReleaseSession(key, "conn-1")
 
 	// 终端早已断开，空闲租约按旧起点算已经过期很久，但长任务仍在跑。
-	bridge.mu.Lock()
-	bridge.sessionIdleAt[key] = time.Now().Add(-time.Hour)
-	bridge.mu.Unlock()
+	bridge.SetSessionIdleAt(key, time.Now().Add(-time.Hour))
 	session.BeginLongTask()
 
-	if reaped := bridge.reapIdleSessions(time.Minute); reaped != 0 {
+	if reaped := bridge.ReapIdleSessions(time.Minute); reaped != 0 {
 		t.Fatalf("保护期内不应回收，实际回收 %d 条", reaped)
 	}
 	session.EndLongTask()
 
 	// 保护刚解除：若 reaper 没有刷新 idleAt，这里会立刻回收（正是现场事故）。
-	if reaped := bridge.reapIdleSessions(time.Minute); reaped != 0 {
+	if reaped := bridge.ReapIdleSessions(time.Minute); reaped != 0 {
 		t.Fatalf("保护解除后应按新起点重新计时，实际立刻回收 %d 条", reaped)
 	}
 
 	// 确认回收能力没丢：真正过期后仍能回收。
-	bridge.mu.Lock()
-	bridge.sessionIdleAt[key] = time.Now().Add(-2 * time.Minute)
-	bridge.mu.Unlock()
-	if reaped := bridge.reapIdleSessions(time.Minute); reaped != 1 {
+	bridge.SetSessionIdleAt(key, time.Now().Add(-2*time.Minute))
+	if reaped := bridge.ReapIdleSessions(time.Minute); reaped != 1 {
 		t.Fatalf("租约真正过期后应回收，实际回收 %d 条", reaped)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/shared/uplink"
 	"time"
 )
@@ -170,7 +171,7 @@ func validatePluginPlatformURL(raw string) (string, error) {
 //
 // 失败一律回原因码，绝不回空清单当"没有插件要装"：那会把一次网络故障
 // 洗成一次成功的同步（B6 同族错误）。
-func (b *Bridge) fetchAcliPluginManifest(
+func fetchAcliPluginManifest(b *app.Bridge,
 	ctx context.Context,
 	platformURL, ticket, caseID string,
 	insecure bool,
