@@ -100,12 +100,13 @@ const router = createRouter({
       meta: { title: 'KBD管理', icon: 'Document', order: 6 },
     },
     {
-      // WeKnora 知识库：问答与管理台两个页签，均为同源 iframe。
-      // order 取 6.5，落在「KBD管理」(6) 与「SOP管理」(7) 之间。
+      // WeK 知识库（WeKnora）：问答与管理台两个页签，均为同源 iframe。
+      // order 取 4.7，落在「DSH离线诊断」(4.6) 与「分类基线」(5) 之间：
+      // 知识库属于诊断辅助入口，与 DSH 相邻比挂在 KBD 管理之后更符合使用路径。
       path: '/knowledge/weknora',
       name: 'KnowledgeBase',
       component: () => import('@/views/KnowledgeBaseView.vue'),
-      meta: { title: '知识库', icon: 'Reading', order: 6.5 },
+      meta: { title: 'WeK知识库', icon: 'Reading', order: 4.7 },
     },
     {
       path: '/knowledge/sop',

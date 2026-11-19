@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { FullScreen, Refresh } from '@element-plus/icons-vue'
 import { createApiClient } from '@hci/shared'
 import { getAccessToken } from '@/utils/auth'
+import { useFullscreen } from '@/composables/useFullscreen'
 
 /**
  * WeKnora 知识库（同源内嵌）。
@@ -19,6 +20,10 @@ interface WeknoraLaunch {
 }
 
 const apiClient = createApiClient('/api', undefined, getAccessToken)
+
+// 全屏作用于整个页面容器：工具栏与页签一起留在全屏里，退出入口不会消失。
+const pageRef = ref<HTMLElement | null>(null)
+const { isFullscreen, supported: fullscreenSupported, toggle: toggleFullscreen } = useFullscreen(pageRef)
 
 const activeTab = ref<'chat' | 'console'>('chat')
 const consoleUrl = ref('/weknora/')
@@ -55,14 +60,20 @@ onMounted(loadLaunch)
 </script>
 
 <template>
-  <div class="weknora-container">
+  <div ref="pageRef" class="weknora-container">
     <el-card class="weknora-card">
       <div class="weknora-actions-bar">
-        <span class="weknora-info-text">WeKnora 知识库（文档检索问答 + 知识库管理）</span>
-        <el-button type="primary" size="small" @click="loadLaunch">
-          <el-icon style="margin-right: 4px"><Refresh /></el-icon>
-          重新连接
-        </el-button>
+        <span class="weknora-info-text">WeK知识库（文档检索问答 + 知识库管理）</span>
+        <div class="weknora-actions">
+          <el-button v-if="fullscreenSupported" size="small" @click="toggleFullscreen">
+            <el-icon style="margin-right: 4px"><FullScreen /></el-icon>
+            {{ isFullscreen ? '退出全屏' : '全屏' }}
+          </el-button>
+          <el-button type="primary" size="small" @click="loadLaunch">
+            <el-icon style="margin-right: 4px"><Refresh /></el-icon>
+            重新连接
+          </el-button>
+        </div>
       </div>
 
       <el-alert
@@ -114,12 +125,36 @@ onMounted(loadLaunch)
 </template>
 
 <style scoped>
+/*
+ * 高度链：el-main（flex:1，20px padding）→ 本容器 → el-card → tabs → iframe。
+ *
+ * 不用 calc(100vh - Npx)：N 是拍出来的魔法数，工具栏/页签/告警任一高度变化
+ * 就会错位——要么底部留白，要么页面出现第二条滚动条（iframe 内部已有自己的
+ * 滚动）。改成 flex 逐级传递可用高度后，iframe 恒等于「剩下的全部空间」。
+ *
+ * 注意 el-main 本身不能改成 overflow:hidden：同层还有大量普通表单页依赖它
+ * 滚动，改全局布局会把长页面裁掉。这里只让内嵌页自己不吃满不溢出。
+ */
 .weknora-container {
-  padding: 20px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .weknora-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border-radius: 8px;
+}
+
+:deep(.el-card__body) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .weknora-actions-bar {
@@ -130,6 +165,7 @@ onMounted(loadLaunch)
   background-color: #f5f7fa;
   border-radius: 6px;
   border-left: 4px solid #409eff;
+  flex: none;
 }
 
 .weknora-info-text {
@@ -138,19 +174,51 @@ onMounted(loadLaunch)
   font-weight: 500;
 }
 
+.weknora-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+/* 原生全屏下容器脱离文档流，必须自带背景色，否则透出浏览器默认黑/白底 */
+.weknora-container:fullscreen {
+  background: #f0f2f5;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
 .weknora-alert {
   margin-top: 12px;
+  flex: none;
 }
 
 .weknora-tabs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   margin-top: 8px;
+}
+
+:deep(.weknora-tabs .el-tabs__header) {
+  flex: none;
+  margin-bottom: 0;
+}
+
+:deep(.weknora-tabs .el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:deep(.weknora-tabs .el-tab-pane) {
+  height: 100%;
 }
 
 .weknora-frame {
   width: 100%;
-  height: calc(100vh - 360px);
-  min-height: 480px;
-  margin-top: 8px;
+  height: 100%;
+  min-height: 0;
   border: 1px solid #dcdfe6;
   border-radius: 6px;
   overflow: hidden;
@@ -159,5 +227,6 @@ onMounted(loadLaunch)
 
 .weknora-frame iframe {
   display: block;
+  border: 0;
 }
 </style>
