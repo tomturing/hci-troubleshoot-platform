@@ -240,6 +240,8 @@ app.include_router(log_collect_admin.router)
 app.include_router(log_collect_admin.custom_router)
 # 默认场景清单（管理端编辑）：/api/v1/log-collect-default-scenarios
 app.include_router(log_collect_admin.default_router)
+# 收集脚本库（管理端维护 + 版本历史）：/api/v1/log-collect-scripts
+app.include_router(log_collect_admin.script_router)
 app.include_router(log_collect_admin.tasks_router)
 app.include_router(signal_dry_run.router)
 app.include_router(diagnosis.router)

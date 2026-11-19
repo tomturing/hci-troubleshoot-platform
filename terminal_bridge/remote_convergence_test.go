@@ -319,7 +319,7 @@ func TestUploadStreamDeadCodeRemoved(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(data), "func (s *SSHSession) uploadStream(") {
+		if strings.Contains(string(data), "func (s *sshx.SSHSession) uploadStream(") {
 			t.Errorf("%s 仍定义无校验的 uploadStream（应删除，唯一写入实现是 remote.WriteFile）", name)
 		}
 	}
@@ -334,7 +334,7 @@ func TestAcliSyncConsumerGoesThroughPrimitives(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(data)
-	if !strings.Contains(src, "remote.RunSplit(ctx, newSSHRunner(s), outcome.Command)") {
+	if !strings.Contains(src, "remote.RunSplit(ctx, sshx.NewSSHRunner(s), outcome.Command)") {
 		t.Error("installAcliPackage 必须经 remote.RunSplit 分轨执行（S4a）")
 	}
 	if !strings.Contains(src, "fanout.Each(ctx, targets,") {
@@ -343,11 +343,11 @@ func TestAcliSyncConsumerGoesThroughPrimitives(t *testing.T) {
 	if strings.Contains(src, "sem := make(chan struct{}, spcFanoutConcurrency)") {
 		t.Error("逐节点校验不得再手写 sem/wg 并发（唯一编排实现是 reconcile.Fanout）")
 	}
-	mainSrc, err := os.ReadFile("main.go")
+	mainSrc, err := os.ReadFile("acli.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(mainSrc), "remote.Run(ctx, newSSHRunner(s), \"uname -m\")") {
+	if !strings.Contains(string(mainSrc), "remote.Run(ctx, sshx.NewSSHRunner(s), \"uname -m\")") {
 		t.Error("架构探测必须经 remote.Run 执行（S4a）")
 	}
 }

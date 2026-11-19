@@ -29,6 +29,7 @@ from app.routes import (
     log_collect_default_scenarios,
     log_collect_evidence,
     log_collect_scenarios,
+    log_collect_scripts,
 )
 
 # 在应用创建前初始化 OpenTelemetry
@@ -55,6 +56,7 @@ async def lifespan(app: FastAPI):
     log_collect_scenarios.set_database_manager(database_manager)
     log_collect_custom_scenarios.set_database_manager(database_manager)
     log_collect_default_scenarios.set_database_manager(database_manager)
+    log_collect_scripts.set_database_manager(database_manager)
     log_collect_admin_tasks.set_database_manager(database_manager)
     # 工单证据聚合端点：漏掉这一行不会报错，只会让两个管理端点恒返 500
     # 「Database not initialized」（2026-11-02 staging 实测），故同时保留
@@ -115,6 +117,8 @@ app.include_router(log_collect_custom_scenarios.admin_router)
 # 默认场景清单：客户只读预览 + 管理端编辑/恢复
 app.include_router(log_collect_default_scenarios.router)
 app.include_router(log_collect_default_scenarios.admin_router)
+# 收集脚本库：只有管理端路由（客户侧只按场景展示，永不接触脚本内容）。
+app.include_router(log_collect_scripts.router)
 app.include_router(log_collect_admin_tasks.admin_router)
 # 工单详情证据聚合：日志收集选项/元数据 + DSH 诊断会话（只对管理端开放）
 app.include_router(case_insights.router)

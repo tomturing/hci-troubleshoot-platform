@@ -9,6 +9,7 @@ package main
 //     所以"写没写对、路径在不在"只能由 bridge 在下发前显式证明。
 
 import (
+	"terminal_bridge/internal/sshx"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -127,7 +128,7 @@ func verifyConfigSHA256(raw, expected string) error {
 // ——**不做"探测不了就跳过"**，否则一次写坏的配置会以"任务成功但少收"收场。
 func writeLogCollectConfig(
 	ctx context.Context,
-	s *SSHSession,
+	s *sshx.SSHSession,
 	taskID, raw, expectedSHA string,
 ) (string, error) {
 	path := logCollectConfigPath(taskID)
@@ -166,7 +167,7 @@ func writeLogCollectConfig(
 
 	// 不落账本：config 按 task_id 隔离、总是覆写，账本对它不产生任何判定价值，
 	// 逐任务落盘只会让 state 目录无界增长。
-	res := reconcile.Run(ctx, reconcile.Deps{Runner: newSSHRunner(s)}, desired[0])
+	res := reconcile.Run(ctx, reconcile.Deps{Runner: sshx.NewSSHRunner(s)}, desired[0])
 	switch res.Status {
 	case reconcile.StatusOK, reconcile.StatusSkipped:
 		return path, nil
@@ -182,7 +183,7 @@ func writeLogCollectConfig(
 // 已知局限（必须在前端说清）：config 的 paths 是在**每台目标主机**按根 `/` 解析的，
 // 而 bridge 只连发起节点，因此这里只证明"发起节点上有"。
 // 探测命令本身跑不起来时不猜"都存在"，一律按全部缺失上报，交由用户二次确认。
-func preflightLogCollectPaths(ctx context.Context, s *SSHSession, paths []string) []string {
+func preflightLogCollectPaths(ctx context.Context, s *sshx.SSHSession, paths []string) []string {
 	if len(paths) == 0 {
 		return nil
 	}
@@ -191,7 +192,7 @@ func preflightLogCollectPaths(ctx context.Context, s *SSHSession, paths []string
 		quoted = append(quoted, shellQuote(path))
 	}
 	command := "for p in " + strings.Join(quoted, " ") + `; do [ -e "$p" ] || echo "$p"; done`
-	output, code, err := s.runQuickCommand(ctx, command)
+	output, code, err := s.RunQuickCommand(ctx, command)
 	if err != nil || code != 0 {
 		return append([]string(nil), paths...)
 	}

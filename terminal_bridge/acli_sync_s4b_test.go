@@ -60,7 +60,7 @@ func TestAcliSyncDecisionProbeFailureIsDegradedSkip(t *testing.T) {
 // TestAcliSyncUpToDateMessageHonestOnProbeFailure 钉住外壳文案：
 // probe_failed 分支的回执消息不得含"已是最新/为最新版本"，必须如实标注未判定。
 func TestAcliSyncUpToDateMessageHonestOnProbeFailure(t *testing.T) {
-	raw, err := os.ReadFile("main.go")
+	raw, err := os.ReadFile("acli.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestAcliDiskSpaceDecision(t *testing.T) {
 }
 
 func TestAcliSyncDiskProbeFailureLeavesTrace(t *testing.T) {
-	raw, err := os.ReadFile("main.go")
+	raw, err := os.ReadFile("acli.go")
 	if err != nil {
 		t.Fatal(err)
 	}

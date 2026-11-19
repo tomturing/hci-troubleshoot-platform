@@ -37,7 +37,7 @@ type Provider interface {
 	Desired(ctx context.Context, req SyncRequest) ([]DesiredState, error)
 }
 
-// InlineMessage 用于 spc/config：期望状态由 WS InMessage 直接携带。
+// InlineMessage 用于 spc/config：期望状态由 WS models.InMessage 直接携带。
 //
 // Validate 必填：产品 schema（config 只允许 paths 键、spc 必须是合法数组）
 // 留在调用方，骨架只负责"没有二次校验就不写节点"这条硬规则。

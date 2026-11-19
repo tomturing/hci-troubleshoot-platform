@@ -909,7 +909,7 @@ function normalizeTargetHosts(): string | null {
  * 不说明这一点，用户会把"平台读不到节点"误判成平台故障。
  */
 const manualHostHint = computed(() => {
-  const format = 'all（全部在线节点）或英文逗号分隔的 IP，如 172.28.25.2,172.28.25.3'
+  const format = 'all（全部在线节点）或英文逗号分隔的 IP，如 192.0.2.11,192.0.2.12'
   if (probeResult.value && !probeResult.value.acli_installed) {
     return `acli 未安装，无法自动读取节点清单；可手填 ${format}，开始收集时会先安装 acli`
   }
@@ -1941,7 +1941,7 @@ watch(sshConnected, (ok) => {
 
 // 切换 SSH 会话意味着可能换了集群：旧集群的节点清单与已选目标一律作废。
 // 否则勾选框只渲染新 hostOptions，旧 IP 在界面上不可见却仍随 form.ips 提交
-// （Q2026110302166：连 24.x 集群却把上一集群 25.x 的 172.28.25.2 一并下发，
+// （Q2026110302166：连 24.x 集群却把上一集群 25.x 的 192.0.2.11 一并下发，
 //  bridge 跨集群 SSH 认证失败，整体采集被判失败）。
 watch(nodeIp, (next, prev) => {
   if (next === prev) return
@@ -2865,6 +2865,9 @@ async function handleStart() {
     // 从 task 上抹掉。先固化成局部事实，能力探测与下发都认它。
     const issuedSpcFiles = task.spc_files ?? undefined
     const issuedSpcSlots = task.spc_slots ?? undefined
+    // 收集脚本与场景清单同一条链路：只在创建响应里出现一次，纯透传给 bridge。
+    // 客户侧不展示脚本内容（用户只关心采集哪些东西），因此这里不进入任何 UI 状态。
+    const issuedScriptFiles = task.script_files ?? undefined
     // P1 凭据只在建任务响应里出现一次：拿不到就说明平台没配票据密钥，
     // 此时发 P1 只会换来一次 401，并在界面上留下一个"直传失败"的假故障。
     //
@@ -2900,7 +2903,7 @@ async function handleStart() {
     let capabilities: any = null
     // 有证据票据就顺便做一次能力协商：旧桥不上报速率/网络/包内容/进程日志时，
     // 界面必须说「桥接端版本较旧」，而不是把缺失数据显示成 0 或绿色成功。
-    if (issuedSpcFiles?.length || task.evidence_ticket) {
+    if (issuedSpcFiles?.length || issuedScriptFiles?.length || task.evidence_ticket) {
       try {
         capabilities = await sendAndWait(
           ws,
@@ -2917,6 +2920,12 @@ async function handleStart() {
     if (issuedSpcFiles?.length
       && (!capabilities || capabilities.status !== 'ok' || !capabilities.log_data?.multi_slot_spc)) {
       throw new Error('当前终端桥不支持按场景清单收集，请先升级桌面桥再重试（不会按原清单静默收集）')
+    }
+    // 脚本同理：旧桥不认识 script_files 会静默丢弃，节点上就没有场景引用的脚本，
+    // 采集会「成功」但少采一批内容——这是最难发现的失败，必须前置拦下。
+    if (issuedScriptFiles?.length
+      && (!capabilities || capabilities.status !== 'ok' || !capabilities.log_data?.platform_scripts)) {
+      throw new Error('当前终端桥不支持平台脚本下发，请先升级桌面桥再重试（不会在缺脚本的情况下采集）')
     }
 
     const created = await sendAndWait(
@@ -2954,6 +2963,8 @@ async function handleStart() {
         // 默认场景逐槽位清单：单场景时就是「替换 vm_start.json + -m vm_start」。
         spcFiles: issuedSpcFiles,
         spcSlots: issuedSpcSlots,
+        // 平台脚本：bridge 先写 script/，再写 spc/，最后跑 acli；终态还原。
+        scriptFiles: issuedScriptFiles,
         remoteUrl: pathMode.value === 'P1' ? RELAY_URL : undefined,
         // bridge 会把它注入成 `-L 0:Authorization:Bearer <ticket>`
         uploadTicket: p1Ticket || undefined,

@@ -104,7 +104,7 @@ func (f *fakeUploadPlatform) snapshot() (map[int][]byte, bool) {
 }
 
 // newTestDeliveryRunner 构造只用于上传的执行器。
-// 不走 newDeliveryRunner：它会读 logHub 目录并起调度 goroutine，
+// 不走 newDeliveryRunner：它会读 logpush.DefaultHub 目录并起调度 goroutine，
 // 而这段测试只关心 upload/complete 两个纯函数。
 func newTestDeliveryRunner(t *testing.T) *deliveryRunner {
 	t.Helper()

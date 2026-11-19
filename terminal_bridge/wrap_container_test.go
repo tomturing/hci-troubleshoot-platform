@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/sshx"
 	"strings"
 	"testing"
 )
@@ -13,19 +14,19 @@ func TestWrapContainerCommandSimulationSkipsPathPrefix(t *testing.T) {
 	const hostCmd = "acli --formatter json alert get -k 磁盘"
 
 	// 真机会话：保留 PATH 前缀（既有行为不可回归）。
-	realWrap := wrapContainerCommand(hostCmd, "host", false)
+	realWrap := sshx.WrapContainerCommand(hostCmd, "host", false)
 	if realWrap != `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; `+hostCmd {
 		t.Fatalf("真机会话应加 PATH 前缀, got=%q", realWrap)
 	}
 
 	// 仿真会话：必须原样裸命令，绝不含 ';'（否则撞 hci-sim policy_denied）。
-	simWrap := wrapContainerCommand(hostCmd, "host", true)
+	simWrap := sshx.WrapContainerCommand(hostCmd, "host", true)
 	if simWrap != hostCmd {
 		t.Fatalf("仿真会话应跳过 PATH 前缀, got=%q", simWrap)
 	}
 
 	// smartctl 同样受仿真豁免（覆盖 acli/smartctl 两类工具）。
-	sc := wrapContainerCommand("smartctl.real -a /dev/sdb", "", true)
+	sc := sshx.WrapContainerCommand("smartctl.real -a /dev/sdb", "", true)
 	if sc != "smartctl.real -a /dev/sdb" {
 		t.Fatalf("仿真会话 smartctl 应裸命令, got=%q", sc)
 	}
@@ -39,7 +40,7 @@ func TestWrapContainerCommandSimulationSkipsPathPrefix(t *testing.T) {
 func TestWrapContainerCommandSimulationUnwrapsDispatcher(t *testing.T) {
 	dispatcher := "HCI_CONTAINER='vs-cp-manager'; HCI_CTR_NS='k8s.io'; HCI_USER_COMMAND='smartctl.real -a /dev/sdb'; export HCI_CONTAINER HCI_CTR_NS HCI_USER_COMMAND; HCI_RUNTIME=$(sh -lc 'printf container_exec'); case \"$HCI_RUNTIME\" in container_exec) exec container_exec -n \"$HCI_CONTAINER\" -c \"$HCI_USER_COMMAND\" -d ;; esac"
 
-	got := wrapContainerCommand(dispatcher, "vs-cp-manager", true)
+	got := sshx.WrapContainerCommand(dispatcher, "vs-cp-manager", true)
 	if got != "smartctl.real -a /dev/sdb" {
 		t.Fatalf("仿真会话应解出派发壳内层裸命令, got=%q", got)
 	}
@@ -51,7 +52,7 @@ func TestWrapContainerCommandSimulationUnwrapsDispatcher(t *testing.T) {
 // TestWrapContainerCommandRealContainerStillWraps 守护真机容器语义不被仿真分支污染：
 // 真机会话（simulation=false）容器名非 host 时仍走 container_exec 包裹。
 func TestWrapContainerCommandRealContainerStillWraps(t *testing.T) {
-	ctr := wrapContainerCommand("acli --version", "vs-cp-manager", false)
+	ctr := sshx.WrapContainerCommand("acli --version", "vs-cp-manager", false)
 	if !strings.Contains(ctr, "container_exec -n vs-cp-manager") {
 		t.Fatalf("真机容器分支应走 container_exec 包装, got=%q", ctr)
 	}
@@ -74,9 +75,9 @@ func TestScanFirstShellToken(t *testing.T) {
 		{"   ", "", false},                      // 全空白
 	}
 	for _, c := range cases {
-		got, ok := scanFirstShellToken(c.in)
+		got, ok := sshx.ScanFirstShellToken(c.in)
 		if ok != c.ok || got != c.want {
-			t.Errorf("scanFirstShellToken(%q)=(%q,%v) 期望(%q,%v)", c.in, got, ok, c.want, c.ok)
+			t.Errorf("sshx.ScanFirstShellToken(%q)=(%q,%v) 期望(%q,%v)", c.in, got, ok, c.want, c.ok)
 		}
 	}
 }

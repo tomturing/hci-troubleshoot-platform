@@ -348,3 +348,60 @@ func CleanupTmp(ctx context.Context, r Runner, tmpPath string) {
 	defer cancel()
 	_, _, _ = r.RunQuickCommand(cleanupCtx, "rm -f "+ShellQuote(tmpPath))
 }
+
+// BuildChunkedArgvWriteCommands 把大内容拆成多条「argv 追加 + 校验 + 原子替换」命令。
+//
+// 为什么需要分块：脚本动辄几百 KB（collect_slow_disk.sh 359KB），而 argv 写入受
+// Linux MAX_ARG_STRLEN（单参数 128KB）限制；一次性塞进 printf 会被 kernel 直接拒绝。
+// 分块仍是同一条写入协议：先写确定性 tmp → 校验 size/sha256 → mv 覆盖，
+// 只是把"填充"从一次 printf 拆成多次追加；校验与替换仍由 buildVerifiedMove 唯一实现。
+//
+// 关键实现约束：
+//   - 按 UTF-8 字符边界切，绝不在多字节字符中间截断（否则写出的脚本是坏的）；
+//   - 最后一条命令的 fill 用 ":"（恒真），只做校验+mv，避免把内容再传一遍；
+//   - 调用方必须按顺序逐条执行；任一条失败都不得继续，否则 tmp 会拼进半截内容。
+func BuildChunkedArgvWriteCommands(spec WriteSpec, chunkBytes int) []string {
+	if chunkBytes <= 0 {
+		chunkBytes = 32 << 10
+	}
+	tmpPath := spec.TmpPath
+	if tmpPath == "" {
+		tmpPath = spec.Path + ".tmp"
+	}
+	chunks := splitRunesByBytes(string(spec.Data), chunkBytes)
+	commands := make([]string, 0, len(chunks)+1)
+	for index, chunk := range chunks {
+		operator := ">>"
+		if index == 0 {
+			operator = ">"
+		}
+		commands = append(commands, "printf '%s' "+ShellQuote(chunk)+" "+operator+" "+ShellQuote(tmpPath))
+	}
+	commands = append(commands, buildVerifiedMove(":", tmpPath, spec.Path, spec.Size, spec.SHA256, spec.MD5, spec.Mode))
+	return commands
+}
+
+// splitRunesByBytes 按 UTF-8 字符边界把文本切成不超过 limit 字节的块。
+// 空文本返回 nil：调用方应先拒绝空内容，而不是依赖本函数兜底。
+func splitRunesByBytes(text string, limit int) []string {
+	if text == "" {
+		return nil
+	}
+	chunks := make([]string, 0, len(text)/limit+1)
+	var builder strings.Builder
+	size := 0
+	for _, r := range text {
+		width := len(string(r))
+		if size > 0 && size+width > limit {
+			chunks = append(chunks, builder.String())
+			builder.Reset()
+			size = 0
+		}
+		builder.WriteRune(r)
+		size += width
+	}
+	if builder.Len() > 0 {
+		chunks = append(chunks, builder.String())
+	}
+	return chunks
+}

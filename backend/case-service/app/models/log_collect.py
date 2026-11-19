@@ -113,6 +113,12 @@ class LogCollectTask(Base, TimestampMixin, TraceableMixin):
     # 本次下发的全部槽位；多槽位时终态与平台兜底还原必须逐槽位重放。
     spc_slots = Column(JSONB, nullable=True)
     restore_status = Column(String(16), nullable=False, default="none", server_default="'none'")
+    # 脚本下发证据：与 spc_* 同构，但目录与还原动作独立（script/<code>）。
+    # 空表示本次没有覆写任何脚本（用节点原件或自由输入路径）。
+    script_codes = Column(JSONB, nullable=True)
+    script_sha256 = Column(JSONB, nullable=True)
+    script_hosts = Column(JSONB, nullable=True)
+    script_restore_status = Column(String(16), nullable=False, default="none", server_default="'none'")
     detail = Column(JSONB, nullable=False, default=dict)
     error_code = Column(String(64), nullable=True)
     error_message = Column(Text, nullable=True)
@@ -173,3 +179,37 @@ class LogCollectDefaultScenario(Base):
 
     def __repr__(self) -> str:
         return f"<LogCollectDefaultScenario(module={self.module_code}, revision={self.revision})>"
+
+
+class LogCollectScript(Base):
+    """日志收集「收集脚本」库（script_catalog 的覆写 + 平台新增）。
+
+    第一性原理与默认场景一致：随镜像发布的 ``data/script_catalog`` 是平台默认快照，
+    本表只存"被改过的脚本"和"平台新增脚本"，恢复默认即删除该 code 的全部行。
+
+    与默认场景的唯一差别是版本必须留原文：默认场景用 ``module_code`` 单主键只留
+    最新一版，脚本被任务引用后必须能回答"当时节点上跑的是哪一版脚本内容"，因此用
+    ``(script_id, revision)`` 复合主键，每次保存新增一行，历史永久可回放。
+    """
+
+    __tablename__ = "log_collect_script"
+
+    script_id = Column(UUID(as_uuid=True), primary_key=True, server_default="gen_random_uuid()")
+    revision = Column(Integer, primary_key=True, nullable=False, default=1)
+    # 落盘文件名，也是 spc 条目 action=script 的 path；创建后不可改。
+    code = Column(String(64), nullable=False)
+    name = Column(String(64), nullable=False)
+    interpreter = Column(String(16), nullable=False, default="bash", server_default="bash")
+    content = Column(Text, nullable=False)
+    content_sha256 = Column(String(64), nullable=False)
+    content_bytes = Column(Integer, nullable=False, default=0, server_default="0")
+    change_note = Column(String(200), nullable=True)
+    source = Column(String(16), nullable=False, default="manual", server_default="'manual'")
+    enabled = Column(Boolean, nullable=False, default=True, server_default="true")
+    sort_order = Column(Integer, nullable=False, default=100, server_default="100")
+    trace_id = Column(String(64), nullable=True)
+    created_by = Column(String(255), nullable=False, default="system", server_default="'system'")
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default="now()")
+
+    def __repr__(self) -> str:
+        return f"<LogCollectScript(code={self.code}, revision={self.revision})>"

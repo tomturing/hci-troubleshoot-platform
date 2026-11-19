@@ -1,4 +1,4 @@
-package main
+package logpush
 
 // 桥日志直传：把结构化日志直接从 bridge 送到平台，不经过浏览器。
 //
@@ -34,6 +34,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/shared/uplink"
 	"time"
 )
 
@@ -52,8 +54,8 @@ const (
 	envLogUploadToken    = "HCI_BRIDGE_LOG_UPLOAD_TOKEN"
 	// 崩溃补传：启动时把本地日志文件里"水位之后"的条目回灌队列。
 	// 只扫最近几个文件即可覆盖进程被杀/Pod 重建的窗口，扫全量会拖慢启动。
-	defaultSeedMaxFiles   = 2
-	defaultSeedMaxEntries = 5000
+	DefaultSeedMaxFiles   = 2
+	DefaultSeedMaxEntries = 5000
 )
 
 // logUploader 是进程级单例：**串行**发送，全局并发恒为 1。
@@ -61,17 +63,17 @@ const (
 // 为什么必须串行：断点语义依赖"前一批成功才推进"，并发会让失败批次与成功批次
 // 交错，重试边界不可判定；在低配机器上并发也只会放大内存与调度开销。
 type logUploader struct {
-	mu sync.Mutex
+	Mu sync.Mutex
 	// sendMu 串行化"取批次 → 发送 → 出队"整段：只靠 mu 保护队列会出两个问题——
 	// 两个 goroutine 可能取到同一批（重复发送），且后完成者用旧 size 切新队列（越界）。
 	sendMu   sync.Mutex
 	token    string
 	endpoint string
-	caseID   string
+	CaseID   string
 	instance string
 	// source 记录令牌来源（env / ws），排障时先看它判断"直传到底有没有被启用"。
 	source   string
-	queue    []logEntry
+	queue    []LogEntry
 	outbox   *os.File
 	outboxAt string
 	maxBytes int64
@@ -88,12 +90,12 @@ type logUploader struct {
 	relaxed map[string]bool
 }
 
-var logUpload = newLogUploader()
+var LogUpload = newLogUploader()
 
 func newLogUploader() *logUploader {
 	return &logUploader{
 		wake:     make(chan struct{}, 1),
-		maxBytes: int64(envIntOrDefault("HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES", defaultLogOutboxMaxBytes)),
+		maxBytes: int64(bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES", defaultLogOutboxMaxBytes)),
 		relaxed:  make(map[string]bool),
 	}
 }
@@ -102,7 +104,7 @@ func newLogUploader() *logUploader {
 //
 // 幂等：同一 token 重复下发不会重启 worker；token 变化时重置退避计数，
 // 让上一次失败（例如旧令牌过期）不拖累新令牌。
-func (u *logUploader) configure(token, endpoint, caseID, instance string) {
+func (u *logUploader) Configure(token, endpoint, caseID, instance string) {
 	u.configureWithSource(token, endpoint, caseID, instance, "ws")
 }
 
@@ -111,11 +113,11 @@ func (u *logUploader) configureWithSource(token, endpoint, caseID, instance, sou
 	if strings.TrimSpace(token) == "" || strings.TrimSpace(endpoint) == "" {
 		return
 	}
-	u.mu.Lock()
+	u.Mu.Lock()
 	changed := u.token != token
 	u.token = strings.TrimSpace(token)
 	u.endpoint = strings.TrimSpace(endpoint)
-	u.caseID = strings.TrimSpace(caseID)
+	u.CaseID = strings.TrimSpace(caseID)
 	u.instance = strings.TrimSpace(instance)
 	u.source = strings.TrimSpace(source)
 	if changed {
@@ -123,11 +125,11 @@ func (u *logUploader) configureWithSource(token, endpoint, caseID, instance, sou
 	}
 	needStart := !u.started
 	u.started = true
-	u.mu.Unlock()
+	u.Mu.Unlock()
 
 	u.recoverOutbox()
 
-	blog("INFO", "log_upload.configured", "桥日志直传已启用", "", caseID, "", "", map[string]any{
+	Blog("INFO", "log_upload.configured", "桥日志直传已启用", "", caseID, "", "", map[string]any{
 		"endpoint": endpoint, "instance": instance, "token_changed": changed, "source": source,
 	})
 	if needStart {
@@ -142,13 +144,13 @@ func (u *logUploader) configureWithSource(token, endpoint, caseID, instance, sou
 // 而生产环境的桥部署在云端，没有浏览器给它发令牌 —— `/status` 长期显示
 // `log_upload.enabled=false`，服务端直连桥发起的插件下发日志一条也进不了库。
 // 部署期注入把"是否上传"从依赖页面在线，改成依赖部署配置。
-func (u *logUploader) bootstrapFromEnv() bool {
+func (u *logUploader) BootstrapFromEnv() bool {
 	endpoint := strings.TrimSpace(os.Getenv(envLogUploadEndpoint))
 	token := strings.TrimSpace(os.Getenv(envLogUploadToken))
 	if endpoint == "" || token == "" {
 		return false
 	}
-	u.configureWithSource(token, endpoint, "", logHub.instanceID, "env")
+	u.configureWithSource(token, endpoint, "", DefaultHub.InstanceID, "env")
 	return u.enabled()
 }
 
@@ -158,26 +160,26 @@ func (u *logUploader) bootstrapFromEnv() bool {
 // 既不在 outbox 里（outbox 只在启用直传后按条追加），也没进过数据库。
 // 水位（watermark）按实例持久化，重启后只补"水位之后"的条目；
 // 后端按 event_id 幂等，重复补传不会产生重复行。
-func (u *logUploader) seedFromLocalLogs(maxFiles, maxEntries int) int {
+func (u *logUploader) SeedFromLocalLogs(maxFiles, maxEntries int) int {
 	if !u.enabled() {
 		return 0
 	}
-	dir := strings.TrimSpace(logHub.logDir)
+	dir := strings.TrimSpace(DefaultHub.LogDir)
 	if dir == "" {
 		return 0
 	}
 	if maxFiles <= 0 {
-		maxFiles = defaultSeedMaxFiles
+		maxFiles = DefaultSeedMaxFiles
 	}
 	if maxEntries <= 0 {
-		maxEntries = defaultSeedMaxEntries
+		maxEntries = DefaultSeedMaxEntries
 	}
-	files := recentBridgeLogFiles(dir, strings.TrimSpace(logHub.logPath), maxFiles)
+	files := recentBridgeLogFiles(dir, strings.TrimSpace(DefaultHub.LogPath), maxFiles)
 	if len(files) == 0 {
 		return 0
 	}
 	watermark := u.loadWatermark()
-	candidates := make([]logEntry, 0, 256)
+	candidates := make([]LogEntry, 0, 256)
 	for _, path := range files {
 		candidates = append(candidates, readLogFileEntries(path, watermark)...)
 	}
@@ -189,7 +191,7 @@ func (u *logUploader) seedFromLocalLogs(maxFiles, maxEntries int) int {
 		candidates = candidates[len(candidates)-maxEntries:]
 	}
 
-	u.mu.Lock()
+	u.Mu.Lock()
 	if len(u.queue)+len(candidates) > 5000 {
 		drop := len(u.queue) + len(candidates) - 5000
 		if drop > len(candidates) {
@@ -199,9 +201,9 @@ func (u *logUploader) seedFromLocalLogs(maxFiles, maxEntries int) int {
 		atomic.AddUint64(&u.dropped, uint64(drop))
 	}
 	u.queue = append(candidates, u.queue...)
-	u.mu.Unlock()
+	u.Mu.Unlock()
 
-	blog("INFO", "log_upload.seeded", "已从本地日志文件补传未上传区间", "", "", "", "", map[string]any{
+	Blog("INFO", "log_upload.seeded", "已从本地日志文件补传未上传区间", "", "", "", "", map[string]any{
 		"files": len(files), "seeded": len(candidates), "watermark": watermark,
 	})
 	u.notify()
@@ -210,14 +212,14 @@ func (u *logUploader) seedFromLocalLogs(maxFiles, maxEntries int) int {
 
 // watermarkPath 记录"该实例已成功上传到哪个 seq"，用于重启后精确补传。
 func (u *logUploader) watermarkPath() string {
-	dir := strings.TrimSpace(logHub.logDir)
-	u.mu.Lock()
+	dir := strings.TrimSpace(DefaultHub.LogDir)
+	u.Mu.Lock()
 	instance := u.instance
-	u.mu.Unlock()
+	u.Mu.Unlock()
 	if dir == "" || instance == "" {
 		return ""
 	}
-	return filepath.Join(dir, "bridge-log-uploaded-"+instance+".seq")
+	return filepath.Join(dir, "bridge-log-uploaded-"+instance+".Seq")
 }
 
 func (u *logUploader) loadWatermark() uint64 {
@@ -254,28 +256,28 @@ func (u *logUploader) saveWatermark(seq uint64) {
 
 // enabled 返回当前是否具备直传条件（有令牌且已配置）。
 func (u *logUploader) enabled() bool {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	u.Mu.Lock()
+	defer u.Mu.Unlock()
 	return u.token != "" && u.endpoint != ""
 }
 
 // enqueue 把一条事件放进发送队列并落盘。
 //
-// 调用点必须在 logHub 解锁之后（enqueue 自己加锁，避免与 publish 的锁嵌套）。
-func (u *logUploader) enqueue(entry logEntry) {
+// 调用点必须在 DefaultHub 解锁之后（enqueue 自己加锁，避免与 publish 的锁嵌套）。
+func (u *logUploader) enqueue(entry LogEntry) {
 	if !u.enabled() {
 		return
 	}
-	u.mu.Lock()
+	u.Mu.Lock()
 	// 队列上限与 outbox 字节上限双重保护：客户机磁盘可能只剩几百 MB。
 	if len(u.queue) >= 5000 || (u.maxBytes > 0 && u.written >= u.maxBytes) {
 		u.dropped++
-		u.mu.Unlock()
+		u.Mu.Unlock()
 		return
 	}
 	u.queue = append(u.queue, entry)
 	u.persistLocked(entry)
-	u.mu.Unlock()
+	u.Mu.Unlock()
 	u.notify()
 }
 
@@ -288,7 +290,7 @@ func (u *logUploader) notify() {
 }
 
 func (u *logUploader) interval() time.Duration {
-	seconds := envIntOrDefault("HCI_BRIDGE_LOG_UPLOAD_INTERVAL_SECONDS", int(defaultLogUploadInterval/time.Second))
+	seconds := bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_UPLOAD_INTERVAL_SECONDS", int(defaultLogUploadInterval/time.Second))
 	if seconds <= 0 {
 		seconds = 2
 	}
@@ -296,7 +298,7 @@ func (u *logUploader) interval() time.Duration {
 }
 
 func (u *logUploader) batchSize() int {
-	size := envIntOrDefault("HCI_BRIDGE_LOG_UPLOAD_BATCH", defaultLogUploadBatch)
+	size := bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_UPLOAD_BATCH", defaultLogUploadBatch)
 	if size <= 0 || size > 1000 {
 		return defaultLogUploadBatch
 	}
@@ -317,7 +319,7 @@ func (u *logUploader) run() {
 			sent, err := u.flushOnce()
 			if err != nil {
 				delay := u.backoff()
-				blog("WARN", "log_upload.failed", "桥日志直传失败，稍后重试", "", "", "", "", map[string]any{
+				Blog("WARN", "log_upload.failed", "桥日志直传失败，稍后重试", "", "", "", "", map[string]any{
 					"error": err.Error(), "backoff_seconds": int(delay.Seconds()), "queued": u.queueLen(),
 				})
 				time.Sleep(delay)
@@ -331,15 +333,15 @@ func (u *logUploader) run() {
 }
 
 func (u *logUploader) queueLen() int {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	u.Mu.Lock()
+	defer u.Mu.Unlock()
 	return len(u.queue)
 }
 
 // backoff 返回下一次重试延迟：1s→2s→…→60s。
 func (u *logUploader) backoff() time.Duration {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	u.Mu.Lock()
+	defer u.Mu.Unlock()
 	u.attempt++
 	if u.attempt > 6 {
 		u.attempt = 6
@@ -357,23 +359,23 @@ func (u *logUploader) flushOnce() (int, error) {
 	u.sendMu.Lock()
 	defer u.sendMu.Unlock()
 
-	u.mu.Lock()
+	u.Mu.Lock()
 	if u.token == "" || u.endpoint == "" {
-		u.mu.Unlock()
+		u.Mu.Unlock()
 		return 0, nil
 	}
 	size := u.batchSize()
 	if len(u.queue) == 0 {
-		u.mu.Unlock()
+		u.Mu.Unlock()
 		return 0, nil
 	}
 	if size > len(u.queue) {
 		size = len(u.queue)
 	}
-	batch := make([]logEntry, size)
+	batch := make([]LogEntry, size)
 	copy(batch, u.queue[:size])
 	token, endpoint := u.token, u.endpoint
-	u.mu.Unlock()
+	u.Mu.Unlock()
 
 	payload, err := encodeLogBatch(batch)
 	if err != nil {
@@ -397,10 +399,10 @@ func (u *logUploader) flushOnce() (int, error) {
 			maxSeq = entry.Seq
 		}
 	}
-	u.mu.Lock()
+	u.Mu.Lock()
 	u.queue = u.queue[size:]
 	u.attempt = 0
-	u.mu.Unlock()
+	u.Mu.Unlock()
 	// 水位只在批次确认成功后才推进：崩溃补传的边界就靠它，提前推进等于自认没发出去。
 	if maxSeq > 0 {
 		u.saveWatermark(maxSeq)
@@ -450,7 +452,7 @@ func recentBridgeLogFiles(dir, exclude string, limit int) []string {
 }
 
 // readLogFileEntries 读取单个日志文件中 seq 大于水位的条目。
-func readLogFileEntries(path string, watermark uint64) []logEntry {
+func readLogFileEntries(path string, watermark uint64) []LogEntry {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil
@@ -458,9 +460,9 @@ func readLogFileEntries(path string, watermark uint64) []logEntry {
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	entries := make([]logEntry, 0, 128)
+	entries := make([]LogEntry, 0, 128)
 	for scanner.Scan() {
-		var entry logEntry
+		var entry LogEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
 		}
@@ -482,9 +484,9 @@ func readLogFileEntries(path string, watermark uint64) []logEntry {
 // 安全边界：这条通道只写绑定工单的日志、只携带只写令牌，放宽 TLS 不等于放宽鉴权；
 // 放宽范围被限定在**该 endpoint**，不影响交付通道，也不影响其它域名。
 func (u *logUploader) sendBatch(payload []byte, endpoint, token string) (*http.Response, error) {
-	u.mu.Lock()
+	u.Mu.Lock()
 	instance := u.instance
-	u.mu.Unlock()
+	u.Mu.Unlock()
 	build := func() (*http.Request, error) {
 		request, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
 		if err != nil {
@@ -506,32 +508,32 @@ func (u *logUploader) sendBatch(payload []byte, endpoint, token string) (*http.R
 	if err != nil {
 		return nil, err
 	}
-	response, err := httpClientFor(relaxed, logUploadTimeout).Do(request)
-	if err == nil || relaxed || !isUntrustedCertificateError(err) {
+	response, err := uplink.HttpClientFor(relaxed, logUploadTimeout).Do(request)
+	if err == nil || relaxed || !uplink.IsUntrustedCertificateError(err) {
 		return response, err
 	}
 
 	// 命中自签证书：放宽一次重试，并记住该 endpoint，避免每一批都先失败一轮。
 	u.markTLSRelaxed(endpoint)
-	blog("WARN", "log_upload.tls_relaxed", "平台证书不受信，桥日志直传已放宽证书校验", "", "", "", "", map[string]any{
+	Blog("WARN", "log_upload.tls_relaxed", "平台证书不受信，桥日志直传已放宽证书校验", "", "", "", "", map[string]any{
 		"endpoint": endpoint, "reason": "self-signed-certificate",
 	})
 	retry, buildErr := build()
 	if buildErr != nil {
 		return nil, err
 	}
-	return httpClientFor(true, logUploadTimeout).Do(retry)
+	return uplink.HttpClientFor(true, logUploadTimeout).Do(retry)
 }
 
 func (u *logUploader) isTLSRelaxed(endpoint string) bool {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	u.Mu.Lock()
+	defer u.Mu.Unlock()
 	return u.relaxed[endpoint]
 }
 
 func (u *logUploader) markTLSRelaxed(endpoint string) {
-	u.mu.Lock()
-	defer u.mu.Unlock()
+	u.Mu.Lock()
+	defer u.Mu.Unlock()
 	if u.relaxed == nil {
 		u.relaxed = make(map[string]bool)
 	}
@@ -539,7 +541,7 @@ func (u *logUploader) markTLSRelaxed(endpoint string) {
 }
 
 // encodeLogBatch 把事件编码为 gzip 压缩的 JSON。
-func encodeLogBatch(batch []logEntry) ([]byte, error) {
+func encodeLogBatch(batch []LogEntry) ([]byte, error) {
 	body, err := json.Marshal(map[string]any{"logs": batch})
 	if err != nil {
 		return nil, err
@@ -557,7 +559,7 @@ func encodeLogBatch(batch []logEntry) ([]byte, error) {
 
 // outboxDir 返回落盘目录（与日志同级的 bridge-log-outbox）。
 func outboxDir() string {
-	dir := strings.TrimSpace(logHub.logDir)
+	dir := strings.TrimSpace(DefaultHub.LogDir)
 	if dir == "" {
 		return ""
 	}
@@ -565,7 +567,7 @@ func outboxDir() string {
 }
 
 // persistLocked 追加一条到 outbox；失败不影响内存队列（best-effort）。
-func (u *logUploader) persistLocked(entry logEntry) {
+func (u *logUploader) persistLocked(entry LogEntry) {
 	dir := outboxDir()
 	if dir == "" || u.instance == "" {
 		return
@@ -604,9 +606,9 @@ func (u *logUploader) recoverOutbox() {
 	if dir == "" {
 		return
 	}
-	u.mu.Lock()
+	u.Mu.Lock()
 	instance := u.instance
-	u.mu.Unlock()
+	u.Mu.Unlock()
 	if instance == "" {
 		return
 	}
@@ -617,11 +619,11 @@ func (u *logUploader) recoverOutbox() {
 	}
 	defer file.Close()
 
-	recovered := make([]logEntry, 0, 256)
+	recovered := make([]LogEntry, 0, 256)
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
-		var entry logEntry
+		var entry LogEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
 		}
@@ -633,22 +635,22 @@ func (u *logUploader) recoverOutbox() {
 	if len(recovered) == 0 {
 		return
 	}
-	u.mu.Lock()
+	u.Mu.Lock()
 	u.queue = append(recovered, u.queue...)
-	u.mu.Unlock()
+	u.Mu.Unlock()
 	// 读回后清空，避免下次重启重复恢复（未发送部分已在内存队列里，
 	// 若此时进程再挂，最多丢这一批，与"发送中丢失"是同一语义）。
 	_ = os.Truncate(path, 0)
-	blog("INFO", "log_upload.recovered", "已从 outbox 恢复未发送日志", "", "", "", "", map[string]any{
+	Blog("INFO", "log_upload.recovered", "已从 outbox 恢复未发送日志", "", "", "", "", map[string]any{
 		"recovered": len(recovered), "path": path,
 	})
 }
 
-// logUploadStats 供 /status 暴露直传状态（排障时无需再猜是否启用）。
-func logUploadStats() map[string]any {
-	u := logUpload
-	u.mu.Lock()
-	defer u.mu.Unlock()
+// LogUploadStats 供 /status 暴露直传状态（排障时无需再猜是否启用）。
+func LogUploadStats() map[string]any {
+	u := LogUpload
+	u.Mu.Lock()
+	defer u.Mu.Unlock()
 	return map[string]any{
 		"enabled":  u.token != "" && u.endpoint != "",
 		"queued":   len(u.queue),

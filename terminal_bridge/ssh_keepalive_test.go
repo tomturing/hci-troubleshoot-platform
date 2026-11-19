@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 )
@@ -11,13 +12,13 @@ func TestKeepAliveProbeSucceedsOnHealthySession(t *testing.T) {
 	host, port := startFakeSSHServer(t, func(string) (string, int) { return "", 0 })
 	session := newFakeSSHSession(t, host, port)
 
-	if err := session.probeKeepAlive(); err != nil {
+	if err := session.ProbeKeepAlive(); err != nil {
 		t.Fatalf("健康链路保活探测失败: %v", err)
 	}
 
-	session.startKeepAlive(20 * time.Millisecond)
+	session.StartKeepAlive(20 * time.Millisecond)
 	time.Sleep(150 * time.Millisecond)
-	if session.isClosed() {
+	if session.IsClosed() {
 		t.Fatal("健康会话被保活误杀")
 	}
 }
@@ -28,18 +29,18 @@ func TestKeepAliveClosesSessionOnBrokenLink(t *testing.T) {
 	host, port := startFakeSSHServer(t, func(string) (string, int) { return "", 0 })
 	session := newFakeSSHSession(t, host, port)
 
-	session.mu.Lock()
-	client := session.client
-	session.mu.Unlock()
+	session.Mu.Lock()
+	client := session.Client
+	session.Mu.Unlock()
 	if client == nil {
 		t.Fatal("会话未建立")
 	}
 	_ = client.Close()
 
-	session.startKeepAlive(20 * time.Millisecond)
+	session.StartKeepAlive(20 * time.Millisecond)
 
 	deadline := time.Now().Add(3 * time.Second)
-	for !session.isClosed() {
+	for !session.IsClosed() {
 		if time.Now().After(deadline) {
 			t.Fatal("断链后保活未关闭会话")
 		}
@@ -50,11 +51,11 @@ func TestKeepAliveClosesSessionOnBrokenLink(t *testing.T) {
 // 间隔 <=0 表示关闭应用层探测（仅保留 TCP keepalive），不能在关闭配置下空转。
 func TestKeepAliveIntervalFromEnv(t *testing.T) {
 	t.Setenv("HCI_BRIDGE_SSH_KEEPALIVE_SECONDS", "0")
-	if got := sshKeepAliveInterval(); got != 0 {
+	if got := sshx.SshKeepAliveInterval(); got != 0 {
 		t.Fatalf("=0 应关闭应用层探测，实际 %v", got)
 	}
 	t.Setenv("HCI_BRIDGE_SSH_KEEPALIVE_SECONDS", "45")
-	if got := sshKeepAliveInterval(); got != 45*time.Second {
+	if got := sshx.SshKeepAliveInterval(); got != 45*time.Second {
 		t.Fatalf("期望 45s，实际 %v", got)
 	}
 }

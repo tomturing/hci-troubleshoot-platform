@@ -10,6 +10,9 @@ package main
 // 前端只通过 job_status 轮询进度，重连后继续轮询即可。
 
 import (
+	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/uplink"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +28,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"terminal_bridge/internal/shared/models"
 	"time"
 )
 
@@ -99,7 +103,7 @@ var deliveryRunnerInstance *deliveryRunner
 func newDeliveryRunner(bridge *Bridge) *deliveryRunner {
 	runner := &deliveryRunner{
 		bridge:      bridge,
-		store:       newDeliveryStore(logHub.logDir),
+		store:       newDeliveryStore(logpush.DefaultHub.LogDir),
 		concurrency: decideDeliveryConcurrency(),
 		jobs:        make(map[string]*deliveryJob),
 		cancels:     make(map[string]context.CancelFunc),
@@ -121,7 +125,7 @@ func (r *deliveryRunner) start() {
 	r.started = true
 	r.mu.Unlock()
 
-	blog("INFO", "delivery.runner_started", "交付执行器已启动", "", "", "", "",
+	logpush.Blog("INFO", "delivery.runner_started", "交付执行器已启动", "", "", "", "",
 		describeDeliveryConcurrency(r.concurrency))
 
 	go r.schedule()
@@ -131,7 +135,7 @@ func (r *deliveryRunner) start() {
 		r.mu.Lock()
 		r.jobs[job.JobID] = job
 		r.mu.Unlock()
-		blog("INFO", "delivery.recovered", "恢复未完成的交付作业", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("INFO", "delivery.recovered", "恢复未完成的交付作业", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "task_id": job.TaskID, "phase": string(job.Phase),
 			"pulled_bytes": job.PulledBytes, "uploaded_parts": len(job.UploadedParts),
 			"needs_reauth": job.NeedsReauth,
@@ -143,7 +147,7 @@ func (r *deliveryRunner) start() {
 	}
 	// 终态 job 文件保留 7 天供取证，之后清理。
 	if removed := r.store.purgeOlderThan(7 * 24 * time.Hour); removed > 0 {
-		blog("INFO", "delivery.purged", "清理过期交付作业记录", "", "", "", "", map[string]any{"removed": removed})
+		logpush.Blog("INFO", "delivery.purged", "清理过期交付作业记录", "", "", "", "", map[string]any{"removed": removed})
 	}
 	// 本地中转副本的回收与 job 记录回收是两条独立生命周期：
 	// 记录留 7 天是为了取证，副本留 3 天是为了给重试机会——GB 级副本不能跟着记录一起攒。
@@ -232,7 +236,7 @@ func (r *deliveryRunner) enqueue(job *deliveryJob) {
 	select {
 	case r.queue <- job:
 	default:
-		blog("WARN", "delivery.queue_full", "交付队列已满，作业留待下一轮", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "delivery.queue_full", "交付队列已满，作业留待下一轮", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "phase": string(job.Phase),
 		})
 	}
@@ -294,7 +298,7 @@ func (r *deliveryRunner) submit(job *deliveryJob) *deliveryJob {
 		snapshot := *stale
 		snapshot.JobID = oldID + "-superseded"
 		_ = r.store.save(&snapshot)
-		blog("WARN", "delivery.superseded", "同一任务的新上传会话覆盖了旧作业", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "delivery.superseded", "同一任务的新上传会话覆盖了旧作业", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "old_job_id": oldID,
 			"old_submitted_size": stale.SubmittedSize, "new_submitted_size": job.SubmittedSize,
 			"old_part_count": stale.PartCount, "new_part_count": job.PartCount,
@@ -302,11 +306,11 @@ func (r *deliveryRunner) submit(job *deliveryJob) *deliveryJob {
 	}
 
 	if err := r.store.save(job); err != nil {
-		blog("WARN", "delivery.save_failed", "交付作业落盘失败（本次仅内存）", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "delivery.save_failed", "交付作业落盘失败（本次仅内存）", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "error": err.Error(),
 		})
 	}
-	blog("INFO", "delivery.submitted", "交付作业已提交", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("INFO", "delivery.submitted", "交付作业已提交", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "task_id": job.TaskID, "source_path": job.SourcePath,
 		"source_size": job.SourceSize, "part_count": job.PartCount, "chunk_size": job.ChunkSize,
 	})
@@ -388,7 +392,7 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	abandoned := job.Superseded
 	r.mu.Unlock()
 	if abandoned {
-		blog("INFO", "delivery.superseded_skipped", "被顶替的作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("INFO", "delivery.superseded_skipped", "被顶替的作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "task_id": job.TaskID,
 		})
 		return
@@ -403,7 +407,7 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	if job.Superseded || (r.jobs[job.JobID] != nil && r.jobs[job.JobID] != job) {
 		r.mu.Unlock()
 		cancel()
-		blog("INFO", "delivery.superseded_skipped", "注册时已被顶替，作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("INFO", "delivery.superseded_skipped", "注册时已被顶替，作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "task_id": job.TaskID, "stage": "register",
 		})
 		return
@@ -444,7 +448,7 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 		progressed := len(job.UploadedParts) > partsBefore || job.PulledBytes > pulledBefore
 		if progressed {
 			job.Attempt = 0
-			blog("INFO", "delivery.progress_renewed", "本轮有新增进度，重试预算复位", "", job.CaseID, job.NodeIP, "", map[string]any{
+			logpush.Blog("INFO", "delivery.progress_renewed", "本轮有新增进度，重试预算复位", "", job.CaseID, job.NodeIP, "", map[string]any{
 				"job_id": job.JobID, "task_id": job.TaskID,
 				"uploaded_parts_before": partsBefore, "uploaded_parts_after": len(job.UploadedParts),
 				"pulled_bytes_before": pulledBefore, "pulled_bytes_after": job.PulledBytes,
@@ -500,7 +504,7 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 	// 已不是当前执行者的作业不得写 journal：dj-<task>.json 是所有同任务作业共用的
 	// 文件名，僵尸收尾会把新作业的记录覆盖回旧会话的阶段与字节数。
 	_ = r.saveJob(job)
-	blog("INFO", "delivery.job_finished", "交付作业状态更新", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("INFO", "delivery.job_finished", "交付作业状态更新", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "task_id": job.TaskID, "phase": string(finalPhase),
 		"attempt": finalAttempt, "needs_reauth": needsReauth, "error": job.LastError,
 		"pulled_bytes": job.PulledBytes, "uploaded_parts": len(job.UploadedParts),
@@ -518,7 +522,7 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 			if r.requeueEligible(job) {
 				r.enqueue(job)
 			} else {
-				blog("INFO", "delivery.requeue_rejected", "被顶替或已取消的作业不再重排", "", job.CaseID, job.NodeIP, "", map[string]any{
+				logpush.Blog("INFO", "delivery.requeue_rejected", "被顶替或已取消的作业不再重排", "", job.CaseID, job.NodeIP, "", map[string]any{
 					"job_id": job.JobID, "superseded": job.Superseded, "phase": string(job.Phase),
 				})
 			}
@@ -546,7 +550,7 @@ func (r *deliveryRunner) watchStall(ctx context.Context, cancel context.CancelFu
 			if !tracker.observe(now, signature, watched) {
 				continue
 			}
-			blog("WARN", "delivery.stalled", "交付长时间无进展，终止本轮等下一轮重排", "", job.CaseID, job.NodeIP, "", map[string]any{
+			logpush.Blog("WARN", "delivery.stalled", "交付长时间无进展，终止本轮等下一轮重排", "", job.CaseID, job.NodeIP, "", map[string]any{
 				"job_id": job.JobID, "task_id": job.TaskID,
 				"stalled_sec": int64(deliveryStallTimeout / time.Second), "signature": signature,
 			})
@@ -598,8 +602,8 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	session := r.sessionFor(job)
 	if session != nil {
 		// 交付的每个需要节点的步骤都是"业务使用"：与日志采集一样没有显式包裹，
-		// 靠时间窗保护会话不被空闲租约回收（见 SSHSession.markBusy）。
-		session.markBusy()
+		// 靠时间窗保护会话不被空闲租约回收（见 sshx.SSHSession.markBusy）。
+		session.MarkBusy()
 	}
 	if err := requireSessionForPhase(job.Phase, session); err != nil {
 		return err
@@ -672,8 +676,8 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 // 仅当本阶段确实需要节点时才尝试重连：上传/收尾只读本地副本与平台，不该为它们
 // 去敲一条 SSH 连接（否则会在不需要时开连接、甚至因节点不可达而误报 needs_reauth）。
 // 两个分支都落空才返回 nil（由调用方转成 needs_reauth）。
-func (r *deliveryRunner) sessionFor(job *deliveryJob) *SSHSession {
-	session, _, _ := r.bridge.resolveLogCollectSession(InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
+func (r *deliveryRunner) sessionFor(job *deliveryJob) *sshx.SSHSession {
+	session, _, _ := r.bridge.resolveLogCollectSession(models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
 	if session != nil {
 		return session
 	}
@@ -703,7 +707,7 @@ func deliveryPhaseNeedsNode(phase deliveryPhase) bool {
 }
 
 // requireSessionForPhase 只在真的需要节点时，把"没有会话"判定为需要重新认证。
-func requireSessionForPhase(phase deliveryPhase, session *SSHSession) error {
+func requireSessionForPhase(phase deliveryPhase, session *sshx.SSHSession) error {
 	if session == nil && deliveryPhaseNeedsNode(phase) {
 		return &deliveryAuthError{reason: "SSH 会话不存在（需重新连接节点）"}
 	}
@@ -719,14 +723,14 @@ func requireSessionForPhase(phase deliveryPhase, session *SSHSession) error {
 // `done=1/total=1`，只看 Done>=Total 就会在 4 秒内把上一次的完成当成本次完成，
 // 然后去拉一个已被覆盖/不存在的包（2026-10-27 现场 48f890d5）。
 // 归属判据：磁盘上那个包的 mtime 不能早于本次任务开始时间。
-func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, job *deliveryJob) error {
+func (r *deliveryRunner) waitCollect(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
 	deadline := time.Now().Add(deliveryCollectTimeout)
 	interval := 10 * time.Second
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("等待采集完成超时（%s）", deliveryCollectTimeout)
 		}
-		output, _, err := session.runCommandPty(ctx, "acli log_collect progress", 60*time.Second)
+		output, _, err := runCommandPty(session, ctx, "acli log_collect progress", 60*time.Second)
 		if err == nil {
 			progress := parseLogCollectProgress(output)
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
@@ -735,7 +739,7 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 					// progress 到 100% 却没有包路径：不能就这么进入拉取。
 					// 空路径会让后面每一步都失败（digest_unavailable、stat 失败、
 					// 拉取命令 status 1），错误文案却指向"源包可能已被清理"。
-					blog("WARN", "delivery.archive_path_missing", "采集已完成但未取到压缩包路径，继续等待", "", job.CaseID, job.NodeIP, "", map[string]any{
+					logpush.Blog("WARN", "delivery.archive_path_missing", "采集已完成但未取到压缩包路径，继续等待", "", job.CaseID, job.NodeIP, "", map[string]any{
 						"job_id": job.JobID, "total": progress.Total,
 					})
 				} else {
@@ -771,7 +775,7 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *SSHSession, j
 					job.Phase = phasePulling
 					r.mu.Unlock()
 					_ = r.saveJob(job)
-					blog("INFO", "delivery.collect_finished", "节点采集已完成且压缩包已落定，开始交付", "", job.CaseID, job.NodeIP, "", map[string]any{
+					logpush.Blog("INFO", "delivery.collect_finished", "节点采集已完成且压缩包已落定，开始交付", "", job.CaseID, job.NodeIP, "", map[string]any{
 						"job_id": job.JobID, "total": progress.Total, "archive_path": sourcePath, "size": settledSize,
 					})
 					// 包已确认写完，此刻取基线最可靠。
@@ -802,11 +806,11 @@ const (
 )
 
 // statArchiveSize 取节点上压缩包的字节数；stat 不可用时退回两级探测。
-func statArchiveSize(ctx context.Context, session *SSHSession, path string) (int64, bool) {
+func statArchiveSize(ctx context.Context, session *sshx.SSHSession, path string) (int64, bool) {
 	if strings.TrimSpace(path) == "" {
 		return 0, false
 	}
-	if out, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path))); err == nil {
+	if out, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path))); err == nil {
 		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
 			return size, true
 		}
@@ -831,7 +835,7 @@ func statArchiveSize(ctx context.Context, session *SSHSession, path string) (int
 //
 // EOCD 校验手段缺失（受限 shell 没有 tail/od/tr/grep）时降级为只看大小稳定，
 // 与 prepareDirect 同一取舍：少一个观测手段不该阻断交付。
-func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *SSHSession, job *deliveryJob, path string) (int64, error) {
+func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *sshx.SSHSession, job *deliveryJob, path string) (int64, error) {
 	deadline := time.Now().Add(deliveryArchiveSettleTimeout)
 	var last int64
 	for {
@@ -850,7 +854,7 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *SSHSes
 				return size, nil
 			}
 			if errors.Is(completeErr, errArchiveCompleteUnverifiable) {
-				blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，仅按大小稳定判定包已写完", "", job.CaseID, job.NodeIP, "", map[string]any{
+				logpush.Blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，仅按大小稳定判定包已写完", "", job.CaseID, job.NodeIP, "", map[string]any{
 					"job_id": job.JobID, "source_path": path, "size": size, "reason": completeErr.Error(),
 				})
 				return size, nil
@@ -878,7 +882,7 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *SSHSes
 // 大小探测必须与 progress/stat 动作共用 probeLogCollectArchive：Q2026102900165
 // （2026-10-29）现场证明 aSV 受限 shell 没有 stat（exit 127），只写单条 stat 的实现
 // 会把盘上 29.9 MB 的包报成"源包不可读"，让补交付在最后一步永远走不通。
-func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession, job *deliveryJob) error {
+func (r *deliveryRunner) prepareDirect(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
 	sourcePath := strings.TrimSpace(job.SourcePath)
 	if sourcePath == "" {
 		return fmt.Errorf("缺少源包路径，无法交付")
@@ -917,7 +921,7 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession,
 			)
 		}
 		// 校验手段缺失不是包坏了：只能降级为"未校验"并留痕，不能因此阻断交付。
-		blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，跳过完整性预检", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，跳过完整性预检", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "source_path": sourcePath, "reason": err.Error(),
 		})
 	}
@@ -939,7 +943,7 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession,
 	}
 	_ = r.saveJob(job)
 
-	blog("INFO", "delivery.direct_ready", "补交付源包校验通过，开始拉取", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("INFO", "delivery.direct_ready", "补交付源包校验通过，开始拉取", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "source_path": sourcePath, "size": size,
 	})
 	// 摘要必须在拉取前取：拉完再取，节点上的包可能已被下一次采集同名覆盖，
@@ -953,7 +957,7 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *SSHSession,
 // 为什么失败不阻断：HCI 可能既没有 sha256sum 也没有 md5sum（精简系统），取不到
 // 摘要不等于包坏了。此时降级为 unverified，并在 UI 上明示"未校验源包"，
 // 让用户自己决定是否接受——比直接让 20 GiB 的采集白跑更合理。
-func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *SSHSession, job *deliveryJob) {
+func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) {
 	if session == nil || strings.TrimSpace(job.SourcePath) == "" {
 		return
 	}
@@ -964,14 +968,14 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *SSHSes
 		return
 	}
 
-	algo, digest, err := session.probeSourceDigest(ctx, job.SourcePath)
+	algo, digest, err := probeSourceDigest(session, ctx, job.SourcePath)
 	r.mu.Lock()
 	if err != nil {
 		job.Integrity = integrityUnverified
 		job.IntegrityNote = "未取得源包摘要：" + err.Error()
 		r.mu.Unlock()
 		_ = r.saveJob(job)
-		blog("WARN", "delivery.digest_unavailable", "节点无法计算源包摘要，完整性校验降级", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "delivery.digest_unavailable", "节点无法计算源包摘要，完整性校验降级", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "source_path": job.SourcePath, "error": err.Error(),
 		})
 		return
@@ -985,7 +989,7 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *SSHSes
 	// 这里只拿到"基线"，还不代表任何一跳校验通过；Integrity 留给 pull/complete 定论。
 	r.mu.Unlock()
 	_ = r.saveJob(job)
-	blog("INFO", "delivery.digest_probed", "已取得节点源包摘要", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("INFO", "delivery.digest_probed", "已取得节点源包摘要", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "algorithm": algo, "digest": digest, "source_size": job.SourceSize,
 	})
 }
@@ -1000,12 +1004,12 @@ var errArchiveCompleteUnverifiable = errors.New("节点缺少 tail/od/tr/grep，
 // 失败必须分两类：命令不可用（126/127 或 stderr 报 not found）返回
 // errArchiveCompleteUnverifiable，由调用方降级放行；只有命令真跑了且没找到标记，
 // 才说明包还在写入中。混在一起会让没有 tail 的受限 shell 永远交付不上去。
-func verifyArchiveComplete(ctx context.Context, session *SSHSession, path string) error {
+func verifyArchiveComplete(ctx context.Context, session *sshx.SSHSession, path string) error {
 	command := fmt.Sprintf(
 		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
 		shellQuote(path),
 	)
-	stdout, stderr, exitCode, err := session.runQuickCommandStreams(ctx, command)
+	stdout, stderr, exitCode, err := session.RunQuickCommandStreams(ctx, command)
 	combined := stdout + "\n" + stderr
 	// 注意：runQuickCommandStreams 在非零退出时也会返回 ssh.ExitError，
 	// 因此不能用 err != nil 判“命令不可用”——grep 未命中（exit 1）同样是 err != nil，
@@ -1024,8 +1028,8 @@ func verifyArchiveComplete(ctx context.Context, session *SSHSession, path string
 }
 
 // statArchiveMTime 读取节点上文件的修改时间，用于判断包归属。
-func statArchiveMTime(ctx context.Context, session *SSHSession, path string) (time.Time, error) {
-	output, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", shellQuote(path)))
+func statArchiveMTime(ctx context.Context, session *sshx.SSHSession, path string) (time.Time, error) {
+	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", shellQuote(path)))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -1084,7 +1088,7 @@ func (r *deliveryRunner) pendingLocalBytes(excludeJobID, dir string) int64 {
 	return total
 }
 
-func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *deliveryJob) error {
+func (r *deliveryRunner) pull(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
 	if strings.TrimSpace(job.SourcePath) == "" {
 		return fmt.Errorf("缺少源包路径，无法拉取")
 	}
@@ -1094,7 +1098,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 	// 每次都重新量源包大小，而不是只在"未知"时量：
 	// 前端 stat 与本阶段可能相隔很久（用户点了补交付又放了半小时），陈旧的大小
 	// 会让末片长度算错，也会把"源包已被同名覆盖"误判成"网络中断"，然后无限重拉。
-	if output, _, err := session.runQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(job.SourcePath))); err == nil {
+	if output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(job.SourcePath))); err == nil {
 		if size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64); parseErr == nil && size > 0 {
 			r.mu.Lock()
 			job.SourceSize = size
@@ -1105,9 +1109,9 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 	// 远超 HCI 交互式 shell 的 TMOUT=600。两条防线同时上：
 	//   1) 周期性注入 NUL，让 shell 根本不会因空闲退出；
 	//   2) 标记长任务，即使 shell 真的退了也不让连接被连坐销毁/被空闲租约回收。
-	session.beginLongTask()
-	defer session.endLongTask()
-	stopHeartbeat := session.startShellHeartbeat(job.CaseID)
+	session.BeginLongTask()
+	defer session.EndLongTask()
+	stopHeartbeat := session.StartShellHeartbeat(job.CaseID)
 	defer stopHeartbeat()
 
 	// 空间预检：12.8 GiB 要完整落地再分片上传，写满一半才失败的话
@@ -1127,7 +1131,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 				// 否则两个 20 GiB 作业各自预检都"够"，一起写就把盘写满。
 				reserved := r.pendingLocalBytes(job.JobID, dir)
 				verdict := admissionCheck(job.LocalPath, job.SourceSize, existing, reserved)
-				blog("INFO", "delivery.disk_precheck", "交付前磁盘预检", "", job.CaseID, job.NodeIP, "", map[string]any{
+				logpush.Blog("INFO", "delivery.disk_precheck", "交付前磁盘预检", "", job.CaseID, job.NodeIP, "", map[string]any{
 					"job_id": job.JobID, "local_path": job.LocalPath, "dir": dir,
 					"need_bytes": verdict.Need, "free_bytes": verdict.Free,
 					"reserved_bytes": reserved, "probed": verdict.Probed, "ok": verdict.OK,
@@ -1149,7 +1153,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 		}
 	}
 
-	written, localSum, err := session.pullArchive(ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
+	written, localSum, err := pullArchive(session, ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
 		r.mu.Lock()
 		job.PulledBytes = done
 		if job.SourceSize <= 0 && total > 0 {
@@ -1244,7 +1248,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *SSHSession, job *del
 	}
 	r.mu.Unlock()
 	_ = r.saveJob(job)
-	blog("INFO", "delivery.pull_verified", "拉取完成并完成完整性比对", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("INFO", "delivery.pull_verified", "拉取完成并完成完整性比对", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "size": written, "sha256": localSum,
 		"source_sha256": sourceSHA, "source_md5": sourceMD5, "integrity": job.Integrity,
 	})
@@ -1293,7 +1297,7 @@ func (r *deliveryRunner) discardLocalCopy(job *deliveryJob, reason string) {
 	// 删掉的其实是新作业正在上传的那个包——下一片立刻以"本地副本不存在"失败。
 	// 资格丧失时连进度都不该重置：那些字节现在是新作业的续传基线。
 	if !r.ownerIntact(job) {
-		blog("WARN", "delivery.local_discard_skipped", "作业已不是当前执行者，不删共享本地副本", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "delivery.local_discard_skipped", "作业已不是当前执行者，不删共享本地副本", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "local_path": job.LocalPath, "reason": reason,
 		})
 		return
@@ -1309,7 +1313,7 @@ func (r *deliveryRunner) discardLocalCopy(job *deliveryJob, reason string) {
 		_ = os.Remove(path)
 	}
 	_ = r.saveJob(job)
-	blog("WARN", "delivery.local_discarded", "本地副本校验失败，已丢弃并重置分片进度", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("WARN", "delivery.local_discarded", "本地副本校验失败，已丢弃并重置分片进度", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "local_path": path, "reason": reason,
 	})
 }
@@ -1325,7 +1329,7 @@ func (r *deliveryRunner) discardLocalCopy(job *deliveryJob, reason string) {
 // 授权随 job 落盘（TLSInsecure），只影响本任务的 client；job 结束即失效，
 // 用户撤销后新 job 自动回到严格校验，不存在"一次放宽永久放宽"。
 func platformHTTPClient(job *deliveryJob, timeout time.Duration) *http.Client {
-	return httpClientFor(job != nil && job.TLSInsecure, timeout)
+	return uplink.HttpClientFor(job != nil && job.TLSInsecure, timeout)
 }
 
 // upload 分片上传；并发与单片预算按实测速率收敛，已传分片自动跳过。
@@ -1463,14 +1467,14 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 		// 于是客户内网自签平台上的每一次交付都停在「已传 0/N 片」。
 		// 与桥日志直传通道保持一致：命中证书不受信就自动放宽一次并留痕，
 		// 鉴权不放松（上传令牌仍绑定 task_id）。
-		if !job.TLSInsecure && isUntrustedCertificateError(firstErr) {
+		if !job.TLSInsecure && uplink.IsUntrustedCertificateError(firstErr) {
 			r.mu.Lock()
 			job.TLSInsecure = true
 			job.Phase = phaseUploading
 			job.LastError = "平台证书不受信，已放宽校验并重新上传"
 			r.mu.Unlock()
 			_ = r.saveJob(job)
-			blog("WARN", "delivery.tls_relaxed", "平台证书不受信，交付通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
+			logpush.Blog("WARN", "delivery.tls_relaxed", "平台证书不受信，交付通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
 				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
 			})
 			// 归为 transient：此刻不需要人，只需要下一轮用放宽后的 client 重传。
@@ -1495,7 +1499,7 @@ func (r *deliveryRunner) adjustPace(job *deliveryJob, prev uploadPace, sample up
 	job.Pace = next
 	_ = r.saveJobLocked(job)
 	r.mu.Unlock()
-	blog("WARN", "delivery.pace_adjusted", "按实测速率调整上传节奏", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("WARN", "delivery.pace_adjusted", "按实测速率调整上传节奏", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id":                  job.JobID,
 		"chunk_size":              job.ChunkSize,
 		"part_count":              job.PartCount,
@@ -1629,13 +1633,13 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 	client := platformHTTPClient(job, deliveryCompleteTimeout)
 	response, err := client.Do(request)
 	if err != nil {
-		if !job.TLSInsecure && isUntrustedCertificateError(err) {
+		if !job.TLSInsecure && uplink.IsUntrustedCertificateError(err) {
 			r.mu.Lock()
 			job.TLSInsecure = true
 			job.Phase = phaseCompleting
 			r.mu.Unlock()
 			_ = r.saveJob(job)
-			blog("WARN", "delivery.tls_relaxed", "平台证书不受信，收尾通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
+			logpush.Blog("WARN", "delivery.tls_relaxed", "平台证书不受信，收尾通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
 				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
 			})
 			return &deliveryTransientError{reason: "平台证书不受信，已放宽校验，将自动重试"}
@@ -1674,7 +1678,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 		}
 		r.mu.Unlock()
 		_ = r.saveJob(job)
-		blog("INFO", "delivery.integrity_confirmed", "平台确认交付完整性", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("INFO", "delivery.integrity_confirmed", "平台确认交付完整性", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "integrity": ack.IntegrityState, "sha256": ack.SHA256,
 		})
 	}
@@ -1861,7 +1865,7 @@ func isTransientTransportError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if isUntrustedCertificateError(err) {
+	if uplink.IsUntrustedCertificateError(err) {
 		return false
 	}
 	// 域名不存在是本机解析配置问题，不是链路抖动；混进 transient 会让用户

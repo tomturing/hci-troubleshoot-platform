@@ -142,3 +142,8 @@ dsh/data/tickets/*
 
 # helm-unittest `-d` 调试产物（2026-10-30 曾被误提交进 #1375）
 .debug/
+
+# 日志收集脚本基线：仓库是公开仓库，只允许元数据索引；
+# acli 插件的脚本原文是厂商专有代码，绝不入库。
+backend/case-service/app/data/script_catalog/*
+!backend/case-service/app/data/script_catalog/index.json

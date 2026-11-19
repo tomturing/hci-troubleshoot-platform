@@ -1,6 +1,9 @@
 package main
 
 import (
+	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/logpush"
+	bruntime "terminal_bridge/internal/shared/runtime"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -16,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/shared/models"
 	"testing"
 	"time"
 
@@ -29,9 +33,9 @@ import (
 
 func TestOwnedSessionTrackerDrainCaseIncludesNodeSessions(t *testing.T) {
 	tracker := newOwnedSessionTracker()
-	defaultSession := &SSHSession{}
-	nodeSession := &SSHSession{}
-	otherSession := &SSHSession{}
+	defaultSession := &sshx.SSHSession{}
+	nodeSession := &sshx.SSHSession{}
+	otherSession := &sshx.SSHSession{}
 	tracker.set("CASE-1", defaultSession)
 	tracker.set("CASE-1@node-a", nodeSession)
 	tracker.set("CASE-10@node-b", otherSession)
@@ -47,7 +51,7 @@ func TestOwnedSessionTrackerDrainCaseIncludesNodeSessions(t *testing.T) {
 }
 
 func TestLineMatchesOutputFilterAllAndExclude(t *testing.T) {
-	filter := OutputFilter{Source: "stdout", Include: []string{"4359974862144", "qcow2"}, Exclude: []string{"grep"}, IncludeMode: "all", CaseSensitive: true}
+	filter := models.OutputFilter{Source: "stdout", Include: []string{"4359974862144", "qcow2"}, Exclude: []string{"grep"}, IncludeMode: "all", CaseSensitive: true}
 	if !lineMatchesOutputFilter("qemu 123 /images/4359974862144.vm/disk.qcow2\n", filter) {
 		t.Fatal("expected the VM image line to match")
 	}
@@ -57,7 +61,7 @@ func TestLineMatchesOutputFilterAllAndExclude(t *testing.T) {
 }
 
 func TestLineMatchesOutputFilterAnyCaseInsensitive(t *testing.T) {
-	filter := OutputFilter{Source: "stdout", Include: []string{"server-img", "4359974862144"}, IncludeMode: "any", CaseSensitive: false}
+	filter := models.OutputFilter{Source: "stdout", Include: []string{"server-img", "4359974862144"}, IncludeMode: "any", CaseSensitive: false}
 	if !lineMatchesOutputFilter("SERVER-IMG is busy\n", filter) {
 		t.Fatal("case-insensitive any mode should match")
 	}
@@ -67,7 +71,7 @@ func TestLineMatchesOutputFilterAnyCaseInsensitive(t *testing.T) {
 }
 
 func TestLineMatchesOutputFilterExcludeAll(t *testing.T) {
-	filter := OutputFilter{
+	filter := models.OutputFilter{
 		Source: "stdout", Include: []string{"检测到IP", "冲突"}, IncludeMode: "all",
 		Exclude: []string{"测试数据", "模拟冲突"}, ExcludeMode: "all", CaseSensitive: true,
 	}
@@ -80,7 +84,7 @@ func TestLineMatchesOutputFilterExcludeAll(t *testing.T) {
 }
 
 func TestFiltersForSourceIgnoresEmptyAndOtherStream(t *testing.T) {
-	filters := []OutputFilter{{Source: "stdout", Include: []string{"VM"}}, {Source: "stderr", Include: []string{"error"}}, {Source: "stdout"}}
+	filters := []models.OutputFilter{{Source: "stdout", Include: []string{"VM"}}, {Source: "stderr", Include: []string{"error"}}, {Source: "stdout"}}
 	selected := filtersForSource(filters, "stdout")
 	if len(selected) != 1 || selected[0].Include[0] != "VM" {
 		t.Fatalf("unexpected stdout filters: %#v", selected)
@@ -88,15 +92,15 @@ func TestFiltersForSourceIgnoresEmptyAndOtherStream(t *testing.T) {
 }
 
 func TestValidateOutputFilters(t *testing.T) {
-	valid := []OutputFilter{{Source: "stdout", Include: []string{"4359974862144"}, IncludeMode: "all", CaseSensitive: true}}
+	valid := []models.OutputFilter{{Source: "stdout", Include: []string{"4359974862144"}, IncludeMode: "all", CaseSensitive: true}}
 	if err := validateOutputFilters(valid); err != nil {
 		t.Fatalf("valid literal filter rejected: %v", err)
 	}
-	invalid := []OutputFilter{{Source: "invalid", Include: []string{"VM"}, IncludeMode: "all"}}
+	invalid := []models.OutputFilter{{Source: "invalid", Include: []string{"VM"}, IncludeMode: "all"}}
 	if err := validateOutputFilters(invalid); err == nil {
 		t.Fatal("invalid source must be rejected")
 	}
-	invalidExcludeMode := []OutputFilter{{Source: "stdout", Include: []string{"VM"}, IncludeMode: "all", ExcludeMode: "none"}}
+	invalidExcludeMode := []models.OutputFilter{{Source: "stdout", Include: []string{"VM"}, IncludeMode: "all", ExcludeMode: "none"}}
 	if err := validateOutputFilters(invalidExcludeMode); err == nil {
 		t.Fatal("invalid exclude_mode must be rejected")
 	}
@@ -104,29 +108,29 @@ func TestValidateOutputFilters(t *testing.T) {
 
 func TestDrainExecPipeFilteredTracksRawAndFilteredStats(t *testing.T) {
 	input := "unrelated process\nqemu 9527 /images/18864231143.vm/disk.qcow2\n"
-	filter := OutputFilter{
+	filter := models.OutputFilter{
 		Source: "stdout", Include: []string{"18864231143"}, IncludeMode: "all", CaseSensitive: true,
 	}
-	capture := newBoundedCapture(4096)
-	stats := newStreamStats(true)
+	capture := sshx.NewBoundedCapture(4096)
+	stats := sshx.NewStreamStats(true)
 	emitted := strings.Builder{}
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 
 	go drainExecPipeFiltered(
-		strings.NewReader(input), capture, stats, func(chunk string) { emitted.WriteString(chunk) }, &wg, "stdout", []OutputFilter{filter},
+		strings.NewReader(input), capture, stats, func(chunk string) { emitted.WriteString(chunk) }, &wg, "stdout", []models.OutputFilter{filter},
 	)
 	wg.Wait()
-	stats.finish()
+	stats.Finish()
 
-	if stats.rawBytes != int64(len(input)) {
-		t.Fatalf("rawBytes = %d, want %d", stats.rawBytes, len(input))
+	if stats.RawBytes != int64(len(input)) {
+		t.Fatalf("rawBytes = %d, want %d", stats.RawBytes, len(input))
 	}
-	if stats.scannedLines != 2 || stats.keptLines != 1 {
-		t.Fatalf("lines scanned=%d kept=%d, want 2/1", stats.scannedLines, stats.keptLines)
+	if stats.ScannedLines != 2 || stats.KeptLines != 1 {
+		t.Fatalf("lines scanned=%d kept=%d, want 2/1", stats.ScannedLines, stats.KeptLines)
 	}
-	if capture.total >= stats.rawBytes {
-		t.Fatalf("filtered bytes = %d, raw bytes = %d; filtering did not reduce output", capture.total, stats.rawBytes)
+	if capture.Total >= stats.RawBytes {
+		t.Fatalf("filtered bytes = %d, raw bytes = %d; filtering did not reduce output", capture.Total, stats.RawBytes)
 	}
 	if capture.String() != "qemu 9527 /images/18864231143.vm/disk.qcow2\n" {
 		t.Fatalf("unexpected filtered capture: %q", capture.String())
@@ -134,27 +138,27 @@ func TestDrainExecPipeFilteredTracksRawAndFilteredStats(t *testing.T) {
 	if emitted.String() != capture.String() {
 		t.Fatalf("emitted output differs from safe capture: %q", emitted.String())
 	}
-	if stats.rawSHA256() == capture.SHA256() {
+	if stats.RawSHA256() == capture.SHA256() {
 		t.Fatal("raw and filtered SHA-256 should differ when a line is removed")
 	}
 }
 
 func TestDrainExecPipeTracksUnfilteredStats(t *testing.T) {
 	input := "line one\nline two"
-	capture := newBoundedCapture(4096)
-	stats := newStreamStats(false)
+	capture := sshx.NewBoundedCapture(4096)
+	stats := sshx.NewStreamStats(false)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 
 	go drainExecPipe(strings.NewReader(input), capture, stats, func(string) {}, &wg)
 	wg.Wait()
-	stats.finish()
+	stats.Finish()
 
-	if stats.rawBytes != capture.total || stats.rawSHA256() != capture.SHA256() {
+	if stats.RawBytes != capture.Total || stats.RawSHA256() != capture.SHA256() {
 		t.Fatal("unfiltered raw and returned stream statistics must be identical")
 	}
-	if stats.scannedLines != 2 || stats.keptLines != 2 {
-		t.Fatalf("lines scanned=%d kept=%d, want 2/2", stats.scannedLines, stats.keptLines)
+	if stats.ScannedLines != 2 || stats.KeptLines != 2 {
+		t.Fatalf("lines scanned=%d kept=%d, want 2/2", stats.ScannedLines, stats.KeptLines)
 	}
 }
 
@@ -165,8 +169,8 @@ func TestNormalizeRuntimeConfigDefaults(t *testing.T) {
 		wantAddress string
 		wantOrigin  string
 	}{
-		{name: "桌面模式", mode: desktopMode, wantAddress: "127.0.0.1", wantOrigin: "*"},
-		{name: "集群模式", mode: clusterMode, wantAddress: "0.0.0.0", wantOrigin: "same-origin"},
+		{name: "桌面模式", mode: bruntime.DesktopMode, wantAddress: "127.0.0.1", wantOrigin: "*"},
+		{name: "集群模式", mode: bruntime.ClusterMode, wantAddress: "0.0.0.0", wantOrigin: "same-origin"},
 	}
 
 	for _, test := range tests {
@@ -186,7 +190,7 @@ func TestNormalizeRuntimeConfigDefaults(t *testing.T) {
 }
 
 func TestClusterModeOriginPolicy(t *testing.T) {
-	config, err := normalizeRuntimeConfig(clusterMode, "", defaultWSPort, "")
+	config, err := normalizeRuntimeConfig(bruntime.ClusterMode, "", defaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +203,7 @@ func TestClusterModeOriginPolicy(t *testing.T) {
 }
 
 func TestClusterModeRejectsCrossOriginWebSocketRequest(t *testing.T) {
-	config, err := normalizeRuntimeConfig(clusterMode, "", defaultWSPort, "")
+	config, err := normalizeRuntimeConfig(bruntime.ClusterMode, "", defaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +242,7 @@ func TestAcceptNewHostKeyRejectsFingerprintChange(t *testing.T) {
 	firstKey := newPublicKey()
 	changedKey := newPublicKey()
 
-	acceptNewCallback, err := buildHostKeyCallback(address)
+	acceptNewCallback, err := sshx.BuildHostKeyCallback(address)
 	if err != nil {
 		t.Fatalf("创建 accept-new 回调失败: %v", err)
 	}
@@ -246,7 +250,7 @@ func TestAcceptNewHostKeyRejectsFingerprintChange(t *testing.T) {
 		t.Fatalf("首次出现的主机指纹应被接纳: %v", err)
 	}
 
-	verificationCallback, err := buildHostKeyCallback(address)
+	verificationCallback, err := sshx.BuildHostKeyCallback(address)
 	if err != nil {
 		t.Fatalf("重新加载 known_hosts 失败: %v", err)
 	}
@@ -267,7 +271,7 @@ func TestContextFromMessageAcceptsW3CRandomFlag(t *testing.T) {
 
 	const traceID = "caa7e3e825ba4a606df189740be1118c"
 	const spanID = "cbef2f8fb7e2d3a8"
-	ctx := contextFromMessage(InMessage{
+	ctx := logpush.ContextFromMessage(models.InMessage{
 		TraceID:     traceID,
 		Traceparent: "00-" + traceID + "-" + spanID + "-03",
 	})
@@ -295,9 +299,9 @@ func TestNormalizeTraceparentOnlyDropsW3CRandomFlag(t *testing.T) {
 	}
 	for inputFlags, expected := range tests {
 		t.Run(inputFlags, func(t *testing.T) {
-			actual := normalizeTraceparentForLegacyGo(prefix + inputFlags)
+			actual := logpush.NormalizeTraceparentForLegacyGo(prefix + inputFlags)
 			if actual != expected {
-				t.Fatalf("normalizeTraceparentForLegacyGo() = %q, want %q", actual, expected)
+				t.Fatalf("NormalizeTraceparentForLegacyGo() = %q, want %q", actual, expected)
 			}
 		})
 	}
@@ -306,26 +310,26 @@ func TestNormalizeTraceparentOnlyDropsW3CRandomFlag(t *testing.T) {
 func TestSimulationLeaseCredentialDetection(t *testing.T) {
 	tests := []struct {
 		name string
-		msg  InMessage
+		msg  models.InMessage
 		want bool
 	}{
-		{name: "complete htp2 lease context", msg: InMessage{AuthType: "lease", ExecutionMode: "sim-ssh", Password: "htp2.payload.signature"}, want: true},
-		{name: "bare token is insufficient", msg: InMessage{AuthType: "password", Password: "htp2.payload.signature"}, want: false},
-		{name: "lease auth alone is insufficient", msg: InMessage{AuthType: "lease", Password: "opaque"}, want: false},
-		{name: "execution mode alone is insufficient", msg: InMessage{ExecutionMode: "sim-ssh", Password: "opaque"}, want: false},
-		{name: "real HCI password", msg: InMessage{AuthType: "password", Password: "ordinary"}, want: false},
+		{name: "complete htp2 lease context", msg: models.InMessage{AuthType: "lease", ExecutionMode: "sim-ssh", Password: "htp2.payload.signature"}, want: true},
+		{name: "bare token is insufficient", msg: models.InMessage{AuthType: "password", Password: "htp2.payload.signature"}, want: false},
+		{name: "lease auth alone is insufficient", msg: models.InMessage{AuthType: "lease", Password: "opaque"}, want: false},
+		{name: "execution mode alone is insufficient", msg: models.InMessage{ExecutionMode: "sim-ssh", Password: "opaque"}, want: false},
+		{name: "real HCI password", msg: models.InMessage{AuthType: "password", Password: "ordinary"}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := isSimulationLeaseCredential(tt.msg); got != tt.want {
-				t.Fatalf("isSimulationLeaseCredential()=%v want=%v", got, tt.want)
+			if got := sshx.IsSimulationLeaseCredential(tt.msg); got != tt.want {
+				t.Fatalf("sshx.IsSimulationLeaseCredential()=%v want=%v", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestBuildAuthMethodsAcceptsLease(t *testing.T) {
-	methods, err := buildAuthMethods(InMessage{AuthType: "lease", Password: "htp2.payload.signature"})
+	methods, err := sshx.BuildAuthMethods(models.InMessage{AuthType: "lease", Password: "htp2.payload.signature"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +339,7 @@ func TestBuildAuthMethodsAcceptsLease(t *testing.T) {
 }
 
 func TestHealthAndStatusEndpoints(t *testing.T) {
-	config, err := normalizeRuntimeConfig(clusterMode, "", defaultWSPort, "")
+	config, err := normalizeRuntimeConfig(bruntime.ClusterMode, "", defaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,34 +373,11 @@ func TestHealthAndStatusEndpoints(t *testing.T) {
 	}
 }
 
-func TestLogHubPublishReturnsObservableFields(t *testing.T) {
-	hub := &LogHub{
-		cap:        10,
-		subs:       make(map[*websocket.Conn]*bridgeSubscriber),
-		instanceID: "bridge-test-instance",
-	}
-
-	entry := hub.publish(logEntry{Level: "INFO", Service: "terminal_bridge", Event: "test"})
-
-	if entry.Type != "bridge_log" {
-		t.Fatalf("Type = %q, want bridge_log", entry.Type)
-	}
-	if entry.Seq != 1 {
-		t.Fatalf("Seq = %d, want 1", entry.Seq)
-	}
-	if entry.Timestamp == "" {
-		t.Fatal("Timestamp 不应为空")
-	}
-	if entry.EventID == "" || entry.BridgeInstanceID == "" {
-		t.Fatal("幂等事件字段不应为空")
-	}
-}
-
 func TestBoundedCaptureKeepsHashAndBoundsMemory(t *testing.T) {
-	capture := newBoundedCapture(4)
-	capture.write([]byte("abcdef"))
-	if capture.String() != "abcd" || !capture.truncated || capture.total != 6 {
-		t.Fatalf("有界捕获结果异常: value=%q truncated=%v total=%d", capture.String(), capture.truncated, capture.total)
+	capture := sshx.NewBoundedCapture(4)
+	capture.Write([]byte("abcdef"))
+	if capture.String() != "abcd" || !capture.Truncated || capture.Total != 6 {
+		t.Fatalf("有界捕获结果异常: value=%q truncated=%v total=%d", capture.String(), capture.Truncated, capture.Total)
 	}
 	if len(capture.SHA256()) != 64 {
 		t.Fatalf("SHA256 长度异常: %q", capture.SHA256())
@@ -404,14 +385,14 @@ func TestBoundedCaptureKeepsHashAndBoundsMemory(t *testing.T) {
 }
 
 func TestRedactSensitiveText(t *testing.T) {
-	redacted := redactSensitiveText(`password=secret token: abc {"private_key":"sensitive"}`)
+	redacted := logpush.RedactSensitiveText(`password=secret token: abc {"private_key":"sensitive"}`)
 	if strings.Contains(redacted, "secret") || strings.Contains(redacted, "sensitive") {
 		t.Fatalf("敏感信息未被脱敏: %s", redacted)
 	}
 }
 
 func TestExecResultAlwaysIncludesZeroExitCode(t *testing.T) {
-	payload, err := json.Marshal(OutMessage{Type: "exec_result", CaseID: "Q1", ExitCode: 0})
+	payload, err := json.Marshal(models.OutMessage{Type: "exec_result", CaseID: "Q1", ExitCode: 0})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,8 +405,8 @@ func TestExecResultAlwaysIncludesZeroExitCode(t *testing.T) {
 
 const testVMConsoleCaptureID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 
-func validVMConsoleMessage(operation string) InMessage {
-	return InMessage{
+func validVMConsoleMessage(operation string) models.InMessage {
+	return models.InMessage{
 		Type: "vm_console_op", CaseID: "Q2026081900001", NodeIP: "10.0.0.1", ExecID: "exec-1",
 		CaptureID: testVMConsoleCaptureID, Operation: operation,
 		HostNodeID: "SIM-HCI-NODE-01", VMID: "271230001", Timeout: 20,
@@ -473,23 +454,23 @@ func TestParseVMConsoleRequestRejectsUnknownOperation(t *testing.T) {
 func TestParseVMConsoleRequestRejectsInvalidTargets(t *testing.T) {
 	tests := []struct {
 		name   string
-		mutate func(*InMessage)
+		mutate func(*models.InMessage)
 	}{
-		{name: "host_node_id 含 shell 字符", mutate: func(m *InMessage) { m.HostNodeID = "node;rm -rf /" }},
-		{name: "host_node_id 含空格", mutate: func(m *InMessage) { m.HostNodeID = "node id" }},
-		{name: "host_node_id 以符号开头", mutate: func(m *InMessage) { m.HostNodeID = "-node" }},
-		{name: "host_node_id 超长", mutate: func(m *InMessage) { m.HostNodeID = strings.Repeat("a", 129) }},
-		{name: "host_node_id 为空", mutate: func(m *InMessage) { m.HostNodeID = "" }},
-		{name: "vm_id 非数字", mutate: func(m *InMessage) { m.VMID = "vm123" }},
-		{name: "vm_id 含路径穿越", mutate: func(m *InMessage) { m.VMID = "../etc" }},
-		{name: "vm_id 超长", mutate: func(m *InMessage) { m.VMID = strings.Repeat("9", 21) }},
-		{name: "vm_id 为空", mutate: func(m *InMessage) { m.VMID = "" }},
-		{name: "capture_id 非 UUID", mutate: func(m *InMessage) { m.CaptureID = "not-a-uuid" }},
-		{name: "capture_id 含 shell 字符", mutate: func(m *InMessage) { m.CaptureID = "$(reboot).ppm" }},
-		{name: "capture_id 为空", mutate: func(m *InMessage) { m.CaptureID = "" }},
-		{name: "case_id 为空", mutate: func(m *InMessage) { m.CaseID = "" }},
-		{name: "exec_id 为空", mutate: func(m *InMessage) { m.ExecID = "" }},
-		{name: "node_ip 为空", mutate: func(m *InMessage) { m.NodeIP = "" }},
+		{name: "host_node_id 含 shell 字符", mutate: func(m *models.InMessage) { m.HostNodeID = "node;rm -rf /" }},
+		{name: "host_node_id 含空格", mutate: func(m *models.InMessage) { m.HostNodeID = "node id" }},
+		{name: "host_node_id 以符号开头", mutate: func(m *models.InMessage) { m.HostNodeID = "-node" }},
+		{name: "host_node_id 超长", mutate: func(m *models.InMessage) { m.HostNodeID = strings.Repeat("a", 129) }},
+		{name: "host_node_id 为空", mutate: func(m *models.InMessage) { m.HostNodeID = "" }},
+		{name: "vm_id 非数字", mutate: func(m *models.InMessage) { m.VMID = "vm123" }},
+		{name: "vm_id 含路径穿越", mutate: func(m *models.InMessage) { m.VMID = "../etc" }},
+		{name: "vm_id 超长", mutate: func(m *models.InMessage) { m.VMID = strings.Repeat("9", 21) }},
+		{name: "vm_id 为空", mutate: func(m *models.InMessage) { m.VMID = "" }},
+		{name: "capture_id 非 UUID", mutate: func(m *models.InMessage) { m.CaptureID = "not-a-uuid" }},
+		{name: "capture_id 含 shell 字符", mutate: func(m *models.InMessage) { m.CaptureID = "$(reboot).ppm" }},
+		{name: "capture_id 为空", mutate: func(m *models.InMessage) { m.CaptureID = "" }},
+		{name: "case_id 为空", mutate: func(m *models.InMessage) { m.CaseID = "" }},
+		{name: "exec_id 为空", mutate: func(m *models.InMessage) { m.ExecID = "" }},
+		{name: "node_ip 为空", mutate: func(m *models.InMessage) { m.NodeIP = "" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -650,27 +631,27 @@ func startFakeSSHServer(t *testing.T, handler func(command string) (stdout strin
 }
 
 // newFakeSSHSession 建立指向进程内假 SSH 服务端的 Bridge 会话。
-func newFakeSSHSession(t *testing.T, host string, port int) *SSHSession {
+func newFakeSSHSession(t *testing.T, host string, port int) *sshx.SSHSession {
 	t.Helper()
 	t.Setenv("HCI_BRIDGE_HOST_KEY_POLICY", "insecure")
-	session, err := newSSHSession(InMessage{
+	session, err := sshx.NewSSHSession(models.InMessage{
 		CaseID: "Q2026081900001", Host: host, Port: port,
 		Username: "root", AuthType: "password", Password: "test-password",
 	})
 	if err != nil {
 		t.Fatalf("连接假 SSH 服务端失败: %v", err)
 	}
-	t.Cleanup(session.close)
+	t.Cleanup(session.Close)
 	return session
 }
 
 // runVMConsoleOpSync 同步执行固定操作并收集结果（超时兜底防止测试悬挂）。
-func runVMConsoleOpSync(t *testing.T, session *SSHSession, req vmConsoleRequest) OutMessage {
+func runVMConsoleOpSync(t *testing.T, session *sshx.SSHSession, req vmConsoleRequest) models.OutMessage {
 	t.Helper()
-	var result OutMessage
+	var result models.OutMessage
 	done := make(chan struct{})
 	go func() {
-		session.runVMConsoleOp(func(message OutMessage) {
+		runVMConsoleOp(session, func(message models.OutMessage) {
 			result = message
 			close(done)
 		}, req)
@@ -680,11 +661,11 @@ func runVMConsoleOpSync(t *testing.T, session *SSHSession, req vmConsoleRequest)
 		return result
 	case <-time.After(30 * time.Second):
 		t.Fatal("vm_console 操作未在预期时间内返回")
-		return OutMessage{}
+		return models.OutMessage{}
 	}
 }
 
-func parseVMConsoleRequestOrFail(t *testing.T, msg InMessage) vmConsoleRequest {
+func parseVMConsoleRequestOrFail(t *testing.T, msg models.InMessage) vmConsoleRequest {
 	t.Helper()
 	req, errType := parseVMConsoleRequest(msg, "hci.local")
 	if errType != "" {
@@ -1005,7 +986,7 @@ func TestUploadVMConsolePPMContract(t *testing.T) {
 // TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket 经 WebSocket 派发入口：
 // 非法 operation 直接回 vm_console_result 拒绝，不建立任何 SSH 执行。
 func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
-	config, err := normalizeRuntimeConfig(desktopMode, "", defaultWSPort, "")
+	config, err := normalizeRuntimeConfig(bruntime.DesktopMode, "", defaultWSPort, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1021,14 +1002,14 @@ func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
 	defer conn.Close()
 
 	// 同一 WS 还会收到 bridge_log 回采消息，只提取 vm_console_result。
-	receiveVMConsoleResult := func() OutMessage {
+	receiveVMConsoleResult := func() models.OutMessage {
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
 			var raw string
 			if err := websocket.Message.Receive(conn, &raw); err != nil {
 				t.Fatalf("接收消息失败: %v", err)
 			}
-			var response OutMessage
+			var response models.OutMessage
 			if err := json.Unmarshal([]byte(raw), &response); err != nil {
 				t.Fatal(err)
 			}
@@ -1037,7 +1018,7 @@ func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
 			}
 		}
 		t.Fatal("未在预期时间内收到 vm_console_result")
-		return OutMessage{}
+		return models.OutMessage{}
 	}
 
 	msg := validVMConsoleMessage("arbitrary_command")
@@ -1123,7 +1104,7 @@ func TestBuildAcliVersionCommandPrefersAbsolutePath(t *testing.T) {
 }
 
 func TestAcliSyncMessageSerialization(t *testing.T) {
-	in := InMessage{
+	in := models.InMessage{
 		Type:      "acli_sync",
 		CaseID:    "case-123",
 		Force:     true,
@@ -1133,7 +1114,7 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var inDecoded InMessage
+	var inDecoded models.InMessage
 	if err := json.Unmarshal(b, &inDecoded); err != nil {
 		t.Fatal(err)
 	}
@@ -1141,7 +1122,7 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 		t.Fatalf("decoded message mismatch: %#v", inDecoded)
 	}
 
-	out := OutMessage{
+	out := models.OutMessage{
 		Type:           "acli_sync_result",
 		CaseID:         "case-123",
 		Status:         "installed",
@@ -1153,7 +1134,7 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var outDecoded OutMessage
+	var outDecoded models.OutMessage
 	if err := json.Unmarshal(bOut, &outDecoded); err != nil {
 		t.Fatal(err)
 	}
@@ -1165,34 +1146,34 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 // acli_sync 曾因为不带 node_ip 而恒定 session_missing：会话键是 caseID@nodeIP，
 // 而旧逻辑只找键为 caseID 的会话。这里锁定三层兜底与"不猜节点"的边界。
 func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
-	b := &Bridge{sessions: map[string]*SSHSession{
-		"Q2026101401684@172.28.24.129": {address: "172.28.24.129:22"},
+	b := &Bridge{sessions: map[string]*sshx.SSHSession{
+		"Q2026101401684@192.0.2.21": {Address: "192.0.2.21:22"},
 	}}
 
 	// 1) 带 node_ip：精确命中
-	if s, key := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101401684", NodeIP: "172.28.24.129"}); s == nil {
+	if s, key := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684", NodeIP: "192.0.2.21"}); s == nil {
 		t.Fatalf("node_ip 精确匹配失败")
-	} else if key != "Q2026101401684@172.28.24.129" {
+	} else if key != "Q2026101401684@192.0.2.21" {
 		t.Fatalf("精确匹配键不符: %s", key)
 	}
 
 	// 2) 不带 node_ip：线上故障场景，必须兜底到该工单唯一会话
-	s, key := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101401684"})
+	s, key := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"})
 	if s == nil {
 		t.Fatalf("缺少 node_ip 时未兜底到唯一会话")
 	}
-	if key != "Q2026101401684@172.28.24.129" {
+	if key != "Q2026101401684@192.0.2.21" {
 		t.Fatalf("兜底会话键不符: %s", key)
 	}
 
 	// 3) 同工单两条会话且不带 node_ip：宁可不装，也不猜节点
-	b.sessions["Q2026101401684@172.28.24.130"] = &SSHSession{address: "172.28.24.130:22"}
-	if s, _ := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101401684"}); s != nil {
+	b.sessions["Q2026101401684@192.0.2.22"] = &sshx.SSHSession{Address: "192.0.2.22:22"}
+	if s, _ := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"}); s != nil {
 		t.Fatalf("多会话时不应猜测节点")
 	}
 
 	// 4) 不串工单
-	if s, _ := b.resolveAcliSyncSession(InMessage{CaseID: "Q2026101499999"}); s != nil {
+	if s, _ := b.resolveAcliSyncSession(models.InMessage{CaseID: "Q2026101499999"}); s != nil {
 		t.Fatalf("不应命中其它工单的会话")
 	}
 }

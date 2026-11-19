@@ -16,6 +16,7 @@ package main
 // 只有高配机才允许 2。
 
 import (
+	bruntime "terminal_bridge/internal/shared/runtime"
 	"runtime"
 	"strings"
 )
@@ -55,10 +56,10 @@ func decideDeliveryConcurrency() deliveryConcurrency {
 	}
 
 	// 显式覆盖永远优先：现网特殊设备（大内存但弱 CPU、或需要强制单流）靠它兜底。
-	if forced := envIntOrDefault("HCI_BRIDGE_DELIVERY_CONCURRENCY", 0); forced > 0 {
+	if forced := bruntime.EnvIntOrDefault("HCI_BRIDGE_DELIVERY_CONCURRENCY", 0); forced > 0 {
 		decision.Parts, decision.Reason = clamp(forced, 1, maxDeliveryParts), "env:HCI_BRIDGE_DELIVERY_CONCURRENCY"
 	}
-	if forced := envIntOrDefault("HCI_BRIDGE_DELIVERY_TASKS", 0); forced > 0 {
+	if forced := bruntime.EnvIntOrDefault("HCI_BRIDGE_DELIVERY_TASKS", 0); forced > 0 {
 		decision.Tasks = clamp(forced, 1, maxDeliveryTasks)
 	}
 	return decision

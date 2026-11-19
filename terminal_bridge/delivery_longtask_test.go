@@ -10,19 +10,20 @@ package main
 // 长任务期间会话不被空闲租约回收；长任务结束后回收能力恢复（不能变成永久泄漏）。
 
 import (
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 )
 
 func TestReaperKeepsSessionWithLongTask(t *testing.T) {
 	bridge := newBridge()
-	session := &SSHSession{done: make(chan struct{}), createdAt: time.Now()}
+	session := &sshx.SSHSession{Done: make(chan struct{}), CreatedAt: time.Now()}
 	key := "Q2026102801014@192.168.1.20"
 	bridge.set(key, session)
 	// 浏览器早已关闭是大包交付的常态：refs 归零后进入空闲租约。
 	bridge.releaseSession(key, "conn-1")
 
-	session.beginLongTask()
+	session.BeginLongTask()
 	if reaped := bridge.reapIdleSessions(time.Nanosecond); reaped != 0 {
 		t.Fatalf("长任务进行中的会话不应被空闲租约回收，实际回收 %d 条", reaped)
 	}
@@ -31,7 +32,7 @@ func TestReaperKeepsSessionWithLongTask(t *testing.T) {
 	}
 
 	// 长任务结束后必须恢复回收，否则孤儿会话永久占用远端 shell。
-	session.endLongTask()
+	session.EndLongTask()
 	if reaped := bridge.reapIdleSessions(time.Nanosecond); reaped != 1 {
 		t.Fatalf("长任务结束后应恢复常规回收，实际回收 %d 条", reaped)
 	}
@@ -39,9 +40,9 @@ func TestReaperKeepsSessionWithLongTask(t *testing.T) {
 
 func TestShellHeartbeatStopIsIdempotent(t *testing.T) {
 	// 心跳 goroutine 必须在 stop 后可重复调用而不 panic（defer 与显式调用并存）。
-	session := &SSHSession{done: make(chan struct{}), createdAt: time.Now()}
-	stop := session.startShellHeartbeat("Q2026102801014")
+	session := &sshx.SSHSession{Done: make(chan struct{}), CreatedAt: time.Now()}
+	stop := session.StartShellHeartbeat("Q2026102801014")
 	stop()
 	stop()
-	close(session.done)
+	close(session.Done)
 }

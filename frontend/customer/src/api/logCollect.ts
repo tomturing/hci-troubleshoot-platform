@@ -338,6 +338,21 @@ export interface LogCollectTask {
   spc_files?: Array<{ slot: string; content: string; sha256: string }> | null
   spc_slots?: string[] | null
   restore_status?: string | null
+  /**
+   * 收集脚本：原文只在创建响应出现一次，前端纯透传给 bridge；
+   * 客户侧永远不展示脚本内容与版本，只按场景展示采集项。
+   */
+  script_files?: Array<{
+    code: string
+    content: string
+    sha256: string
+    interpreter?: string
+    revision?: number
+  }> | null
+  script_codes?: string[] | null
+  script_sha256?: Record<string, string> | null
+  script_hosts?: Array<{ ip: string; backup?: string; error?: string }> | null
+  script_restore_status?: string | null
   status: LogCollectStatus
   progress: number
   /** P1 直传时创建即带上传地址；老记录没有 upload_mode，用它兜底判定交付路径 */

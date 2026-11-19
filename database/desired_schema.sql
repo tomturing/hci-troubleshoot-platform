@@ -4054,6 +4054,66 @@ COMMENT ON COLUMN log_collect_task.spc_sha256 IS '覆写的场景清单摘要，
 COMMENT ON COLUMN log_collect_task.spc_hosts IS '扇出写入结果：每台节点的 ip/backup/error';
 COMMENT ON COLUMN log_collect_task.restore_status IS 'none/pending/success/failed：终态恢复是否已还原原清单';
 
+-- 任务侧：脚本下发证据。脚本与 spc 是两条被覆写的文件通道（目录不同），
+-- 必须各自记录"写了哪几台、摘要是什么、还原了没有"，否则事后无法判断
+-- 节点上残留的是平台脚本还是插件原件。
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS script_codes jsonb;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS script_sha256 jsonb;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS script_hosts jsonb;
+ALTER TABLE log_collect_task ADD COLUMN IF NOT EXISTS script_restore_status varchar(16) NOT NULL DEFAULT 'none';
+
+COMMENT ON COLUMN log_collect_task.script_codes IS '本次下发的平台脚本文件名集合（code）；空表示未覆写任何脚本';
+COMMENT ON COLUMN log_collect_task.script_sha256 IS 'code -> 内容摘要；与脚本库当前 revision 一致才允许执行';
+COMMENT ON COLUMN log_collect_task.script_hosts IS '脚本扇出写入结果：每台节点的 ip/backup/created/error';
+COMMENT ON COLUMN log_collect_task.script_restore_status IS 'none/pending/success/failed：脚本终态还原是否已把节点恢复成插件原件';
+
+
+-- ------------------------------------------------------------
+-- 表: log_collect_script  [模块: case-service]
+-- 说明: 日志收集「收集脚本」库。语义与默认场景完全同构：
+--       随镜像发布的 script_catalog 是平台默认快照，本表只存"被改过的脚本"
+--       （覆写内置脚本）与"平台新增脚本"，恢复默认即删除该 code 的全部覆写行。
+-- 约束: 必须版本化 —— (script_id, revision) 复合主键保留每一版原文，
+--       任务侧记录 code + revision + sha256，才能回答"当时节点上跑的是哪一版"。
+--       code 是落盘文件名（如 log_slow_disk.py），创建后不可改；改名等于新建。
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS log_collect_script (
+    script_id uuid NOT NULL DEFAULT gen_random_uuid(),
+    revision integer NOT NULL DEFAULT 1,
+    code varchar(64) NOT NULL,
+    name varchar(64) NOT NULL,
+    interpreter varchar(16) NOT NULL DEFAULT 'bash',
+    content text NOT NULL,
+    content_sha256 char(64) NOT NULL,
+    content_bytes integer NOT NULL,
+    change_note varchar(200),
+    source varchar(16) NOT NULL DEFAULT 'manual',
+    enabled boolean NOT NULL DEFAULT true,
+    sort_order integer NOT NULL DEFAULT 100,
+    trace_id varchar(64),
+    created_by varchar(255) NOT NULL DEFAULT 'system',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT log_collect_script_pkey PRIMARY KEY (script_id, revision),
+    CONSTRAINT uq_log_collect_script_code_revision UNIQUE (code, revision),
+    CONSTRAINT ck_log_collect_script_revision CHECK (revision >= 1),
+    CONSTRAINT ck_log_collect_script_bytes CHECK (content_bytes >= 0),
+    CONSTRAINT ck_log_collect_script_source CHECK ((source)::text = ANY ((ARRAY['manual'::character varying, 'import'::character varying, 'baseline'::character varying])::text[]))
+);
+
+COMMENT ON TABLE log_collect_script IS '日志收集收集脚本库：script_catalog 快照的覆写版本 + 平台新增脚本，按 revision 版本化';
+COMMENT ON COLUMN log_collect_script.code IS '落盘文件名（也是 spc 条目 action=script 的 path），创建后不可改';
+COMMENT ON COLUMN log_collect_script.name IS '管理端展示名';
+COMMENT ON COLUMN log_collect_script.interpreter IS '解释器：python/bash；与 spc 条目的 interpreter 字段一致';
+COMMENT ON COLUMN log_collect_script.content IS '脚本原文；下发时写入节点 script 目录，任务终态还原';
+COMMENT ON COLUMN log_collect_script.change_note IS '本次变更说明（界面必填），构成可读的变更历史';
+COMMENT ON COLUMN log_collect_script.source IS '来源：manual=手写；import=导入文件；baseline=从平台默认快照复制';
+COMMENT ON COLUMN log_collect_script.trace_id IS '唯一调用链：把保存动作与后续下发、还原事件串起来';
+
+CREATE INDEX IF NOT EXISTS idx_log_collect_script_latest
+    ON log_collect_script (code, revision DESC);
+CREATE INDEX IF NOT EXISTS idx_log_collect_script_order
+    ON log_collect_script (enabled, sort_order, code);
+
 
 -- ------------------------------------------------------------
 -- 表: log_collect_artifact_manifest  [模块: case-service]

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"terminal_bridge/internal/sshx"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/shared/models"
 	"testing"
 	"time"
 )
@@ -195,7 +197,7 @@ type fakeSftpRemote struct {
 
 func (f *fakeSftpRemote) ListDir(string) ([]os.FileInfo, error) { return f.infos, f.err }
 func (f *fakeSftpRemote) Stat(string) (os.FileInfo, error)      { return nil, f.err }
-func (f *fakeSftpRemote) Open(string) (sftpSeekReader, error)   { return nil, f.err }
+func (f *fakeSftpRemote) Open(string) (sshx.SftpSeekReader, error)   { return nil, f.err }
 func (f *fakeSftpRemote) Getwd() (string, error)                { return f.wd, f.err }
 func (f *fakeSftpRemote) Close() error                          { return nil }
 
@@ -462,23 +464,23 @@ func TestCancelUnknownSftpTaskIsNotError(t *testing.T) {
 // TestDropSftpRemoteClientIfIdle 验证“死通道回收”不会误伤并发的另一个下载。
 func TestDropSftpRemoteClientIfIdle(t *testing.T) {
 	bridge := newBridge()
-	session := &SSHSession{sftp: &fakeSftpRemote{}}
+	session := &sshx.SSHSession{Sftp: &fakeSftpRemote{}}
 
 	// 无并发任务：直接丢弃，让下次请求重新协商
 	if !bridge.dropSftpRemoteClientIfIdle(session, false) {
 		t.Fatal("无并发任务时应丢弃缓存通道")
 	}
-	if session.sftp != nil {
+	if session.Sftp != nil {
 		t.Fatal("通道应已被清空，否则后续请求会一直撞死通道")
 	}
 
 	// 有旁人任务：列表失败不得关闭通道（否则会提前杀断另一个下载）
-	session.sftp = &fakeSftpRemote{}
+	session.Sftp = &fakeSftpRemote{}
 	bridge.sftpTasks[sftpTaskKey("Q1", "other")] = &sftpTask{cancel: func() {}}
 	if bridge.dropSftpRemoteClientIfIdle(session, false) {
 		t.Fatal("有并发任务时不应丢弃通道")
 	}
-	if session.sftp == nil {
+	if session.Sftp == nil {
 		t.Fatal("有并发任务时通道必须保留")
 	}
 
@@ -488,19 +490,19 @@ func TestDropSftpRemoteClientIfIdle(t *testing.T) {
 	}
 
 	// allowSelf 但还有旁人：仍然不能丢
-	session.sftp = &fakeSftpRemote{}
+	session.Sftp = &fakeSftpRemote{}
 	bridge.sftpTasks[sftpTaskKey("Q1", "self")] = &sftpTask{cancel: func() {}}
 	if bridge.dropSftpRemoteClientIfIdle(session, true) {
 		t.Fatal("还有并发任务时不得丢弃通道")
 	}
-	if session.sftp == nil {
+	if session.Sftp == nil {
 		t.Fatal("还有并发任务时通道必须保留")
 	}
 }
 
 func TestSftpWireContract(t *testing.T) {
 	// 协议字段名是前后端的硬契约：改名等于静默功能失效，这里锁死。
-	encoded, err := json.Marshal(OutMessage{
+	encoded, err := json.Marshal(models.OutMessage{
 		Type: "sftp_transfer_progress", CaseID: "Q1", ExecID: "task-1", SftpAction: "download",
 		SftpData: sftpTransferPayload{TaskID: "task-1", Phase: "downloading", Bytes: 1, TotalBytes: 2, Percent: 50},
 	})
@@ -513,7 +515,7 @@ func TestSftpWireContract(t *testing.T) {
 		}
 	}
 
-	var inbound InMessage
+	var inbound models.InMessage
 	if err := json.Unmarshal([]byte(`{"type":"sftp_op","case_id":"Q1","exec_id":"t1","sftp_action":"download","sftp_path":"/tmp/a.zip","node_ip":"10.0.0.1"}`), &inbound); err != nil {
 		t.Fatalf("解析入站消息失败: %v", err)
 	}

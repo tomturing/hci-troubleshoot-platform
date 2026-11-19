@@ -10,6 +10,7 @@ package main
 // 会被触发（阶段二不执行），阶段一与终端/日志业务不受影响。
 
 import (
+	"terminal_bridge/internal/shared/uplink"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -193,7 +194,7 @@ func (b *Bridge) fetchAcliPluginManifest(
 	}
 	req.Header.Set("X-Plugin-Ticket", ticket)
 	req.Header.Set("Accept", "application/json")
-	resp, err := httpClientFor(insecure, acliPluginFetchTimeout).Do(req)
+	resp, err := uplink.HttpClientFor(insecure, acliPluginFetchTimeout).Do(req)
 	if err != nil {
 		return nil, newAcliPluginError("manifest_unreachable", err.Error())
 	}

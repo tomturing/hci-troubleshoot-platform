@@ -12,6 +12,9 @@ package main
 // 因此把连接与会话的生命周期收敛到本文件，统一产出 conn.* / session.* 事件。
 
 import (
+	"terminal_bridge/internal/sshx"
+	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/logpush"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +34,7 @@ var processStartedAt time.Time
 // 标准库 log 包，不接管它。客户现场双击 exe 后控制台窗口一闪而过，
 // 崩溃栈就永久丢失（2026-10-27 现场正是无法区分"被杀"与"panic"）。
 func redirectStderrToFile() {
-	dir := strings.TrimSpace(logHub.logDir)
+	dir := strings.TrimSpace(logpush.DefaultHub.LogDir)
 	if dir == "" {
 		return
 	}
@@ -118,7 +121,7 @@ func (b *Bridge) destroySession(key, reason, byConn string) bool {
 	if session == nil {
 		// 落空本身是重要信号：说明调用方以为自己在销毁，实际键早已不在
 		// （例如远端 EOF 已先走一遍清理），据此可判断清理链路是否重复。
-		blog("WARN", "session.destroy_miss", "会话销毁落空：键已不存在", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+		logpush.Blog("WARN", "session.destroy_miss", "会话销毁落空：键已不存在", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 			"key":             key,
 			"reason":          reason,
 			"by_conn":         byConn,
@@ -127,12 +130,12 @@ func (b *Bridge) destroySession(key, reason, byConn string) bool {
 		})
 		return false
 	}
-	ownerConn, ageSeconds := session.ownerConn, int64(session.ageSeconds())
-	session.close()
+	ownerConn, ageSeconds := session.OwnerConn, int64(ageSeconds(session))
+	session.Close()
 	b.remove(key)
 	// 租约簿记必须随会话一起清理，否则 reaper 会反复命中已不存在的键。
 	b.forgetLease(key)
-	blog("WARN", "session.destroyed", "SSH 会话被销毁", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	logpush.Blog("WARN", "session.destroyed", "SSH 会话被销毁", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key":             key,
 		"reason":          reason,
 		"by_conn":         byConn,
@@ -183,7 +186,7 @@ func (b *Bridge) releaseSession(key, byConn string) {
 	b.sessionIdleAt[key] = time.Now()
 	b.mu.Unlock()
 
-	blog("INFO", "session.idle", "会话已无持有者，进入空闲租约", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	logpush.Blog("INFO", "session.idle", "会话已无持有者，进入空闲租约", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key": key, "by_conn": byConn, "idle_ttl_seconds": int(sessionIdleTTL().Seconds()),
 	})
 }
@@ -215,7 +218,7 @@ func (b *Bridge) reapIdleSessions(ttl time.Duration) int {
 		// 恰恰是大包交付/长时采集的常态，而回收一条正在拉取或正在被轮询的连接
 		// 等价于把作业打断到 needs_reauth / progress session_missing。
 		// 长任务自己结束时会清掉计数，业务窗口到期自动失效，下一轮 reaper 自然回收。
-		if session := b.sessions[key]; session != nil && (session.hasLongTask() || session.isBusy()) {
+		if session := b.sessions[key]; session != nil && (session.HasLongTask() || session.IsBusy()) {
 			// 保护期内**不计空闲**：必须把 idleAt 推到当前时刻。
 			// 否则保护一解除（长任务归零 / 业务窗口到期）就会按"历史空闲时长"
 			// 立刻回收——2026-10-28 现场正是如此：10:18:11 终端断开进入空闲租约，
@@ -239,22 +242,10 @@ func (b *Bridge) reapIdleSessions(ttl time.Duration) int {
 // sessionIdleTTL 返回空闲租约时长；<=0 表示关闭租约回收（退化为"永不主动销毁"，
 // 仅建议在调试时使用，因为那样只能靠远端 EOF 或显式断开回收）。
 func sessionIdleTTL() time.Duration {
-	seconds := envIntOrDefault("HCI_BRIDGE_SESSION_IDLE_TTL_SECONDS", int(defaultSessionIdleTTL/time.Second))
+	seconds := bruntime.EnvIntOrDefault("HCI_BRIDGE_SESSION_IDLE_TTL_SECONDS", int(defaultSessionIdleTTL/time.Second))
 	return time.Duration(seconds) * time.Second
 }
 
-// defaultSessionBusyGrace 是"业务活跃"保护窗口。
-//
-// 必须远大于采集轮询间隔（5s），又要在用户真的离开后自动过期：取 15 分钟。
-// 它是 lease 式的自我失效，不像 longTasks 计数那样"忘减一次就永久保护"，
-// 因此用它覆盖"采集进行中但无法包裹"的场景是安全的（2026-10-28 现场的直接教训）。
-const defaultSessionBusyGrace = 15 * time.Minute
-
-// sessionBusyGrace 返回业务活跃窗口；<=0 表示关闭该保护（退回只看长任务计数）。
-func sessionBusyGrace() time.Duration {
-	seconds := envIntOrDefault("HCI_BRIDGE_SESSION_BUSY_GRACE_SECONDS", int(defaultSessionBusyGrace/time.Second))
-	return time.Duration(seconds) * time.Second
-}
 
 // detachSession 把会话摘出路由表，但**保留底层 SSH 连接**。
 //
@@ -264,7 +255,7 @@ func sessionBusyGrace() time.Duration {
 func (b *Bridge) detachSession(key, reason, byConn string) bool {
 	session := b.get(key)
 	if session == nil {
-		blog("WARN", "session.destroy_miss", "会话摘表落空：键已不存在", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+		logpush.Blog("WARN", "session.destroy_miss", "会话摘表落空：键已不存在", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 			"key":             key,
 			"reason":          reason,
 			"by_conn":         byConn,
@@ -274,17 +265,17 @@ func (b *Bridge) detachSession(key, reason, byConn string) bool {
 		})
 		return false
 	}
-	ownerConn, ageSeconds := session.ownerConn, int64(session.ageSeconds())
-	session.markOrphaned()
+	ownerConn, ageSeconds := session.OwnerConn, int64(ageSeconds(session))
+	session.MarkOrphaned()
 	b.remove(key)
 	b.forgetLease(key)
-	blog("WARN", "session.detached", "会话已摘表但保留连接（长任务进行中，禁止腰斩）", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	logpush.Blog("WARN", "session.detached", "会话已摘表但保留连接（长任务进行中，禁止腰斩）", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key":             key,
 		"reason":          reason,
 		"by_conn":         byConn,
 		"owner_conn":      ownerConn,
 		"age_seconds":     ageSeconds,
-		"long_tasks":      session.longTasks.Load(),
+		"long_tasks":      session.LongTasks.Load(),
 		"active_sessions": b.sessionCount(),
 		"session_keys":    b.sessionKeyList(8),
 	})
@@ -296,7 +287,7 @@ func (b *Bridge) detachSession(key, reason, byConn string) bool {
 // 收敛到一个入口是为了让"重连有没有腰斩作业"这个问题在日志里可回答：
 // 两条路径分别记 session.detached 与 session.destroyed，按 reason=reconnect 一查即知。
 func (b *Bridge) destroyOrDetachSession(key, reason, byConn string) bool {
-	if session := b.get(key); session != nil && session.hasLongTask() {
+	if session := b.get(key); session != nil && session.HasLongTask() {
 		return b.detachSession(key, reason, byConn)
 	}
 	return b.destroySession(key, reason, byConn)
@@ -319,7 +310,7 @@ func startSessionReaper(bridge *Bridge, ttl time.Duration) {
 		defer ticker.Stop()
 		for range ticker.C {
 			if reaped := bridge.reapIdleSessions(ttl); reaped > 0 {
-				blog("INFO", "session.reaped", "空闲租约到期，已回收会话", "", "", "", "", map[string]any{
+				logpush.Blog("INFO", "session.reaped", "空闲租约到期，已回收会话", "", "", "", "", map[string]any{
 					"reaped": reaped, "active_sessions": bridge.sessionCount(),
 				})
 			}
@@ -331,28 +322,28 @@ func startSessionReaper(bridge *Bridge, ttl time.Duration) {
 //
 // 与会话销毁事件成对出现，构成「建立—销毁」闭环；
 // 缺了它就只能看到销毁，无法判断是「从没建立过」还是「建立后被清掉」。
-func logSessionCreated(session *SSHSession, key, connID, role, source string) {
+func logSessionCreated(session *sshx.SSHSession, key, connID, role, source string) {
 	if session == nil {
 		return
 	}
-	session.ownerConn = connID
-	session.createdAt = time.Now()
-	blog("INFO", "session.created", "SSH 会话已建立", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	session.OwnerConn = connID
+	session.CreatedAt = time.Now()
+	logpush.Blog("INFO", "session.created", "SSH 会话已建立", "", sessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key":        key,
 		"conn_id":    connID,
 		"role":       role,
 		"source":     source, // ssh_connect | auto_connect
-		"address":    session.address,
-		"simulation": session.simulation,
+		"address":    session.Address,
+		"simulation": session.Simulation,
 	})
 }
 
 // ageSeconds 返回会话存活秒数；未记录建立时间时返回 0。
-func (s *SSHSession) ageSeconds() float64 {
-	if s == nil || s.createdAt.IsZero() {
+func ageSeconds(s *sshx.SSHSession) float64 {
+	if s == nil || s.CreatedAt.IsZero() {
 		return 0
 	}
-	return time.Since(s.createdAt).Seconds()
+	return time.Since(s.CreatedAt).Seconds()
 }
 
 // resourceSnapshot 采集进程级资源事实，用于启动/退出/定时采样。
@@ -362,10 +353,10 @@ func (s *SSHSession) ageSeconds() float64 {
 func resourceSnapshot() map[string]any {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-	// ring/seq 的读写都在 LogHub.mu 下，这里必须持锁快照，不能裸读。
-	logHub.mu.Lock()
-	ringLen, logSeq := len(logHub.ring), logHub.seq
-	logHub.mu.Unlock()
+	// ring/seq 的读写都在 logpush.LogHub.Mu 下，这里必须持锁快照，不能裸读。
+	logpush.DefaultHub.Mu.Lock()
+	ringLen, logSeq := len(logpush.DefaultHub.Ring), logpush.DefaultHub.Seq
+	logpush.DefaultHub.Mu.Unlock()
 	// 只报 Go 运行时能确定性拿到的量：Sys 是进程向 OS 申请的总内存（含堆外），
 	// 足以判断"是不是在持续膨胀"，且不需要按平台引入 syscall 分支。
 	snapshot := map[string]any{
@@ -394,7 +385,7 @@ func startResourceSampler(interval time.Duration) {
 		for range ticker.C {
 			extra := resourceSnapshot()
 			extra["sessions"] = sessionCountSnapshot()
-			blog("INFO", "resource.sample", "桥侧资源采样", "", "", "", "", extra)
+			logpush.Blog("INFO", "resource.sample", "桥侧资源采样", "", "", "", "", extra)
 		}
 	}()
 }

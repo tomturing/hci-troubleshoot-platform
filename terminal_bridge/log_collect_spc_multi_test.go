@@ -5,6 +5,7 @@ package main
 
 import (
 	"strings"
+	"terminal_bridge/internal/shared/models"
 	"testing"
 )
 
@@ -62,15 +63,15 @@ func TestPickSpcDirIgnoresOtherSpcDirs(t *testing.T) {
 	}
 }
 
-func spcTestFile(slot, path string) SpcFile {
+func spcTestFile(slot, path string) models.SpcFile {
 	content := `[{"action":"copy","path":"` + path + `"}]`
-	return SpcFile{Slot: slot, Content: content, SHA256: spcSHA256(content)}
+	return models.SpcFile{Slot: slot, Content: content, SHA256: spcSHA256(content)}
 }
 
 // 逐槽位载荷必须 fail-closed：任何一份清单不合规都不能去改节点文件。
 func TestParseSpcFiles(t *testing.T) {
 	t.Run("多槽位合法载荷按序返回并复算摘要", func(t *testing.T) {
-		msg := InMessage{SpcFiles: []SpcFile{
+		msg := models.InMessage{SpcFiles: []models.SpcFile{
 			spcTestFile("vm_start", "/var/log/vm.log"),
 			spcTestFile("network", "/var/log/net.log"),
 		}}
@@ -87,14 +88,14 @@ func TestParseSpcFiles(t *testing.T) {
 	})
 
 	t.Run("空载荷返回 nil 走单槽位兼容", func(t *testing.T) {
-		files, rejection := parseSpcFiles(InMessage{})
+		files, rejection := parseSpcFiles(models.InMessage{})
 		if rejection != nil || files != nil {
 			t.Fatalf("空载荷应走兼容路径：files=%v rejection=%+v", files, rejection)
 		}
 	})
 
 	t.Run("与单槽位通道互斥", func(t *testing.T) {
-		msg := InMessage{SpcJSON: `[{"action":"copy","path":"/var/log/a"}]`, SpcFiles: []SpcFile{spcTestFile("vm_start", "/var/log/b")}}
+		msg := models.InMessage{SpcJSON: `[{"action":"copy","path":"/var/log/a"}]`, SpcFiles: []models.SpcFile{spcTestFile("vm_start", "/var/log/b")}}
 		_, rejection := parseSpcFiles(msg)
 		if rejection == nil || rejection.ErrType != "spc_config_conflict" {
 			t.Fatalf("两个通道同时下发必须拒绝：%+v", rejection)
@@ -102,14 +103,14 @@ func TestParseSpcFiles(t *testing.T) {
 	})
 
 	t.Run("非 acli 模块槽位被拒", func(t *testing.T) {
-		_, rejection := parseSpcFiles(InMessage{SpcFiles: []SpcFile{spcTestFile("compute", "/var/log/a")}})
+		_, rejection := parseSpcFiles(models.InMessage{SpcFiles: []models.SpcFile{spcTestFile("compute", "/var/log/a")}})
 		if rejection == nil || rejection.ErrType != "invalid_spc" {
 			t.Fatalf("compute 不在 -m 白名单必须拒绝：%+v", rejection)
 		}
 	})
 
 	t.Run("重复槽位被拒", func(t *testing.T) {
-		_, rejection := parseSpcFiles(InMessage{SpcFiles: []SpcFile{
+		_, rejection := parseSpcFiles(models.InMessage{SpcFiles: []models.SpcFile{
 			spcTestFile("vm_start", "/var/log/a"), spcTestFile("vm_start", "/var/log/b"),
 		}})
 		if rejection == nil {
@@ -120,15 +121,15 @@ func TestParseSpcFiles(t *testing.T) {
 	t.Run("摘要不符被拒", func(t *testing.T) {
 		file := spcTestFile("vm_start", "/var/log/a")
 		file.SHA256 = strings.Repeat("0", 64)
-		_, rejection := parseSpcFiles(InMessage{SpcFiles: []SpcFile{file}})
+		_, rejection := parseSpcFiles(models.InMessage{SpcFiles: []models.SpcFile{file}})
 		if rejection == nil || rejection.ErrType != "spc_digest_mismatch" {
 			t.Fatalf("摘要不符必须拒绝：%+v", rejection)
 		}
 	})
 
 	t.Run("非法清单内容被拒", func(t *testing.T) {
-		file := SpcFile{Slot: "vm_start", Content: `{"action":"copy"}`, SHA256: spcSHA256(`{"action":"copy"}`)}
-		_, rejection := parseSpcFiles(InMessage{SpcFiles: []SpcFile{file}})
+		file := models.SpcFile{Slot: "vm_start", Content: `{"action":"copy"}`, SHA256: spcSHA256(`{"action":"copy"}`)}
+		_, rejection := parseSpcFiles(models.InMessage{SpcFiles: []models.SpcFile{file}})
 		if rejection == nil || rejection.ErrType != "invalid_spc" {
 			t.Fatalf("非数组清单必须拒绝：%+v", rejection)
 		}
@@ -148,7 +149,7 @@ func TestSpcApplySpecFiles(t *testing.T) {
 
 // 多模块命令必须按槽位集合拼 -m，否则文件写了却没被采集。
 func TestBuildLogCollectCreateCommandMultiModules(t *testing.T) {
-	req := InMessage{
+	req := models.InMessage{
 		TicketNo: "Q2026110302155",
 		Modules:  []string{"vm_start", "network"},
 		DateFrom: "2026-11-01",

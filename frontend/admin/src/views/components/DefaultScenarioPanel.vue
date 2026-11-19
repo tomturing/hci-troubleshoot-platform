@@ -8,6 +8,8 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+
+import ScriptPathSelect from './ScriptPathSelect.vue'
 import {
   listDefaultManifests,
   resetDefaultManifest,
@@ -162,7 +164,14 @@ async function reset() {
           <el-option label="命令" value="command" />
           <el-option label="脚本" value="script" />
         </el-select>
-        <el-input v-model="item.path" size="small" placeholder="日志或配置文件的绝对路径 / 通配路径" />
+        <!-- 动作=脚本时路径必须从平台脚本库选择：手填一个不存在的文件名，
+             要到节点上执行时才失败，而且现场看不懂是配置错还是插件缺文件。 -->
+        <ScriptPathSelect
+          v-if="item.action === 'script'"
+          v-model="item.path"
+          v-model:interpreter="item.interpreter"
+        />
+        <el-input v-else v-model="item.path" size="small" placeholder="日志或配置文件的绝对路径 / 通配路径" />
         <el-input v-model="item.note" size="small" placeholder="可选：分组备注" />
         <el-button size="small" @click="removeItem(index)">移除</el-button>
       </div>

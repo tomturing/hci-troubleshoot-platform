@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"terminal_bridge/internal/shared/models"
 	"testing"
 )
 
@@ -102,7 +103,7 @@ func TestNormalizePtyOutputIdempotent(t *testing.T) {
 
 // TestPtySemanticsSerialization 保证前端能区分"stderr 为空"的两种语义。
 func TestPtySemanticsSerialization(t *testing.T) {
-	pty := OutMessage{Type: "exec_result", ExitCode: 0, PtyMode: "pty", StderrPtyMerged: true}
+	pty := models.OutMessage{Type: "exec_result", ExitCode: 0, PtyMode: "pty", StderrPtyMerged: true}
 	encoded, err := json.Marshal(pty)
 	if err != nil {
 		t.Fatalf("序列化失败: %v", err)
@@ -113,7 +114,7 @@ func TestPtySemanticsSerialization(t *testing.T) {
 		}
 	}
 
-	pipe := OutMessage{Type: "exec_result", ExitCode: 0, PtyMode: "pipe"}
+	pipe := models.OutMessage{Type: "exec_result", ExitCode: 0, PtyMode: "pipe"}
 	encodedPipe, err := json.Marshal(pipe)
 	if err != nil {
 		t.Fatalf("序列化失败: %v", err)
@@ -124,7 +125,7 @@ func TestPtySemanticsSerialization(t *testing.T) {
 }
 
 func TestInMessagePtyField(t *testing.T) {
-	var withPty InMessage
+	var withPty models.InMessage
 	if err := json.Unmarshal([]byte(`{"type":"ssh_exec_process","pty":true}`), &withPty); err != nil {
 		t.Fatalf("反序列化失败: %v", err)
 	}
@@ -132,7 +133,7 @@ func TestInMessagePtyField(t *testing.T) {
 		t.Fatal("pty 字段未生效")
 	}
 
-	var withoutPty InMessage
+	var withoutPty models.InMessage
 	if err := json.Unmarshal([]byte(`{"type":"ssh_exec_process"}`), &withoutPty); err != nil {
 		t.Fatalf("反序列化失败: %v", err)
 	}

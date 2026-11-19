@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/shared/models"
 	"testing"
 	"time"
 )
@@ -520,24 +521,24 @@ func TestAcliPluginActionRankFailsWorst(t *testing.T) {
 
 func TestAcliPluginStageDisabledForOldFrontend(t *testing.T) {
 	// 旧前端不带 platform_url / plugin_ticket：阶段二整条路径不执行，也不发回执。
-	if acliPluginStageRequested(InMessage{}) {
+	if acliPluginStageRequested(models.InMessage{}) {
 		t.Fatalf("无凭据时不应启用阶段二")
 	}
-	if acliPluginStageRequested(InMessage{PlatformURL: "https://hci.example"}) {
+	if acliPluginStageRequested(models.InMessage{PlatformURL: "https://hci.example"}) {
 		t.Fatalf("只有 platform_url 不应启用阶段二")
 	}
-	if acliPluginStageRequested(InMessage{PluginTicket: "t.1"}) {
+	if acliPluginStageRequested(models.InMessage{PluginTicket: "t.1"}) {
 		t.Fatalf("只有票据不应启用阶段二")
 	}
-	if !acliPluginStageRequested(InMessage{PlatformURL: "https://hci.example", PluginTicket: "t.1"}) {
+	if !acliPluginStageRequested(models.InMessage{PlatformURL: "https://hci.example", PluginTicket: "t.1"}) {
 		t.Fatalf("两个字段齐备时应启用阶段二")
 	}
 	// 未启用时连“拉期望态”这一步都不发生（不发 HTTP、不留 plan），回执也不得产出。
-	plan := (&Bridge{}).prepareAcliPluginStage(InMessage{}, "", "")
+	plan := (&Bridge{}).prepareAcliPluginStage(models.InMessage{}, "", "")
 	if plan != nil {
 		t.Fatalf("无凭据时不应有阶段二计划：%+v", plan)
 	}
-	if receipt := (&Bridge{}).runAcliPluginStage(nil, InMessage{}, plan, "", ""); receipt != nil {
+	if receipt := (&Bridge{}).runAcliPluginStage(nil, models.InMessage{}, plan, "", ""); receipt != nil {
 		t.Fatalf("未启用时不应产出回执：%+v", receipt)
 	}
 }
@@ -559,29 +560,29 @@ func TestAcliPluginStageFetchFailureKeepsReasonCode(t *testing.T) {
 		started:  time.Now(),
 		fetchErr: newAcliPluginError("plugin_ticket_rejected", "平台返回 401"),
 	}
-	receipt := (&Bridge{}).syncAcliPluginsFromPlatform(context.Background(), nil, InMessage{}, plan, "", "")
+	receipt := (&Bridge{}).syncAcliPluginsFromPlatform(context.Background(), nil, models.InMessage{}, plan, "", "")
 	if receipt.OK || receipt.Reason != "plugin_ticket_rejected" {
 		t.Fatalf("拉取失败必须带原因码上报：%+v", receipt)
 	}
 	if receipt.Skipped != 0 || receipt.DesiredCount != 0 {
 		t.Fatalf("拉取失败不得凭空计数：%+v", receipt)
 	}
-	if !strings.Contains(receipt.summaryText(), "plugin_ticket_rejected") {
-		t.Fatalf("汇总文案必须能回答为什么未执行：%s", receipt.summaryText())
+	if !strings.Contains(receipt.SummaryText(), "plugin_ticket_rejected") {
+		t.Fatalf("汇总文案必须能回答为什么未执行：%s", receipt.SummaryText())
 	}
 }
 
 func TestAcliPluginSummaryTextNilSafeAndInformative(t *testing.T) {
-	var empty *acliPluginStageReceipt
-	if empty.summaryText() != "" {
+	var empty *models.AcliPluginStageReceipt
+	if empty.SummaryText() != "" {
 		t.Fatalf("nil 回执不应产出文案")
 	}
-	failed := &acliPluginStageReceipt{Reason: "manifest_unreachable"}
-	if !strings.Contains(failed.summaryText(), "manifest_unreachable") {
-		t.Fatalf("未执行时必须带原因码：%s", failed.summaryText())
+	failed := &models.AcliPluginStageReceipt{Reason: "manifest_unreachable"}
+	if !strings.Contains(failed.SummaryText(), "manifest_unreachable") {
+		t.Fatalf("未执行时必须带原因码：%s", failed.SummaryText())
 	}
-	done := &acliPluginStageReceipt{Installed: 1, Overwritten: 2, Skipped: 3, Failed: 4, DesiredCount: 10, Nodes: []string{"10.0.0.1", "10.0.0.2"}}
-	text := done.summaryText()
+	done := &models.AcliPluginStageReceipt{Installed: 1, Overwritten: 2, Skipped: 3, Failed: 4, DesiredCount: 10, Nodes: []string{"10.0.0.1", "10.0.0.2"}}
+	text := done.SummaryText()
 	for _, want := range []string{"新增 1", "覆盖 2", "跳过 3", "失败 4", "期望 10 个插件 / 2 个节点"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("回执文案缺少 %q：%s", want, text)

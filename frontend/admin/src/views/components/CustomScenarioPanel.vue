@@ -20,6 +20,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+import ScriptPathSelect from './ScriptPathSelect.vue'
+
 import {
   createCustomScenario,
   deleteCustomScenario,
@@ -817,7 +819,13 @@ async function remove(row: CustomScenario) {
             </el-table-column>
             <el-table-column label="路径 / 命令" min-width="240">
               <template #default="{ row }">
-                <el-input v-model="row.path" size="small" @change="row.path = row.path.trim()" />
+                <!-- spc 通道的脚本动作与默认场景同一条校验：必须来自平台脚本库或显式手填。 -->
+                <ScriptPathSelect
+                  v-if="row.action === 'script'"
+                  v-model="row.path"
+                  v-model:interpreter="row.interpreter"
+                />
+                <el-input v-else v-model="row.path" size="small" @change="row.path = row.path.trim()" />
               </template>
             </el-table-column>
             <el-table-column label="分类" width="110">

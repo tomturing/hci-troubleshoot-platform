@@ -1,4 +1,4 @@
-package main
+package uplink
 
 // 平台证书信任判定与 HTTP 客户端构造（交付通道与桥日志直传通道共用）。
 //
@@ -21,11 +21,11 @@ import (
 	"time"
 )
 
-// isUntrustedCertificateError 判断是否为"证书不受信"类失败。
+// IsUntrustedCertificateError 判断是否为"证书不受信"类失败。
 //
 // 必须能穿透 url.Error 包装：Go 的 http.Client 返回的握手错误是
 // `*url.Error`，直接比对类型会发现不了里面的 x509 原因。
-func isUntrustedCertificateError(err error) bool {
+func IsUntrustedCertificateError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -44,11 +44,11 @@ func isUntrustedCertificateError(err error) bool {
 	return false
 }
 
-// httpClientFor 构造 HTTP 客户端；insecure 为真时跳过服务端证书校验。
+// HttpClientFor 构造 HTTP 客户端；insecure 为真时跳过服务端证书校验。
 //
 // 刻意做成"按调用点决定"而不是全局开关：放宽的范围必须与授权范围等长，
 // 否则一次放宽会永久污染整个进程。
-func httpClientFor(insecure bool, timeout time.Duration) *http.Client {
+func HttpClientFor(insecure bool, timeout time.Duration) *http.Client {
 	client := &http.Client{Timeout: timeout}
 	if !insecure {
 		return client

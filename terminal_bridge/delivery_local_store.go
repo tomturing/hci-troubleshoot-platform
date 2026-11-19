@@ -26,6 +26,8 @@ package main
 //     避免误删正在写入但 job 尚未落盘的文件。
 
 import (
+	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/logpush"
 	"errors"
 	"os"
 	"path/filepath"
@@ -104,7 +106,7 @@ func localCopyPolicyFromEnv() localCopyPolicy {
 			}
 		}
 	}
-	if mb := envIntOrDefault("HCI_BRIDGE_LOCAL_MAX_MB", 0); mb > 0 {
+	if mb := bruntime.EnvIntOrDefault("HCI_BRIDGE_LOCAL_MAX_MB", 0); mb > 0 {
 		policy.MaxBytes = int64(mb) << 20
 	}
 	if strings.TrimSpace(os.Getenv("HCI_BRIDGE_CLEANUP_DRY_RUN")) == "1" {
@@ -181,7 +183,7 @@ func (r *deliveryRunner) discardDeliveredCopy(job *deliveryJob) {
 		return
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		blog("WARN", "delivery.local_clean_failed", "交付成功后删除本地副本失败", "", job.CaseID, job.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "delivery.local_clean_failed", "交付成功后删除本地副本失败", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "local_path": path, "reason": "delivered", "error": err.Error(),
 		})
 		return
@@ -190,7 +192,7 @@ func (r *deliveryRunner) discardDeliveredCopy(job *deliveryJob) {
 	job.LocalDeletedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	r.mu.Unlock()
 	_ = r.saveJob(job)
-	blog("INFO", "delivery.local_cleaned", "交付成功，已删除本地中转副本", "", job.CaseID, job.NodeIP, "", map[string]any{
+	logpush.Blog("INFO", "delivery.local_cleaned", "交付成功，已删除本地中转副本", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "local_path": path, "reason": "delivered",
 	})
 }
@@ -249,7 +251,7 @@ func (r *deliveryRunner) reconcileLocalCopies(now time.Time) localCopyCleanupRep
 		}
 		if !policy.DryRun {
 			if err := os.Remove(item.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				blog("WARN", "delivery.local_clean_failed", "清理本地副本失败", "", "", "", "", map[string]any{
+				logpush.Blog("WARN", "delivery.local_clean_failed", "清理本地副本失败", "", "", "", "", map[string]any{
 					"local_path": item.path, "reason": reason, "error": err.Error(),
 				})
 				return
@@ -348,7 +350,7 @@ func (r *deliveryRunner) runLocalCopyCleanup() {
 	if report.Removed == 0 && !report.DryRun {
 		return
 	}
-	blog("INFO", "delivery.local_cleaned", "本地中转副本对账完成", "", "", "", "", map[string]any{
+	logpush.Blog("INFO", "delivery.local_cleaned", "本地中转副本对账完成", "", "", "", "", map[string]any{
 		"removed": report.Removed, "bytes": report.Bytes,
 		"reasons": report.Reasons, "dry_run": report.DryRun,
 	})
