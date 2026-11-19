@@ -65,9 +65,12 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}/weknora-ui:${{ inputs.version }}
             ghcr.io/${{ github.repository }}/weknora-ui:${{ steps.tag.outputs.value }}
+          # VITE_BASE_PATH 必须显式传：这是镜像的核心语义（子路径部署），
+          # 不能依赖 Dockerfile 默认值——漏传会静默产出根路径产物，页面白屏。
           build-args: |
             WEKNORA_VERSION=${{ inputs.version }}
             WEKNORA_IMAGE_TAG=${{ inputs.version }}
+            VITE_BASE_PATH=/weknora/
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

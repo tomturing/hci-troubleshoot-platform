@@ -33,8 +33,11 @@ WORKDIR /src/frontend
 # lockfile 固定了远程 SheetJS 归档及其完整性哈希，必须用 npm ci。
 RUN npm ci --registry="${NPM_REGISTRY}"
 
+# 用 :- 兜底而不是直接展开：CI 的 build-args 若漏传该参数，ARG 会退化为空串，
+# vite 随即回落到 base='/'，产物变成根路径资源——镜像照样构建成功，但页面
+# 白屏（模块脚本 MIME 变成 text/html）。这种失败极隐蔽，必须让默认值不可丢。
 ENV VITE_IS_DOCKER=true \
-    VITE_BASE_PATH="${VITE_BASE_PATH}" \
+    VITE_BASE_PATH="${VITE_BASE_PATH:-/weknora/}" \
     NODE_OPTIONS=--max-old-space-size=4096
 
 RUN npm run build
