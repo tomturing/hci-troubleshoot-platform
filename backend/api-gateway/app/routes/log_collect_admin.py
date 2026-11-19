@@ -292,3 +292,98 @@ async def get_admin_task(task_id: str, request: Request) -> Response:
         request,
         prefix=TASKS_UPSTREAM_PREFIX,
     )
+
+
+# ── 收集脚本库管理端 ────────────────────────────────────────────────────────
+# 独立前缀：脚本正文是平台资产，既不进客户侧接口，也不与场景清单混用一条路由。
+# 逐条枚举而不是通配代理，理由见 AGENTS.md §1.2「服务契约与网关」：
+# 未登记的路径会表现为"端点存在但 404"。
+script_router = APIRouter(
+    prefix="/api/v1/log-collect-scripts",
+    tags=["log-collect-scripts-admin"],
+    dependencies=[Depends(require_admin)],
+)
+SCRIPT_UPSTREAM_PREFIX = "/internal/log-collect/scripts"
+
+
+def _raw_query(request: Request) -> str | None:
+    """已编码的原始 query 串直接透传，避免二次编码把 %2F 变成 %252F。"""
+    return request.url.query or None
+
+
+@script_router.get("")
+async def list_scripts(request: Request) -> Response:
+    return await _request_upstream("GET", "", request, prefix=SCRIPT_UPSTREAM_PREFIX)
+
+
+@script_router.get("/detail")
+async def get_script(request: Request) -> Response:
+    return await _request_upstream(
+        "GET", "/detail", request, prefix=SCRIPT_UPSTREAM_PREFIX, query=_raw_query(request)
+    )
+
+
+@script_router.get("/revisions")
+async def list_script_revisions(request: Request) -> Response:
+    return await _request_upstream(
+        "GET", "/revisions", request, prefix=SCRIPT_UPSTREAM_PREFIX, query=_raw_query(request)
+    )
+
+
+@script_router.get("/revision")
+async def get_script_revision(request: Request) -> Response:
+    return await _request_upstream(
+        "GET", "/revision", request, prefix=SCRIPT_UPSTREAM_PREFIX, query=_raw_query(request)
+    )
+
+
+@script_router.get("/references")
+async def list_script_references(request: Request) -> Response:
+    return await _request_upstream(
+        "GET", "/references", request, prefix=SCRIPT_UPSTREAM_PREFIX, query=_raw_query(request)
+    )
+
+
+@script_router.post("/validate")
+async def validate_script(request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("POST", "/validate", request, payload, prefix=SCRIPT_UPSTREAM_PREFIX)
+
+
+@script_router.post("/create", status_code=201)
+async def create_script(request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("POST", "/create", request, payload, prefix=SCRIPT_UPSTREAM_PREFIX)
+
+
+@script_router.post("/import", status_code=201)
+async def import_script(request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("POST", "/import", request, payload, prefix=SCRIPT_UPSTREAM_PREFIX)
+
+
+@script_router.post("/save")
+async def save_script(request: Request) -> Response:
+    payload = await request.json()
+    return await _request_upstream("POST", "/save", request, payload, prefix=SCRIPT_UPSTREAM_PREFIX)
+
+
+@script_router.post("/reset")
+async def reset_script(request: Request) -> Response:
+    return await _request_upstream(
+        "POST", "/reset", request, prefix=SCRIPT_UPSTREAM_PREFIX, query=_raw_query(request)
+    )
+
+
+@script_router.patch("/enabled")
+async def set_script_enabled(request: Request) -> Response:
+    return await _request_upstream(
+        "PATCH", "/enabled", request, prefix=SCRIPT_UPSTREAM_PREFIX, query=_raw_query(request)
+    )
+
+
+@script_router.delete("")
+async def delete_script(request: Request) -> Response:
+    return await _request_upstream(
+        "DELETE", "", request, prefix=SCRIPT_UPSTREAM_PREFIX, query=_raw_query(request)
+    )

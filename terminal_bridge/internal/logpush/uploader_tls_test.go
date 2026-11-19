@@ -1,4 +1,4 @@
-package main
+package logpush
 
 // 桥日志直传在自签平台上的行为护栏。
 //

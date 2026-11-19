@@ -1,4 +1,4 @@
-package main
+package sshx
 
 import (
 	"bytes"
@@ -29,8 +29,8 @@ type sshRunner struct {
 	session *SSHSession
 }
 
-// newSSHRunner 构造适配器；session 为 nil 时返回 nil，由 remote 侧判空报错。
-func newSSHRunner(s *SSHSession) remote.Runner {
+// NewSSHRunner 构造适配器；session 为 nil 时返回 nil，由 remote 侧判空报错。
+func NewSSHRunner(s *SSHSession) remote.Runner {
 	if s == nil {
 		return nil
 	}
@@ -38,11 +38,11 @@ func newSSHRunner(s *SSHSession) remote.Runner {
 }
 
 func (r sshRunner) RunQuickCommand(ctx context.Context, command string) (string, int, error) {
-	return r.session.runQuickCommand(ctx, command)
+	return r.session.RunQuickCommand(ctx, command)
 }
 
 func (r sshRunner) RunQuickCommandStreams(ctx context.Context, command string) (string, string, int, error) {
-	return r.session.runQuickCommandStreams(ctx, command)
+	return r.session.RunQuickCommandStreams(ctx, command)
 }
 
 // WriteStdin 向远端命令的 stdin 流式写入，并捕获 stdout/stderr 与退出码。
@@ -53,7 +53,7 @@ func (r sshRunner) RunQuickCommandStreams(ctx context.Context, command string) (
 // 退出码约定：远端非零退出 → 该码；通道异常/ctx 取消 → -1（没有退出码可言）。
 // ctx 取消时发 SIGKILL 终止远端进程，不留半包继续写。
 func (r sshRunner) WriteStdin(ctx context.Context, command string, reader io.Reader) (string, int, error) {
-	session, err := r.session.client.NewSession()
+	session, err := r.session.Client.NewSession()
 	if err != nil {
 		return "", -1, err
 	}
@@ -114,7 +114,7 @@ func (p *pullStream) Close() error {
 	return p.session.Close()
 }
 
-func (p *pullStream) finish() {
+func (p *pullStream) Finish() {
 	p.once.Do(func() { close(p.finished) })
 	_ = p.session.Close()
 }
@@ -124,7 +124,7 @@ func (p *pullStream) finish() {
 // 调用方负责 Close（remote.Pull 用 defer 保证）；Wait 必须在读完后调用，
 // 否则拿不到远端退出码，"源包被清理"会表现成一次静默的短读。
 func (r sshRunner) ReadStream(ctx context.Context, command string) (io.ReadCloser, remote.WaitFunc, error) {
-	session, err := r.session.client.NewSession()
+	session, err := r.session.Client.NewSession()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -140,7 +140,7 @@ func (r sshRunner) ReadStream(ctx context.Context, command string) (io.ReadClose
 	stream := &pullStream{pipe: pipe, session: session, finished: make(chan struct{})}
 	wait := func() error {
 		err := session.Wait()
-		stream.finish()
+		stream.Finish()
 		return err
 	}
 	// ctx 取消时主动终止：远端不会感知本地 context，必须显式发信号。

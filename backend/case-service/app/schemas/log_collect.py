@@ -254,6 +254,11 @@ class NodeObservedFacts(BaseModel):
     spc_hosts: list[dict] | None = Field(default=None, max_length=512)
     spc_slots: list[str] | None = Field(default=None, max_length=16)
     restore_status: Literal["none", "pending", "success", "failed"] | None = None
+    # 收集脚本（覆写 script/ 目录）：与 spc 并列的另一条文件通道，证据必须独立记录。
+    script_codes: list[str] | None = Field(default=None, max_length=32)
+    script_sha256: dict[str, str] | None = None
+    script_hosts: list[dict] | None = Field(default=None, max_length=512)
+    script_restore_status: Literal["none", "pending", "success", "failed"] | None = None
 
 
 class LogCollectTaskPatch(BaseModel):
@@ -302,6 +307,13 @@ class LogCollectTaskPatch(BaseModel):
     # 取值域定死：还原态是判定依据，不是自由文本。客户端写入它虽无法被平台验证
     # （桥在客户侧），但至少不能出现第二个"看似成功"的拼写。
     restore_status: Literal["none", "pending", "success", "failed"] | None = None
+    # 脚本回执：由 bridge 据节点实际写入/还原结果补报。
+    # 与 restore_status 分开：脚本与清单是两条独立还原通道，混成一个状态会让
+    # "清单已还原、脚本还残留"这种情况无法表达。
+    script_codes: list[str] | None = Field(default=None, max_length=32)
+    script_sha256: dict[str, str] | None = None
+    script_hosts: list[dict] | None = Field(default=None, max_length=512)
+    script_restore_status: Literal["none", "pending", "success", "failed"] | None = None
     # 推荐入口：节点事实。字段与上面并列字段同义（客户端可任选其一），
     # 但只有走这里才会被贴上「fact」审计，语义上不再冒充结论。
     node_observed: NodeObservedFacts | None = None
@@ -414,6 +426,11 @@ class LogCollectTaskResponse(BaseModel):
     # 默认场景多槽位：每份清单对应一个 acli 模块，前端原样透传给 bridge。
     # 只在创建响应里出现（平台不留副本），与单槽位 spc_json 互斥。
     spc_files: list[dict] | None = Field(default=None, description="仅创建响应：逐槽位清单原文与摘要")
+    # 收集脚本：与 spc_files 同一条链路（服务端只序列化、bridge 负责写节点）。
+    # 只在创建响应出现，平台不留节点副本；客户前端不解析、不展示。
+    script_files: list[dict] | None = Field(
+        default=None, description="仅创建响应：需要覆写到节点的脚本原文（code/content/sha256/revision）"
+    )
     spc_slots: list[str] | None = Field(default=None, description="仅创建响应：本次覆写的槽位集合，供兜底还原")
     # 逐台写入证据与还原态：回答"改了哪几台、备份叫什么、现在还原了没有"。
     # 还原态不是采集状态的一部分（采集可能早已 completed），必须独立可查。

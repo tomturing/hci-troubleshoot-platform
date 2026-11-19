@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
+	"terminal_bridge/internal/shared/uplink"
 	"testing"
 	"time"
 )
@@ -40,7 +41,7 @@ func newFakeEvidencePlatform(t *testing.T) *fakeEvidencePlatform {
 func evidenceConfigForTLS(url, taskID string) evidenceConfig {
 	return evidenceConfig{
 		TaskID: taskID, CaseID: "Q2026111300155", PlatformURL: url,
-		Ticket: "ticket-001", TraceID: "trace-evidence-tls", NodeIP: "172.28.25.1",
+		Ticket: "ticket-001", TraceID: "trace-evidence-tls", NodeIP: "192.0.2.10",
 	}
 }
 
@@ -52,7 +53,7 @@ func TestEvidencePostAgainstSelfSignedPlatformAutoRelaxesOnce(t *testing.T) {
 
 	// 前提校验：严格客户端确实被自签证书挡住，否则下面的「自动放宽」没有证明力。
 	strictReq, _ := http.NewRequest(http.MethodGet, fake.server.URL, nil)
-	if _, err := httpClientFor(false, 3*time.Second).Do(strictReq); err == nil || !isUntrustedCertificateError(err) {
+	if _, err := uplink.HttpClientFor(false, 3*time.Second).Do(strictReq); err == nil || !uplink.IsUntrustedCertificateError(err) {
 		t.Fatalf("测试前提不成立：自签服务端应触发证书不受信，实际 %v", err)
 	}
 

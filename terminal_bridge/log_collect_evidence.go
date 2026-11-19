@@ -28,6 +28,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/uplink"
+	"terminal_bridge/internal/sshx"
 	"time"
 )
 
@@ -86,19 +90,19 @@ func markEvidenceTLSRelaxed(cfg evidenceConfig, cause error) {
 	if _, loaded := evidenceTLSRelaxed.LoadOrStore(cfg.TaskID, struct{}{}); loaded {
 		return
 	}
-	blog("WARN", "log_collect.evidence_tls_relaxed", "证据通道命中自签证书，已放宽证书校验", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	logpush.Blog("WARN", "log_collect.evidence_tls_relaxed", "证据通道命中自签证书，已放宽证书校验", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "trace_id": cfg.TraceID, "reason": cause.Error(),
 		"scope": "仅本次任务的证据通道", "auth": "X-Evidence-Ticket 鉴权不变",
 	})
 }
 
-func configureEvidence(msg InMessage, customUI string) {
+func configureEvidence(msg models.InMessage, customUI string) {
 	if strings.TrimSpace(msg.ExecID) == "" || strings.TrimSpace(msg.EvidenceTicket) == "" {
 		return
 	}
 	base, err := validatePlatformURL(msg.PlatformURL)
 	if err != nil {
-		blog("WARN", "log_collect.evidence_disabled", "证据上报未启用：平台地址无效", msg.TraceID, msg.CaseID, msg.NodeIP, "", map[string]any{
+		logpush.Blog("WARN", "log_collect.evidence_disabled", "证据上报未启用：平台地址无效", msg.TraceID, msg.CaseID, msg.NodeIP, "", map[string]any{
 			"reason": err.Error(), "task_id": msg.ExecID,
 		})
 		return
@@ -117,7 +121,7 @@ func configureEvidence(msg InMessage, customUI string) {
 	evidenceConfigs.Store(cfg.TaskID, cfg)
 	// 下发前探测是异步的：绝不因为弱网/平台不可达拖延 acli 下发。
 	go runNetworkProbes(cfg)
-	blog("INFO", "log_collect.evidence_enabled", "证据上报已启用", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	logpush.Blog("INFO", "log_collect.evidence_enabled", "证据上报已启用", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "upload_mode": cfg.UploadMode, "trace_id": cfg.TraceID,
 	})
 }
@@ -161,14 +165,14 @@ func (e evidenceConfig) postEvidence(ctx context.Context, path string, payload a
 	if err != nil {
 		return nil, err
 	}
-	resp, err := httpClientFor(insecure, 15*time.Second).Do(req)
-	if err != nil && !insecure && isUntrustedCertificateError(err) {
+	resp, err := uplink.HttpClientFor(insecure, 15*time.Second).Do(req)
+	if err != nil && !insecure && uplink.IsUntrustedCertificateError(err) {
 		markEvidenceTLSRelaxed(e, err)
 		retry, buildErr := e.newEvidenceRequest(ctx, target, body, probeTicket)
 		if buildErr != nil {
 			return nil, buildErr
 		}
-		resp, err = httpClientFor(true, 15*time.Second).Do(retry)
+		resp, err = uplink.HttpClientFor(true, 15*time.Second).Do(retry)
 	}
 	if err != nil {
 		return nil, err
@@ -275,7 +279,7 @@ func measureNetwork(ctx context.Context, targetURL string, insecure bool) networ
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, targetURL, nil)
 	if err == nil {
-		client := httpClientFor(insecure, 5*time.Second)
+		client := uplink.HttpClientFor(insecure, 5*time.Second)
 		resp, doErr := client.Do(req)
 		if doErr == nil {
 			code := resp.StatusCode
@@ -309,7 +313,7 @@ func runNetworkProbes(cfg evidenceConfig) {
 		}
 		ack, err := cfg.postEvidence(ctx, cfg.taskPath("network-probe"), facts, "")
 		if err != nil {
-			blog("WARN", "log_collect.network_probe_failed", "网络探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+			logpush.Blog("WARN", "log_collect.network_probe_failed", "网络探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 				"target": target.name, "error": err.Error(),
 			})
 			continue
@@ -333,7 +337,7 @@ func runNetworkProbes(cfg evidenceConfig) {
 
 func measureBandwidth(ctx context.Context, cfg evidenceConfig, probeID, ticket string) (int64, int64) {
 	base := strings.TrimRight(cfg.PlatformURL, "/") + evidenceDirectPrefix + "/network-probe/" + url.PathEscape(probeID)
-	client := httpClientFor(evidenceTLSInsecure(cfg), 15*time.Second)
+	client := uplink.HttpClientFor(evidenceTLSInsecure(cfg), 15*time.Second)
 	payload := bytes.Repeat([]byte{'x'}, evidenceBandwidthBytes)
 
 	started := time.Now()
@@ -477,7 +481,7 @@ func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliver
 			_, err := cfg.postEvidence(postCtx, cfg.taskPath("metrics"), metric, "")
 			cancel()
 			if err != nil {
-				blog("WARN", "log_collect.metric_failed", "传输速率样本上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+				logpush.Blog("WARN", "log_collect.metric_failed", "传输速率样本上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 					"task_id": cfg.TaskID, "seq": metric.Seq, "error": err.Error(),
 				})
 			}
@@ -590,7 +594,7 @@ func (t tailReaderAt) ReadAt(p []byte, off int64) (int, error) {
 // 旧实现同时依赖这两条命令，于是「命令缺失」与「包加密」被统一报成
 // 「中央目录读取不可用」，S7 因此永远看不到包内容（Q2026110302166）。
 // 现在只依赖 tail：取包尾窗口，用 Go 标准库解析，加密标记也能如实读出。
-func inspectNodeArchive(ctx context.Context, s *SSHSession, cfg evidenceConfig, path string, size int64) {
+func inspectNodeArchive(ctx context.Context, s *sshx.SSHSession, cfg evidenceConfig, path string, size int64) {
 	if s == nil || strings.TrimSpace(path) == "" {
 		return
 	}
@@ -604,12 +608,12 @@ func inspectNodeArchive(ctx context.Context, s *SSHSession, cfg evidenceConfig, 
 	var lastWindow int64
 	for _, window := range archiveTailWindows(size) {
 		lastWindow = window
-		raw, stderr, code, err := s.runQuickCommandBytes(ctx, "tail -c "+strconv.FormatInt(window, 10)+" "+quoted)
+		raw, stderr, code, err := s.RunQuickCommandBytes(ctx, "tail -c "+strconv.FormatInt(window, 10)+" "+quoted)
 		if err != nil || code != 0 {
 			manifest.Evidence = map[string]any{
 				"reader":            "tail -c + archive/zip",
 				"exit_code":         code,
-				"stderr":            truncateString(stderr, 400),
+				"stderr":            sshx.TruncateString(stderr, 400),
 				"tail_window_bytes": window,
 				"reason":            "节点侧读取包尾失败，仅保留体积证据",
 			}
@@ -632,7 +636,7 @@ func inspectNodeArchive(ctx context.Context, s *SSHSession, cfg evidenceConfig, 
 	manifest.Evidence = map[string]any{
 		"reader":            "tail -c + archive/zip",
 		"tail_window_bytes": lastWindow,
-		"reason":            truncateString(reason, 400),
+		"reason":            sshx.TruncateString(reason, 400),
 	}
 	postManifest(ctx, cfg, manifest, "log_collect.node_manifest_failed", "节点侧包内容探测上报失败")
 }
@@ -699,7 +703,7 @@ func postManifest(ctx context.Context, cfg evidenceConfig, manifest artifactMani
 	if err == nil {
 		return
 	}
-	blog("WARN", event, message, cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	logpush.Blog("WARN", event, message, cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "error": err.Error(),
 	})
 	cfg.reportEvidenceError(ctx, "artifact-manifest", err)
@@ -710,7 +714,7 @@ func postManifest(ctx context.Context, cfg evidenceConfig, manifest artifactMani
 // 没有这条陈述时，平台只能观察到「没收到清单」，无法区分「还没跑完」与
 // 「真的传不进去」，历史上只能把它猜成失败（Q2026110302166）。
 func (e evidenceConfig) reportEvidenceError(ctx context.Context, kind string, cause error) {
-	body, err := json.Marshal(map[string]any{"kind": kind, "error": truncateString(cause.Error(), 500)})
+	body, err := json.Marshal(map[string]any{"kind": kind, "error": sshx.TruncateString(cause.Error(), 500)})
 	if err != nil {
 		return
 	}
@@ -719,9 +723,9 @@ func (e evidenceConfig) reportEvidenceError(ctx context.Context, kind string, ca
 	if buildErr != nil {
 		return
 	}
-	resp, postErr := httpClientFor(true, 10*time.Second).Do(req)
+	resp, postErr := uplink.HttpClientFor(true, 10*time.Second).Do(req)
 	if postErr != nil {
-		blog("WARN", "log_collect.evidence_error_report_failed", "证据失败陈述上报失败", e.TraceID, e.CaseID, e.NodeIP, e.CustomUI, map[string]any{
+		logpush.Blog("WARN", "log_collect.evidence_error_report_failed", "证据失败陈述上报失败", e.TraceID, e.CaseID, e.NodeIP, e.CustomUI, map[string]any{
 			"task_id": e.TaskID, "kind": kind, "error": postErr.Error(),
 		})
 		return
@@ -743,7 +747,7 @@ type processLogPayload struct {
 	CollectedAt  string `json:"collected_at,omitempty"`
 }
 
-func collectNodeProcessLogs(ctx context.Context, s *SSHSession, cfg evidenceConfig) {
+func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg evidenceConfig) {
 	if s == nil {
 		return
 	}
@@ -751,9 +755,9 @@ func collectNodeProcessLogs(ctx context.Context, s *SSHSession, cfg evidenceConf
 	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	listOut, _, code, err := s.runQuickCommandStreams(ctx, "ls -1 "+shellQuote(processLogDir))
+	listOut, _, code, err := s.RunQuickCommandStreams(ctx, "ls -1 "+shellQuote(processLogDir))
 	if err != nil || code != 0 {
-		blog("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+		logpush.Blog("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 			"task_id": cfg.TaskID, "error": errString(err), "exit_code": code,
 		})
 		return
@@ -769,7 +773,7 @@ func collectNodeProcessLogs(ctx context.Context, s *SSHSession, cfg evidenceConf
 			break
 		}
 		path := processLogDir + name
-		content, _, contentCode, contentErr := s.runQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(maxProcessLogFileBytes)+" "+shellQuote(path))
+		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(maxProcessLogFileBytes)+" "+shellQuote(path))
 		payload := processLogPayload{
 			Host: cfg.NodeIP, Path: path, CollectedAt: time.Now().UTC().Format(time.RFC3339),
 		}
@@ -800,7 +804,7 @@ func collectNodeProcessLogs(ctx context.Context, s *SSHSession, cfg evidenceConf
 		_, postErr := cfg.postEvidence(postCtx, cfg.taskPath("process-logs"), payload, "")
 		cancel()
 		if postErr != nil {
-			blog("WARN", "log_collect.process_log_failed", "采集进程日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+			logpush.Blog("WARN", "log_collect.process_log_failed", "采集进程日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 				"task_id": cfg.TaskID, "path": path, "error": postErr.Error(),
 			})
 		}

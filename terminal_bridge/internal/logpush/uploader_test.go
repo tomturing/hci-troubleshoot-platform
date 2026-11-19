@@ -1,4 +1,4 @@
-package main
+package logpush
 
 // 桥日志直传的单测。
 //
@@ -19,8 +19,8 @@ import (
 	"time"
 )
 
-func sampleLogEntry() logEntry {
-	return logEntry{
+func sampleLogEntry() LogEntry {
+	return LogEntry{
 		Level: "INFO", Service: "terminal_bridge", Event: "session.created",
 		Message: "SSH 会话已建立", CaseID: "Q1", NodeIP: "10.0.0.1",
 		Extra: map[string]any{"key": "Q1@10.0.0.1"},
@@ -28,7 +28,7 @@ func sampleLogEntry() logEntry {
 }
 
 func TestEncodeLogBatchIsGzipJSON(t *testing.T) {
-	payload, err := encodeLogBatch([]logEntry{sampleLogEntry()})
+	payload, err := encodeLogBatch([]LogEntry{sampleLogEntry()})
 	if err != nil {
 		t.Fatalf("编码失败: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestEncodeLogBatchIsGzipJSON(t *testing.T) {
 		t.Fatalf("解压失败: %v", err)
 	}
 	var body struct {
-		Logs []logEntry `json:"logs"`
+		Logs []LogEntry `json:"logs"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("不是合法 JSON: %v", err)
@@ -79,7 +79,7 @@ func TestUploaderFlushesBatchOnSuccess(t *testing.T) {
 		}
 		raw, _ := io.ReadAll(reader)
 		var body struct {
-			Logs []logEntry `json:"logs"`
+			Logs []LogEntry `json:"logs"`
 		}
 		_ = json.Unmarshal(raw, &body)
 		gotEntries = len(body.Logs)

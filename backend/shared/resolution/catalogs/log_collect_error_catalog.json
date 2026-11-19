@@ -15,7 +15,8 @@
     "PLUGIN": "acli log_collect 插件语义：参数、任务冲突、采集/取消失败、进度解析",
     "SPC": "场景清单分发：create 之前把平台场景清单逐台写入节点、回读校验与回滚",
     "TRANSFER": "制品交付：包缺失、校验和不一致、分块上传与断点续传",
-    "PLATFORM": "平台服务：鉴权、归属、状态机、并发、数据库"
+    "PLATFORM": "平台服务：鉴权、归属、状态机、并发、数据库",
+    "SCRIPT": "收集脚本下发：把脚本库中的脚本按任务写到节点、备份原件与结束后还原"
   },
   "errors": [
     {
@@ -809,6 +810,61 @@
       "http_status": 409,
       "user_hint": "采集已结束但交付会话未被 bridge 执行（僵尸会话）；请点「补交付」重新上传。",
       "ops_hint": "采集终态后 delivery_status 长期停留在 queued，bridge 侧无对应作业。多为通道断开或节点侧任务已结束未回报；历史欠账由 061 清理脚本订正。"
+    },
+    {
+      "code": "LC-SCRIPT-001",
+      "layer": "SCRIPT",
+      "stage": "create",
+      "title_zh": "脚本目录不存在",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 422,
+      "user_hint": "平台要把收集脚本写到节点，但该目录不存在且无法创建（通常是日志收集插件未安装或被清理）。",
+      "ops_hint": "在报错 IP 上确认插件脚本目录（与场景清单目录同级）是否存在；error_detail 带实际探测输出。"
+    },
+    {
+      "code": "LC-SCRIPT-002",
+      "layer": "SCRIPT",
+      "stage": "create",
+      "title_zh": "脚本备份失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 502,
+      "user_hint": "写入前需要先把节点上的同名脚本备份为还原源，备份或保真校验失败。",
+      "ops_hint": "检查节点磁盘空间与目录权限；确认备份文件 <script>.platform.<task_id>.bak 是否可写。"
+    },
+    {
+      "code": "LC-SCRIPT-003",
+      "layer": "SCRIPT",
+      "stage": "create",
+      "title_zh": "脚本写入失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 502,
+      "user_hint": "分块写入或落盘校验未通过，节点上的原脚本已回滚，不会留下半截脚本。",
+      "ops_hint": "查看任务详情里的节点输出；确认磁盘空间与 sha256sum/wc 等基础工具可用后重试。"
+    },
+    {
+      "code": "LC-SCRIPT-004",
+      "layer": "SCRIPT",
+      "stage": "create",
+      "title_zh": "脚本还原失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 502,
+      "user_hint": "采集结束后未能把节点脚本恢复成插件原件，节点可能残留平台脚本。",
+      "ops_hint": "按任务详情里的备份路径人工恢复；确认节点在线且目录可写。残留平台脚本会影响后续采集行为。"
+    },
+    {
+      "code": "LC-SCRIPT-005",
+      "layer": "SCRIPT",
+      "stage": "create",
+      "title_zh": "多台节点脚本写入失败",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 502,
+      "user_hint": "多台目标节点写入脚本失败且原因不同，逐台原因见任务详情。",
+      "ops_hint": "按脚本主机明细逐台排查 SSH 连通性、目录权限与磁盘空间。"
     }
   ]
 }

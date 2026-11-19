@@ -106,6 +106,9 @@ markers = [
 [tool.ruff]
 target-version = "py312"
 line-length = 120
+# script_catalog 是 HCI acli 插件的脚本快照（随镜像发布、由现场脚本演进），
+# 不是本项目源码：不允许 lint 工具改写它，否则基线会与节点上的真实内容失真。
+extend-exclude = ["backend/case-service/app/data/script_catalog"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "SIM"]

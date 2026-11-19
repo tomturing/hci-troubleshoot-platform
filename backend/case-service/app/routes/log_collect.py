@@ -52,6 +52,7 @@ from ..services.log_collect_default_scenario_service import LogCollectDefaultSce
 from ..services.log_collect_evidence_service import LogCollectEvidenceTicket
 from ..services.log_collect_node_path import expected_node_archive_path
 from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
+from ..services.log_collect_script_service import LogCollectScriptService, ScriptError
 from ..services.log_collect_service import (
     InvalidTransitionError,
     LogCollectService,
@@ -382,6 +383,39 @@ async def create_task(
             config_plan = (config_text, sha256, len(paths))
             config_kind = "config"
 
+    # 本次要下发的场景清单先算出来（只读、不落库），因为脚本引用必须先校验。
+    # 顺序调整的理由：脚本被停用/删除时必须在**建任务之前**返回 409，
+    # 否则用户会看到一条永远不会执行的记录（原实现把清单计算放在建任务之后）。
+    spc_files: list[dict] = []
+    manifest_degraded = False
+    if payload.custom_scenario_id is None:
+        try:
+            manifest_service = LogCollectDefaultScenarioService(service.repository.session)
+            spc_files = await manifest_service.build_spc_files(payload.modules)
+        except Exception as exc:  # noqa: BLE001 - 清单读取失败只降级，不能挡住采集
+            manifest_degraded = True
+            logger.warning(
+                "log_collect.manifest_lookup_degraded case_id=%s err=%s",
+                payload.case_id,
+                exc,
+            )
+            spc_files = []
+
+    # 脚本库：从即将下发的 spc 里挑出 action=script 的引用，取库中最新版本冻结成本次下发内容。
+    # 未覆写的内置脚本、自由输入路径都不下发（节点上本来就有），与默认场景"零行为变化"一致。
+    script_files: list[dict] = []
+    try:
+        script_service = LogCollectScriptService(service.repository.session)
+        scan_files = list(spc_files)
+        if config_plan and config_kind == "spc":
+            scan_files.append({"slot": "core", "content": config_plan[0]})
+        script_files = await script_service.build_script_files(scan_files)
+    except ScriptError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc}；请到管理台「收集脚本」页启用或改选脚本后重试",
+        ) from exc
+
     try:
         task = await service.create_task(
             payload,
@@ -426,23 +460,7 @@ async def create_task(
             trace_id=task.trace_id,
         )
 
-    # 默认场景：任一勾选模块存在清单覆写 → 为所有勾选模块签发平台清单。
-    # 放在建任务成功之后：冲突/校验失败不该多打一次库；清单服务异常只降级为
-    # 原生默认场景（零行为变化），不能把采集整体挡住。
-    spc_files: list[dict] = []
-    manifest_degraded = False
-    if payload.custom_scenario_id is None:
-        try:
-            manifest_service = LogCollectDefaultScenarioService(service.repository.session)
-            spc_files = await manifest_service.build_spc_files(payload.modules)
-        except Exception as exc:
-            manifest_degraded = True
-            logging.getLogger(__name__).warning(
-                "log_collect.manifest_lookup_degraded case_id=%s err=%s",
-                payload.case_id,
-                exc,
-            )
-            spc_files = []
+    # 默认场景清单已在建任务前算好（脚本引用校验需要它），这里只回写证据。
 
     response = LogCollectTaskResponse.model_validate(task)
     if manifest_degraded:
@@ -474,6 +492,29 @@ async def create_task(
             task.task_id,
             task.trace_id,
             ",".join(slots),
+        )
+    if script_files:
+        codes = [str(item["code"]) for item in script_files]
+        script_evidence = {
+            "mode": "platform_script",
+            "codes": codes,
+            "sha256": {str(item["code"]): str(item["sha256"]) for item in script_files},
+            "revision": {str(item["code"]): int(item.get("revision", 0)) for item in script_files},
+            "trace_id": task.trace_id,
+        }
+        # 与 spc 同一条证据链：换端/关页面后仍能回答"节点上跑的是哪一版脚本"。
+        task.detail = {**(task.detail or {}), "scripts": script_evidence}
+        task.script_codes = codes
+        task.script_sha256 = script_evidence["sha256"]
+        await service.repository.session.commit()
+        response.detail = task.detail
+        response.script_files = script_files
+        logging.getLogger(__name__).info(
+            "log_collect.script_selected case_id=%s task_id=%s trace_id=%s codes=%s",
+            payload.case_id,
+            task.task_id,
+            task.trace_id,
+            ",".join(codes),
         )
     if config_plan:
         # 只在创建响应里出现：bridge 需要原文写节点，平台不留副本。

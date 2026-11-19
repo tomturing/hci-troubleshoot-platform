@@ -37,6 +37,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"terminal_bridge/internal/shared/reconcile"
@@ -325,7 +326,7 @@ func newAcliProgressReader(data []byte, step int64, onStep func(sent, total int6
 //   - 传输中断时主动清理 tmp，不留残包。
 func uploadAcliPackage(
 	ctx context.Context,
-	s *SSHSession,
+	s *sshx.SSHSession,
 	pkg *acliPackage,
 	destPath string,
 	onProgress func(sent, total int64),
@@ -344,7 +345,7 @@ func uploadAcliPackage(
 		OnProgress:   onProgress,
 		ProgressStep: acliUploadProgressStep,
 	}
-	result, err := remote.WriteFile(ctx, newSSHRunner(s), spec)
+	result, err := remote.WriteFile(ctx, sshx.NewSSHRunner(s), spec)
 	if err != nil {
 		return result, acliWriteErrorToSync(err, pkg, result)
 	}
@@ -352,8 +353,8 @@ func uploadAcliPackage(
 }
 
 // cleanupAcliTmp 尽力删除远端临时文件。失败不改变主结论，只写日志。
-func cleanupAcliTmp(ctx context.Context, s *SSHSession, tmpPath string) {
-	remote.CleanupTmp(ctx, newSSHRunner(s), tmpPath)
+func cleanupAcliTmp(ctx context.Context, s *sshx.SSHSession, tmpPath string) {
+	remote.CleanupTmp(ctx, sshx.NewSSHRunner(s), tmpPath)
 }
 
 // ── 安装 ──────────────────────────────────────────────────────────────────────
@@ -382,9 +383,9 @@ type acliInstallOutcome struct {
 // 为什么必须分离 stdout/stderr：安装器的进度条走 stdout、真正的失败原因常常
 // 只出现在 stderr；合并成一个字符串后，"退出码非零但看起来全是进度条"就无法解释。
 // S4a：分轨执行委托 remote.RunSplit（唯一分轨实现），命令与结论语义不变。
-func installAcliPackage(ctx context.Context, s *SSHSession, destPath string) acliInstallOutcome {
+func installAcliPackage(ctx context.Context, s *sshx.SSHSession, destPath string) acliInstallOutcome {
 	outcome := acliInstallOutcome{Command: buildAcliInstallCommand(destPath)}
-	res := remote.RunSplit(ctx, newSSHRunner(s), outcome.Command)
+	res := remote.RunSplit(ctx, sshx.NewSSHRunner(s), outcome.Command)
 	outcome.DurationMS = res.Duration.Milliseconds()
 	outcome.Stdout = res.Stdout
 	outcome.Stderr = res.Stderr
@@ -476,12 +477,12 @@ type nodePluginState struct {
 // S4b：探测目标改由 acliLandingDescriptor 声明（B8），不再只验 log_collect。
 // HostTimeout 取负禁用主机级超时，单条命令的 30s 预算已在
 // runSpcOnHostStreams 内部强制（与旧实现一致）。
-func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *SSHSession) []nodePluginState {
-	hosts := s.spcNodeList(ctx)
+func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *sshx.SSHSession) []nodePluginState {
+	hosts := spcNodeList(s, ctx)
 	if len(hosts) == 0 {
 		return nil
 	}
-	localIPs := s.spcLocalAddresses(ctx)
+	localIPs := spcLocalAddresses(s, ctx)
 	targets := make([]string, 0, len(hosts))
 	for _, host := range hosts {
 		targets = append(targets, host.IP)
@@ -490,7 +491,7 @@ func (b *Bridge) verifyClusterPluginLanding(ctx context.Context, s *SSHSession) 
 	probeCmd := buildPluginLandingProbeCommand(descriptor)
 	fanout := reconcile.Fanout{Concurrency: spcFanoutConcurrency, HostTimeout: -1, BatchMode: true}
 	results := fanout.Each(ctx, targets, func(ctx context.Context, ip string) reconcile.HostResult {
-		stdout, stderr, _, err := s.runSpcOnHostStreams(ctx, ip, localIPs[ip], probeCmd)
+		stdout, stderr, _, err := runSpcOnHostStreams(s, ctx, ip, localIPs[ip], probeCmd)
 		present := parsePluginLandingProbe(stdout)
 		state := nodePluginState{IP: ip, Present: true}
 		for _, f := range descriptor.Files {
@@ -714,11 +715,11 @@ func parseAcliProbeOutput(output string) (size int64, algo, digest string, missi
 //
 // 探测失败与探测到缺失是两种结论：前者返回 err（不猜"都存在"也不猜
 // "都不存在"），后者 missing=true。混为一谈会让重试逻辑走错分支。
-func probeRemoteAcliPackage(ctx context.Context, s *SSHSession, path string) (size int64, algo, digest string, missing bool, err error) {
+func probeRemoteAcliPackage(ctx context.Context, s *sshx.SSHSession, path string) (size int64, algo, digest string, missing bool, err error) {
 	if s == nil {
 		return 0, "", "", true, errors.New("SSH 会话不存在")
 	}
-	result, err := remote.ProbeFile(ctx, newSSHRunner(s), path)
+	result, err := remote.ProbeFile(ctx, sshx.NewSSHRunner(s), path)
 	if err != nil {
 		return 0, "", "", false, err
 	}
@@ -731,12 +732,12 @@ func probeRemoteAcliPackage(ctx context.Context, s *SSHSession, path string) (si
 // 来自 probeAcliLatest —— 官网一旦不可达就拿不到文件名，路径就拼错，重试必然
 // 退化成“重新下载失败”。先在节点上找实存的包，兜底才真的能兜住。
 // 返回空串表示“没找到”（调用方继续走完整传输），不抛错。
-func findRemoteAcliPackage(ctx context.Context, s *SSHSession) string {
+func findRemoteAcliPackage(ctx context.Context, s *sshx.SSHSession) string {
 	if s == nil {
 		return ""
 	}
 	// -t 按 mtime 降序：多份残包时优先取最新的那份。
-	out, code, err := s.runQuickCommand(ctx, "ls -1t /sf/data/local/*.acli 2>/dev/null | head -1")
+	out, code, err := s.RunQuickCommand(ctx, "ls -1t /sf/data/local/*.acli 2>/dev/null | head -1")
 	if err != nil || code != 0 {
 		return ""
 	}

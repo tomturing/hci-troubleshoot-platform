@@ -3,18 +3,19 @@ package main
 import (
 	"io"
 	"strings"
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 )
 
 // TestOnOutputStartNilWSNoPanic 守护 on_output_start 在 ws==nil 时不 panic：
-// 交付后台自动重连节点走的就是 nil ws 路径，若 sendMsg(nil, ...) 未被保护就会崩。
+// 交付后台自动重连节点走的就是 nil ws 路径，若 models.SendMsg(nil, ...) 未被保护就会崩。
 // 同时验证 exec 完成标记仍能被正常解析并回环给监听者（runCommand 依赖这条链路）。
 func TestOnOutputStartNilWSNoPanic(t *testing.T) {
-	s := &SSHSession{createdAt: time.Now(), listeners: make(map[string]*ExecListener)}
-	resCh := make(chan ExecResult, 1)
+	s := &sshx.SSHSession{CreatedAt: time.Now(), Listeners: make(map[string]*sshx.ExecListener)}
+	resCh := make(chan sshx.ExecResult, 1)
 	// ExecID 去连字符后前 16 位 = 1111111122223333，对应标记前缀 __EXEC_DONE_1111111122223333:
-	s.registerExecListener(&ExecListener{
+	s.RegisterExecListener(&sshx.ExecListener{
 		ExecID:     "11111111-2222-3333-4444-555555555555",
 		StartTime:  time.Now(),
 		OutputBuf:  new(strings.Builder),
@@ -23,14 +24,14 @@ func TestOnOutputStartNilWSNoPanic(t *testing.T) {
 
 	r, w := io.Pipe()
 	go func() {
-		// 普通终端输出：触发 ssh_output 分支，ws==nil 必须跳过 sendMsg
+		// 普通终端输出：触发 ssh_output 分支，ws==nil 必须跳过 models.SendMsg
 		_, _ = w.Write([]byte("some terminal output\r\n"))
-		// exec 完成标记：触发 exec_result 分支，ws==nil 必须跳过 sendMsg，但结果仍回环
+		// exec 完成标记：触发 exec_result 分支，ws==nil 必须跳过 models.SendMsg，但结果仍回环
 		_, _ = w.Write([]byte("__EXEC_DONE_1111111122223333:0\r\nhello\r\n"))
 		_ = w.Close()
 	}()
 
-	s.on_output_start(nil, r, "case1", func(reason string) {})
+	on_output_start(s, nil, r, "case1", func(reason string) {})
 
 	select {
 	case res := <-resCh:
@@ -45,7 +46,7 @@ func TestOnOutputStartNilWSNoPanic(t *testing.T) {
 // TestDeliverySessionForLiveSession 守护：已有会话时直接复用，不触发自动重连。
 func TestDeliverySessionForLiveSession(t *testing.T) {
 	b := newBridge()
-	sess := &SSHSession{caseID: "case-x", createdAt: time.Now()}
+	sess := &sshx.SSHSession{CaseID: "case-x", CreatedAt: time.Now()}
 	b.set(sessionKey("case-x", "10.0.0.1"), sess)
 	r := &deliveryRunner{bridge: b}
 	job := &deliveryJob{CaseID: "case-x", NodeIP: "10.0.0.1", Phase: phasePulling}

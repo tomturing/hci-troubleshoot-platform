@@ -35,10 +35,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 	"unicode"
 
-	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
 )
@@ -115,91 +117,11 @@ type sftpTransferPayload struct {
 	DurationMSecs int64  `json:"duration_ms,omitempty"`
 }
 
-// ── 远端只读能力抽象 ───────────────────────────────────────────────────────────
-//
-// 只暴露"读目录 / 取属性 / 打开文件"三件事：SFTP 面板是下载器，不是远程文件管理器，
-// 不给删除、重命名、写权限留任何入口。抽象出来同时让单测能注入假远端。
-
-type sftpSeekReader interface {
-	io.Reader
-	io.Closer
-	Seek(offset int64, whence int) (int64, error)
-}
-
-type sftpRemote interface {
-	ListDir(remotePath string) ([]os.FileInfo, error)
-	Stat(remotePath string) (os.FileInfo, error)
-	Open(remotePath string) (sftpSeekReader, error)
-	// Getwd 取远端登录用户的初始工作目录：面板首次打开时不带路径，
-	// 由服务端决定落到 home，而不是让前端猜 /root 还是 /home/xxx。
-	Getwd() (string, error)
-	Close() error
-}
-
-type sftpClientRemote struct {
-	client *sftp.Client
-}
-
-func (r *sftpClientRemote) ListDir(remotePath string) ([]os.FileInfo, error) {
-	return r.client.ReadDir(remotePath)
-}
-
-func (r *sftpClientRemote) Stat(remotePath string) (os.FileInfo, error) {
-	return r.client.Stat(remotePath)
-}
-
-func (r *sftpClientRemote) Open(remotePath string) (sftpSeekReader, error) {
-	file, err := r.client.Open(remotePath)
-	if err != nil {
-		return nil, err
-	}
-	return file, nil
-}
-
-func (r *sftpClientRemote) Getwd() (string, error) { return r.client.Getwd() }
-
-func (r *sftpClientRemote) Close() error { return r.client.Close() }
-
-// sftpRemoteClient 懒加载并缓存 SFTP 通道。
-//
-// 缓存而非每次新建：SFTP 建链要做 subsystem 协商，批量下载时每个文件都建一次会让
-// 每次下载都多出数百毫秒；缓存在会话上，会话关闭时一并回收。
-func (s *SSHSession) sftpRemoteClient() (sftpRemote, error) {
-	s.sftpMu.Lock()
-	defer s.sftpMu.Unlock()
-	if s.sftp != nil {
-		return s.sftp, nil
-	}
-	if s.client == nil {
-		return nil, fmt.Errorf("SSH 会话已关闭")
-	}
-	client, err := sftp.NewClient(s.client)
-	if err != nil {
-		return nil, err
-	}
-	s.sftp = &sftpClientRemote{client: client}
-	return s.sftp, nil
-}
-
-// dropSftpRemoteClient 丢弃缓存的 SFTP 通道。
-//
-// 通道可能因远端 sshd 回收 subsystem、网络抖动而失效。若继续缓存一个死通道，
-// 后续每一次列表/下载都会失败到用户重连 SSH 为止。丢弃后下次请求重新协商，
-// 代价只是一次 subsystem 握手。
-func (s *SSHSession) dropSftpRemoteClient() {
-	s.sftpMu.Lock()
-	defer s.sftpMu.Unlock()
-	if s.sftp != nil {
-		_ = s.sftp.Close()
-		s.sftp = nil
-	}
-}
-
 // dropSftpRemoteClientIfIdle 在没有其他并发任务时才丢弃通道。
 //
 // 关闭通道会连带干掉同会话上正在跑的另一个下载，所以必须先确认没有旁人。
 // allowSelf=true 表示调用方自己已登记在任务表里（下载），计数为 1 属正常。
-func (b *Bridge) dropSftpRemoteClientIfIdle(session *SSHSession, allowSelf bool) bool {
+func (b *Bridge) dropSftpRemoteClientIfIdle(session *sshx.SSHSession, allowSelf bool) bool {
 	running := b.runningSftpTasks()
 	if allowSelf {
 		if running > 1 {
@@ -208,7 +130,7 @@ func (b *Bridge) dropSftpRemoteClientIfIdle(session *SSHSession, allowSelf bool)
 	} else if running > 0 {
 		return false
 	}
-	session.dropSftpRemoteClient()
+	session.DropSftpRemoteClient()
 	return true
 }
 
@@ -460,7 +382,7 @@ func sftpMaxBytes() int64 {
 // ── 消息入口 ──────────────────────────────────────────────────────────────────
 
 // handleSftpOp 是 sftp_op 的总入口。所有分支都收敛在这里，避免协议散落。
-func (b *Bridge) handleSftpOp(ws *websocket.Conn, msg InMessage, cui, connID string) {
+func (b *Bridge) handleSftpOp(ws *websocket.Conn, msg models.InMessage, cui, connID string) {
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
 		traceID = "sftp-" + firstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
@@ -475,10 +397,10 @@ func (b *Bridge) handleSftpOp(ws *websocket.Conn, msg InMessage, cui, connID str
 	case "cancel":
 		b.handleSftpCancel(ws, msg, cui)
 	default:
-		blog("ERROR", "sftp.rejected", "sftp_op 动作非法，已拒绝", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.rejected", "sftp_op 动作非法，已拒绝", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"sftp_action": msg.SftpAction, "task_id": msg.ExecID,
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, ExecID: msg.ExecID, SftpAction: "unknown",
 			ErrorType: sftpErrInvalidAction, Message: "不支持的 sftp 动作: " + msg.SftpAction,
 			TraceID: traceID, CustomUI: cui,
@@ -486,16 +408,16 @@ func (b *Bridge) handleSftpOp(ws *websocket.Conn, msg InMessage, cui, connID str
 	}
 }
 
-func (b *Bridge) handleSftpList(ws *websocket.Conn, msg InMessage, cui string) {
+func (b *Bridge) handleSftpList(ws *websocket.Conn, msg models.InMessage, cui string) {
 	// 空路径表示"我不知道在哪，给我默认目录"：由服务端解析成远端 home，
 	// 前端因此可以一打开面板就发请求，无需先猜一个起始路径。
 	wantsDefaultDir := strings.TrimSpace(msg.SftpPath) == ""
 	remotePath, errType, errMsg := normalizeSftpRemotePath(msg.SftpPath)
 	if errType != "" && !wantsDefaultDir {
-		blog("ERROR", "sftp.rejected", "目录列表请求被拒绝", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.rejected", "目录列表请求被拒绝", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"error_type": errType, "reason": errMsg, "path_len": len(msg.SftpPath),
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, SftpAction: "list",
 			ErrorType: errType, Message: errMsg, TraceID: msg.TraceID, CustomUI: cui,
 		})
@@ -506,11 +428,11 @@ func (b *Bridge) handleSftpList(ws *websocket.Conn, msg InMessage, cui string) {
 	if session == nil {
 		// 与日志收集同一套定性字段：会话数为 0 是"连接生命周期已结束"，
 		// 会话数 >0 但键对不上是路由问题，二者的处置完全不同。
-		blog("ERROR", "sftp.session_missing", "目录列表缺少 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.session_missing", "目录列表缺少 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"sftp_action": "list", "requested_key": sessionKey(msg.CaseID, msg.NodeIP),
 			"active_sessions": b.sessionCount(), "session_keys": b.sessionKeyList(8),
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, SftpAction: "list",
 			ErrorType: sftpErrSessionMissing, Message: "SSH 会话不存在（需先连接终端）",
 			TraceID: msg.TraceID, CustomUI: cui,
@@ -518,7 +440,7 @@ func (b *Bridge) handleSftpList(ws *websocket.Conn, msg InMessage, cui string) {
 		return
 	}
 	if match != "exact" {
-		blog("INFO", "sftp.session_fallback", "文件下载回退复用 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("INFO", "sftp.session_fallback", "文件下载回退复用 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"sftp_action": "list", "session_key": key, "match": match,
 		})
 	}
@@ -528,13 +450,13 @@ func (b *Bridge) handleSftpList(ws *websocket.Conn, msg InMessage, cui string) {
 		downloadDir = ""
 	}
 
-	remote, sftpErr := session.sftpRemoteClient()
+	remote, sftpErr := session.SftpRemoteClient()
 	if sftpErr != nil {
 		// 目录浏览依赖 sftp subsystem；不可用时明确降级提示，而不是让用户对着空列表猜。
-		blog("ERROR", "sftp.unavailable", "SFTP 子系统不可用，目录列表失败", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.unavailable", "SFTP 子系统不可用，目录列表失败", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"error": sftpErr.Error(), "path": remotePath, "session_key": key,
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, SftpAction: "list",
 			ErrorType: sftpErrUnavailable,
 			Message:   "当前节点未启用 SFTP 子系统，无法浏览目录；可直接输入文件绝对路径下载（将回退到 exec 通道）",
@@ -551,10 +473,10 @@ func (b *Bridge) handleSftpList(ws *websocket.Conn, msg InMessage, cui string) {
 	if listErr != nil {
 		// 列表失败时丢弃通道：死通道会让用户“刷新多少次都报同样的错”。
 		b.dropSftpRemoteClientIfIdle(session, false)
-		blog("ERROR", "sftp.list_failed", "读取远端目录失败", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.list_failed", "读取远端目录失败", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"error": listErr.Error(), "path": remotePath, "session_key": key,
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, SftpAction: "list",
 			ErrorType: sftpErrRemoteIO, Message: "读取远端目录失败: " + listErr.Error(),
 			TraceID: msg.TraceID, CustomUI: cui,
@@ -562,11 +484,11 @@ func (b *Bridge) handleSftpList(ws *websocket.Conn, msg InMessage, cui string) {
 		return
 	}
 
-	blog("INFO", "sftp.list", "读取远端目录", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	logpush.Blog("INFO", "sftp.list", "读取远端目录", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"path": remotePath, "entries": len(entries), "truncated": truncated,
 		"download_dir": downloadDir, "session_key": key,
 	})
-	sendMsg(ws, OutMessage{
+	models.SendMsg(ws, models.OutMessage{
 		Type: "sftp_list_result", CaseID: msg.CaseID, SftpAction: "list", ExecID: msg.ExecID,
 		TraceID: msg.TraceID, CustomUI: cui,
 		SftpData: sftpListPayload{
@@ -583,7 +505,7 @@ func (b *Bridge) handleSftpList(ws *websocket.Conn, msg InMessage, cui string) {
 //
 // Getwd 失败不报错：部分受限账号 / chroot 环境不实现 realpath，
 // 此时回落根目录仍能给出可用列表，比直接报错让面板空转有用。
-func sftpDefaultRemoteDir(remote sftpRemote) string {
+func sftpDefaultRemoteDir(remote sshx.SftpRemote) string {
 	if wd, err := remote.Getwd(); err == nil {
 		if cleaned, _, _ := normalizeSftpRemotePath(wd); cleaned != "" {
 			return cleaned
@@ -593,7 +515,7 @@ func sftpDefaultRemoteDir(remote sftpRemote) string {
 }
 
 // listSftpDirectory 把远端目录项转成前端结构：目录在前、同类按名称排序。
-func listSftpDirectory(remote sftpRemote, remotePath string, maxEntries int) ([]sftpEntry, bool, error) {
+func listSftpDirectory(remote sshx.SftpRemote, remotePath string, maxEntries int) ([]sftpEntry, bool, error) {
 	infos, err := remote.ListDir(remotePath)
 	if err != nil {
 		return nil, false, err
@@ -640,10 +562,10 @@ func sftpParentPath(remotePath string) string {
 	return parent
 }
 
-func (b *Bridge) handleSftpCancel(ws *websocket.Conn, msg InMessage, cui string) {
+func (b *Bridge) handleSftpCancel(ws *websocket.Conn, msg models.InMessage, cui string) {
 	taskID := strings.TrimSpace(msg.ExecID)
 	if taskID == "" {
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, SftpAction: "cancel",
 			ErrorType: sftpErrInvalidTask, Message: "缺少任务 ID", TraceID: msg.TraceID, CustomUI: cui,
 		})
@@ -652,7 +574,7 @@ func (b *Bridge) handleSftpCancel(ws *websocket.Conn, msg InMessage, cui string)
 	key := sftpTaskKey(msg.CaseID, taskID)
 	if !b.cancelSftpTask(key) {
 		// 找不到任务不是错误：任务可能刚刚自然结束，前端据此把按钮复位即可。
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "cancel",
 			TraceID: msg.TraceID, CustomUI: cui,
 			SftpData: sftpTransferPayload{TaskID: taskID, Phase: "done", Status: "cancelled"},
@@ -660,16 +582,16 @@ func (b *Bridge) handleSftpCancel(ws *websocket.Conn, msg InMessage, cui string)
 		})
 		return
 	}
-	blog("INFO", "sftp.cancel_requested", "已请求取消下载任务", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	logpush.Blog("INFO", "sftp.cancel_requested", "已请求取消下载任务", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"task_id": taskID,
 	})
 }
 
 // handleSftpDownload 执行「HCI 远端 → 本机磁盘」的单文件下载。
-func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, connID string) {
+func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg models.InMessage, cui, connID string) {
 	taskID := strings.TrimSpace(msg.ExecID)
 	if taskID == "" {
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, SftpAction: "download",
 			ErrorType: sftpErrInvalidTask, Message: "缺少任务 ID（exec_id）", TraceID: msg.TraceID, CustomUI: cui,
 		})
@@ -678,10 +600,10 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 
 	remotePath, errType, errMsg := normalizeSftpRemotePath(msg.SftpPath)
 	if errType != "" {
-		blog("ERROR", "sftp.rejected", "下载请求被拒绝", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.rejected", "下载请求被拒绝", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"error_type": errType, "reason": errMsg, "task_id": taskID, "path_len": len(msg.SftpPath),
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 			ErrorType: errType, Message: errMsg, TraceID: msg.TraceID, CustomUI: cui,
 		})
@@ -690,11 +612,11 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 
 	session, key, match := b.resolveLogCollectSession(msg)
 	if session == nil {
-		blog("ERROR", "sftp.session_missing", "下载任务缺少 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.session_missing", "下载任务缺少 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "requested_key": sessionKey(msg.CaseID, msg.NodeIP),
 			"active_sessions": b.sessionCount(), "session_keys": b.sessionKeyList(8),
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 			ErrorType: sftpErrSessionMissing, Message: "SSH 会话不存在（需先连接终端）",
 			TraceID: msg.TraceID, CustomUI: cui,
@@ -709,7 +631,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 		if registerErr == sftpErrDuplicateTask {
 			message = "同一任务正在下载中，请勿重复提交"
 		}
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 			ErrorType: registerErr, Message: message, TraceID: msg.TraceID, CustomUI: cui,
 		})
@@ -720,7 +642,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 		b.finishSftpTask(taskKey)
 	}()
 	if match != "exact" {
-		blog("INFO", "sftp.session_fallback", "下载任务回退复用 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("INFO", "sftp.session_fallback", "下载任务回退复用 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "session_key": key, "match": match,
 		})
 	}
@@ -730,7 +652,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 		payload.TaskID = taskID
 		payload.RemotePath = remotePath
 		payload.DurationMSecs = time.Since(startedAt).Milliseconds()
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_transfer_progress", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 			TraceID: msg.TraceID, CustomUI: cui, SftpData: payload,
 		})
@@ -743,12 +665,12 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 			payload.Percent = 99
 		}
 		emit(payload)
-		blog("ERROR", "sftp.download_failed", "文件下载失败", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "sftp.download_failed", "文件下载失败", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "remote_path": remotePath, "error_type": errType, "error": message,
 			"bytes": payload.Bytes, "total_bytes": payload.TotalBytes,
 			"local_path": payload.LocalPath, "transport": payload.Transport,
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 			ErrorType: errType, Message: message, TraceID: msg.TraceID, CustomUI: cui,
 			SftpData: payload,
@@ -767,7 +689,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 	transport := "sftp"
 	var totalSize int64
 
-	remote, sftpErr := session.sftpRemoteClient()
+	remote, sftpErr := session.SftpRemoteClient()
 	if sftpErr == nil {
 		info, statErr := remote.Stat(remotePath)
 		if statErr != nil {
@@ -783,7 +705,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 	} else {
 		// SFTP subsystem 被禁用：用 shell 探测属性并改走 exec 流。
 		transport = "exec_fallback"
-		size, isDir, probeErr := session.remoteFileSize(ctx, remotePath)
+		size, isDir, probeErr := remoteFileSize(session, ctx, remotePath)
 		if probeErr != nil {
 			fail(sftpErrRemoteIO, "读取远端文件属性失败: "+probeErr.Error(), sftpTransferPayload{Transport: transport})
 			return
@@ -793,7 +715,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 			return
 		}
 		totalSize = size
-		blog("INFO", "sftp.exec_fallback", "SFTP 子系统不可用，回退 exec 通道下载", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("INFO", "sftp.exec_fallback", "SFTP 子系统不可用，回退 exec 通道下载", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "path": remotePath, "size": totalSize, "sftp_error": sftpErr.Error(),
 		})
 	}
@@ -816,10 +738,10 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 			Transport: transport, DownloadDir: downloadDir,
 		}
 		emit(payload)
-		blog("INFO", "sftp.download_exists", "本地已存在同名同大小文件，跳过下载", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("INFO", "sftp.download_exists", "本地已存在同名同大小文件，跳过下载", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "remote_path": remotePath, "local_path": target.FinalPath, "size": totalSize,
 		})
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 			TraceID: msg.TraceID, CustomUI: cui, SftpData: payload,
 			Message: "本机已存在同名同大小文件，已跳过",
@@ -828,7 +750,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 	}
 
 	atomic.AddUint64(&promMetrics.SftpDownloadsTotal, 1)
-	blog("INFO", "sftp.download_start", "开始下载远端文件", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	logpush.Blog("INFO", "sftp.download_start", "开始下载远端文件", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"task_id": taskID, "remote_path": remotePath, "local_path": target.FinalPath,
 		"size": totalSize, "resume_from": target.ResumeFrom, "transport": transport,
 	})
@@ -853,7 +775,7 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 		src = file
 		closeSrc = func() { _ = file.Close() }
 	} else {
-		stream, streamErr := session.openExecFileStream(ctx, remotePath, target.ResumeFrom)
+		stream, streamErr := openExecFileStream(session, ctx, remotePath, target.ResumeFrom)
 		if streamErr != nil {
 			fail(sftpErrRemoteIO, "打开远端文件失败: "+streamErr.Error(), sftpTransferPayload{TotalBytes: totalSize, Transport: transport})
 			return
@@ -887,11 +809,11 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 			payload.Status = "cancelled"
 			payload.LocalPath = target.PartPath
 			emit(payload)
-			blog("INFO", "sftp.download_cancelled", "下载已取消", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			logpush.Blog("INFO", "sftp.download_cancelled", "下载已取消", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"task_id": taskID, "remote_path": remotePath, "bytes": written,
 				"partial_path": target.PartPath,
 			})
-			sendMsg(ws, OutMessage{
+			models.SendMsg(ws, models.OutMessage{
 				Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 				ErrorType: sftpErrCancelled, Message: "下载已取消（已下载部分保留，可重试续传）",
 				TraceID: msg.TraceID, CustomUI: cui, SftpData: payload,
@@ -922,12 +844,12 @@ func (b *Bridge) handleSftpDownload(ws *websocket.Conn, msg InMessage, cui, conn
 	payload.Sha256 = sum
 	payload.DownloadDir = downloadDir
 	emit(payload)
-	blog("INFO", "sftp.download_done", "远端文件下载完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	logpush.Blog("INFO", "sftp.download_done", "远端文件下载完成", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"task_id": taskID, "remote_path": remotePath, "local_path": target.FinalPath,
 		"size": written, "sha256": sum, "transport": transport,
 		"duration_ms": time.Since(startedAt).Milliseconds(),
 	})
-	sendMsg(ws, OutMessage{
+	models.SendMsg(ws, models.OutMessage{
 		Type: "sftp_result", CaseID: msg.CaseID, ExecID: taskID, SftpAction: "download",
 		TraceID: msg.TraceID, CustomUI: cui, SftpData: payload,
 		Message: "下载完成",
@@ -1041,13 +963,13 @@ func hashFilePrefix(filePath string, length int64, digest io.Writer) error {
 // ── exec 回退通道（SFTP 子系统不可用）─────────────────────────────────────────
 
 // remoteFileSize 用 shell 探测远端路径：区分"目录 / 缺失 / 普通文件 + 字节数"。
-func (s *SSHSession) remoteFileSize(ctx context.Context, remotePath string) (int64, bool, error) {
+func remoteFileSize(s *sshx.SSHSession, ctx context.Context, remotePath string) (int64, bool, error) {
 	quoted := shellQuote(remotePath)
 	command := fmt.Sprintf(
 		"if [ -d %s ]; then echo __HCI_DIR__; elif [ -f %s ]; then stat -c %%s %s; else echo __HCI_MISSING__; fi",
 		quoted, quoted, quoted,
 	)
-	output, exitCode, err := s.runQuickCommand(ctx, command)
+	output, exitCode, err := s.RunQuickCommand(ctx, command)
 	if err != nil && exitCode < 0 {
 		return 0, false, err
 	}
@@ -1088,10 +1010,10 @@ func (s *execFileStream) Close() error {
 }
 
 // openExecFileStream 从 offset 处开始读远端文件（tail 的 -c +N 是 1-based）。
-func (s *SSHSession) openExecFileStream(ctx context.Context, remotePath string, offset int64) (io.ReadCloser, error) {
-	s.mu.Lock()
-	client := s.client
-	s.mu.Unlock()
+func openExecFileStream(s *sshx.SSHSession, ctx context.Context, remotePath string, offset int64) (io.ReadCloser, error) {
+	s.Mu.Lock()
+	client := s.Client
+	s.Mu.Unlock()
 	if client == nil {
 		return nil, fmt.Errorf("SSH 会话已关闭")
 	}

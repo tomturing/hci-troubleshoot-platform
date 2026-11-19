@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/shared/uplink"
 	"time"
 )
 
@@ -193,7 +194,7 @@ func (b *Bridge) fetchAcliPluginManifest(
 	}
 	req.Header.Set("X-Plugin-Ticket", ticket)
 	req.Header.Set("Accept", "application/json")
-	resp, err := httpClientFor(insecure, acliPluginFetchTimeout).Do(req)
+	resp, err := uplink.HttpClientFor(insecure, acliPluginFetchTimeout).Do(req)
 	if err != nil {
 		return nil, newAcliPluginError("manifest_unreachable", err.Error())
 	}

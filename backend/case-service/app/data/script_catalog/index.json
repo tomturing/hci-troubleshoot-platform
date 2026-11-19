@@ -1,0 +1,33 @@
+{
+  "kind": "demo",
+  "note": "演示用基线：仅示意条目，不含真实脚本清单、目录、摘要或源码。生产环境通过 LOG_COLLECT_SCRIPT_BASELINE_INDEX 指向环境侧注入的清单。",
+  "scripts": [
+    {
+      "code": "demo_check.py",
+      "name": "示例：环境检查",
+      "interpreter": "python",
+      "bytes": 0,
+      "sha256": "",
+      "binary": false,
+      "ref_usable": true
+    },
+    {
+      "code": "demo_network.sh",
+      "name": "示例：网络信息",
+      "interpreter": "bash",
+      "bytes": 0,
+      "sha256": "",
+      "binary": false,
+      "ref_usable": true
+    },
+    {
+      "code": "demo_collect.py",
+      "name": "示例：通用采集",
+      "interpreter": "python",
+      "bytes": 0,
+      "sha256": "",
+      "binary": false,
+      "ref_usable": true
+    }
+  ]
+}

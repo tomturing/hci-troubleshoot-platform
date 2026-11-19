@@ -1121,7 +1121,7 @@ describe('LogCollectPanel', () => {
     const hint = wrapper.findAll('.lc-hint').map((node) => node.text()).join(' | ')
     expect(hint).not.toContain('acli -i')
     // 必须给出可直接照抄的示例，而不是让用户猜格式
-    expect(hint).toContain('172.28.25.2,172.28.25.3')
+    expect(hint).toContain('192.0.2.11,192.0.2.12')
     // 必须说清"为什么没有清单"，避免用户误判为平台故障
     expect(hint).toContain('acli 未安装')
   })

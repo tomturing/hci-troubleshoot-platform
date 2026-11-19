@@ -55,7 +55,7 @@ func normalizeRetryable(value any) string {
 // 任何一侧新增/修改而未同步，CI 直接失败，避免"码在日志里有、平台不认"。
 func TestErrorCatalogMatchesGoMeta(t *testing.T) {
 	catalog := loadErrorCatalog(t)
-	codePattern := regexp.MustCompile(`^LC-(ENV|INSTALL|EXEC|PLUGIN|SPC|TRANSFER|PLATFORM)-\d{3}$`)
+	codePattern := regexp.MustCompile(`^LC-(ENV|INSTALL|EXEC|PLUGIN|SPC|SCRIPT|TRANSFER|PLATFORM)-\d{3}$`)
 
 	seen := make(map[string]bool, len(catalog.Errors))
 	for _, item := range catalog.Errors {

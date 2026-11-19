@@ -28,6 +28,7 @@ from ..services.log_collect_default_scenario_service import (
     LogCollectDefaultScenarioService,
     normalize_items,
 )
+from ..services.log_collect_script_service import LogCollectScriptService, ScriptError
 from ..services.log_collect_spc_catalog import load_catalog
 from ..services.operation_audit import write_operation_audit
 
@@ -113,6 +114,12 @@ async def save_manifest(
     service: LogCollectDefaultScenarioService = Depends(get_service),
     x_admin_user: str | None = Header(default=None, alias="X-Admin-User"),
 ) -> dict[str, Any]:
+    # 保存前先校验脚本引用：引用已停用脚本的清单不允许落库，
+    # 否则要等到下发时才失败，管理员会以为是采集环境问题。
+    try:
+        await LogCollectScriptService(service.session).assert_scenario_items(payload.items)
+    except ScriptError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         result = await service.save(module, payload.items, x_admin_user, get_current_trace_id())
     except DefaultScenarioError as exc:

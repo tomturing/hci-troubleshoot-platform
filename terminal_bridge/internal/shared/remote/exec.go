@@ -80,7 +80,7 @@ func RunCombined(ctx context.Context, r Runner, command string) ExecResult {
 
 // RunTruncated 在合并语义之上按上限截断输出（log_collect 的历史语义）。
 //
-// 截断形态与既有 truncateString 一致：保留前 limit 字节 + "..."。
+// 截断形态与既有 TruncateString 一致：保留前 limit 字节 + "..."。
 // limit<=0 表示不截断。FullBytes 保留原始长度，供"日志被截了多少"可查。
 func RunTruncated(ctx context.Context, r Runner, command string, limit int) ExecResult {
 	res := RunCombined(ctx, r, command)

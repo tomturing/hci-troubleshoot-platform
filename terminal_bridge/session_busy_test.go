@@ -14,28 +14,29 @@ package main
 //  3. 重连覆盖不再腰斩进行中的长任务（摘表但保留连接，作业结束自愈关闭）。
 
 import (
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 )
 
-func newTestSession() *SSHSession {
-	return &SSHSession{done: make(chan struct{}), createdAt: time.Now()}
+func newTestSession() *sshx.SSHSession {
+	return &sshx.SSHSession{Done: make(chan struct{}), CreatedAt: time.Now()}
 }
 
 // 业务动作必须留下时间戳：它是 shell EOF 时"连接还在被用"的唯一证据。
 func TestMarkBusyRecordsTimestamp(t *testing.T) {
 	session := newTestSession()
-	if session.isBusy() {
+	if session.IsBusy() {
 		t.Fatal("从未被业务使用过的会话不应处于活跃窗口")
 	}
-	if age := session.busyAgeSeconds(); age != -1 {
+	if age := session.BusyAgeSeconds(); age != -1 {
 		t.Fatalf("未使用过的会话 busyAgeSeconds 应为 -1（区分没用过与刚用过），实际 %v", age)
 	}
-	session.markBusy()
-	if !session.isBusyWithin(time.Minute) {
+	session.MarkBusy()
+	if !session.IsBusyWithin(time.Minute) {
 		t.Fatal("刚打过戳的会话必须处于活跃窗口内")
 	}
-	if age := session.busyAgeSeconds(); age < 0 || age > 5 {
+	if age := session.BusyAgeSeconds(); age < 0 || age > 5 {
 		t.Fatalf("刚打戳的 busyAgeSeconds 应在 0~5s，实际 %v", age)
 	}
 }
@@ -43,10 +44,10 @@ func TestMarkBusyRecordsTimestamp(t *testing.T) {
 // 窗口到期保护必须自动失效：这是选 lease 而非计数器的唯一理由。
 func TestBusyWindowExpires(t *testing.T) {
 	session := newTestSession()
-	session.markBusy()
+	session.MarkBusy()
 	// 直接把戳推到 1 小时前，等价于"用户早已离开"。
-	session.lastBusyAt.Store(time.Now().Add(-time.Hour).UnixMilli())
-	if session.isBusyWithin(defaultSessionBusyGrace) {
+	session.LastBusyAt.Store(time.Now().Add(-time.Hour).UnixMilli())
+	if session.IsBusyWithin(sshx.DefaultSessionBusyGrace) {
 		t.Fatal("超过窗口后仍判定为活跃，保护将永久生效（等价于泄漏）")
 	}
 }
@@ -59,7 +60,7 @@ func TestReaperKeepsBusySession(t *testing.T) {
 	bridge.set(key, session)
 	bridge.releaseSession(key, "conn-1")
 
-	session.markBusy()
+	session.MarkBusy()
 	if reaped := bridge.reapIdleSessions(time.Nanosecond); reaped != 0 {
 		t.Fatalf("业务活跃期内的会话不应被空闲租约回收，实际回收 %d 条", reaped)
 	}
@@ -68,7 +69,7 @@ func TestReaperKeepsBusySession(t *testing.T) {
 	}
 
 	// 窗口过期后必须恢复回收，否则孤儿会话永久占用远端 shell。
-	session.lastBusyAt.Store(time.Now().Add(-time.Hour).UnixMilli())
+	session.LastBusyAt.Store(time.Now().Add(-time.Hour).UnixMilli())
 	if reaped := bridge.reapIdleSessions(time.Nanosecond); reaped != 1 {
 		t.Fatalf("业务窗口过期后应恢复常规回收，实际回收 %d 条", reaped)
 	}
@@ -80,7 +81,7 @@ func TestDetachSessionKeepsConnectionForLongTask(t *testing.T) {
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
 	bridge.set(key, session)
-	session.beginLongTask()
+	session.BeginLongTask()
 
 	if !bridge.destroyOrDetachSession(key, sessionReasonReconnect, "c2-2") {
 		t.Fatal("重连覆盖应命中已有会话")
@@ -88,15 +89,15 @@ func TestDetachSessionKeepsConnectionForLongTask(t *testing.T) {
 	if bridge.get(key) != nil {
 		t.Fatal("摘表后路由表里不应再有该键（新会话必须能入表）")
 	}
-	if session.isClosed() {
+	if session.IsClosed() {
 		t.Fatal("长任务进行中不得关闭连接：关闭等于把 12.8 GiB 拉取腰斩")
 	}
 
 	// 作业结束必须自愈关闭，否则这条连接会永远挂在远端 shell 上。
-	session.endLongTask()
+	session.EndLongTask()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if session.isClosed() {
+		if session.IsClosed() {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -114,7 +115,7 @@ func TestDestroyOrDetachDestroysIdleSession(t *testing.T) {
 	if !bridge.destroyOrDetachSession(key, sessionReasonReconnect, "c2-2") {
 		t.Fatal("重连覆盖应命中已有会话")
 	}
-	if !session.isClosed() {
+	if !session.IsClosed() {
 		t.Fatal("无长任务的会话必须正常销毁（不能退化成只摘表，否则连接泄漏）")
 	}
 }
@@ -133,12 +134,12 @@ func TestReaperRestartsIdleClockWhileProtected(t *testing.T) {
 	bridge.mu.Lock()
 	bridge.sessionIdleAt[key] = time.Now().Add(-time.Hour)
 	bridge.mu.Unlock()
-	session.beginLongTask()
+	session.BeginLongTask()
 
 	if reaped := bridge.reapIdleSessions(time.Minute); reaped != 0 {
 		t.Fatalf("保护期内不应回收，实际回收 %d 条", reaped)
 	}
-	session.endLongTask()
+	session.EndLongTask()
 
 	// 保护刚解除：若 reaper 没有刷新 idleAt，这里会立刻回收（正是现场事故）。
 	if reaped := bridge.reapIdleSessions(time.Minute); reaped != 0 {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	bruntime "terminal_bridge/internal/shared/runtime"
 	"testing"
 )
 
@@ -55,7 +56,7 @@ func serveLiveBridgeOn(t *testing.T, port int) func() {
 }
 
 func desktopConfig(port int) runtimeConfig {
-	return runtimeConfig{Mode: desktopMode, ListenAddress: "127.0.0.1", Port: port}
+	return runtimeConfig{Mode: bruntime.DesktopMode, ListenAddress: "127.0.0.1", Port: port}
 }
 
 func TestIsAddressInUse(t *testing.T) {

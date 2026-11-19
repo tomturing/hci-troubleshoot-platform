@@ -1,5 +1,7 @@
 package main
 
+import "terminal_bridge/internal/sshx"
+
 import "testing"
 
 // TestClassifyExecFailure 覆盖修复 D：非零退出必须细分语义 error_type，
@@ -24,8 +26,8 @@ func TestClassifyExecFailure(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyExecFailure(tc.exitCode, tc.output); got != tc.want {
-				t.Fatalf("classifyExecFailure(%d, %q) = %q, want %q", tc.exitCode, tc.output, got, tc.want)
+			if got := sshx.ClassifyExecFailure(tc.exitCode, tc.output); got != tc.want {
+				t.Fatalf("sshx.ClassifyExecFailure(%d, %q) = %q, want %q", tc.exitCode, tc.output, got, tc.want)
 			}
 		})
 	}
@@ -33,23 +35,23 @@ func TestClassifyExecFailure(t *testing.T) {
 
 // TestProbeLevel 覆盖修复 E：探测成功/失败的日志级别判别。
 func TestProbeLevel(t *testing.T) {
-	if got := probeLevel(true); got != "INFO" {
-		t.Fatalf("probeLevel(true) = %q, want INFO", got)
+	if got := sshx.ProbeLevel(true); got != "INFO" {
+		t.Fatalf("sshx.ProbeLevel(true) = %q, want INFO", got)
 	}
-	if got := probeLevel(false); got != "WARN" {
-		t.Fatalf("probeLevel(false) = %q, want WARN", got)
+	if got := sshx.ProbeLevel(false); got != "WARN" {
+		t.Fatalf("sshx.ProbeLevel(false) = %q, want WARN", got)
 	}
 }
 
-// TestExecResultErrorTypeField 锁定 ExecResult 结构化字段契约：超时/失败必须携带 ErrorType，
+// TestExecResultErrorTypeField 锁定 sshx.ExecResult 结构化字段契约：超时/失败必须携带 ErrorType，
 // 确保回传链路不塌缩为 unknown_error。
 func TestExecResultErrorTypeField(t *testing.T) {
-	res := ExecResult{Output: "x", ExitCode: 124, Timeout: true, ErrorType: "timeout"}
+	res := sshx.ExecResult{Output: "x", ExitCode: 124, Timeout: true, ErrorType: "timeout"}
 	if res.ErrorType != "timeout" {
-		t.Fatalf("ExecResult.ErrorType 未透传: got %q", res.ErrorType)
+		t.Fatalf("sshx.ExecResult.ErrorType 未透传: got %q", res.ErrorType)
 	}
 	if !res.Timeout {
-		t.Fatal("ExecResult.Timeout 应为 true")
+		t.Fatal("sshx.ExecResult.Timeout 应为 true")
 	}
 }
 
@@ -73,9 +75,9 @@ func TestDeviceAbsentFromProbe(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			absent, refs := deviceAbsentFromProbe(tc.command, tc.lsblk)
+			absent, refs := sshx.DeviceAbsentFromProbe(tc.command, tc.lsblk)
 			if absent != tc.wantAbsent {
-				t.Fatalf("deviceAbsentFromProbe absent = %v, want %v (refs=%v)", absent, tc.wantAbsent, refs)
+				t.Fatalf("sshx.DeviceAbsentFromProbe absent = %v, want %v (refs=%v)", absent, tc.wantAbsent, refs)
 			}
 			if len(refs) != tc.wantRefs {
 				t.Fatalf("referenced = %v (len %d), want len %d", refs, len(refs), tc.wantRefs)

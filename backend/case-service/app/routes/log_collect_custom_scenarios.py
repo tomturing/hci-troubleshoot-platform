@@ -35,6 +35,7 @@ from ..services.log_collect_custom_scenario_service import (
     CustomScenarioNotFoundError,
     LogCollectCustomScenarioService,
 )
+from ..services.log_collect_script_service import LogCollectScriptService, ScriptError
 from ..services.log_collect_spc_catalog import load_catalog
 from ..services.operation_audit import write_operation_audit
 
@@ -133,6 +134,10 @@ async def create_scenario(
     x_admin_user: str | None = Header(default=None, alias="X-Admin-User"),
 ) -> LogCollectCustomScenarioResponse:
     try:
+        await LogCollectScriptService(service.session).assert_scenario_items(payload.items)
+    except ScriptError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
         created = await service.create(payload, actor=x_admin_user)
     except IntegrityError as exc:
         raise HTTPException(status_code=409, detail=f"场景标识已存在：{payload.code}") from exc
@@ -157,6 +162,11 @@ async def update_scenario(
     x_admin_user: str | None = Header(default=None, alias="X-Admin-User"),
 ) -> LogCollectCustomScenarioResponse:
     """更新会生成新 revision（不可原地覆盖，历史任务要能回溯）。"""
+    if payload.items is not None:
+        try:
+            await LogCollectScriptService(service.session).assert_scenario_items(payload.items)
+        except ScriptError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         updated = await service.update(code, payload, actor=x_admin_user)
     except CustomScenarioNotFoundError as exc:

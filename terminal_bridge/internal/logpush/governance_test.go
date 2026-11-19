@@ -1,4 +1,4 @@
-package main
+package logpush
 
 import (
 	"os"
@@ -34,8 +34,8 @@ func TestLogHubLevelEnabled(t *testing.T) {
 	if !h.levelEnabled("ERROR") {
 		t.Fatal("WARN 阈值下 ERROR 不应被过滤")
 	}
-	if h.logLevelName() != "WARN" {
-		t.Fatalf("logLevelName() = %q, 期望 WARN", h.logLevelName())
+	if h.LogLevelName() != "WARN" {
+		t.Fatalf("logLevelName() = %q, 期望 WARN", h.LogLevelName())
 	}
 
 	debug := &LogHub{minLevel: parseLogLevel("DEBUG")}
@@ -117,14 +117,14 @@ func TestReplayLocalLogFileRestoresRing(t *testing.T) {
 	if replayed := h.replayLocalLogFile(dir, current); replayed != 1 {
 		t.Fatalf("replayLocalLogFile() = %d, 期望 1（非法行应跳过）", replayed)
 	}
-	if len(h.ring) != 1 || h.ring[0].Seq != 7 {
-		t.Fatalf("回放结果异常: ring=%d seq=%d", len(h.ring), h.seq)
+	if len(h.Ring) != 1 || h.Ring[0].Seq != 7 {
+		t.Fatalf("回放结果异常: ring=%d seq=%d", len(h.Ring), h.Seq)
 	}
 }
 
 // TestLogFileNameLockedIncludesDateAndInstance 校验文件名含日期与实例短标识，便于人工识别与上传。
 func TestLogFileNameLockedIncludesDateAndInstance(t *testing.T) {
-	h := &LogHub{instanceID: "12345678-abcd-efgh"}
+	h := &LogHub{InstanceID: "12345678-abcd-efgh"}
 	name := h.logFileNameLocked()
 	if !strings.HasPrefix(name, "bridge-") || !strings.HasSuffix(name, ".log") {
 		t.Fatalf("文件名格式异常: %q", name)

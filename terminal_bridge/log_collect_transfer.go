@@ -26,6 +26,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"time"
 
 	"golang.org/x/net/websocket"
@@ -169,20 +172,18 @@ func progressStep(total int64) int64 {
 // pullArchive 把 HCI 上的压缩包续传到本地，同时返回整包 SHA-256。
 //
 // S1 收口：断点续传、边拉边摘要、字节数收敛三件事的唯一实现已迁到
-// remote.Pull。本方法只剩"把 SSHSession 适配成执行器 + 拆三元组返回值"。
+// remote.Pull。本方法只剩"把 sshx.SSHSession 适配成执行器 + 拆三元组返回值"。
 //
 // 为什么 delivery_runner.pull 不需要再改：它本来就调用本方法，外壳里的
 // "每次重新 stat 量源包 / 长任务心跳抗 TMOUT=600 / 磁盘 admission 预检 /
 // 失败回填 PulledBytes" 都是交付编排语义，不属拉取原语，因此原地不动。
 // 收口前"两份拉取实现"的差异由此消除：两个调用方现在共用同一段字节逻辑。
-func (s *SSHSession) pullArchive(
-	ctx context.Context,
+func pullArchive(s *sshx.SSHSession, ctx context.Context,
 	remotePath string,
 	localPath string,
 	totalSize int64,
-	onProgress func(written, total int64),
-) (int64, string, error) {
-	result, err := remote.Pull(ctx, newSSHRunner(s), remote.PullSpec{
+	onProgress func(written, total int64)) (int64, string, error) {
+	result, err := remote.Pull(ctx, sshx.NewSSHRunner(s), remote.PullSpec{
 		RemotePath: remotePath,
 		LocalPath:  localPath,
 		TotalSize:  totalSize,
@@ -329,14 +330,14 @@ func uploadArchiveParts(
 func (b *Bridge) handleLogCollectTransfer(
 	ctx context.Context,
 	ws *websocket.Conn,
-	s *SSHSession,
-	msg InMessage,
+	s *sshx.SSHSession,
+	msg models.InMessage,
 	cui string,
 	traceID string,
 ) error {
 	taskID := strings.TrimSpace(msg.ExecID)
 	emit := func(status string, progress logCollectTransferProgress, message, errorCode string) {
-		sendMsg(ws, OutMessage{
+		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: "transfer",
 			Status: status, LogData: progress, Message: message,
 			ErrorCode: errorCode, TraceID: traceID, CustomUI: cui,
@@ -346,7 +347,7 @@ func (b *Bridge) handleLogCollectTransfer(
 	fail := func(code, message string, progress logCollectTransferProgress) error {
 		progress.Stage = "failed"
 		emit("error", progress, message, code)
-		blog("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		logpush.Blog("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "error_code": code, "error": message,
 			"stage": progress.Stage, "pulled_bytes": progress.PulledBytes,
 			"uploaded_parts": progress.UploadedParts, "part_count": progress.PartCount,
@@ -396,7 +397,7 @@ func (b *Bridge) handleLogCollectTransfer(
 	}
 	emit("ok", progress, "", "")
 
-	written, sum, err := s.pullArchive(ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
+	written, sum, err := pullArchive(s, ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
 		progress.PulledBytes = done
 		progress.TotalSize = total
 		if total > 0 {
@@ -443,7 +444,7 @@ func (b *Bridge) handleLogCollectTransfer(
 	progress.Stage = "done"
 	progress.Percent = 100
 	emit("ok", progress, "", "")
-	blog("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	logpush.Blog("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"task_id": taskID, "size": progress.Size, "sha256": progress.Sha256,
 		"part_count": partCount, "local_path": localPath,
 	})

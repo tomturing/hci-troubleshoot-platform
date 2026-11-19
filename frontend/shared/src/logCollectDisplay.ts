@@ -2015,6 +2015,146 @@ export const FAULT_CATALOG = {
     "title_zh": "节点上没有所选专项",
     "tone": "error"
   },
+  "LC-SCRIPT-001": {
+    "action": "平台要把收集脚本写到节点，但该目录不存在且无法创建（通常是日志收集插件未安装或被清理）。",
+    "admin_detail": "在报错 IP 上确认插件脚本目录（与场景清单目录同级）是否存在；error_detail 带实际探测输出。",
+    "business_stage": "create",
+    "check": [
+      "登录提示里的节点，确认日志收集插件的脚本目录存在。",
+      "确认该目录对当前 SSH 账号可写。"
+    ],
+    "component": "hci",
+    "evidence": "bridge_execution_logs（SCRIPT 层原始输出）",
+    "fix": [
+      "重新安装日志收集插件后重试。",
+      "若目录被人为清理，先还原目录结构再重试。"
+    ],
+    "http_status": 422,
+    "kind": "runtime",
+    "layer": "SCRIPT",
+    "match_keywords": [
+      "脚本目录不存在"
+    ],
+    "owner": "customer",
+    "problem": "脚本目录不存在",
+    "retryable": "manual",
+    "scope": "intranet",
+    "stage": "S3",
+    "title_zh": "脚本目录不存在",
+    "tone": "error"
+  },
+  "LC-SCRIPT-002": {
+    "action": "写入前需要先把节点上的同名脚本备份为还原源，备份或保真校验失败。",
+    "admin_detail": "检查节点磁盘空间与目录权限；确认备份文件 <script>.platform.<task_id>.bak 是否可写。",
+    "business_stage": "create",
+    "check": [
+      "确认节点磁盘剩余空间充足。",
+      "确认脚本目录对当前 SSH 账号可写。"
+    ],
+    "component": "hci",
+    "evidence": "bridge_execution_logs（SCRIPT 层原始输出）",
+    "fix": [
+      "清理节点磁盘后重试。",
+      "仍失败时按任务详情里的备份路径人工核对目录权限。"
+    ],
+    "http_status": 502,
+    "kind": "runtime",
+    "layer": "SCRIPT",
+    "match_keywords": [
+      "脚本备份失败"
+    ],
+    "owner": "customer",
+    "problem": "脚本备份失败",
+    "retryable": "manual",
+    "scope": "intranet",
+    "stage": "S3",
+    "title_zh": "脚本备份失败",
+    "tone": "error"
+  },
+  "LC-SCRIPT-003": {
+    "action": "分块写入或落盘校验未通过，节点上的原脚本已回滚，不会留下半截脚本。",
+    "admin_detail": "查看任务详情里的节点输出；确认磁盘空间与 sha256sum/wc 等基础工具可用后重试。",
+    "business_stage": "create",
+    "check": [
+      "查看任务详情里该节点的输出，确认失败发生在写入还是校验阶段。",
+      "确认磁盘空间与 sha256sum/wc 等基础工具可用。"
+    ],
+    "component": "hci",
+    "evidence": "bridge_execution_logs（SCRIPT 层原始输出）",
+    "fix": [
+      "补齐磁盘空间或基础工具后重试。",
+      "重试仍失败时换节点验证是否为单机问题。"
+    ],
+    "http_status": 502,
+    "kind": "runtime",
+    "layer": "SCRIPT",
+    "match_keywords": [
+      "脚本写入失败"
+    ],
+    "owner": "customer",
+    "problem": "脚本写入失败",
+    "retryable": "manual",
+    "scope": "intranet",
+    "stage": "S3",
+    "title_zh": "脚本写入失败",
+    "tone": "error"
+  },
+  "LC-SCRIPT-004": {
+    "action": "采集结束后未能把节点脚本恢复成插件原件，节点可能残留平台脚本。",
+    "admin_detail": "按任务详情里的备份路径人工恢复；确认节点在线且目录可写。残留平台脚本会影响后续采集行为。",
+    "business_stage": "create",
+    "check": [
+      "确认节点在线且脚本目录可写。",
+      "确认备份文件仍在节点上。"
+    ],
+    "component": "hci",
+    "evidence": "bridge_execution_logs（SCRIPT 层还原记录）、script_restore_status",
+    "fix": [
+      "按任务详情里的备份路径人工恢复。",
+      "恢复后重新触发一次采集以校验脚本已回到原件。"
+    ],
+    "http_status": 502,
+    "kind": "runtime",
+    "layer": "SCRIPT",
+    "match_keywords": [
+      "脚本还原失败"
+    ],
+    "owner": "customer",
+    "problem": "脚本还原失败",
+    "retryable": "manual",
+    "scope": "intranet",
+    "stage": "S3",
+    "title_zh": "脚本还原失败",
+    "tone": "error"
+  },
+  "LC-SCRIPT-005": {
+    "action": "多台目标节点写入脚本失败且原因不同，逐台原因见任务详情。",
+    "admin_detail": "按脚本主机明细逐台排查 SSH 连通性、目录权限与磁盘空间。",
+    "business_stage": "create",
+    "check": [
+      "在任务详情里逐台查看失败节点与原因。",
+      "对比成功与失败节点的账号权限、磁盘空间与 SSH 连通性。"
+    ],
+    "component": "hci",
+    "evidence": "bridge_execution_logs（SCRIPT 层逐台输出）、script_hosts",
+    "fix": [
+      "按逐台原因分别处理后重试。",
+      "无法修复的节点先移出目标列表再下发。"
+    ],
+    "http_status": 502,
+    "kind": "runtime",
+    "layer": "SCRIPT",
+    "match_keywords": [
+      "多台节点脚本写入失败"
+    ],
+    "owner": "customer",
+    "problem": "多台节点脚本写入失败",
+    "retryable": "manual",
+    "scope": "intranet",
+    "stage": "S3",
+    "title_zh": "多台节点脚本写入失败",
+    "tone": "error"
+  },
   "LC-SPC-001": {
     "action": "目标节点上找不到平台场景清单目录。节点可能未安装对应平台版本，或目录被移动/清理。",
     "admin_detail": "在报错 IP 上确认平台场景清单目录存在且只有一份；error_detail 带实际探测输出。确认节点版本与平台匹配后重试。",

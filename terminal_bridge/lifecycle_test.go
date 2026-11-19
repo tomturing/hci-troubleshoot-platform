@@ -7,19 +7,21 @@ package main
 // 2026-10-27 现场只能看到 active_sessions=0，就是因为缺少这组事件。
 
 import (
+	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 )
 
 // findLogEventSince 在全局 ring 里找指定事件（只看 seq 之后的新增条目）。
 //
-// 全局 logHub 会跨用例累积，必须用起始水位隔离，否则断言会命中别的用例写入的事件。
-func findLogEventSince(t *testing.T, startSeq uint64, event string) *logEntry {
+// 全局 logpush.DefaultHub 会跨用例累积，必须用起始水位隔离，否则断言会命中别的用例写入的事件。
+func findLogEventSince(t *testing.T, startSeq uint64, event string) *logpush.LogEntry {
 	t.Helper()
-	logHub.mu.Lock()
-	defer logHub.mu.Unlock()
-	for i := len(logHub.ring) - 1; i >= 0; i-- {
-		entry := logHub.ring[i]
+	logpush.DefaultHub.Mu.Lock()
+	defer logpush.DefaultHub.Mu.Unlock()
+	for i := len(logpush.DefaultHub.Ring) - 1; i >= 0; i-- {
+		entry := logpush.DefaultHub.Ring[i]
 		if entry.Seq <= startSeq {
 			break
 		}
@@ -31,21 +33,21 @@ func findLogEventSince(t *testing.T, startSeq uint64, event string) *logEntry {
 }
 
 func ringSeq() uint64 {
-	logHub.mu.Lock()
-	defer logHub.mu.Unlock()
-	return logHub.seq
+	logpush.DefaultHub.Mu.Lock()
+	defer logpush.DefaultHub.Mu.Unlock()
+	return logpush.DefaultHub.Seq
 }
 
 // 销毁会话必须同时完成三件事：摘表、关闭、留痕（含原因/行为者/存活时长）。
 func TestDestroySessionEmitsLifecycleEvent(t *testing.T) {
 	b := newBridge()
 	key := "Q2026102700862@10.0.11.100"
-	session := &SSHSession{
-		caseID:    "Q2026102700862",
-		address:   "10.0.11.100:22",
-		done:      make(chan struct{}),
-		ownerConn: "c1-1",
-		createdAt: time.Now().Add(-90 * time.Second),
+	session := &sshx.SSHSession{
+		CaseID:    "Q2026102700862",
+		Address:   "10.0.11.100:22",
+		Done:      make(chan struct{}),
+		OwnerConn: "c1-1",
+		CreatedAt: time.Now().Add(-90 * time.Second),
 	}
 	b.set(key, session)
 
@@ -56,7 +58,7 @@ func TestDestroySessionEmitsLifecycleEvent(t *testing.T) {
 	if b.get(key) != nil {
 		t.Fatal("销毁后会话仍在表中")
 	}
-	if !session.isClosed() {
+	if !session.IsClosed() {
 		t.Fatal("销毁后底层连接未关闭")
 	}
 

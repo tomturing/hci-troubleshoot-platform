@@ -1,5 +1,7 @@
 package main
 
+import "terminal_bridge/internal/sshx"
+
 // 交付阶段与会话依赖的回归护栏。
 //
 // 现场 Q2026102800720（3.6 GiB，2026-10-28）：平台收尾连续 4 次 500 的几分钟里
@@ -44,7 +46,7 @@ func TestRequireSessionForPhase(t *testing.T) {
 
 	// 有会话时任何阶段都不该被拦。
 	for _, phase := range []deliveryPhase{phaseWaitingCollect, phasePulling, phaseUploading, phaseCompleting} {
-		if err := requireSessionForPhase(phase, &SSHSession{}); err != nil {
+		if err := requireSessionForPhase(phase, &sshx.SSHSession{}); err != nil {
 			t.Fatalf("phase=%s 有会话时不应报错：%v", phase, err)
 		}
 	}

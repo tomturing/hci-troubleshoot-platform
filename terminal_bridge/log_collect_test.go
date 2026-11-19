@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
 
@@ -15,12 +17,12 @@ import (
 // TestBuildLogCollectCreateCommand 覆盖参数白名单与命令转义。
 // 插件不防注入，bridge 是最后一道防线：任何非法输入都必须被拒绝，绝不能进入命令行。
 func TestBuildLogCollectCreateCommand(t *testing.T) {
-	base := InMessage{
+	base := models.InMessage{
 		TicketNo: "Q20261022001",
 		Modules:  []string{"network"},
 		DateFrom: "2026-10-21",
 		DateTo:   "2026-10-22",
-		IPs:      "172.28.25.1,172.28.25.2",
+		IPs:      "192.0.2.10,192.0.2.11",
 	}
 
 	t.Run("最小合法参数", func(t *testing.T) {
@@ -33,7 +35,7 @@ func TestBuildLogCollectCreateCommand(t *testing.T) {
 			"-s 'Q20261022001'",
 			"-m 'network'",
 			"-d '2026-10-21,2026-10-22'",
-			"-i '172.28.25.1,172.28.25.2'",
+			"-i '192.0.2.10,192.0.2.11'",
 		} {
 			if !strings.Contains(command, fragment) {
 				t.Fatalf("命令缺少片段 %q，实际：%s", fragment, command)
@@ -71,23 +73,23 @@ func TestBuildLogCollectCreateCommand(t *testing.T) {
 
 	rejectCases := []struct {
 		name    string
-		mutate  func(*InMessage)
+		mutate  func(*models.InMessage)
 		errType string
 	}{
-		{"工单号含分号", func(r *InMessage) { r.TicketNo = "Q1;rm -rf /" }, "invalid_ticket"},
-		{"工单号含空格", func(r *InMessage) { r.TicketNo = "Q1 2" }, "invalid_ticket"},
-		{"工单号超长", func(r *InMessage) { r.TicketNo = strings.Repeat("A", 33) }, "invalid_ticket"},
-		{"未知专项", func(r *InMessage) { r.Modules = []string{"rootkit"} }, "invalid_module"},
-		{"日期格式错误", func(r *InMessage) { r.DateFrom = "2026/10/21" }, "invalid_date"},
-		{"日期倒置", func(r *InMessage) { r.DateFrom = "2026-10-23" }, "invalid_date"},
-		{"超过 30 天", func(r *InMessage) { r.DateFrom = "2026-08-01" }, "invalid_date"},
-		{"非法 IP", func(r *InMessage) { r.IPs = "1.2.3.999" }, "invalid_ips"},
-		{"注入型 IP", func(r *InMessage) { r.IPs = "1.1.1.1;id" }, "invalid_ips"},
-		{"相对路径", func(r *InMessage) { r.ExtraPaths = []string{"sf/data"} }, "invalid_path"},
-		{"路径注入", func(r *InMessage) { r.ExtraPaths = []string{"/sf/x;id"} }, "invalid_path"},
-		{"路径穿越", func(r *InMessage) { r.ExtraPaths = []string{"/sf/../etc/shadow"} }, "invalid_path"},
-		{"非 http 上传地址", func(r *InMessage) { r.RemoteURL = "ftp://a/b" }, "invalid_remote_url"},
-		{"上传地址含空格", func(r *InMessage) { r.RemoteURL = "http://a b" }, "invalid_remote_url"},
+		{"工单号含分号", func(r *models.InMessage) { r.TicketNo = "Q1;rm -rf /" }, "invalid_ticket"},
+		{"工单号含空格", func(r *models.InMessage) { r.TicketNo = "Q1 2" }, "invalid_ticket"},
+		{"工单号超长", func(r *models.InMessage) { r.TicketNo = strings.Repeat("A", 33) }, "invalid_ticket"},
+		{"未知专项", func(r *models.InMessage) { r.Modules = []string{"rootkit"} }, "invalid_module"},
+		{"日期格式错误", func(r *models.InMessage) { r.DateFrom = "2026/10/21" }, "invalid_date"},
+		{"日期倒置", func(r *models.InMessage) { r.DateFrom = "2026-10-23" }, "invalid_date"},
+		{"超过 30 天", func(r *models.InMessage) { r.DateFrom = "2026-08-01" }, "invalid_date"},
+		{"非法 IP", func(r *models.InMessage) { r.IPs = "1.2.3.999" }, "invalid_ips"},
+		{"注入型 IP", func(r *models.InMessage) { r.IPs = "1.1.1.1;id" }, "invalid_ips"},
+		{"相对路径", func(r *models.InMessage) { r.ExtraPaths = []string{"sf/data"} }, "invalid_path"},
+		{"路径注入", func(r *models.InMessage) { r.ExtraPaths = []string{"/sf/x;id"} }, "invalid_path"},
+		{"路径穿越", func(r *models.InMessage) { r.ExtraPaths = []string{"/sf/../etc/shadow"} }, "invalid_path"},
+		{"非 http 上传地址", func(r *models.InMessage) { r.RemoteURL = "ftp://a/b" }, "invalid_remote_url"},
+		{"上传地址含空格", func(r *models.InMessage) { r.RemoteURL = "http://a b" }, "invalid_remote_url"},
 	}
 
 	for _, tc := range rejectCases {
@@ -143,7 +145,7 @@ func TestLogCollectAcliInvokeUsesResolvedPath(t *testing.T) {
 // 一旦有人把 acli 塞回参数串，执行侧就会变成 `"$__acli" acli ...`（双份），
 // 单元测试必须比现场更早发现。
 func TestLogCollectCreateCommandRequiresInvoke(t *testing.T) {
-	command, errType, _ := buildLogCollectCreateCommand(InMessage{
+	command, errType, _ := buildLogCollectCreateCommand(models.InMessage{
 		TicketNo: "Q20261022001",
 		Modules:  []string{"other"},
 		DateFrom: "2026-10-21",
@@ -192,7 +194,7 @@ func TestParseLogCollectProgress(t *testing.T) {
 			"压缩包路径（完成日志下载后请手动删除压缩包）：/sf/data/local/acli/tmp/data/log_collect/Q20261022001.zip",
 			"总进度：63% - 2/3（已收集完成/收集总数）",
 			"总耗时：00:12:31",
-			"172.28.25.2  收集完成  100%",
+			"192.0.2.11  收集完成  100%",
 			"172.28.25.3  收集中  45%",
 			"172.28.25.4  收集失败  -",
 			"日志收集结果发送状态：",
@@ -216,7 +218,7 @@ func TestParseLogCollectProgress(t *testing.T) {
 		if len(got.Hosts) != 3 {
 			t.Fatalf("主机明细数量错误：%d", len(got.Hosts))
 		}
-		if got.Hosts[0].IP != "172.28.25.2" || got.Hosts[0].Status != "收集完成" || got.Hosts[0].Percent != "100%" {
+		if got.Hosts[0].IP != "192.0.2.11" || got.Hosts[0].Status != "收集完成" || got.Hosts[0].Percent != "100%" {
 			t.Fatalf("主机明细解析错误：%+v", got.Hosts[0])
 		}
 		if got.UploadURL != "http://acli.sangfor.com.cn:5888/" || got.UploadState != "发送中" {
@@ -244,7 +246,7 @@ func TestParseLogCollectProgress(t *testing.T) {
 
 // TestManualLogCollectProbe 是现场集成验证入口（默认 skip，CI 不执行）。
 //
-//	HCI_TEST_ADDR=172.28.25.1:22 HCI_TEST_USER=root HCI_TEST_KEY=~/.ssh/id_ed25519 \
+//	HCI_TEST_ADDR=192.0.2.10:22 HCI_TEST_USER=root HCI_TEST_KEY=~/.ssh/id_ed25519 \
 //	  go test -run TestManualLogCollectProbe -v ./...
 //
 // 验证内容：PTY 下 acli 插件可执行、版本/架构探测可用、progress 文本可被结构化解析。
@@ -280,11 +282,11 @@ func TestManualLogCollectProbe(t *testing.T) {
 	}
 	defer client.Close()
 
-	session := &SSHSession{client: client}
+	session := &sshx.SSHSession{Client: client}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	probe := session.probeLogCollectEnv(ctx, logCollectDefaultLogServer)
+	probe := probeLogCollectEnv(session, ctx, logCollectDefaultLogServer)
 	t.Logf("probe: %+v", probe)
 	if probe.Architecture == "" {
 		t.Fatal("架构探测为空")
@@ -293,7 +295,7 @@ func TestManualLogCollectProbe(t *testing.T) {
 		t.Fatal("未探测到 acli 安装")
 	}
 
-	output, exitCode, err := session.runCommandPty(ctx, "acli log_collect progress", 30*time.Second)
+	output, exitCode, err := runCommandPty(session, ctx, "acli log_collect progress", 30*time.Second)
 	if err != nil {
 		t.Fatalf("progress 执行失败：%v", err)
 	}
@@ -400,7 +402,7 @@ func TestConfirmLogServerReachabilityStopsWhenSleepAborts(t *testing.T) {
 
 func TestInMessageLogCollectFields(t *testing.T) {
 	payload := `{"type":"log_collect","log_action":"create","ticket_no":"Q20261022001","modules":["network","core"],"date_from":"2026-10-21","date_to":"2026-10-22","ips":"all","extra_paths":["/sf/x"],"remote_url":"http://acli.sangfor.com.cn:5888/"}`
-	var msg InMessage
+	var msg models.InMessage
 	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
 		t.Fatalf("反序列化失败：%v", err)
 	}
@@ -506,7 +508,7 @@ func TestParseLogCollectNodeList(t *testing.T) {
       "alert": "0",
       "controller": 1,
       "id": "host-80615f1e94e4",
-      "ip": "172.28.25.2",
+      "ip": "192.0.2.11",
       "master": 1,
       "name": "SVR_aCloud_680",
       "status": 1
@@ -520,7 +522,7 @@ func TestParseLogCollectNodeList(t *testing.T) {
 	if hosts[0].IP != "172.28.25.4" || hosts[0].Name != "SVR_aCloud_682" || hosts[0].Master {
 		t.Fatalf("首个节点解析错误：%+v", hosts[0])
 	}
-	if !hosts[2].Master || hosts[2].IP != "172.28.25.2" {
+	if !hosts[2].Master || hosts[2].IP != "192.0.2.11" {
 		t.Fatalf("master 标记解析错误：%+v", hosts[2])
 	}
 }
@@ -571,23 +573,23 @@ func TestParseLogCollectNodeListKeepsFirstValidObject(t *testing.T) {
 // 换到新工单采集时精确键失配，直接报 session_missing（LC-ENV-006）；
 // 而界面此时显示"已连接"，自相矛盾。
 func TestSessionByNodeIP(t *testing.T) {
-	target := &SSHSession{}
-	prefixTrap := &SSHSession{}
-	other := &SSHSession{}
-	bridge := &Bridge{sessions: map[string]*SSHSession{}}
-	bridge.sessions["terminal-only@172.28.25.1"] = target
-	bridge.sessions["Q2026101401684@172.28.25.11"] = prefixTrap // 前缀相同的另一台主机，不得被误命中
-	bridge.sessions["Q2026101401684@172.28.25.20"] = other
+	target := &sshx.SSHSession{}
+	prefixTrap := &sshx.SSHSession{}
+	other := &sshx.SSHSession{}
+	bridge := &Bridge{sessions: map[string]*sshx.SSHSession{}}
+	bridge.sessions["terminal-only@192.0.2.10"] = target
+	bridge.sessions["Q2026101401684@192.0.2.101"] = prefixTrap // 前缀相同的另一台主机，不得被误命中
+	bridge.sessions["Q2026101401684@192.0.2.110"] = other
 
-	got, key := bridge.sessionByNodeIP("172.28.25.1")
+	got, key := bridge.sessionByNodeIP("192.0.2.10")
 	if got != target {
 		t.Fatalf("应按节点 IP 复用会话，实际 got=%v key=%s", got, key)
 	}
-	if key != "terminal-only@172.28.25.1" {
+	if key != "terminal-only@192.0.2.10" {
 		t.Fatalf("应返回命中的原始键，实际：%s", key)
 	}
 
-	if got, _ := bridge.sessionByNodeIP("172.28.25.11"); got != prefixTrap {
+	if got, _ := bridge.sessionByNodeIP("192.0.2.101"); got != prefixTrap {
 		t.Fatal("前缀相同的主机必须精确匹配")
 	}
 	if got, _ := bridge.sessionByNodeIP("172.28.25.99"); got != nil {
@@ -689,34 +691,34 @@ func TestClassifyLogCollectNodeState(t *testing.T) {
 }
 
 func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
-	single := &SSHSession{address: "192.168.33.89:22"}
-	bridge := &Bridge{sessions: map[string]*SSHSession{"Q2026102601505@192.168.33.89": single}}
+	single := &sshx.SSHSession{Address: "192.168.33.89:22"}
+	bridge := &Bridge{sessions: map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single}}
 
-	got, key, match := bridge.resolveLogCollectSession(InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
+	got, key, match := bridge.resolveLogCollectSession(models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
 	if got != single || key != "Q2026102601505@192.168.33.89" || match != "only_session_for_case" {
 		t.Fatalf("唯一会话应被兜底命中，实际 got=%v key=%s match=%s", got, key, match)
 	}
 
 	// 多节点时不猜：猜错会取消另一台机器上的采集任务
-	multi := &Bridge{sessions: map[string]*SSHSession{
-		"Q1@10.0.0.1": {address: "10.0.0.1:22"},
-		"Q1@10.0.0.2": {address: "10.0.0.2:22"},
+	multi := &Bridge{sessions: map[string]*sshx.SSHSession{
+		"Q1@10.0.0.1": {Address: "10.0.0.1:22"},
+		"Q1@10.0.0.2": {Address: "10.0.0.2:22"},
 	}}
-	if got, _, _ := multi.resolveLogCollectSession(InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
+	if got, _, _ := multi.resolveLogCollectSession(models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
 		t.Fatal("多节点且无 node_ip 时不得兜底，必须返回 nil 由调用方报 session_missing")
 	}
 
 	// 带了 node_ip 就走精确键，命中原因要能被日志区分
-	if got, key, match := multi.resolveLogCollectSession(InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
+	if got, key, match := multi.resolveLogCollectSession(models.InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
 		t.Fatalf("精确键应优先命中，实际 key=%s match=%s", key, match)
 	}
 
 	// 同节点其他工单的会话：按节点复用，不应落到 only_session_for_case
-	reuse := &Bridge{sessions: map[string]*SSHSession{
-		"Q1@10.0.0.1":            {address: "10.0.0.1:22"},
-		"terminal-only@10.9.9.9": {address: "10.9.9.9:22"},
+	reuse := &Bridge{sessions: map[string]*sshx.SSHSession{
+		"Q1@10.0.0.1":            {Address: "10.0.0.1:22"},
+		"terminal-only@10.9.9.9": {Address: "10.9.9.9:22"},
 	}}
-	got2, key2, match2 := reuse.resolveLogCollectSession(InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
+	got2, key2, match2 := reuse.resolveLogCollectSession(models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
 	if got2 == nil || key2 != "terminal-only@10.9.9.9" || match2 != "node_ip_suffix" {
 		t.Fatalf("应按节点复用其他工单会话，实际 key=%s match=%s", key2, match2)
 	}
@@ -726,25 +728,25 @@ func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 // ssh_connect 历史上不带 node_ip，键只剩 caseID；此时日志收集按 caseID@nodeIP
 // 查不到，必须能回退到"会话实际连的主机地址"。
 func TestSessionByAddressHost(t *testing.T) {
-	legacy := &SSHSession{address: "172.28.25.1:22"}
-	otherPort := &SSHSession{address: "172.28.25.7:2222"}
-	bridge := &Bridge{sessions: map[string]*SSHSession{}}
+	legacy := &sshx.SSHSession{Address: "192.0.2.10:22"}
+	otherPort := &sshx.SSHSession{Address: "192.0.2.12:2222"}
+	bridge := &Bridge{sessions: map[string]*sshx.SSHSession{}}
 	// 键故意不带 @IP，复现现场：终端连好了，但键只有 caseID
 	bridge.sessions["terminal-only"] = legacy
-	bridge.sessions["Q2026101401684@172.28.25.7"] = otherPort
+	bridge.sessions["Q2026101401684@192.0.2.12"] = otherPort
 
-	got, key := bridge.sessionByAddressHost("172.28.25.1")
+	got, key := bridge.sessionByAddressHost("192.0.2.10")
 	if got != legacy || key != "terminal-only" {
 		t.Fatalf("应按会话地址命中存量会话，实际 got=%v key=%s", got, key)
 	}
-	if got, _ := bridge.sessionByAddressHost(" 172.28.25.7 "); got != otherPort {
+	if got, _ := bridge.sessionByAddressHost(" 192.0.2.12 "); got != otherPort {
 		t.Fatal("地址匹配应忽略首尾空格与端口差异")
 	}
 	if got, _ := bridge.sessionByAddressHost("172.28.25.99"); got != nil {
 		t.Fatal("未连接过的主机必须返回 nil")
 	}
 	// 无 address 的空会话不得被误命中
-	bridge.sessions["broken"] = &SSHSession{}
+	bridge.sessions["broken"] = &sshx.SSHSession{}
 	if got, _ := bridge.sessionByAddressHost(""); got != nil {
 		t.Fatal("空节点不得命中")
 	}
@@ -861,7 +863,7 @@ func TestLogCollectProgressArchiveExistsJSON(t *testing.T) {
 func TestBuildLogCollectCreateCommandP1Ticket(t *testing.T) {
 	const ticket = "p1.v1.eyJ2IjoxLCJjaWQiOiJRMjAyNjExMDMwMDI3OCJ9.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-	base := InMessage{
+	base := models.InMessage{
 		TicketNo:     "Q2026110300278",
 		Modules:      []string{"system"},
 		DateFrom:     "2026-11-02",

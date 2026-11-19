@@ -15,6 +15,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import CustomScenarioPanel from './components/CustomScenarioPanel.vue'
 import DefaultScenarioPanel from './components/DefaultScenarioPanel.vue'
 import LogUploadPanel from './components/LogUploadPanel.vue'
+import ScriptManagePanel from './components/ScriptManagePanel.vue'
 import {
   listScenarios,
   updateScenario,
@@ -23,7 +24,7 @@ import {
 } from '@/api/logCollectScenario'
 
 // 日志收集入口默认落在任务进展：管理员第一诉求是看任务状态，而不是改场景配置。
-const activeTab = ref<'upload' | 'default' | 'custom'>('upload')
+const activeTab = ref<'upload' | 'default' | 'custom' | 'script'>('upload')
 
 const rows = ref<LogCollectScenario[]>([])
 const loading = ref(false)
@@ -284,6 +285,11 @@ async function submitDetail() {
 
       <el-tab-pane label="自定义场景" name="custom" lazy>
         <CustomScenarioPanel />
+      </el-tab-pane>
+
+      <!-- 收集脚本：默认/自定义场景里「动作=脚本」的路径来源，与场景清单联动。 -->
+      <el-tab-pane label="收集脚本" name="script" lazy>
+        <ScriptManagePanel />
       </el-tab-pane>
     </el-tabs>
 

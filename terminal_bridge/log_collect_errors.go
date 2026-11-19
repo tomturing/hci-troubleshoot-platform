@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"terminal_bridge/internal/sshx"
 )
 
 const (
@@ -67,6 +68,15 @@ const (
 	// 主机键互斥（B3）：另一条链路正在同一台上写场景。不是环境故障，
 	// 等它完成重试即可，因此 retryable=true，责任在桥侧串行化而非客户。
 	ErrSpcHostBusy = "LC-SPC-011"
+
+	// ── SCRIPT：收集脚本覆写（create 之前的逐台写入）──────────────────────────
+	// 与 SPC 分开成层：失败点是 script/ 目录与脚本内容，不是场景清单；
+	// 混用 LC-SPC-* 会把「清单写坏了」和「脚本写坏了」压成同一个处置动作。
+	ErrScriptDirMissing    = "LC-SCRIPT-001"
+	ErrScriptBackupFailed  = "LC-SCRIPT-002"
+	ErrScriptWriteFailed   = "LC-SCRIPT-003"
+	ErrScriptRestoreFailed = "LC-SCRIPT-004"
+	ErrScriptAggregate     = "LC-SCRIPT-005"
 
 	ErrPlugInvalidTicket = "LC-PLUGIN-001"
 	ErrPlugInvalidModule = "LC-PLUGIN-002"
@@ -183,6 +193,12 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrExecStart:      {"EXEC", "customer", "true", "exec"},
 	ErrExecWait:       {"EXEC", "customer", "true", "exec"},
 
+	ErrScriptDirMissing:    {"SCRIPT", "customer", "manual", "create"},
+	ErrScriptBackupFailed:  {"SCRIPT", "customer", "manual", "create"},
+	ErrScriptWriteFailed:   {"SCRIPT", "customer", "manual", "create"},
+	ErrScriptRestoreFailed: {"SCRIPT", "customer", "manual", "create"},
+	ErrScriptAggregate:     {"SCRIPT", "customer", "manual", "create"},
+
 	ErrSpcDirMissing:     {"SPC", "customer", "manual", "create"},
 	ErrSpcDirAmbiguous:   {"SPC", "customer", "manual", "create"},
 	ErrSpcBackupFailed:   {"SPC", "customer", "manual", "create"},
@@ -267,6 +283,16 @@ func validationErrorCode(errType string) string {
 	case "invalid_task_id":
 		return ErrPlugInvalidTaskID
 	// SPC 扇出的内部短名 → 规范码。短名仍写进 error_type，便于按「哪一步失败」聚合。
+	case "script_dir_missing":
+		return ErrScriptDirMissing
+	case "script_backup_failed":
+		return ErrScriptBackupFailed
+	case "script_write_failed":
+		return ErrScriptWriteFailed
+	case "script_restore_failed":
+		return ErrScriptRestoreFailed
+	case "script_hosts_unknown":
+		return ErrPlugInvalidIPs
 	case "spc_dir_missing":
 		return ErrSpcDirMissing
 	case "spc_dir_ambiguous":
@@ -312,7 +338,7 @@ func execErrorCode(err error, exitCode int) string {
 	return ""
 }
 
-// logCollectErrorFields 返回可直接写入 OutMessage 的四个诊断字段。
+// logCollectErrorFields 返回可直接写入 models.OutMessage 的四个诊断字段。
 // 未知码返回空值，调用方仍会保留 error_type 与 message，不阻断主流程。
 func logCollectErrorFields(code string) (layer, owner, retryable string) {
 	meta, ok := logCollectErrorMeta[code]
@@ -428,7 +454,7 @@ func spcErrorDetail(output string, err error) string {
 	if s := spcOutputTail(output, 3, 200); s != "" {
 		parts = append(parts, s)
 	}
-	return truncateString(strings.Join(parts, " | "), 400)
+	return sshx.TruncateString(strings.Join(parts, " | "), 400)
 }
 
 // spcOutputTail 取输出末尾若干行，跳过空行与标记行。
@@ -441,7 +467,7 @@ func spcOutputTail(output string, maxLines, maxLen int) string {
 		if line == "" || strings.HasPrefix(line, "SPC_") {
 			continue
 		}
-		picked = append([]string{truncateString(line, maxLen)}, picked...)
+		picked = append([]string{sshx.TruncateString(line, maxLen)}, picked...)
 	}
 	return strings.Join(picked, " / ")
 }
