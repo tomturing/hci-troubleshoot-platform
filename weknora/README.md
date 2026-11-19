@@ -13,14 +13,15 @@ admin-ui 侧对应页面：`frontend/admin/src/views/KnowledgeBaseView.vue`，
 
 ## 为什么需要自建 UI 镜像
 
-上游 UI 是 vite 构建的 SPA，`vite.config.ts` 默认 `base='/'`，
+上游 UI 是 vite 构建的 SPA，默认 `base='/'`，
 静态资源引用（`/assets/*`）和 axios 的 baseURL（`getApiBaseUrl()` 取
-`import.meta.env.BASE_URL`）都固定在站点根。而本平台要把 WeKnora 挂在
+`import.meta.env.BASE_URL`）都指向站点根。而本平台要把 WeKnora 挂在
 `/weknora/` 子路径做同源内嵌：
 
 - 同源的好处：iframe 不需要跨域白名单，`embed` 的 CSP `frame-ancestors 'self'`
   直接成立，也不需要给集群再开一个域名或端口。
-- 上游已经提供了构建开关 `VITE_BASE_PATH`，因此**只需重跑一次前端构建**，
+- v0.9.0 的 `api-base.ts` 已读取 `BASE_URL`（上游为 LocalHub 反代合入的补丁），
+  因此**只需用 `vite build --base=/weknora/` 重跑一次前端构建**，
   运行期完全复用官方 `wechatopenai/weknora-ui` 镜像（nginx 配置、
   `/embed/` 的 `auth_request`、`/api` 反代、entrypoint 生成 `config.js` 都不改）。
 
@@ -79,11 +80,11 @@ Docker Hub，镜像必须先同步。
 
 ## 构建坑位
 
-`VITE_BASE_PATH` 必须由 CI 显式作为 build-arg 传入（workflow 已传）。
-若漏传，Dockerfile 的 ARG 会变成空串，vite 回落 `base='/'`：镜像构建成功、
+v0.9.0 的 `frontend/` 里**没有** `vite.config.ts`，设环境变量 `VITE_BASE_PATH` 完全无效。
+必须用 `npm run build -- --base=/weknora/`。若 `--base` 丢失，镜像照样构建成功、
 Pod Running、`/weknora/` 返回 200，但页面白屏且控制台报
 "Failed to load module script ... MIME type of text/html"。
-Dockerfile 已用 `${VITE_BASE_PATH:-/weknora/}` 兜底，双重保险不要删。
+Dockerfile 已用 `${VITE_BASE_PATH:-/weknora/}` 兜底，不要删。
 
 ## 已知边界
 

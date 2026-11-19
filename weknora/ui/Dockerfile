@@ -1,9 +1,9 @@
 # WeKnora 管理端 UI — 前缀部署定制镜像
 #
-# 上游 UI 用 vite 默认 base='/' 构建，静态资源与 axios baseURL 都固定在站点根，
-# 无法直接挂在 /weknora/ 子路径。上游因此暴露了 VITE_BASE_PATH 构建开关
-# （frontend/vite.config.ts: base: process.env.VITE_BASE_PATH || '/'），
-# 本 Dockerfile 只重跑一次前端构建，运行期仍用官方镜像：
+# 上游 UI 默认以站点根构建，静态资源与 axios baseURL 都指向根路径，
+# 无法直接挂在 /weknora/ 子路径。v0.9.0 的 api-base.ts 已读取
+# import.meta.env.BASE_URL（上游为 LocalHub 反向代理合入的补丁），
+# 因此用 vite 的 --base 参数重跑一次前端构建即可，运行期仍用官方镜像：
 #   - nginx 配置（/embed/ 的 auth_request + CSP、/api 反代）不动
 #   - entrypoint 仍会生成 config.js 并 envsubst 模板
 # 维护面因此收敛到「只换 /usr/share/nginx/html 里的 dist」。
@@ -33,14 +33,18 @@ WORKDIR /src/frontend
 # lockfile 固定了远程 SheetJS 归档及其完整性哈希，必须用 npm ci。
 RUN npm ci --registry="${NPM_REGISTRY}"
 
-# 用 :- 兜底而不是直接展开：CI 的 build-args 若漏传该参数，ARG 会退化为空串，
-# vite 随即回落到 base='/'，产物变成根路径资源——镜像照样构建成功，但页面
-# 白屏（模块脚本 MIME 变成 text/html）。这种失败极隐蔽，必须让默认值不可丢。
 ENV VITE_IS_DOCKER=true \
-    VITE_BASE_PATH="${VITE_BASE_PATH:-/weknora/}" \
     NODE_OPTIONS=--max-old-space-size=4096
 
-RUN npm run build
+# 前缀必须走 vite 原生的 --base CLI 参数，不能靠环境变量：
+#   - v0.9.0 的 frontend 目录里**没有** vite.config.ts（base 配置是 main 分支
+#     新增的），环境变量不会被读取；
+#   - 但 utils/api-base.ts 在 v0.9.0 已读取 import.meta.env.BASE_URL
+#     （上游为 LocalHub 反向代理合入的补丁），--base 会同时修正
+#     静态资源引用与 axios 的 /api 前缀，两者缺一不可。
+# 用 :- 兜底：build-arg 漏传时 vite 会静默回落 base='/'
+# ，镜像照样构建成功但页面白屏（模块脚本 MIME 变成 text/html），极难发现。
+RUN npm run build -- --base="${VITE_BASE_PATH:-/weknora/}"
 
 # ---------- 运行阶段 ----------
 FROM wechatopenai/weknora-ui:${WEKNORA_IMAGE_TAG}
