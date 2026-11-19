@@ -23,7 +23,6 @@ spec:
         releaseName: hci-platform-dsh-offline
         valueFiles:
           - $values/environments/staging/values.yaml
-          - $values/environments/staging/dsh-values.yaml
           - $values/environments/staging/dsh-offline-values.yaml
     - repoURL: https://github.com/tomturing/hci-platform-env.git
       targetRevision: main

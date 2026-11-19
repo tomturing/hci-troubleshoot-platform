@@ -88,6 +88,7 @@ compose-build-services:
 
 config-contract-check:
 	@UV_CACHE_DIR=$${TMPDIR:-/tmp}/hci-uv-cache uv run --frozen python scripts/verify/verify_config_contract.py $(if $(filter 1,$(REQUIRE_HELM)),--require-render,)
+	@UV_CACHE_DIR=$${TMPDIR:-/tmp}/hci-uv-cache uv run --frozen python scripts/verify/verify_dsh_config_contract.py $(if $(filter 1,$(REQUIRE_HELM)),--require-render,)
 
 dev-up: compose-check compose-network config-contract-check diagnosis-dev-keys diagnosis-sample-preflight
 	@echo "Starting PostgreSQL & Redis..."

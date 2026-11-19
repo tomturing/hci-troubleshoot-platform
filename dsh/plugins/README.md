@@ -52,6 +52,7 @@ dsh_cockpit-rules/
 | `deepseek-harness-wecom` | `0.1.34` | 企业微信通道；多于三个确认项时拆分多张卡片并保持同一会话答案状态 |
 | `deepseek-harness-session-bi` | `0.1.21` | 会话运营台账与规则包 |
 | `hci-offline-diagnosis-bundle` | `0.4.2` | HCI 单 Agent 离线诊断 Preset；移除 DSH 0.2.1 未提供的执行器插件 |
+| `dsh-ip-redactor` | `0.1.3` | 诊断输出 IP 脱敏插件；`engines.dsh` 要求 DSH `0.2.1-rc.3`，默认 `DSH_VERSION` 为 `rc.2` 时需显式升级后再启用 |
 
 这些 tgz 是构建上下文中的不可变本地制品；部署 values 必须使用精确文件名，禁止在
 容器启动时从 npm registry 解析浮动版本。

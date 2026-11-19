@@ -81,6 +81,9 @@ networkPolicy:
 # ======================== DSH 主容器 =========================================
 dsh:
   replicaCount: 1
+  # DSH profile 名称。旧实例与离线实例均默认使用 web，但必须由 values 显式承载，
+  # 这样 Compose 与 Helm 的实例配置才有可校验的共同语义，不依赖模板硬编码。
+  profile: web
   # DSH 当前版本包含 ARM64 不完整的 Node 原生 binding；实际环境由环境仓
   # 显式选择 amd64 节点，避免 Pod 被调度到 ARM64 后启动即退出。
   nodeSelector: {}
