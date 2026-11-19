@@ -1,9 +1,10 @@
 /**
- * acli 插件管理端 API。
+ * acli 插件管理端 API（仅规格维护）。
  *
- * 契约边界：页面只提交「插件规格 spec + 已登录 SSH 会话」。
- * 目标节点、SSH 凭据、bridge 地址与部署命令全部由平台服务端托管，
- * 这里不定义、不发送、不接收这些字段（服务端白名单会直接拒绝）。
+ * 契约边界：页面只提交「插件规格 spec」，服务端做规格校验并落成不可变
+ * revision；**插件到达节点不由本页驱动**——旧「保存并下发 + 浏览器连桥执行 +
+ * 任务轮询」链路已随链路收口删除（D1），节点收敛由客户侧 acli_sync 第二阶段
+ * 持票据拉取平台 manifest 完成（S4c）。页面不接触 SSH 口令/私钥，也不连桥。
  *
  * 鉴权走管理端 JWT，由网关 `require_admin` 校验后重签内部令牌。
  */
@@ -65,50 +66,24 @@ export interface AcliPluginTemplateResponse {
   forbidden_fields: string[]
 }
 
-/** custom-ui + terminal_bridge 当前已登录的 SSH 会话（可下发目标）。 */
-export interface AcliPluginSession {
-  case_id: string
-  node_ip: string
-  host: string
-  key: string
-}
-
 export interface AcliPluginItem {
   plugin_name: string
   display_name: string
   update_mode: string
-  current_spec_hash: string
+  // 平台不接收节点侧回传，因此没有「当前已生效 hash」这一列；
+  // 只有期望态（desired_spec_hash + revision）。
   desired_spec_hash: string
-  last_deploy_status: string
-  last_deploy_at: string | null
   enabled: boolean
   revision: number | null
   spec_json: AcliPluginSpec | null
   validation: { ok: boolean; errors: string[]; warnings: string[] } | null
 }
 
-export interface AcliPluginDeployment {
-  deploy_id: string
+export interface SaveSpecResult {
   plugin_name: string
-  revision: number
-  spec_hash: string
-  status: 'pending' | 'claimed' | 'running' | 'succeeded' | 'failed'
-  attempt: number
-  exec_id: string
-  trace_id: string
-  verification: Record<string, any>
-  bridge_result: Record<string, any>
-  error_code: string
-  error_message: string
-  created_at: string | null
-  finished_at: string | null
-}
-
-export interface PublishResult {
-  deploy_id: string
+  revision: number | null
   spec_hash: string
   status: string
-  idempotent: boolean
 }
 
 export async function getTemplate(): Promise<AcliPluginTemplateResponse> {
@@ -116,36 +91,15 @@ export async function getTemplate(): Promise<AcliPluginTemplateResponse> {
   return data as AcliPluginTemplateResponse
 }
 
-export async function listSessions(): Promise<AcliPluginSession[]> {
-  const { data } = await client.get(`${BASE}/sessions`)
-  return (data?.sessions ?? []) as AcliPluginSession[]
-}
-
 export async function listPlugins(): Promise<AcliPluginItem[]> {
   const { data } = await client.get(`${BASE}/plugins`)
   return (data?.plugins ?? []) as AcliPluginItem[]
 }
 
-/** 保存配置并自动下发；返回 deploy_id 用于页面轮询状态。 */
-export async function publishPlugin(spec: AcliPluginSpec, session: { caseId: string; nodeIp: string }): Promise<PublishResult> {
-  const { data } = await client.post(`${BASE}/plugins`, {
-    spec,
-    case_id: session.caseId,
-    node_ip: session.nodeIp,
-  })
-  return data as PublishResult
-}
-
-export async function listDeployments(pluginName: string, limit = 50): Promise<AcliPluginDeployment[]> {
-  const { data } = await client.get(
-    `${BASE}/plugins/${encodeURIComponent(pluginName)}/deployments?limit=${limit}`,
-  )
-  return (data?.deployments ?? []) as AcliPluginDeployment[]
-}
-
-export async function getDeployment(deployId: string): Promise<AcliPluginDeployment> {
-  const { data } = await client.get(`${BASE}/deployments/${encodeURIComponent(deployId)}`)
-  return data?.deployment as AcliPluginDeployment
+/** 仅保存规格：校验 → 不可变 revision；同一规格重复保存按 spec_hash 幂等。 */
+export async function saveSpec(spec: AcliPluginSpec): Promise<SaveSpecResult> {
+  const { data } = await client.post(`${BASE}/specs`, { spec })
+  return data as SaveSpecResult
 }
 
 /** 把新增插件信息模板下载为 JSON，供后续再次新增插件时填写。 */

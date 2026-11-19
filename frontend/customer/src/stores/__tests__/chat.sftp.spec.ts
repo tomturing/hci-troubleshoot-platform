@@ -48,6 +48,13 @@ vi.mock('@/services/acliManager', () => ({
   ensureAcliReady: vi.fn().mockResolvedValue(null),
 }))
 
+// 阶段二取票：不桩就会在“连上 SSH”时真发一次 HTTP。
+vi.mock('@/api/acliPluginSync', () => ({
+  platformRootUrl: () => 'http://localhost:3000',
+  requestAcliPluginTicket: vi.fn(),
+  resolveAcliPluginSyncCredentials: vi.fn().mockResolvedValue({ credentials: {}, error: '' }),
+}))
+
 function sentMessages(): Array<Record<string, unknown>> {
   return fakeSocket.sent
     .map((raw) => {

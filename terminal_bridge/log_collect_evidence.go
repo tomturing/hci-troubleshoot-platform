@@ -96,7 +96,7 @@ func configureEvidence(msg InMessage, customUI string) {
 	if strings.TrimSpace(msg.ExecID) == "" || strings.TrimSpace(msg.EvidenceTicket) == "" {
 		return
 	}
-	base, err := validatePlatformURL(msg.TransferPlatformURL)
+	base, err := validatePlatformURL(msg.PlatformURL)
 	if err != nil {
 		blog("WARN", "log_collect.evidence_disabled", "证据上报未启用：平台地址无效", msg.TraceID, msg.CaseID, msg.NodeIP, "", map[string]any{
 			"reason": err.Error(), "task_id": msg.ExecID,

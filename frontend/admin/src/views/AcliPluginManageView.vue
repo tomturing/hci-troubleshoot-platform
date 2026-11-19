@@ -1,30 +1,24 @@
 <script setup lang="ts">
 /**
- * acli 插件管理页。
+ * acli 插件管理页（仅规格维护）。
  *
- * 这是配置管理页，不是调试面板：只维护插件规格，保存后由平台服务端自动
- * 编排下发。页面全程不出现 node_ip / SSH 口令 / 私钥 / bridge 地址 / 部署命令，
- * 也不建立任何 WebSocket 连接。
+ * 页面只维护插件规格：列表 / 新建 / 编辑 / 下载信息模板。保存只落
+ * 不可变 revision，**不再下发、不轮询任务**——插件到达节点由客户侧
+ * acli_sync 第二阶段持票据拉取平台 manifest 驱动（链路收口 D1/S4c）。
+ * 页面不接触 SSH 口令 / 私钥，不连桥，也不选择目标环境。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Edit, Plus, Refresh } from '@element-plus/icons-vue'
 import {
   downloadTemplate,
-  getDeployment,
   getTemplate,
-  listDeployments,
-  listSessions,
   listPlugins,
-  publishPlugin,
-  type AcliPluginDeployment,
-  type AcliPluginSession,
+  saveSpec,
   type AcliPluginItem,
   type AcliPluginSpec,
   type AcliPluginTemplateResponse,
 } from '@/api/acliPlugin'
-
-type TagType = 'success' | 'warning' | 'danger' | 'info'
 
 function blankSpec(): AcliPluginSpec {
   return {
@@ -60,57 +54,24 @@ function blankSpec(): AcliPluginSpec {
 }
 
 const plugins = ref<AcliPluginItem[]>([])
-const sessions = ref<AcliPluginSession[]>([])
 const templateInfo = ref<AcliPluginTemplateResponse | null>(null)
 const loading = ref(false)
-const publishing = ref(false)
+const saving = ref(false)
 const formVisible = ref(false)
-const progressVisible = ref(false)
-const historyVisible = ref(false)
 const activeTab = ref('basic')
 const isEditing = ref(false)
-const selectedSessionKey = ref('')
 const form = ref<AcliPluginSpec>(blankSpec())
-const deployments = ref<AcliPluginDeployment[]>([])
-const selectedDeployment = ref<AcliPluginDeployment | null>(null)
-const currentDeployment = ref<AcliPluginDeployment | null>(null)
-const currentDeployId = ref('')
-const idempotent = ref(false)
-const historyPluginName = ref('')
-let polling = false
 
-const selectedSession = computed(() => sessions.value.find(item => item.key === selectedSessionKey.value) || null)
 const smokeHint = computed(() =>
   form.value.smoke_args
-    ? `设备侧将真实执行：/sf/bin/acli --timeout 60 ${form.value.plugin_name || '<插件名>'} ${form.value.smoke_args}`
+    ? `设备侧将由 acli_sync 第二阶段真实执行：/sf/bin/acli --timeout 60 ${form.value.plugin_name || '<插件名>'} ${form.value.smoke_args}`
     : '必须填写冒烟参数，只跑 --help 不算生效',
 )
 
-function statusTag(status?: string): TagType {
-  switch (status) {
-    case 'succeeded': return 'success'
-    case 'failed': return 'danger'
-    case 'running':
-    case 'claimed':
-    case 'pending': return 'warning'
-    default: return 'info'
-  }
-}
-
-function statusText(status?: string): string {
-  const mapping: Record<string, string> = {
-    never: '尚未下发',
-    pending: '等待下发',
-    claimed: '已领取',
-    running: '下发中',
-    succeeded: '已生效',
-    failed: '下发失败',
-  }
-  return mapping[status || ''] || status || '未知'
-}
-
-function isEffective(row: AcliPluginItem): boolean {
-  return Boolean(row.current_spec_hash) && row.current_spec_hash === row.desired_spec_hash
+function isPublished(row: AcliPluginItem): boolean {
+  // 保存即发布：有期望 revision 就算已发布。平台不接收节点侧回传（D1 删掉了
+  // 回执端点与下发表），因此本页只回答「期望态是什么」，不回答「节点上现在是什么」。
+  return Boolean(row.desired_spec_hash)
 }
 
 async function loadPlugins() {
@@ -124,36 +85,17 @@ async function loadPlugins() {
   }
 }
 
-/** 会话是 bridge 进程内的实时状态：登录/退出都会变，打开抽屉与展开下拉时都要重取。 */
-async function loadSessions() {
-  try {
-    sessions.value = await listSessions()
-    if (!sessions.value.some(item => item.key === selectedSessionKey.value)) {
-      // 原选项已失效（会话退出）或从未选择：回落到首个可用会话，避免提交过期 key。
-      selectedSessionKey.value = sessions.value.length ? sessions.value[0].key : ''
-    }
-  } catch {
-    ElMessage.warning('已登录会话列表加载失败，请确认 terminal_bridge 在线后重试')
-  }
-}
-
-/** 下拉展开即重取：用户可能刚在 custom-ui 里登录，缓存列表会过期。 */
-function handleSessionSelectVisible(visible: boolean) {
-  if (visible) void loadSessions()
-}
-
 async function loadMeta() {
   try {
-    const [, templateData] = await Promise.all([loadSessions(), getTemplate()])
-    templateInfo.value = templateData
+    templateInfo.value = await getTemplate()
   } catch {
-    ElMessage.warning('模板或环境列表加载失败，可稍后重试')
+    ElMessage.warning('模板加载失败，可稍后重试')
   }
 }
 
 function openCreate() {
   isEditing.value = false
-  // 新建时保留模板字段结构、清空示例值，避免误把 lmt 示例直接下发。
+  // 新建时保留模板字段结构、清空示例值，避免误把 lmt 示例直接保存。
   form.value = { ...blankSpec(), ...JSON.parse(JSON.stringify(templateInfo.value?.template ?? {})) }
   form.value.plugin_name = ''
   form.value.plugin_uuid = ''
@@ -167,7 +109,6 @@ function openCreate() {
   form.value.extra_files = []
   activeTab.value = 'basic'
   formVisible.value = true
-  void loadSessions()
 }
 
 function openEdit(row: AcliPluginItem) {
@@ -175,7 +116,6 @@ function openEdit(row: AcliPluginItem) {
   form.value = JSON.parse(JSON.stringify(row.spec_json ?? blankSpec()))
   activeTab.value = 'basic'
   formVisible.value = true
-  void loadSessions()
 }
 
 function addParameter() {
@@ -194,7 +134,7 @@ function removeExtraFile(index: number) {
   form.value.extra_files.splice(index, 1)
 }
 
-function validateBeforePublish(): boolean {
+function validateBeforeSave(): boolean {
   const spec = form.value
   if (!/^[a-z][a-z0-9_]{0,63}$/.test(spec.plugin_name)) {
     ElMessage.warning('插件名必须是小写字母开头的 [a-z0-9_] 标识')
@@ -221,94 +161,37 @@ function validateBeforePublish(): boolean {
     activeTab.value = 'basic'
     return false
   }
-  // 目标会话必须在弹二次确认之前就校验：否则用户确认覆盖后才发现没选环境，白白多点一次。
-  if (!selectedSession.value) {
-    ElMessage.warning('请先在 custom-ui 登录目标 HCI，使 terminal_bridge 存在已连接的 SSH 会话')
-    return false
-  }
   return true
 }
 
-async function handlePublish() {
-  if (!validateBeforePublish()) return
+async function handleSave() {
+  if (!validateBeforeSave()) return
   if (form.value.update_mode === 'builtin_override') {
     try {
       await ElMessageBox.confirm(
-        '将覆盖 HCI 出厂内置插件：保留 built_in / source / 原 id，强制备份原目录，冒烟失败自动回滚。请确认已填写现场注册项原 id 与变更说明。',
+        '将覆盖 HCI 出厂内置插件规格：保留 built_in / source / 原 id。客户侧 acli_sync 收敛时设备侧会强制备份原目录、冒烟失败自动回滚。请确认已填写现场注册项原 id 与变更说明。',
         '覆盖内置插件确认',
-        { type: 'warning', confirmButtonText: '确认覆盖并下发', cancelButtonText: '取消' },
+        { type: 'warning', confirmButtonText: '确认保存规格', cancelButtonText: '取消' },
       )
     } catch {
       return
     }
   }
-  publishing.value = true
+  saving.value = true
   try {
-    // validateBeforePublish 已保证 selectedSession 存在；这里只做类型收窄。
-    const session = selectedSession.value
-    if (!session) return
-    const result = await publishPlugin(form.value, {
-      caseId: session.case_id,
-      nodeIp: session.node_ip,
-    })
-    currentDeployId.value = result.deploy_id
-    idempotent.value = result.idempotent
-    currentDeployment.value = null
+    const result = await saveSpec(form.value)
+    if (result.revision == null) {
+      ElMessage.info('规格未变化（同一 spec_hash 幂等复用原 revision）')
+    } else {
+      ElMessage.success(`规格已保存为 r${result.revision}，将在客户下次触发 acli 同步时收敛到节点`)
+    }
     formVisible.value = false
-    progressVisible.value = true
-    await pollDeployment(result.deploy_id)
     await loadPlugins()
   } catch (error: any) {
     const errors = error?.response?.data?.detail?.errors
-    ElMessage.error(Array.isArray(errors) ? errors.join('；') : '保存并下发失败')
+    ElMessage.error(Array.isArray(errors) ? errors.join('；') : '保存规格失败')
   } finally {
-    publishing.value = false
-  }
-}
-
-async function pollDeployment(deployId: string) {
-  polling = true
-  for (let attempt = 0; attempt < 80 && polling; attempt += 1) {
-    if (!progressVisible.value) break
-    try {
-      const deployment = await getDeployment(deployId)
-      currentDeployment.value = deployment
-      if (deployment.status === 'succeeded') {
-        ElMessage.success('插件已在目标环境实时生效')
-        polling = false
-        return
-      }
-      if (deployment.status === 'failed') {
-        ElMessage.error(`下发失败：${deployment.error_code || '未知原因'}`)
-        polling = false
-        return
-      }
-    } catch {
-      // 状态接口尚未就绪时继续轮询，由后台状态机保证收敛。
-    }
-    await new Promise(resolve => setTimeout(resolve, 1500))
-  }
-  polling = false
-  ElMessage.warning('仍在下发中，可在「下发历史」里继续查看')
-}
-
-async function openHistoryByName(pluginName: string) {
-  historyPluginName.value = pluginName
-  selectedDeployment.value = null
-  historyVisible.value = true
-  try {
-    deployments.value = await listDeployments(pluginName)
-  } catch {
-    ElMessage.error('加载下发历史失败')
-  }
-}
-
-async function showDeployment(row: AcliPluginDeployment) {
-  selectedDeployment.value = row
-  try {
-    selectedDeployment.value = await getDeployment(row.deploy_id)
-  } catch {
-    // 列表已是最新回执，详情失败时保留列表行。
+    saving.value = false
   }
 }
 
@@ -326,10 +209,6 @@ onMounted(() => {
   void loadPlugins()
   void loadMeta()
 })
-
-onBeforeUnmount(() => {
-  polling = false
-})
 </script>
 
 <template>
@@ -337,7 +216,7 @@ onBeforeUnmount(() => {
     <div class="page-header">
       <div>
         <h2>acli 插件</h2>
-        <p class="subtitle">维护 HCI acli 插件规格，保存后由平台自动下发并在目标环境实时生效</p>
+        <p class="subtitle">维护 HCI acli 插件规格；保存即发布，节点收敛由客户侧 acli 同步（第二阶段）自动完成</p>
       </div>
       <div class="header-actions">
         <el-button :icon="Download" @click="handleDownloadTemplate">下载信息模板</el-button>
@@ -347,8 +226,10 @@ onBeforeUnmount(() => {
     </div>
 
     <el-alert type="info" :closable="false" show-icon class="boundary-hint">
-      <template #title>插件规格与目标环境分离</template>
-      页面只维护插件本身的信息；目标节点、SSH 凭据与下发通道由平台服务端托管，不在页面填写或展示。
+      <template #title>插件规格是平台唯一事实源</template>
+      页面只维护插件本身的信息；目标节点、SSH 凭据与下发通道不在本页出现。插件何时到达节点，
+      完全由客户在 custom-ui 连接 HCI 后触发的 acli_sync 第二阶段（拉取平台 manifest、差量收敛）决定。
+      本页因此不展示节点实际状态：要看收敛结果，到 custom-ui 的「插件同步」回执或桥日志核对。
     </el-alert>
 
     <el-card shadow="never" class="table-card">
@@ -365,27 +246,21 @@ onBeforeUnmount(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="生效状态" width="120">
+        <el-table-column label="规格" width="120">
           <template #default="{ row }">
-            <el-tag :type="isEffective(row) ? 'success' : 'warning'" size="small">
-              {{ isEffective(row) ? '已生效' : '待下发' }}
+            <el-tag :type="isPublished(row) ? 'success' : 'info'" size="small">
+              {{ isPublished(row) ? `已发布 r${row.revision ?? '-'}` : '未发布' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最近下发" width="130">
+        <el-table-column prop="spec_hash" label="spec_hash" min-width="140">
           <template #default="{ row }">
-            <el-tag :type="statusTag(row.last_deploy_status)" size="small">
-              {{ statusText(row.last_deploy_status) }}
-            </el-tag>
+            <span class="hash-cell" :title="row.desired_spec_hash">{{ (row.desired_spec_hash || '').slice(0, 12) || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="last_deploy_at" label="下发时间" min-width="170">
-          <template #default="{ row }">{{ row.last_deploy_at || '-' }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="170" fixed="right">
+        <el-table-column label="操作" width="100" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" :icon="Edit" @click="openEdit(row)">编辑</el-button>
-            <el-button link type="info" @click="openHistoryByName(row.plugin_name)">下发历史</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -412,7 +287,7 @@ onBeforeUnmount(() => {
                 <el-radio-button value="builtin_override">覆盖内置插件</el-radio-button>
               </el-radio-group>
               <div v-if="form.update_mode === 'builtin_override'" class="field-hint warning">
-                覆盖出厂插件需二次确认；平台会强制备份并在冒烟失败时回滚。
+                覆盖出厂插件需二次确认；客户侧收敛时设备侧会强制备份并在冒烟失败时回滚。
               </div>
             </el-form-item>
             <el-form-item v-if="form.update_mode === 'builtin_override'" label="现场注册项原 id" required>
@@ -478,7 +353,7 @@ onBeforeUnmount(() => {
               <el-input v-model="form.smoke_args" placeholder="-m env -c cpu_load" />
               <div class="field-hint">{{ smokeHint }}</div>
             </el-form-item>
-            <el-form-item label="下发超时(秒)">
+            <el-form-item label="执行超时(秒)">
               <el-input-number v-model="form.timeout_seconds" :min="1" :max="300" />
             </el-form-item>
             <el-form-item label="Tab 补全"><el-switch v-model="form.enable_completion" /></el-form-item>
@@ -488,7 +363,7 @@ onBeforeUnmount(() => {
 
           <el-tab-pane label="校验与预览" name="review">
             <el-alert type="success" :closable="false" show-icon title="平台服务端负责的校验">
-              保存时会校验 manifest 15 字段、逐文件 SHA-256、wrapper 透传、注册表原子更新，
+              保存时会校验 manifest 15 字段、逐文件 SHA-256、wrapper 透传、注册项结构，
               并生成不可变 spec_hash；页面不做最终校验，也不组装部署命令。
             </el-alert>
             <el-divider content-position="left">manifest.json 必填字段</el-divider>
@@ -509,91 +384,18 @@ onBeforeUnmount(() => {
                 {{ field }}
               </el-tag>
             </div>
-            <p class="field-hint">这些字段由服务端环境表与 Secret 解析，页面不收集、不展示、不落库。</p>
+            <p class="field-hint">这些字段属于运行环境，页面不收集、服务端规格也不保存。</p>
           </el-tab-pane>
         </el-tabs>
       </el-form>
 
       <template #footer>
         <div class="drawer-footer">
-          <span class="env-label">目标会话</span>
-          <el-select
-            v-model="selectedSessionKey"
-            style="width: 260px"
-            placeholder="custom-ui 已登录的 HCI"
-            @visible-change="handleSessionSelectVisible"
-          >
-            <el-option
-              v-for="item in sessions"
-              :key="item.key"
-              :label="`${item.case_id} · ${item.node_ip}`"
-              :value="item.key"
-            />
-          </el-select>
           <span class="footer-spacer" />
           <el-button @click="formVisible = false">取消</el-button>
-          <el-button type="primary" :loading="publishing" @click="handlePublish">保存并下发</el-button>
+          <el-button type="primary" :loading="saving" @click="handleSave">保存规格</el-button>
         </div>
       </template>
-    </el-drawer>
-
-    <el-dialog v-model="progressVisible" title="下发进度" width="600px" :close-on-click-modal="false">
-      <p class="progress-hint">配置已保存，平台服务端正在通过 terminal_bridge 下发到目标环境。</p>
-      <el-descriptions :column="2" border>
-        <el-descriptions-item label="下发任务">{{ currentDeployId }}</el-descriptions-item>
-        <el-descriptions-item label="重复保存">{{ idempotent ? '幂等复用原任务' : '新任务' }}</el-descriptions-item>
-        <el-descriptions-item label="状态">
-          <el-tag :type="statusTag(currentDeployment?.status)" size="small">
-            {{ statusText(currentDeployment?.status) }}
-          </el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="trace_id">{{ currentDeployment?.trace_id || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="错误码">{{ currentDeployment?.error_code || '-' }}</el-descriptions-item>
-        <el-descriptions-item label="重试次数">{{ currentDeployment?.attempt ?? '-' }}</el-descriptions-item>
-      </el-descriptions>
-      <div v-if="currentDeployment?.verification?.smoke_output" class="smoke-output">
-        <div class="smoke-title">设备侧冒烟输出</div>
-        <pre>{{ currentDeployment.verification.smoke_output }}</pre>
-      </div>
-      <template #footer>
-        <el-button @click="progressVisible = false">关闭</el-button>
-        <el-button type="primary" @click="openHistoryByName(form.plugin_name)">
-          查看下发历史
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <el-drawer v-model="historyVisible" :title="`下发历史 · ${historyPluginName}`" size="62%">
-      <el-table :data="deployments" row-key="deploy_id" empty-text="暂无下发记录" @row-click="showDeployment">
-        <el-table-column prop="deploy_id" label="下发任务" min-width="220" />
-        <el-table-column label="状态" width="110">
-          <template #default="{ row }">
-            <el-tag :type="statusTag(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="env_code" label="环境" width="90" />
-        <el-table-column prop="attempt" label="尝试" width="80" />
-        <el-table-column prop="error_code" label="错误码" min-width="140" />
-        <el-table-column prop="created_at" label="创建时间" min-width="170" />
-      </el-table>
-      <div v-if="selectedDeployment" class="detail-panel">
-        <el-divider content-position="left">任务回执详情</el-divider>
-        <el-descriptions :column="2" border>
-          <el-descriptions-item label="exec_id">{{ selectedDeployment.exec_id || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="trace_id">{{ selectedDeployment.trace_id || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="spec_hash">{{ selectedDeployment.spec_hash }}</el-descriptions-item>
-          <el-descriptions-item label="退出码">
-            {{ selectedDeployment.bridge_result?.exit_code ?? '-' }}
-          </el-descriptions-item>
-          <el-descriptions-item label="错误说明" :span="2">
-            {{ selectedDeployment.error_message || '-' }}
-          </el-descriptions-item>
-        </el-descriptions>
-        <div v-if="selectedDeployment.verification?.smoke_output" class="smoke-output">
-          <div class="smoke-title">设备侧冒烟输出</div>
-          <pre>{{ selectedDeployment.verification.smoke_output }}</pre>
-        </div>
-      </div>
     </el-drawer>
   </div>
 </template>
@@ -607,16 +409,11 @@ onBeforeUnmount(() => {
 .boundary-hint { margin-bottom: 16px; }
 .table-card { border-radius: 10px; }
 .drawer-footer { display: flex; align-items: center; gap: 12px; }
-.env-label { color: #4b5563; font-size: 13px; }
 .footer-spacer { flex: 1; }
 .field-hint { margin-top: 4px; color: #909399; font-size: 12px; line-height: 1.5; }
 .field-hint.warning { color: #b45309; }
 .dynamic-row { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
 .tag-cloud { display: flex; flex-wrap: wrap; gap: 6px; }
 .code-editor :deep(textarea) { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
-.progress-hint { margin: 0 0 14px; color: #6b7280; font-size: 13px; }
-.smoke-output { margin-top: 16px; }
-.smoke-title { margin-bottom: 6px; color: #374151; font-size: 13px; font-weight: 600; }
-.smoke-output pre { max-height: 220px; overflow: auto; padding: 12px; border-radius: 6px; background: #f5f7fa; font-size: 12px; white-space: pre-wrap; }
-.detail-panel { margin-top: 18px; }
+.hash-cell { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #6b7280; }
 </style>

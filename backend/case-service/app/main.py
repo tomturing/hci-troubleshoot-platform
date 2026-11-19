@@ -30,8 +30,6 @@ from app.routes import (
     log_collect_evidence,
     log_collect_scenarios,
 )
-from app.services.acli_plugin_bridge import AcliPluginBridgeClient
-from app.services.acli_plugin_relay import AcliPluginDeployRelay, SqlAcliPluginStore
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
@@ -62,7 +60,7 @@ async def lifespan(app: FastAPI):
     # 「Database not initialized」（2026-11-02 staging 实测），故同时保留
     # get_session 里从 app.state 兜底的逻辑，双保险。
     case_insights.set_database_manager(database_manager)
-    # acli 插件管理端：保存配置 → 不可变 revision → pending 下发任务
+    # acli 插件管理端：保存规格 → 不可变 revision（下发链路已随链路收口 D1 删除）
     acli_plugins.set_database_manager(database_manager)
 
     # 接管上一个进程遗留的代传（发布/重启/OOM 后不靠人工干预）：
@@ -72,31 +70,10 @@ async def lifespan(app: FastAPI):
     # 根本看不到它（2026-11-04 Q2026110400024 因此卡在 228/723 共 43 分钟）。
     relay_reconcile = asyncio.create_task(log_collect.reconcile_relays_loop())
 
-    # acli 插件下发：目标为 custom-ui + terminal_bridge 已登录会话，
-    # 服务端不持有 SSH 凭据、不新建 SSH 连接，只复用已存在会话执行。
-    acli_plugin_reconcile = None
-    if settings.ACLI_PLUGIN_RELAY_ENABLED:
-        acli_plugin_relay = AcliPluginDeployRelay(
-            store=SqlAcliPluginStore(database_manager),
-            bridge_client=AcliPluginBridgeClient(),
-            default_bridge_url=settings.ACLI_PLUGIN_BRIDGE_URL,
-            lease_seconds=settings.ACLI_PLUGIN_LEASE_SECONDS,
-            max_attempts=settings.ACLI_PLUGIN_MAX_ATTEMPTS,
-            deploy_timeout=settings.ACLI_PLUGIN_DEPLOY_TIMEOUT_SECONDS,
-        )
-        acli_plugin_reconcile = asyncio.create_task(
-            acli_plugin_relay.reconcile_loop(interval=settings.ACLI_PLUGIN_RELAY_INTERVAL_SECONDS),
-            name="acli-plugin-reconcile",
-        )
-
     yield
 
     # 关闭
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
-    if acli_plugin_reconcile is not None:
-        acli_plugin_reconcile.cancel()
-        with suppress(asyncio.CancelledError):
-            await acli_plugin_reconcile
     relay_reconcile.cancel()
     with suppress(asyncio.CancelledError):
         await relay_reconcile
@@ -117,6 +94,10 @@ register_exception_handlers(app)
 
 # 注册路由
 app.include_router(acli_plugins.admin_router)
+# acli_sync 第二阶段（S4c）：客户面取票 + 桥持票拉 manifest / 下载包。
+# sync_router 不继承管理令牌依赖，只认短期只读票据（fail-closed 401）。
+app.include_router(acli_plugins.client_router)
+app.include_router(acli_plugins.sync_router)
 app.include_router(cases.router)
 app.include_router(environments.router)
 app.include_router(log_collect.router)

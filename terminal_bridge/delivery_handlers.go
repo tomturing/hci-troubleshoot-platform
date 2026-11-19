@@ -72,7 +72,7 @@ func (b *Bridge) handleDeliverySubmit(ws *websocket.Conn, msg InMessage, cui str
 		})
 		return
 	}
-	platformURL, err := validatePlatformURL(msg.TransferPlatformURL)
+	platformURL, err := validatePlatformURL(msg.PlatformURL)
 	if err != nil {
 		sendMsg(ws, OutMessage{
 			Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit",

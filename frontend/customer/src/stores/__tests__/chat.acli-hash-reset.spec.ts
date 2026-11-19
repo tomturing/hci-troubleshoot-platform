@@ -16,11 +16,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-const { ensureAcliReadyMock } = vi.hoisted(() => ({
+const { ensureAcliReadyMock, resolveCredentialsMock } = vi.hoisted(() => ({
   ensureAcliReadyMock: vi.fn(),
+  resolveCredentialsMock: vi.fn(),
 }))
 
 vi.mock('@/services/acliManager', () => ({ ensureAcliReady: ensureAcliReadyMock }))
+
+// 阶段二取票：在 store 边界上桩掉。“连接后总是要同步”现在多了一步 HTTP，
+// 不桩就会把用例挂在真实 axios 上。
+vi.mock('@/api/acliPluginSync', () => ({
+  platformRootUrl: () => 'https://platform.example',
+  requestAcliPluginTicket: vi.fn(),
+  resolveAcliPluginSyncCredentials: resolveCredentialsMock,
+}))
 
 vi.mock('@hci/shared', () => ({
   createApiClient: () => ({
@@ -90,6 +99,10 @@ describe('chat store - acli 安装后生效动作', () => {
     localStorage.clear()
     setActivePinia(createPinia())
     ensureAcliReadyMock.mockReset()
+    // 默认“本次没有阶段二凭据”（等价于取票失败），让其余用例只关心 hash -r；
+    // 逐例可覆写。mockReset 会把上一条用例留下的 mockResolvedValue 一并清掉。
+    resolveCredentialsMock.mockReset()
+    resolveCredentialsMock.mockResolvedValue({ credentials: {}, error: '' })
   })
 
   afterEach(() => {
@@ -146,5 +159,38 @@ describe('chat store - acli 安装后生效动作', () => {
 
     expect(result).toBeNull()
     expect(ensureAcliReadyMock).not.toHaveBeenCalled()
+  })
+
+  // 收口设计 S4b：插件期望态只在 acli_sync 里拉。连接后的后台同步必须把按工单
+  // 签发的凭据一路带到报文选项里——不带来，阶段二在生产环境里永远不会跑。
+  it('后台同步带上阶段二凭据（按当前工单取票）', async () => {
+    resolveCredentialsMock.mockResolvedValue({
+      credentials: { platformUrl: 'https://platform.example', pluginTicket: 'tk-3' },
+      error: '',
+    })
+    ensureAcliReadyMock.mockResolvedValue({ status: 'up_to_date', version: '1.0.1' })
+    const { store } = await setup()
+
+    await store.checkAndSyncAcli()
+
+    expect(resolveCredentialsMock).toHaveBeenCalledWith('Q2026102300001')
+    const options = ensureAcliReadyMock.mock.calls[0][3]
+    expect(options.nodeIp).toBe('10.10.1.21')
+    expect(options.platformUrl).toBe('https://platform.example')
+    expect(options.pluginTicket).toBe('tk-3')
+  })
+
+  it('取票失败只降级不阻断：阶段一照旧执行，且不送半套凭据', async () => {
+    resolveCredentialsMock.mockResolvedValue({ credentials: {}, error: '404 case 不存在' })
+    ensureAcliReadyMock.mockResolvedValue({ status: 'installed', version: '1.0.1' })
+    const { store } = await setup()
+    store.showTerminalSidebar = false
+
+    const result = await store.checkAndSyncAcli()
+
+    expect(result?.status).toBe('installed')
+    const options = ensureAcliReadyMock.mock.calls[0][3]
+    expect(options.platformUrl).toBeUndefined()
+    expect(options.pluginTicket).toBeUndefined()
   })
 })

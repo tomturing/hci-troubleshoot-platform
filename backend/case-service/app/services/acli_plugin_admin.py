@@ -1,11 +1,9 @@
-"""acli 插件管理端服务：保存配置即创建下发任务。
+"""acli 插件管理端服务：保存规格即创建不可变 revision。
 
-职责：把 admin-ui 提交的插件规格收敛成不可变 revision，写入事实源，并创建
-``pending`` 下发任务交给 ``AcliPluginDeployRelay``。页面只传规格与环境代号，
-不传 node_ip / 凭据 / bridge 地址；环境表里的目标是服务端解析的。
-
-幂等：同一 ``spec_hash`` + 环境已有进行中或已成功且 ``current_spec_hash``
-已对齐的任务时，直接返回原 ``deploy_id``，不重复写 HCI。
+职责：把 admin-ui 提交的插件规格收敛成不可变 revision，写入事实源。
+**插件到达节点不再由本服务驱动**：旧下发链路（部署任务/回报/轮询）已随链路收口
+删除，节点收敛改由客户侧 acli_sync 第二阶段拉取平台 manifest 驱动（S4c）。
+页面只传规格，不传口令 / 私钥 / bridge 地址，也不再传目标会话。
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ from typing import Any
 
 from app.domain.acli_plugin_spec import (
     build_descriptor,
+    compile_descriptor,
     normalize_spec,
     validate_descriptor,
     validate_spec,
@@ -30,22 +29,18 @@ class AdminValidationError(ValueError):
         super().__init__("; ".join(errors))
 
 
-def prepare_publication(
+def prepare_spec(
     raw_spec: dict[str, Any],
     *,
-    env_code: str,
     actor: str = "",
-    deploy_id: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """纯函数：校验规格并算出本次发布的全部确定性输入。"""
-    if not env_code or not env_code.strip():
-        raise AdminValidationError(["env_code 必填"])
+    """纯函数：校验规格并算出本次保存的全部确定性输入。"""
     spec = normalize_spec(raw_spec)
     validation = validate_spec(spec)
     if not validation["ok"]:
         raise AdminValidationError(validation["errors"])
-    descriptor = build_descriptor(spec, deploy_id=deploy_id, now=now)
+    descriptor = build_descriptor(spec, now=now)
     descriptor_check = validate_descriptor(descriptor)
     if not descriptor_check["ok"]:
         raise AdminValidationError(descriptor_check["errors"])
@@ -53,26 +48,19 @@ def prepare_publication(
         "spec": spec,
         "validation": validation,
         "spec_hash": descriptor["spec_hash"],
-        "deploy_id": descriptor["deploy_id"],
         "plugin_name": spec["plugin_name"],
         "display_name": str(spec.get("display_name") or spec["plugin_name"]),
         "update_mode": str(spec["update_mode"]),
-        "env_code": env_code.strip(),
         "actor": actor,
-        "smoke_command": descriptor["smoke_command"],
-        "verify_commands": descriptor["verify_commands"],
+        # 编译产物随 revision 一起固化：manifest 端点因此零重算直出。
+        # 必须在保存时定稿而不是每次现算——``register_item.last_updated_at``
+        # 取的是构建时刻，同一条 revision 反复重算会让节点侧「无修改」永远判不出来。
+        "compiled": compile_descriptor(descriptor),
     }
 
 
-# 回显给管理端的列：刻意排除 node_ip / lease_owner 等服务端内部字段，
-# 保证页面既不能提交、也不会读到目标主机地址。
-_DEPLOYMENT_COLUMNS = """deploy_id, plugin_name, revision, spec_hash, env_code, status,
-    attempt, exec_id, trace_id, verification, bridge_result,
-    error_code, error_message, created_at, finished_at"""
-
-
 class AcliPluginAdminStore:
-    """管理端持久化；所有 SQL 在同一事务内提交，避免「有规格没任务」。"""
+    """管理端持久化；所有 SQL 在同一事务内提交，避免「有规格没档案」。"""
 
     def __init__(self, db: Any) -> None:
         self._db = db
@@ -93,76 +81,23 @@ class AcliPluginAdminStore:
             await session.commit()
             return results
 
-    async def save_and_publish(self, prepared: dict[str, Any]) -> dict[str, Any]:
-        # 目标来自 custom-ui + terminal_bridge 当前已登录会话，不查静态环境白名单。
-        env_code = str(prepared.get("target_case_id") or prepared["env_code"])
-        target_node_ip = str(prepared.get("target_node_ip") or "")
-        if not env_code or not target_node_ip:
-            raise AdminValidationError(["目标会话无效：请先从 bridge 已登录会话列表选择"])
+    async def save_spec(self, prepared: dict[str, Any]) -> dict[str, Any]:
+        """仅保存规格：写不可变 revision + 更新插件档案，不创建任何下发任务。
+
+        同一 ``spec_hash`` 重复保存命中 ON CONFLICT DO NOTHING，revision 不重复增长；
+        幂等返回当前版本号供页面展示。
+        """
         spec_hash = prepared["spec_hash"]
         plugin_name = prepared["plugin_name"]
-
-        env = {"node_ip": target_node_ip}
-
-        # 幂等判定拆成两段（原实现把两件事塞进一条 SQL 才出的 bug）：
-        #   (a) in-flight：同一 spec 正在下发 → 复用 deploy_id。
-        #       不能带 current_spec_hash——它只在成功后推进，带上会让"首次未成功"的
-        #       重复提交不命中，同一脚本排队执行两次。
-        #   (b) succeeded：只有节点当前态确实等于该规格才算完成态幂等。
-        # force=True 跳过 (b)：acli 重装会清空插件目录，节点被清空后管理员必须能重发。
-        force = bool(prepared.get("force"))
-        params = {"plugin_name": plugin_name, "spec_hash": spec_hash, "env_code": env_code}
-        checks: list[tuple[str, dict[str, Any]]] = []
-        if not force:
-            checks = [
-                (
-                    """
-                    SELECT d.deploy_id, d.status
-                      FROM acli_plugin_deployment d
-                     WHERE d.plugin_name = :plugin_name
-                       AND d.spec_hash = :spec_hash
-                       AND d.env_code = :env_code
-                       AND d.status IN ('pending', 'claimed', 'running')
-                     ORDER BY d.created_at DESC
-                     LIMIT 1
-                    """,
-                    params,
-                ),
-                (
-                    """
-                    SELECT d.deploy_id, d.status
-                      FROM acli_plugin_deployment d
-                      JOIN acli_plugin p ON p.plugin_name = d.plugin_name
-                     WHERE d.plugin_name = :plugin_name
-                       AND d.spec_hash = :spec_hash
-                       AND d.env_code = :env_code
-                       AND d.status = 'succeeded'
-                       AND p.current_spec_hash = :spec_hash
-                     ORDER BY d.created_at DESC
-                     LIMIT 1
-                    """,
-                    params,
-                ),
-            ]
-        existing = await self._script(checks) if checks else []
-        for rows in existing:
-            if not rows:
-                continue
-            row = rows[0]
-            return {
-                "deploy_id": row["deploy_id"],
-                "spec_hash": spec_hash,
-                "status": row["status"],
-                "idempotent": True,
-                "env_code": env_code,
-            }
-
         spec_json = json.dumps(prepared["spec"], ensure_ascii=False, sort_keys=True)
-        validation_json = json.dumps(prepared["validation"], ensure_ascii=False)
+        # validation 里并入 compiled：revision 行的 validation 因此同时是
+        # 「校验回执 + 编译产物」，阶段二 manifest 直接读它，不再重算。
+        validation_payload = {**prepared["validation"], "compiled": prepared["compiled"]}
+        validation_json = json.dumps(validation_payload, ensure_ascii=False)
         # asyncpg 会为同一绑定参数在不同位置推断出不同类型（INSERT 值位置是
         # varchar，WHERE 比较位置是 text），复用同名参数会触发
         # AmbiguousParameterError。子查询一律用独立参数并显式 CAST 收敛类型。
-        await self._script(
+        rows = await self._script(
             [
                 (
                     """
@@ -207,32 +142,20 @@ class AcliPluginAdminStore:
                 ),
                 (
                     """
-                    INSERT INTO acli_plugin_deployment
-                        (deploy_id, plugin_name, revision, spec_hash, env_code, node_ip, status)
-                    SELECT CAST(:deploy_id AS varchar), CAST(:plugin_name AS varchar),
-                           COALESCE((SELECT MAX(revision) FROM acli_plugin_spec
-                                      WHERE spec_hash = CAST(:revision_spec_hash AS varchar)), 1),
-                           CAST(:spec_hash AS varchar), CAST(:env_code AS varchar),
-                           CAST(:node_ip AS varchar), 'pending'
-                    RETURNING deploy_id, status
+                    SELECT revision FROM acli_plugin_spec
+                     WHERE plugin_name = CAST(:plugin_name AS varchar)
+                       AND spec_hash = CAST(:spec_hash AS varchar)
                     """,
-                    {
-                        "deploy_id": prepared["deploy_id"],
-                        "plugin_name": plugin_name,
-                        "revision_spec_hash": spec_hash,
-                        "spec_hash": spec_hash,
-                        "env_code": env_code,
-                        "node_ip": env["node_ip"],
-                    },
+                    {"plugin_name": plugin_name, "spec_hash": spec_hash},
                 ),
             ]
         )
+        revision = rows[2][0]["revision"] if rows and rows[2] else None
         return {
-            "deploy_id": prepared["deploy_id"],
+            "plugin_name": plugin_name,
+            "revision": revision,
             "spec_hash": spec_hash,
-            "status": "pending",
-            "idempotent": False,
-            "env_code": env_code,
+            "status": "saved",
         }
 
     async def list_plugins(self) -> list[dict[str, Any]]:
@@ -241,8 +164,7 @@ class AcliPluginAdminStore:
                 (
                     """
                     SELECT p.plugin_name, p.display_name, p.update_mode,
-                           p.current_spec_hash, p.desired_spec_hash,
-                           p.last_deploy_status, p.last_deploy_at, p.enabled,
+                           p.desired_spec_hash, p.enabled,
                            s.revision, s.spec_json, s.validation
                       FROM acli_plugin p
                       LEFT JOIN LATERAL (
@@ -260,36 +182,34 @@ class AcliPluginAdminStore:
         )
         return rows[0]
 
-    async def list_deployments(self, plugin_name: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    async def list_desired(self) -> list[dict[str, Any]]:
+        """阶段二期望态：启用插件的「期望 revision」固化编译产物。
+
+        故意按 ``desired_spec_hash`` 而不是「最新 revision」取：保存失败或回滚
+        期望指针时，manifest 不能把未生效的 revision 发给节点；两边同一口径
+        （档案指针 + 命中该 hash 的 revision）才能保证拉到的就是管理员确认过的期望态。
+        """
         rows = await self._script(
             [
                 (
-                    f"""
-                    SELECT {_DEPLOYMENT_COLUMNS} FROM acli_plugin_deployment
-                     WHERE plugin_name = :plugin_name
-                     ORDER BY created_at DESC
-                     LIMIT :limit
+                    """
+                    SELECT p.plugin_name, p.desired_spec_hash, s.revision, s.spec_json, s.validation
+                      FROM acli_plugin p
+                      LEFT JOIN LATERAL (
+                          SELECT revision, spec_json, validation
+                            FROM acli_plugin_spec sp
+                           WHERE sp.plugin_name = p.plugin_name
+                             AND sp.spec_hash = p.desired_spec_hash
+                           LIMIT 1
+                      ) s ON true
+                     WHERE p.enabled = true
+                     ORDER BY p.plugin_name
                     """,
-                    {"plugin_name": plugin_name, "limit": limit},
+                    {},
                 )
             ]
         )
         return rows[0]
 
-    async def get_deployment(self, deploy_id: str) -> dict[str, Any] | None:
-        rows = await self._script(
-            [
-                (
-                    f"SELECT {_DEPLOYMENT_COLUMNS} FROM acli_plugin_deployment WHERE deploy_id = :deploy_id",
-                    {"deploy_id": deploy_id},
-                )
-            ]
-        )
-        return rows[0][0] if rows and rows[0] else None
 
-    async def list_environments(self) -> list[dict[str, Any]]:
-        """兼容旧调用：静态环境白名单已不再是下发目标事实源，返回空列表。"""
-        return []
-
-
-__all__ = ["AcliPluginAdminStore", "AdminValidationError", "prepare_publication"]
+__all__ = ["AcliPluginAdminStore", "AdminValidationError", "prepare_spec"]

@@ -87,22 +87,16 @@ class Settings(BaseSettings):
     # 又能避免一个异常文件把内存吃穿。
     DSH_SESSIONS_MAX_BYTES: int = 16 * 1024 * 1024
 
-    # ── acli 插件管理：服务端编排下发 ────────────────────────────────────────
-    # 页面永不下发这些值：bridge 地址、目标节点与 SSH 凭据都由服务端环境表 +
-    # Secret 注入。默认连集群内 terminal-bridge Service（cluster 模式允许空 Origin
-    # 的非浏览器客户端，鉴权交给 NetworkPolicy 边界）。
-    ACLI_PLUGIN_RELAY_ENABLED: bool = True
-    ACLI_PLUGIN_BRIDGE_URL: str = "ws://terminal-bridge:9999"
-    # 凭据字典 JSON：{"24": {"auth_type": "key", "username": "root", "private_key": "..."}}
-    # 由 K8s Secret 注入；口令认证只填去掉 sangfornetwork 后缀的前缀（bridge 自动补全）。
-    # 明文永不写入数据库、日志或 API 响应。
-    ACLI_PLUGIN_CREDENTIALS_JSON: str = ""
-    ACLI_PLUGIN_CREDENTIALS_FILE: str = ""
-    ACLI_PLUGIN_DEPLOY_TIMEOUT_SECONDS: int = 180
-    ACLI_PLUGIN_RELAY_INTERVAL_SECONDS: float = 5.0
-    ACLI_PLUGIN_LEASE_SECONDS: int = 180
-    ACLI_PLUGIN_MAX_ATTEMPTS: int = 3
-
+    # ── acli 插件（链路收口 v2.0）──────────────────────────────────────────────
+    # 服务端不持有 bridge 地址与 SSH 凭据；旧下发链路已随 D1 删除，
+    # 插件到达节点由客户侧 acli_sync 第二阶段持短期只读票据拉取 manifest 驱动。
+    # 插件包存储（沿用诊断服务「持久卷 objects/」范式）：目录不存在时
+    # package 端点 fail-closed 回 404 package_source_undefined，不影响
+    # manifest 内联文件收敛路径。
+    ACLI_PLUGIN_PACKAGE_ROOT: str = "/var/lib/acli-plugins/objects"
+    # 票据有效期上限：盖住一次阶段二（拉 manifest + 逐包下载）即可，
+    # 短到泄露后无法长期复用；签发时强制收敛到 (0, 本值]。
+    ACLI_PLUGIN_TICKET_TTL_SECONDS: int = 600
     model_config = ConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 

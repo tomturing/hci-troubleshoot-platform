@@ -2150,6 +2150,10 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 	case "capabilities":
 		// 能力探测：旧桥对未知 action 会明确返回 invalid_action，前端据此 fail-closed，
 		// 避免把 spc_files 静默忽略后按节点原清单收集（最危险的"看起来成功了"）。
+		// acli_plugin_sync：本桥是否认识 acli_sync 第二阶段的 platform_url/plugin_ticket。
+		// 前端当前**不**拿它当门禁（旧桥不认识新字段会直接忽略，代价只是一次白取的票据；
+		// 先探测要多一次往返，还会把"探测本身失败"变成第二个静默分支），
+		// 这里的职责是让排障能一眼对账：回执里没有 plugin_sync 时，先查这个位。
 		outcome = "ok"
 		sendMsg(ws, OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
@@ -2157,12 +2161,13 @@ func (b *Bridge) handleLogCollect(ws *websocket.Conn, msg InMessage, cui string)
 				"multi_slot_spc":       true,
 				"spc_max_slots":        len(logCollectModules),
 				"log_collect_evidence": true,
+				"acli_plugin_sync":     true,
 			},
 			TraceID: traceID, CustomUI: cui,
 		})
 		blog("INFO", "log_collect.capabilities", "日志收集能力探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"multi_slot_spc": true, "spc_max_slots": len(logCollectModules),
-			"log_collect_evidence": true,
+			"log_collect_evidence": true, "acli_plugin_sync": true,
 		})
 
 	default:

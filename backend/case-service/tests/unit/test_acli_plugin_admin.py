@@ -1,24 +1,32 @@
-"""acli 插件管理端单测：目标来自 bridge 已登录会话、保存即入队、幂等、页面零凭据。"""
+"""acli 插件管理端单测：规格是不可变事实源、保存零副作用、页面零凭据。
+
+链路收口（D1）之后本文件只锁三件事：
+
+1. ``prepare_spec`` 是纯函数——同一规格同一 ``spec_hash``，产物里不含任何凭据
+   字段（口令/私钥/节点地址），也不含"下发目标"（插件何时到节点由客户侧决定）；
+2. ``save_spec`` 只写两张表（不可变 revision + 插件档案），**不产生任何下发副
+   作用**：出现部署任务类 SQL 就等于把已删除的旧链路又写回来；
+3. 阶段二期望态按 ``desired_spec_hash`` 指针取，而不是"最新 revision"——保存失败
+   或回滚期望指针时，未生效的 revision 绝不能被发给节点。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import re
-from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from app.domain.acli_plugin_spec import TEMPLATE_SPEC, SpecValidationError
 from app.services.acli_plugin_admin import (
     AcliPluginAdminStore,
     AdminValidationError,
-    prepare_publication,
+    prepare_spec,
 )
 
-NOW = datetime(2026, 11, 14, 6, 0, 0, tzinfo=UTC)
-DEPLOY_ID = "htp-acli-test-0001"
-CASE_ID = "case-0042"
-NODE_IP = "172.28.24.1"
+NOW = __import__("datetime").datetime(2026, 11, 18, 6, 0, 0, tzinfo=__import__("datetime").UTC)
+SPEC_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class FakeCursor:
@@ -70,34 +78,26 @@ class FakeDB:
 
 
 def _prepared(**overrides):
-    spec = {**TEMPLATE_SPEC, **overrides}
-    return prepare_publication(spec, env_code="24", actor="admin", deploy_id=DEPLOY_ID, now=NOW)
+    return prepare_spec({**TEMPLATE_SPEC, **overrides}, actor="admin", now=NOW)
 
 
-def _targeted(prepared=None, *, case_id: str = CASE_ID, node_ip: str = NODE_IP):
-    """模拟路由层：prepare_publication 之后补上 bridge 会话目标。"""
-    result = dict(prepared if prepared is not None else _prepared())
-    result["target_case_id"] = case_id
-    result["target_node_ip"] = node_ip
-    return result
-
-
-def test_prepare_publication_is_deterministic_and_credential_free():
+def test_prepare_spec_is_deterministic_and_credential_free():
     first = _prepared()
     second = _prepared()
+    # 同一规格必须得到同一 spec_hash：它是幂等键，也是阶段二差量三态的比较键。
     assert first["spec_hash"] == second["spec_hash"]
-    assert first["deploy_id"] == DEPLOY_ID
+    assert SPEC_HASH_RE.match(first["spec_hash"])
     assert first["plugin_name"] == "hci_lmt_check"
+
     serialized = json.dumps(first, ensure_ascii=False, default=str)
-    assert "password" not in serialized
-    assert "private_key" not in serialized
-    assert "node_ip" not in serialized
-    assert "1mt" not in serialized
+    for forbidden in ("password", "private_key", "node_ip", "target_case_id", "1mt"):
+        assert forbidden not in serialized, forbidden
 
 
 def test_forbidden_runtime_fields_are_rejected():
+    # 运行时字段混进规格就会把"这台机器/这个口令"当成平台事实源，跨工单复用必然出错。
     with pytest.raises(SpecValidationError):
-        _prepared(node_ip=NODE_IP)
+        _prepared(node_ip="172.28.24.1")
     with pytest.raises(SpecValidationError):
         _prepared(password="prefix")
 
@@ -116,140 +116,136 @@ def test_invalid_specs_are_rejected(overrides, expected):
     assert any(expected in error for error in exc.value.errors), exc.value.errors
 
 
-def test_prepare_publication_requires_case_id():
-    with pytest.raises(AdminValidationError):
-        prepare_publication(TEMPLATE_SPEC, env_code="  ")
+def test_prepare_spec_freezes_compiled_artifacts():
+    """编译产物必须在保存时定稿：manifest 端点零重算直出，节点才可能判出"无修改"。"""
+    prepared = _prepared()
+    compiled = prepared["compiled"]
+    assert prepared["validation"]["ok"] is True
+    assert compiled["files"], "内联文件清单是桥当前唯一的收敛通道，不得为空"
+    assert compiled["register_item"]["name"] == prepared["plugin_name"]
+    assert compiled["version"] == prepared["spec"]["version"]
+    # last_updated_at 取构建时刻：反复重算会让同一条 revision 的 hash 永远不同 → 全量重装。
+    assert prepared["spec_hash"] == _prepared()["spec_hash"]
 
 
-def test_save_and_publish_creates_pending_task_in_one_transaction():
+def test_save_spec_writes_spec_and_profile_and_nothing_else():
     db = FakeDB(
         [
-            [],  # 幂等 (a) in-flight
-            [],  # 幂等 (b) succeeded+对齐
             FakeCursor([], returns_rows=False),  # INSERT acli_plugin_spec
             FakeCursor([], returns_rows=False),  # INSERT acli_plugin
-            [{"deploy_id": DEPLOY_ID, "status": "pending"}],  # INSERT deployment RETURNING
+            [{"revision": 3}],  # 回读本次 revision（幂等时回读命中同一行）
         ]
     )
-    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
-    assert result["status"] == "pending"
-    assert result["idempotent"] is False
-    assert result["env_code"] == CASE_ID
+    result = asyncio.run(AcliPluginAdminStore(db).save_spec(_prepared()))
+
+    assert result["status"] == "saved"
+    assert result["revision"] == 3
     assert db.session.committed
 
     sqls = " ".join(sql for sql, _ in db.session.calls)
     assert "INSERT INTO acli_plugin_spec" in sqls
     assert "INSERT INTO acli_plugin" in sqls
-    assert "INSERT INTO acli_plugin_deployment" in sqls
-    assert "acli_plugin_environment" not in sqls  # 不再查静态环境表
+    assert "ON CONFLICT (spec_hash) DO NOTHING" in sqls  # 重复保存不增长 revision
+    # D1 的硬边界：保存规格不得再产生任何下发痕迹。
+    for residue in ("deployment", "lease", "relay", "node_ip", "env_code"):
+        assert residue not in sqls.lower(), residue
 
-    spec_params = next(params for sql, params in db.session.calls if "INSERT INTO acli_plugin_spec" in sql)
-    assert "password" not in json.loads(spec_params["spec_json"])
-    assert "private_key" not in json.loads(spec_params["spec_json"])
-    deployment_params = next(params for sql, params in db.session.calls if "INSERT INTO acli_plugin_deployment" in sql)
-    assert deployment_params["env_code"] == CASE_ID
-    assert deployment_params["node_ip"] == NODE_IP
+    _, spec_params = next(call for call in db.session.calls if "INSERT INTO acli_plugin_spec" in call[0])
+    stored = json.loads(spec_params["spec_json"])
+    serialized = json.dumps(stored, ensure_ascii=False)
+    assert "password" not in serialized and "private_key" not in serialized
+    # compiled 固化进 revision 的 validation：阶段二 manifest 因此不需要重算。
+    assert spec_params["spec_hash"] == result["spec_hash"]
 
-    # asyncpg 对同一绑定参数在不同位置推断类型不同，INSERT 里不得复用参数名。
+    # asyncpg 对同名参数在不同位置会推断出不同类型（varchar vs text），
+    # 一条 INSERT 里复用参数名会直接抛 AmbiguousParameterError。
     for sql, _ in db.session.calls:
         if "INSERT INTO" not in sql:
             continue
         names = re.findall(r"(?<!:):([a-zA-Z_][a-zA-Z0-9_]*)", sql)
         assert len(names) == len(set(names)), sql
-    assert spec_params["revision_plugin_name"] == "hci_lmt_check"
-    assert deployment_params["revision_spec_hash"] == result["spec_hash"]
+
+
+def test_compiled_is_persisted_inside_validation_payload():
+    db = FakeDB([FakeCursor([], returns_rows=False), FakeCursor([], returns_rows=False), [{"revision": 1}]])
+    prepared = _prepared()
+    asyncio.run(AcliPluginAdminStore(db).save_spec(prepared))
+    _, spec_params = next(call for call in db.session.calls if "INSERT INTO acli_plugin_spec" in call[0])
+    validation = json.loads(spec_params["validation"])
+    assert validation["compiled"]["spec_hash"] == prepared["compiled"]["spec_hash"]
+    assert validation["ok"] is True
 
 
 def test_write_statements_without_returning_are_not_read_as_rows():
     db = FakeDB(
         [
-            [],
-            [],
             FakeCursor([], returns_rows=False),
             FakeCursor([], returns_rows=False),
-            FakeCursor([], returns_rows=False),
+            [{"revision": 1}],
         ]
     )
-    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
-    assert result["status"] == "pending"
+    result = asyncio.run(AcliPluginAdminStore(db).save_spec(_prepared()))
+    assert result["status"] == "saved"
     assert db.session.committed
 
 
-@pytest.mark.parametrize(
-    ("target_case_id", "target_node_ip", "env_code"),
-    [
-        ("", NODE_IP, ""),  # 无 case_id
-        (CASE_ID, "", "24"),  # 无 node_ip（env_code 兜底不参与目标校验）
-        ("", "", ""),  # 两者都缺
-    ],
-)
-def test_save_and_publish_without_target_session_is_rejected(target_case_id, target_node_ip, env_code):
-    prepared = _targeted(case_id=target_case_id, node_ip=target_node_ip)
-    prepared["env_code"] = env_code
-    db = FakeDB([])
-    with pytest.raises(AdminValidationError) as exc:
-        asyncio.run(AcliPluginAdminStore(db).save_and_publish(prepared))
-    assert "目标会话无效" in exc.value.errors[0]
-    assert db.session.calls == []  # 任何写操作之前就拒绝
+def test_list_desired_reads_expected_pointer_not_latest_revision():
+    """期望态按档案指针取：未生效的 revision 绝不能被发给节点。"""
+    db = FakeDB([[{"plugin_name": "hci_lmt_check", "desired_spec_hash": "a" * 64}]])
+    rows = asyncio.run(AcliPluginAdminStore(db).list_desired())
+    assert rows and rows[0]["plugin_name"] == "hci_lmt_check"
+
+    sql = db.session.calls[0][0].lower()
+    assert "sp.spec_hash = p.desired_spec_hash" in sql
+    assert "p.enabled = true" in sql
+    assert "order by sp.revision desc" not in sql  # 那是 list_plugins 的口径，不是期望态
+    for residue in ("deployment", "lease"):
+        assert residue not in sql
 
 
-def test_repeated_publish_is_idempotent():
-    # (a) in-flight 未命中，(b) succeeded+current_spec_hash 对齐命中。
-    db = FakeDB([[], [{"deploy_id": "htp-acli-old", "status": "succeeded"}]])
-    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
-    assert result["idempotent"] is True
-    assert result["deploy_id"] == "htp-acli-old"
-    assert not any("INSERT" in sql for sql, _ in db.session.calls)
+def test_admin_store_exposes_exactly_the_spec_maintenance_api():
+    """公开方法白名单：链路收口后管理端只会维护与回读期望态。
 
-
-def test_in_flight_publish_reuses_deploy_id_without_waiting_for_current_hash():
-    """首次下发未成功（current_spec_hash 未推进）时，重复提交也必须命中 in-flight 幂等。
-
-    旧实现把 current_spec_hash 写进同一条 SQL，导致这里返回 NULL → 重复建任务、
-    同一脚本排队执行两次。
+    用白名单而不是逐个断言旧方法不存在：任何新增方法都要在这里显式登记，
+    「服务端重新长出一条下发旁路」与「只是给旧名字换个写法」都会被这条拦住。
     """
-    db = FakeDB([[{"deploy_id": "htp-acli-running", "status": "running"}]])
-    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(_targeted()))
-    assert result["idempotent"] is True
-    assert result["deploy_id"] == "htp-acli-running"
-    assert result["status"] == "running"
-    # 两条幂等查询同事务执行；关键是在飞判定语句里不得出现 current_spec_hash。
-    assert "current_spec_hash" not in db.session.calls[0][0]
-    assert not any("INSERT" in sql for sql, _ in db.session.calls)
+    public = {name for name in dir(AcliPluginAdminStore) if not name.startswith("_")}
+    assert public == {"save_spec", "list_plugins", "list_desired"}
 
 
-def test_force_skips_idempotency_so_cleared_node_can_be_reinstalled():
-    """acli 重装会清空插件目录：节点被清空后管理员必须能用 force 重发同一规格。"""
-    prepared = _targeted()
-    prepared["force"] = True
-    db = FakeDB(
-        [
-            FakeCursor([], returns_rows=False),  # INSERT acli_plugin_spec
-            FakeCursor([], returns_rows=False),  # INSERT acli_plugin
-            [{"deploy_id": DEPLOY_ID, "status": "pending"}],  # INSERT deployment RETURNING
-        ]
-    )
-    result = asyncio.run(AcliPluginAdminStore(db).save_and_publish(prepared))
-    assert result["idempotent"] is False
-    assert result["status"] == "pending"
-    sqls = " ".join(sql for sql, _ in db.session.calls)
-    assert "'pending', 'claimed', 'running'" not in sqls  # 未做任何幂等查询
+# ---- D1 结构边界：服务端 acli 插件模块里不存在「主动连桥」的任何形态 ----
+
+# 用通用协议与动词而不是被删模块的文件名：旧名字留在断言里反而成了它存续的理由。
+# 本断言住在后端而不是管理端契约里，这不是偏好而是硬约束：前端门禁 job 用
+# sparse-checkout（只检出 frontend/），跨目录读 backend/ 的测试在那个环境里拿不到源
+# 文件——要么必然空跑，要么必然假失败（CI 实测：expected null to be truthy）。
+OUTBOUND_BRIDGE_FORMS = (
+    "ssh_connect",
+    "ws://",
+    "wss://",
+    "paramiko",
+    "websockets",
+    "deploy",
+    "relay",
+    "lease",
+)
 
 
-def test_deployment_queries_never_expose_node_ip_or_lease_owner():
-    db = FakeDB([[], []])
-    store = AcliPluginAdminStore(db)
-    asyncio.run(store.list_deployments("hci_lmt_check"))
-    asyncio.run(store.get_deployment(DEPLOY_ID))
-    assert len(db.session.calls) == 2
-    for sql, _ in db.session.calls:
-        assert "SELECT *" not in sql
-        assert "node_ip" not in sql.lower()
-        assert "lease_owner" not in sql.lower()
-
-
-def test_list_environments_is_always_empty():
-    db = FakeDB([])
-    rows = asyncio.run(AcliPluginAdminStore(db).list_environments())
-    assert rows == []
-    assert db.session.calls == []  # 连静态环境表都不再查询，天然不泄露凭据
+def test_server_acli_plugin_modules_contain_no_outbound_bridge_forms():
+    """插件到节点的唯一驱动是客户侧 acli_sync；服务端不得再持有任何连桥形态。"""
+    app_root = Path(__file__).resolve().parents[2] / "app"
+    assert app_root.is_dir(), app_root
+    modules = [
+        path
+        for path in app_root.rglob("*.py")
+        if re.search(r"acli|plugin_ticket", path.name) and "__pycache__" not in path.parts
+    ]
+    # 规格 / 管理端服务 / 路由 / 票据 四份都必须在扫描范围内，扫不到就是守卫空转。
+    assert len(modules) >= 4, modules
+    offenders = [
+        f"{path.name} → {token}"
+        for path in modules
+        for token in OUTBOUND_BRIDGE_FORMS
+        if token in path.read_text(encoding="utf-8").lower()
+    ]
+    assert offenders == []

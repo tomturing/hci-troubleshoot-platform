@@ -20,6 +20,13 @@ const { mockCheckBridgeBeforeOpen } = vi.hoisted(() => ({
 
 vi.mock('@/services/acliManager', () => ({ ensureAcliReady: vi.fn() }))
 
+// 阶段二取票：不桩就会在“连上 SSH”时真发一次 HTTP（本文件只用例连接状态）。
+vi.mock('@/api/acliPluginSync', () => ({
+  platformRootUrl: () => 'http://localhost:3000',
+  requestAcliPluginTicket: vi.fn(),
+  resolveAcliPluginSyncCredentials: vi.fn().mockResolvedValue({ credentials: {}, error: '' }),
+}))
+
 vi.mock('@hci/shared', () => ({
   createApiClient: () => ({
     get: vi.fn().mockResolvedValue({ data: [] }),

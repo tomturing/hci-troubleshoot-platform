@@ -39,17 +39,6 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.terminalBridge.port }}
-    {{- if .Values.terminalBridge.networkPolicy.caseServiceIngressEnabled }}
-    # 平台服务端下发：case-service 以空 Origin 的 WS 客户端直连 bridge，
-    # 不走 Traefik；鉴权由本策略的 Pod label 边界承担。
-    - from:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: case-service
-      ports:
-        - protocol: TCP
-          port: {{ .Values.terminalBridge.port }}
-    {{- end }}
   egress:
     # 集群 DNS（hci-sim 的 Service 解析与 SSH 连接依赖）。
     - to:

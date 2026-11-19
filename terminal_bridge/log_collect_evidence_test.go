@@ -23,14 +23,14 @@ func TestConfigureEvidenceRequiresTicketAndPlatformURL(t *testing.T) {
 		t.Fatalf("未配置时不应存在证据上下文")
 	}
 	configureEvidence(InMessage{
-		ExecID: taskID, EvidenceTicket: "t.1", TransferPlatformURL: "not-a-url",
+		ExecID: taskID, EvidenceTicket: "t.1", PlatformURL: "not-a-url",
 	}, "")
 	if _, ok := evidenceFor(taskID); ok {
 		t.Fatalf("平台地址非法时不得启用证据上报")
 	}
 	configureEvidence(InMessage{
 		ExecID: taskID, CaseID: "Q2026111200624", EvidenceTicket: "t.1",
-		TransferPlatformURL: "https://hci.example/", RemoteURL: "http://5888.example",
+		PlatformURL: "https://hci.example/", RemoteURL: "http://5888.example",
 		TraceID: "tr-1", TransferTLSInsecure: true,
 	}, "ui-1")
 	cfg, ok := evidenceFor(taskID)
