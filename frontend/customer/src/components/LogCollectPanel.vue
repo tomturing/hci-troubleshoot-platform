@@ -5586,7 +5586,7 @@ onBeforeUnmount(() => {
             <el-radio-group v-model="form.scenarioMode" class="lc-scenario-mode" :disabled="running">
               <el-radio-button value="default">默认场景</el-radio-button>
               <el-radio-button value="custom" :disabled="!customScenarios.length">
-                自定义场景（含基础日志）
+                自定义场景
               </el-radio-button>
             </el-radio-group>
             <template v-if="form.scenarioMode === 'default'">
@@ -6358,5 +6358,10 @@ onBeforeUnmount(() => {
 .lc-custom-meta {
   font-size: 11px;
   color: var(--el-text-color-secondary);
+}
+/* 选中态卡片底色被刷成主色蓝，固定灰字对比度约 1.1:1 不可读；
+   跟随 inner 的白色文字色，保证注释与标题一致可读 */
+.lc-custom-scenario.is-active .lc-custom-meta {
+  color: inherit;
 }
 </style>

@@ -83,16 +83,28 @@ func (c runtimeConfig) address() string {
 	return net.JoinHostPort(c.ListenAddress, strconv.Itoa(c.Port))
 }
 
-// isAddressInUse 判断 bind 错误是否为"端口已被占用"。跨平台匹配 Go 对 socket
-// 错误的封装文案：Unix 为 "address already in use"，Windows 为
-// "Only one usage of each socket address ..."。命中才走占用分类与回退逻辑。
+// isAddressInUse 判断 bind 错误是否为"该地址当前不可绑定"，这是端口自愈
+// （存活 Bridge 探测 → 备用端口回退 → fail-fast）的唯一入口判据。
+//
+// 判定顺序按可靠度排：先取 socket 层 errno，再退回错误文案匹配。
+// 只按文案判定是有前车之鉴的：Windows 的 bind 文案由 FormatMessage 本地化，
+// 中文系统上是"通常每个套接字地址(协议/网络地址/端口)只允许使用一次。"，
+// 英文子串永远匹配不到——历史实现在中文客户机上等于自愈从未生效。
+// 更关键的是 WSAEACCES(10013)："An attempt was made to access a socket in a way
+// forbidden by its access permissions."，它同样表示"这个地址绑不上"，但文案里
+// 没有 "address already in use"，旧逻辑会把它当成不可恢复错误直接 log.Fatalf
+// （2026-11-19 客户机 127.0.0.1:9999 被 PID 占用即此形态，表现为双击闪退）。
 func isAddressInUse(err error) bool {
 	if err == nil {
 		return false
 	}
+	if isPortBindUnavailableErrno(err) {
+		return true
+	}
 	message := strings.ToLower(err.Error())
 	return strings.Contains(message, "address already in use") ||
-		strings.Contains(message, "only one usage of each socket address")
+		strings.Contains(message, "only one usage of each socket address") ||
+		strings.Contains(message, "forbidden by its access permissions")
 }
 
 // listenWithRetry 建立 TCP 监听，对可恢复的"端口占用"做有限次指数退避重试，
@@ -206,7 +218,7 @@ func acquireListener(config runtimeConfig, allowBackup bool) (listener net.Liste
 		return nil, resolved, false, err
 	}
 
-	// 主端口被占用：先判断占用者是否为存活的 Bridge（重复启动场景）。
+	// 主端口不可绑定：先判断占用者是否为存活的 Bridge（重复启动场景）。
 	if isLiveBridge(config.address()) {
 		return nil, resolved, true, nil
 	}
@@ -219,12 +231,14 @@ func acquireListener(config runtimeConfig, allowBackup bool) (listener net.Liste
 			return backupListener, backupConfig, false, nil
 		}
 		if isAddressInUse(backupErr) {
-			return nil, resolved, false, fmt.Errorf("主端口 %d 与备用端口 %d 均被占用: %w", config.Port, backupWSPort, backupErr)
+			// 文案用"不可绑定"而非"被占用"：WSAEACCES(10013) 的成因可能是端口落在系统/WinNAT
+			// 保留段，此时 netstat 里根本看不到占用者，写"被占用"会把现场引向错误方向。
+			return nil, resolved, false, fmt.Errorf("主端口 %d 与备用端口 %d 均不可绑定（被占用或被系统保留）: %w", config.Port, backupWSPort, backupErr)
 		}
 		return nil, resolved, false, backupErr
 	}
 
-	return nil, resolved, false, fmt.Errorf("端口 %d 被其他进程占用: %w", config.Port, err)
+	return nil, resolved, false, fmt.Errorf("端口 %d 不可绑定（被占用或被系统保留）: %w", config.Port, err)
 }
 
 func (c runtimeConfig) originAllowed(origin, requestHost string) bool {

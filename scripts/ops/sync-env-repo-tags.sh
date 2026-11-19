@@ -71,6 +71,10 @@ fi
 # 则分别由 dsh-values.yaml / dsh-offline-values.yaml 覆盖。
 DSH_VALUES_FILE="${ENV_REPO_PATH}/environments/${TARGET_ENV}/dsh-values.yaml"
 
+# WeKnora 同样独立于平台业务 values：chart 是 vendored 的第三方 chart，
+# 镜像 tag 写入 weknora-values.yaml，避免与主 values 的 image 块互相覆盖。
+WEKNORA_VALUES_FILE="${ENV_REPO_PATH}/environments/${TARGET_ENV}/weknora-values.yaml"
+
 update_service_tag() {
   local file="$1"
   local service_key="$2"
@@ -138,6 +142,7 @@ service_repository() {
     adminUI) echo "admin-ui" ;;
     terminalBridge) echo "terminal-bridge" ;;
     dsh) echo "dsh" ;;
+    weknoraUI) echo "weknora-ui" ;;
     dbMigrate) echo "db-migrate" ;;
     *)
       echo "错误：未知服务 key：$1" >&2
@@ -157,7 +162,15 @@ if [[ -n "$SERVICES_CSV" ]]; then
     fi
     repository="$(service_repository "$svc")"
     echo "更新 ${svc}.image.tag -> ${IMAGE_TAG}"
-    if [[ "$svc" == "dsh" ]]; then
+    if [[ "$svc" == "weknoraUI" ]]; then
+      if [[ ! -f "$WEKNORA_VALUES_FILE" ]]; then
+        echo "未找到 WeKnora 专属 values 文件: $WEKNORA_VALUES_FILE" >&2
+        exit 1
+      fi
+      # chart 里 UI 的 values 路径是 frontend.image.tag，故块键用 frontend；
+      # 顶层不能用 frontend 作为服务名，会与主 values 的 frontend 段冲突。
+      update_service_tag "$WEKNORA_VALUES_FILE" "frontend" "$repository" "$IMAGE_TAG"
+    elif [[ "$svc" == "dsh" ]]; then
       if [[ ! -f "$DSH_VALUES_FILE" ]]; then
         echo "未找到 DSH 专属 values 文件: $DSH_VALUES_FILE" >&2
         exit 1

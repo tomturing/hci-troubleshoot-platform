@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, watch } from 'vue'
-import { Monitor, Document, Search, Refresh, CopyDocument, CircleCheck, Warning, Cpu, DataAnalysis } from '@element-plus/icons-vue'
+import { Monitor, Document, Search, Refresh, CopyDocument, CircleCheck, Warning, Cpu, DataAnalysis, FullScreen } from '@element-plus/icons-vue'
 import { createApiClient } from '@hci/shared'
 import { ElMessage } from 'element-plus'
 import { getAccessToken } from '@/utils/auth'
+import { useFullscreen } from '@/composables/useFullscreen'
 
 // 管理端 axios 客户端注入登录 JWT（axios 不经 window.fetch 全局拦截器，须显式传入）
 const apiClient = createApiClient('/api', undefined, getAccessToken)
+
+// 全屏作用于整页容器：Grafana / Langfuse 两个页签共享同一套退出入口
+const pageRef = ref<HTMLElement | null>(null)
+const { isFullscreen, supported: fullscreenSupported, toggle: toggleFullscreen } = useFullscreen(pageRef)
 
 // ===== 视图选项卡 =====
 const activeTab = ref('grafana')
@@ -322,7 +327,7 @@ watch(activeTab, (tab) => {
 </script>
 
 <template>
-  <div class="observability-container">
+  <div ref="pageRef" class="observability-container">
     <el-card class="observability-card">
       <el-tabs v-model="activeTab" class="observability-tabs">
       <!-- ===== Tab 1: Grafana ===== -->
@@ -336,10 +341,16 @@ watch(activeTab, (tab) => {
         <div v-loading="monitorLoading" class="monitor-tab-content">
           <div class="monitor-actions-bar">
             <span class="monitor-info-text">嵌入式 Grafana 实时度量面板</span>
-            <el-button type="primary" size="small" @click="openGrafana">
-              <el-icon style="margin-right: 4px"><Monitor /></el-icon>
-              在新窗口打开 Grafana
-            </el-button>
+            <div class="monitor-actions">
+              <el-button v-if="fullscreenSupported" size="small" @click="toggleFullscreen">
+                <el-icon style="margin-right: 4px"><FullScreen /></el-icon>
+                {{ isFullscreen ? '退出全屏' : '全屏' }}
+              </el-button>
+              <el-button type="primary" size="small" @click="openGrafana">
+                <el-icon style="margin-right: 4px"><Monitor /></el-icon>
+                在新窗口打开 Grafana
+              </el-button>
+            </div>
           </div>
           <div class="iframe-wrapper">
             <iframe
@@ -371,10 +382,16 @@ watch(activeTab, (tab) => {
         <div v-loading="langfuseLoading" class="monitor-tab-content">
           <div class="monitor-actions-bar" style="border-left-color: #67c23a;">
             <span class="monitor-info-text">嵌入式 Langfuse LLM 可观测性控制台</span>
-            <el-button type="success" size="small" @click="openLangfuse">
-              <el-icon style="margin-right: 4px"><Cpu /></el-icon>
-              在新窗口打开 Langfuse
-            </el-button>
+            <div class="monitor-actions">
+              <el-button v-if="fullscreenSupported" size="small" @click="toggleFullscreen">
+                <el-icon style="margin-right: 4px"><FullScreen /></el-icon>
+                {{ isFullscreen ? '退出全屏' : '全屏' }}
+              </el-button>
+              <el-button type="success" size="small" @click="openLangfuse">
+                <el-icon style="margin-right: 4px"><Cpu /></el-icon>
+                在新窗口打开 Langfuse
+              </el-button>
+            </div>
           </div>
           <div class="iframe-wrapper">
             <iframe
@@ -791,21 +808,55 @@ watch(activeTab, (tab) => {
 .observability-container {
   padding: 0 !important;
   margin: 0 !important;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .observability-card {
   margin: 0 !important;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.05);
   border-radius: 4px;
   border: 1px solid #ebeef5;
 }
 
 .observability-card :deep(.el-card__body) {
-  padding: 20px;
+  /* 内嵌场景：上下内边距直接吃掉 iframe 高度，收紧到 12px */
+  padding: 12px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.observability-tabs {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .observability-tabs :deep(.el-tabs__content) {
   padding-top: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.observability-tabs :deep(.el-tab-pane) {
+  height: 100%;
+}
+
+/* 原生全屏下容器脱离文档流，必须自带背景色 */
+.observability-container:fullscreen {
+  background: #f0f2f5;
+  padding: 12px !important;
+  box-sizing: border-box;
 }
 
 .tab-label {
@@ -820,6 +871,19 @@ watch(activeTab, (tab) => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  height: 100%;
+  min-height: 0;
+}
+
+/* 审计/失败明细等非内嵌页签自己滚动，避免被 flex 链裁掉内容 */
+.audit-tab-content {
+  overflow: auto;
+}
+
+.monitor-actions {
+  display: flex;
+  gap: 8px;
+  flex: none;
 }
 
 /* 监控面板样式 */
@@ -841,8 +905,8 @@ watch(activeTab, (tab) => {
 
 .iframe-wrapper {
   width: 100%;
-  height: calc(100vh - 310px);
-  min-height: 520px;
+  flex: 1;
+  min-height: 480px;
   border: 1px solid #dcdfe6;
   border-radius: 6px;
   overflow: hidden;
@@ -851,6 +915,7 @@ watch(activeTab, (tab) => {
 
 .iframe-wrapper iframe {
   display: block;
+  border: 0;
 }
 
 .monitor-alert {

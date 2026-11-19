@@ -158,15 +158,24 @@ func main() {
 	listener, resolved, alreadyRunning, listenErr := acquireListener(config, allowBackup)
 	if listenErr != nil {
 		holders := findPortHolders(config.Port)
-		logpush.Blog("ERROR", "bridge.port_conflict", "监听端口被占用，启动失败", "", "", "", "", map[string]any{
+		logpush.Blog("ERROR", "bridge.port_conflict", "监听端口不可用，启动失败", "", "", "", "", map[string]any{
 			"requested_listen": config.address(),
 			"port":             config.Port,
+			"backup_port":      backupWSPort,
 			"allow_backup":     allowBackup,
 			"holder_pids":      holders,
 			"error":            listenErr.Error(),
 		})
 		if len(holders) > 0 {
 			log.Printf("[Bridge] 端口 %d 被进程 PID=%s 占用；可用 'netstat -ano | findstr :%d' (Windows) 或 'lsof -nP -iTCP:%d -sTCP:LISTEN' 定位并处置", config.Port, strings.Join(holders, ","), config.Port, config.Port)
+		}
+		// 无论是否探到占用 PID 都给出处置指引：WSAEACCES(10013) 场景下 netstat 常常
+		// 探不到"能杀的进程"（http.sys 注册、系统/WinNAT 保留段、独占绑定），只给一条
+		// netstat 会把人带偏，现场会反复重启同一个端口。
+		if runtime.GOOS == "windows" {
+			log.Printf("[Bridge] 处置指引：1) netstat -ano | findstr :%d 查占用 PID；2) netsh int ipv4 show excludedportrange protocol=tcp 确认 %d 未被系统/WinNAT 保留；3) 结束残留进程后重试，或用 --port %d 启动", config.Port, config.Port, backupWSPort)
+		} else {
+			log.Printf("[Bridge] 处置指引：lsof -nP -iTCP:%d -sTCP:LISTEN 定位占用者；或改用 --port %d 启动", config.Port, backupWSPort)
 		}
 		log.Fatalf("[Bridge] 启动失败: %v", listenErr)
 	}

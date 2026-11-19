@@ -1,0 +1,28 @@
+apiVersion: v2
+name: hci-platform-weknora
+description: |
+  HCI 智能排障平台 — WeKnora 知识库。
+  由独立 ArgoCD Application hci-platform-weknora 管理，部署在独立命名空间 hci-weknora。
+
+  本 chart 是上游 Tencent/WeKnora 官方 helm chart 的 vendored 副本（MIT），
+  平台化改动只有五处，其余保持上游原样以便后续 diff 升级：
+  1. 镜像全部指向私有 registry（节点 Docker Hub 加速器对第三方 namespace 返回 403，
+     不能依赖直连 docker.io；见 weknora/scripts/sync-upstream-images.sh）。
+  2. 自行渲染 ghcr-pull-secret：hci-weknora 与 hci-staging 跨命名空间，
+     Secret 不能复用。
+  3. 关闭 chart 自带 Ingress：/weknora/ 由 admin-ui nginx 反代并剥离前缀，
+     与 admin-ui 同源内嵌（同源才能让 embed 的 CSP frame-ancestors 'self' 成立）。
+  4. 资源上限按单节点 staging 收敛，避免与主平台抢内存。
+  5. 增加 embed 渠道参数（channelId / publishToken），供 api-gateway 换取短令牌。
+
+  升级前必读：weknora/README.md。
+type: application
+version: 1.0.0
+# 上游源码与镜像 tag（Docker Hub 上是 v0.9.0，不是 0.9.0）
+appVersion: "v0.9.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/Tencent/WeKnora
+sources:
+  - https://github.com/Tencent/WeKnora
+annotations:
+  artifacthub.io/license: MIT

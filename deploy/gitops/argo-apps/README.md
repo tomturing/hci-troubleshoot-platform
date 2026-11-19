@@ -59,6 +59,7 @@ bash scripts/ops/argocd-apply-apps.sh --scope local --yes
 | `hci-platform-prod.yaml` | hci-platform-prod | prod（手动同步） |
 | `hci-platform-dsh-staging.yaml` / `hci-platform-dsh-offline-staging.yaml` | staging DSH 两个独立实例 | staging |
 | `hci-platform-dsh-prod.yaml` / `hci-platform-dsh-offline-prod.yaml` | prod DSH 两个独立实例 | prod（手动同步） |
+| `hci-platform-weknora-staging.yaml` | hci-platform-weknora-staging | staging WeKnora 知识库（hci-weknora ns，admin-ui 同源内嵌） |
 
 **Bootstrap 命令（首次或迁移后）：**
 ```bash

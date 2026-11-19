@@ -27,7 +27,7 @@ K3s 调试模式：Custom UI → /terminal-bridge → terminal_bridge Pod → SS
 ```text
 bind(9999)
 ├─ 成功 → 正常提供服务
-└─ 被占用(EADDRINUSE)：
+└─ 不可绑定(EADDRINUSE 10048 / WSAEACCES 10013)：
     ├─ 9999 上是「存活 Bridge」(GET /health/live 返回 status:ok)
     │     └─ 是 → 幂等退出(exit 0)：本机已有 Bridge 在跑，无需重复启动（双击/没退净场景）
     └─ 否（陌生进程占用）→ bind(备用 47324)
@@ -35,6 +35,14 @@ bind(9999)
           └─ 失败 → fail-fast：打印占用地址 + best-effort 占用 PID + 处置指引，exit≠0
 ```
 
+- **判定依据是 socket errno，不是错误文案**：Windows 的 bind 文案由 `FormatMessage` 本地化，
+  中文系统上是「通常每个套接字地址(协议/网络地址/端口)只允许使用一次。」，按英文子串匹配在
+  中文客户机上**恒不命中**（历史自愈逻辑因此在中文现场等于从未生效）。`WSAEACCES(10013)` 更隐蔽：
+  文案是「An attempt was made to access a socket in a way forbidden by its access permissions.」，
+  语义是"这个地址绑不上"（占用者 `SO_EXCLUSIVEADDRUSE` 独占绑定、端口被 http.sys 注册、或落在
+  Hyper-V/WinNAT 保留段），旧逻辑会把它当"不可恢复错误"直接 `log.Fatalf` → 双击闪退。
+  因此 Go 端以 errno 为准判定（Windows `port_conflict_windows.go` 认 10048/10013，
+  Unix `port_conflict_other.go` 认 `EADDRINUSE`），文案匹配只作兜底。
 - **备用端口 `47324`**：位于注册端口区（1024–49151）、IANA 未分配、低于 Windows 出站动态端口下界
   `49152`（不会被 OS 临时征用），数字无规律、避开常见已知端口。Go 端与前端探测共用这一对常量。
 - **浏览器侧对齐**：customer-ui 桌面模式连接前先探测 `9999 → 47324` 两个**已知端口**，以收到
@@ -62,8 +70,10 @@ netsh int ipv4 show excludedportrange protocol=tcp
 taskkill /PID <PID> /F
 ```
 
-fail-fast 退出时，日志与 `bridge.port_conflict` 事件会给出占用地址与尽力探测到的占用 PID，
-并提示上述 `netstat`/`lsof` 命令；Linux/WSL 下对应 `lsof -nP -iTCP:9999 -sTCP:LISTEN`。
+fail-fast 退出时，日志与 `bridge.port_conflict` 事件会给出占用地址、备用端口与尽力探测到的占用 PID；
+**无论是否探到 PID 都会打印三条处置指引**（`netstat` 定位 / `netsh ... show excludedportrange` 查保留段 /
+`--port 47324` 直接换端口启动）——10013 场景下常常"有人占着却查不到能杀的进程"，只给一条 `netstat` 会把人带偏。
+Linux/WSL 下对应 `lsof -nP -iTCP:9999 -sTCP:LISTEN`。
 
 ## hci-sim C3 仿真租约
 
