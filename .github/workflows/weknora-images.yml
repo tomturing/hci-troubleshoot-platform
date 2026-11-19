@@ -1,0 +1,106 @@
+name: WeKnora 上游镜像同步
+
+# 把一个版本的 WeKnora 上游镜像同步进 ghcr。
+#
+# 为什么不并入 ci.yml 的构建矩阵：app/docreader/postgres/redis 不是我们的代码，
+# 每次 PR 都搬运 GB 级镜像既慢又无意义；而离线/私有客户环境又必须能拿到副本。
+# 因此做成按版本手动触发的一次性动作，版本号即幂等键。
+#
+# 前置：ghcr 包名必须小写，github.repository 已满足。
+# 用法：Actions → WeKnora 上游镜像同步 → Run workflow（version=v0.9.0）
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "上游版本 tag（Docker Hub 上是 v0.9.0，不是 0.9.0）"
+        required: true
+        default: "v0.9.0"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: weknora-images-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  # 前缀版 UI 镜像（VITE_BASE_PATH=/weknora/）。
+  #
+  # 这里而不是 ci.yml 的构建矩阵：该镜像的"源码"是上游 git tag，不是本仓库文件，
+  # 与按文件路径推断的矩阵语义不匹配（改 weknora/ui/Dockerfile 才该重建，但基线
+  # 窗口可能漏选）。按版本显式构建更可预期。
+  #
+  # 同时推 :<version> 与 :<date-sha>：
+  # - :v0.9.0 让 chart 在 env tag 为空时也能启动（Chart.appVersion 兜底）；
+  # - date-sha 供生产固定版本，避免可变 tag 漂移。
+  build-ui:
+    name: 构建前缀版 UI 镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 计算镜像 tag
+        id: tag
+        run: |
+          echo "value=$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: weknora/ui/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/weknora-ui:${{ inputs.version }}
+            ghcr.io/${{ github.repository }}/weknora-ui:${{ steps.tag.outputs.value }}
+          build-args: |
+            WEKNORA_VERSION=${{ inputs.version }}
+            WEKNORA_IMAGE_TAG=${{ inputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  mirror:
+    name: 同步上游四个镜像
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: imjasonh/setup-crane@v0.4
+
+      - name: 登录 ghcr
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: 同步镜像
+        env:
+          REGISTRY: ghcr.io/${{ github.repository }}
+        run: |
+          bash weknora/scripts/sync-upstream-images.sh "${{ inputs.version }}"
+
+      - name: 汇总
+        run: |
+          {
+            echo "### WeKnora 上游镜像同步完成"
+            echo ""
+            echo "版本：\`${{ inputs.version }}\`"
+            echo ""
+            echo "请把以下 tag 写进 \`hci-platform-env\` 的 \`weknora-values.yaml\`（若版本变化）："
+            echo ""
+            echo "- app / docreader：\`${{ inputs.version }}\`"
+            echo "- postgres：\`v0.25.11-pg17\`"
+            echo "- redis：\`7.0-alpine\`"
+          } >> "$GITHUB_STEP_SUMMARY"
