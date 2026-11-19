@@ -4075,7 +4075,7 @@ COMMENT ON COLUMN log_collect_task.script_restore_status IS 'none/pending/succes
 --       （覆写内置脚本）与"平台新增脚本"，恢复默认即删除该 code 的全部覆写行。
 -- 约束: 必须版本化 —— (script_id, revision) 复合主键保留每一版原文，
 --       任务侧记录 code + revision + sha256，才能回答"当时节点上跑的是哪一版"。
---       code 是落盘文件名（如 log_slow_disk.py），创建后不可改；改名等于新建。
+--       code 是落盘文件名（如 demo_check.py），创建后不可改；改名等于新建。
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS log_collect_script (
     script_id uuid NOT NULL DEFAULT gen_random_uuid(),

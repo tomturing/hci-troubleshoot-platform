@@ -17,7 +17,7 @@ type SpcFile struct {
 
 // ScriptFile 是平台「收集脚本」库下发的一份脚本。
 //
-// 与 SpcFile 同构但落地目录不同：spc 写 support_bundle_cluster/spc/<slot>.json，
+// 与 SpcFile 同构但落地目录不同：spc 写清单目录下的 <slot>.json，
 // 脚本写与 spc 同级的脚本目录下的 <code>（code 是带扩展名的文件名）。
 // 内容体积上界由平台限制在 4MB，桥侧仍需独立复算摘要——载荷经前端透传，不可信。
 type ScriptFile struct {
