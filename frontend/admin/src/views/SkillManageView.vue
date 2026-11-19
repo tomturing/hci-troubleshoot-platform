@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search, Edit, Delete, FullScreen, Document } from '@element-plus/icons-vue'
+import { Plus, Search, Edit, Delete, FullScreen, Document, Upload } from '@element-plus/icons-vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { parseSkillMarkdown } from '@/utils/skillImport'
 
 // ===== 类型定义（遵循 Agent Skills Open Standard）=====
 interface SkillDefinition {
@@ -144,8 +145,8 @@ const mdPreview = computed(() => {
 // description 字符计数
 const descCharCount = computed(() => formModel.value.description.length)
 
-// ===== 打开新建弹窗 =====
-function openCreateDialog() {
+// ===== 打开新建弹窗（prefill 供导入技能预填表单）=====
+function openCreateDialog(prefill?: Partial<typeof formModel.value>) {
   isEdit.value = false
   isFullscreen.value = false
   activeTab.value = 'basic'
@@ -166,8 +167,74 @@ function openCreateDialog() {
     custom_meta_value: '',
     assets_json: [],
     references_json: [],
+    ...prefill,
   }
   dialogVisible.value = true
+}
+
+// ===== 导入技能（SKILL.md：YAML frontmatter + Markdown 正文）=====
+const importDialogVisible = ref(false)
+const importText = ref('')
+const importFileName = ref('')
+const importParsing = ref(false)
+const importFileInput = ref<HTMLInputElement | null>(null)
+
+function openImportDialog() {
+  importText.value = ''
+  importFileName.value = ''
+  importDialogVisible.value = true
+}
+
+function triggerImportFilePick() {
+  importFileInput.value?.click()
+}
+
+async function handleImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许重复选择同一文件
+  if (!file) return
+  try {
+    importText.value = await file.text()
+    importFileName.value = file.name
+  } catch (e) {
+    console.error('读取技能文件失败:', e)
+    ElMessage.error('读取文件失败，请重试或直接粘贴内容')
+  }
+}
+
+// 解析 SKILL.md 并预填新建弹窗，复用既有创建接口保存
+function confirmImport() {
+  if (!importText.value.trim()) {
+    ElMessage.warning('请上传 SKILL.md 文件或粘贴文件内容')
+    return
+  }
+  importParsing.value = true
+  try {
+    const parsed = parseSkillMarkdown(importText.value)
+    if (skills.value.some(s => s.skill_name === parsed.skill_name)) {
+      ElMessage.warning(`技能标识 "${parsed.skill_name}" 已存在，保存将被拒绝，请修改后再提交`)
+    }
+    importDialogVisible.value = false
+    openCreateDialog({
+      skill_name: parsed.skill_name,
+      display_name: parsed.display_name,
+      description: parsed.description,
+      instructions_md: parsed.instructions_md,
+      compatibility: parsed.compatibility,
+      license: parsed.license,
+      allowed_tools: parsed.allowed_tools,
+      meta_author: parsed.meta_author || 'hci-team',
+      meta_category: parsed.meta_category || 'storage',
+      meta_tags: parsed.meta_tags,
+    })
+    ElMessage.success('解析成功，请核对表单内容后保存')
+  } catch (e: any) {
+    console.error('解析 SKILL.md 失败:', e)
+    ElMessage.error(e.message || '解析失败，请检查文件格式')
+  } finally {
+    importParsing.value = false
+  }
 }
 
 // ===== 打开编辑弹窗 =====
@@ -377,7 +444,10 @@ onMounted(() => {
           <h2 class="page-title">技能注册表</h2>
           <p class="page-desc">基于 Agent Skills Open Standard 的领域专业知识包管理，每个 Skill 是过程性知识与诊断流程的封装，而非函数接口。</p>
         </div>
-        <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建技能</el-button>
+        <div class="header-actions">
+          <el-button :icon="Upload" @click="openImportDialog">导入技能</el-button>
+          <el-button type="primary" :icon="Plus" @click="openCreateDialog()">新建技能</el-button>
+        </div>
       </div>
     </div>
 
@@ -749,6 +819,48 @@ onMounted(() => {
         </div>
       </template>
     </el-dialog>
+
+    <!-- ===== 导入技能弹窗（SKILL.md 文件上传 / 内容粘贴）===== -->
+    <el-dialog
+      v-model="importDialogVisible"
+      title="导入技能（SKILL.md）"
+      width="720px"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px;">
+        <template #title>
+          支持 Agent Skills Open Standard 格式的 SKILL.md 文件：顶部为 --- 包裹的 YAML frontmatter（name、description 必填，compatibility、license、allowed-tools、metadata 可选），其余部分为技能指令正文。解析后将预填新建表单，核对无误后保存。
+        </template>
+      </el-alert>
+
+      <div class="import-toolbar">
+        <el-button :icon="Upload" @click="triggerImportFilePick">选择 SKILL.md 文件</el-button>
+        <span v-if="importFileName" class="import-filename">已加载：{{ importFileName }}</span>
+        <input
+          ref="importFileInput"
+          type="file"
+          accept=".md,.markdown,text/markdown"
+          style="display: none"
+          @change="handleImportFileChange"
+        />
+      </div>
+
+      <el-input
+        v-model="importText"
+        type="textarea"
+        :rows="16"
+        placeholder="也可直接粘贴 SKILL.md 全文，例如：&#10;---&#10;name: hci-disk-vendor-lifetime&#10;description: 识别磁盘厂商并判断寿命是否达到返修阈值。当用户报告磁盘 IO 异常时触发。&#10;metadata:&#10;  author: hci-team&#10;  category: storage&#10;---&#10;&#10;## 技能描述&#10;..."
+        class="import-textarea"
+      />
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="importDialogVisible = false">取消</el-button>
+          <el-button type="primary" :loading="importParsing" @click="confirmImport">解析并填入表单</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -765,6 +877,35 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.header-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+/* 导入技能弹窗 */
+.import-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.import-filename {
+  font-size: 13px;
+  color: #67c23a;
+}
+
+.import-textarea :deep(.el-textarea__inner) {
+  font-family: Consolas, Monaco, 'Andale Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .page-title {
