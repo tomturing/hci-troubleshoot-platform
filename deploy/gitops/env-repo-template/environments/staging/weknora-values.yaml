@@ -1,0 +1,41 @@
+# WeKnora 知识库（chart: deploy/helm/hci-platform-weknora）
+#
+# 与主 values.yaml 分开维护：WeKnora 是 vendored 第三方 chart，顶层键
+# frontend / app / redis / postgresql 与平台业务 values 同名但语义不同，
+# 混在一起会被互相覆盖。
+#
+# 本文件只由 hci-platform-weknora-staging 这个 Application 消费。
+
+global:
+  # 私有镜像仓库前缀（含末尾 /）。CI 回写只改下面的 tag，不会动此前缀。
+  imageRegistry: ghcr.io/tomturing/hci-troubleshoot-platform/
+
+frontend:
+  image:
+    repository: weknora-ui
+    # 自建前缀镜像（VITE_BASE_PATH=/weknora/），tag 由 CI 构建后自动回写。
+    tag: ""
+
+# ghcr 拉取凭证。hci-weknora 与 hci-staging 跨命名空间，Secret 不能复用，
+# 由 chart 在本命名空间渲染同名 Secret。
+imagePullSecret:
+  username: ""
+  token: ""
+
+secrets:
+  # 首次部署时随机生成并长期保留；改值不会重建数据库，只会让服务连不上。
+  dbPassword: ""
+  redisPassword: ""
+  jwtSecret: ""
+  # ⚠️ 必须是 32 字节字符。它加密模型 API Key 等字段，丢失后库里密文不可恢复，
+  # 也不要在 ArgoCD prune 能删到的地方重建 Secret。
+  systemAesKey: ""
+
+embed:
+  # 在 WeKnora 控制台「设置 → 网页嵌入」创建渠道后回填：
+  # channelId = 渠道 UUID，publishToken = em_ 开头的发布令牌。
+  # 留空时问答入口返回 null（管理台仍可用），不会报错。
+  channelId: ""
+  publishToken: ""
+  # 允许嵌入的宿主 origin，必须含端口，例如 https://acli.sangfor.com.cn:4443
+  origin: ""

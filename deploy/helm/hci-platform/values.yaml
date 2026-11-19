@@ -199,6 +199,16 @@ apiGateway:
   # HCI 单 Agent 离线诊断实例，与旧 DSH 使用独立 Service、Ingress path 和会话目录。
   dshOfflineServiceUrl: "http://dsh-offline.hci-dsh.svc.cluster.local:8080"
   dshOfflinePublicPath: "/dsh-offline/"
+  # === WeKnora 知识库 ===
+  # 走 WeKnora frontend Service 而不是 app Service：embed token exchange 与浏览器
+  # 同一条链路（前端 nginx 的 /api 反代），避免两侧解析不一致。
+  weknoraServiceUrl: "http://frontend.hci-weknora.svc.cluster.local:80"
+  # 必须与 admin-ui nginx 的 location 前缀、UI 构建期 VITE_BASE_PATH 三者一致。
+  weknoraPublicPath: "/weknora/"
+  # embed 渠道由 WeKnora 控制台创建后注入；留空时问答入口返回 null（管理台仍可用）。
+  weknoraEmbedChannelId: ""
+  # 渠道白名单里的宿主 origin，必须含端口（浏览器实际地址）。
+  weknoraEmbedOrigin: ""
   # PR-D 管理台强认证开关：true 后共享内部令牌不再赋予 admin（必须 JWT 登录）。
   # 默认 false 保持向后兼容；置 true 前必须先通过 PR-C 人工回归，
   # 详见 docs/solution/events/2026-09-24-统一认证系统-PRC人工回归与PRD强认证方案.md。
@@ -603,6 +613,9 @@ adminUI:
   dshUpstream: "http://dsh.hci-dsh.svc.cluster.local:8080"
   # HCI 单 Agent 离线诊断 DSH 的同源反代地址。
   dshOfflineUpstream: "http://dsh-offline.hci-dsh.svc.cluster.local:8080"
+  # WeKnora 前端 Service（跨命名空间必须 FQDN）。admin-ui nginx 在 /weknora/
+  # 上剥离前缀后转发，浏览器地址栏始终是平台域名。
+  weknoraUpstream: "http://frontend.hci-weknora.svc.cluster.local:80"
   resources:
     requests:
       cpu: "10m"
@@ -724,6 +737,9 @@ config:
 # 生产环境通过 helm install --set secrets.xxx=xxx 覆盖
 secrets:
   postgresPassword: "dev_password_123"
+  # WeKnora embed 渠道的 em_ 发布令牌。只用于 api-gateway 在服务端换取 30 分钟
+  # ems_ 短令牌，绝不下发浏览器。留空即"未开通问答"，管理台入口不受影响。
+  weknoraEmbedPublishToken: ""
   # LLM API Key（用于 dashscope 网关调用，由 kb-service/agent-service/conversation-service 共用）
   llmApiKey: ""
   # Vision 专属 API Key，默认为空时自动回退到 llmApiKey
