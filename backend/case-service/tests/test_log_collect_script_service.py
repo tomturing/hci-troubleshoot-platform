@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 from app.services.log_collect_script_service import (
     MAX_SCRIPT_BYTES,
+    LogCollectScriptService,
     ScriptError,
     _items_reference,
     baseline_content,
@@ -78,3 +79,21 @@ def test_items_reference_only_matches_script_action() -> None:
     assert _items_reference(items, "pl_a.py") is True
     assert _items_reference(items, "pl_c.py") is False
     assert _items_reference(None, "pl_a.py") is False
+
+
+class _ExplodingSession:
+    """任何查库都算失败：用于证明无脚本条目时校验不会触碰数据库。"""
+
+    async def execute(self, *args, **kwargs):
+        raise AssertionError("无 action=script 条目时不应查库")
+
+
+async def test_assert_scenario_items_skips_db_without_script_items() -> None:
+    service = LogCollectScriptService(_ExplodingSession())  # type: ignore[arg-type]
+    items = [
+        {"action": "copy", "path": "/sf/log/cluster/"},
+        {"action": "spc", "path": "demo_network.sh"},
+        {"action": "copy", "path": ""},
+    ]
+    assert await service.assert_scenario_items(items) == []
+    assert items[1]["path"] == "demo_network.sh"

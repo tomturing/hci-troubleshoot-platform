@@ -518,16 +518,26 @@ class LogCollectScriptService:
 
         返回"未命中脚本库"的自由输入路径（合法，引用节点自带脚本），
         命中脚本库但已停用的直接报错。
+
+        没有任何 action=script 条目时直接返回、**不查库**：绝大多数场景只配
+        路径与专项，为它们多开一次 SELECT 既无意义，也让「保存场景」在库不可用
+        时被连坐失败。
         """
-        latest = await self._latest_rows()
-        baseline = baseline_scripts()
-        free_inputs: list[str] = []
+        script_items: list[tuple[Any, str]] = []
         for item in items:
             action = getattr(item, "action", None) or (item.get("action") if isinstance(item, dict) else None)
             path = getattr(item, "path", None) or (item.get("path") if isinstance(item, dict) else None)
             if action != "script" or not path:
                 continue
-            row = latest.get(str(path))
+            script_items.append((item, str(path)))
+        if not script_items:
+            return []
+
+        latest = await self._latest_rows()
+        baseline = baseline_scripts()
+        free_inputs: list[str] = []
+        for item, path in script_items:
+            row = latest.get(path)
             if row is not None and not row.enabled:
                 raise ScriptError(f"脚本已停用：{path}，请在收集脚本页启用或改选其它脚本", "conflict")
             if row is None and str(path) not in baseline:

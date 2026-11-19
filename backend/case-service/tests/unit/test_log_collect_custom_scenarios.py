@@ -63,6 +63,9 @@ class _StubService:
         self.update_calls: list[tuple[str, LogCollectCustomScenarioUpdate, str | None]] = []
         self.deleted: list[str] = []
         self.include_disabled_calls: list[bool] = []
+        # 路由会用 service.session 构造脚本引用校验服务；本文件的用例都不含
+        # action=script 条目，校验已在"无脚本条目"处短路，故不需要真实会话。
+        self.session = None
 
     async def list_latest(self, *, include_disabled: bool):
         self.include_disabled_calls.append(include_disabled)
