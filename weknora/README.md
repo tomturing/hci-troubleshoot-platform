@@ -77,6 +77,14 @@ Docker Hub，镜像必须先同步。
 3. 等 CI 构建出新 UI tag，把它写进 `weknora-values.yaml` 的 `ui.image.tag`。
 4. 在 staging 打开 `/weknora/` 与问答面板各走一遍（升级后必须验，不能只看 Pod Running）。
 
+## 构建坑位
+
+`VITE_BASE_PATH` 必须由 CI 显式作为 build-arg 传入（workflow 已传）。
+若漏传，Dockerfile 的 ARG 会变成空串，vite 回落 `base='/'`：镜像构建成功、
+Pod Running、`/weknora/` 返回 200，但页面白屏且控制台报
+"Failed to load module script ... MIME type of text/html"。
+Dockerfile 已用 `${VITE_BASE_PATH:-/weknora/}` 兜底，双重保险不要删。
+
 ## 已知边界
 
 - WeKnora 有**独立账号体系**，平台 JWT 不会透传；只有平台管理员能进管理台入口，
