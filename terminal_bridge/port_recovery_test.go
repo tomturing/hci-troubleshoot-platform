@@ -67,6 +67,13 @@ func TestIsAddressInUse(t *testing.T) {
 		{"nil", nil, false},
 		{"unix", &net.OpError{Op: "listen", Err: errors.New("bind: address already in use")}, true},
 		{"windows", errors.New("listen tcp: Only one usage of each socket address (protocol/network address/port) is normally permitted."), true},
+		// 2026-11-19 现场形态：Windows 返回 WSAEACCES(10013)，文案里没有 "address already in use"，
+		// 旧逻辑据此判为不可恢复 → 端口自愈整体被跳过 → 双击闪退。
+		{"windows_wsaeacces", errors.New("listen tcp 127.0.0.1:9999: bind: An attempt was made to access a socket in a way forbidden by its access permissions."), true},
+		// 已知边界（故意的）：文案由 FormatMessage 本地化，中文 Windows 上英文子串匹配不到，
+		// 本地化场景只能靠 errno 判定（见 port_conflict_windows.go）；此处钉住该事实，
+		// 避免后续有人用"再加一条中文子串"的方式去糊。
+		{"windows_wsaeacces_zh_locale", errors.New("listen tcp 127.0.0.1:9999: bind: 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。"), false},
 		{"other", errors.New("permission denied"), false},
 	}
 	for _, tc := range cases {
