@@ -1,12 +1,14 @@
-# HCI 配置契约（唯一清单）
+# HCI 主业务配置契约
 #
 # 本文件定义“同一个配置在不同部署形态中如何交付”，而非复制具体值：
 # - Compose 的变量必须在 .env.example 有无敏感值的声明；
 # - compose_only 只服务于本地 Compose，不要求主业务 Helm Chart 同名变量；
-# - helm_equivalents 指出 Helm values 路径及最终容器环境变量名；
+# - helm_equivalents 指出主业务 Helm values 路径及最终容器环境变量名；
 # - compose_build_args 是镜像构建期参数（`docker build --build-arg` 语义），既不是容器
 #   运行时环境变量、也不需要 Helm 等价映射。
 #
+# DSH 独立 Chart 的 Compose→Helm→容器映射见同目录 dsh-config-contract.yaml；不要把
+# DSH_OFFLINE_* 变量误当成主业务 Chart 的同名 Helm values。
 # 新增配置时：先登记其交付类型，再修改 Compose / .env.example / Helm；执行
 # `make config-contract-check`。密钥只登记名称，绝不登记真实值。
 version: 1

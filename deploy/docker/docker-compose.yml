@@ -550,7 +550,7 @@ services:
       DSH_LLM_API: ${DSH_OFFLINE_LLM_API:-openai-completions}
       DSH_LLM_BASE_URL: ${DSH_OFFLINE_LLM_BASE_URL:-https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
       DSH_LLM_MODEL: ${DSH_OFFLINE_LLM_MODEL:-qwen3.8-flash}
-      DSH_PLUGIN_PACKAGES: ${DSH_OFFLINE_PLUGIN_PACKAGES:-/opt/dsh-plugins/deepseek-harness-wecom-0.1.33.tgz /opt/dsh-plugins/deepseek-harness-session-bi-0.1.21.tgz /opt/dsh-plugins/hci-offline-diagnosis-bundle-0.4.1.tgz}
+      DSH_PLUGIN_PACKAGES: ${DSH_OFFLINE_PLUGIN_PACKAGES:-/opt/dsh-plugins/deepseek-harness-wecom-0.1.34.tgz /opt/dsh-plugins/deepseek-harness-session-bi-0.1.21.tgz /opt/dsh-plugins/hci-offline-diagnosis-bundle-0.4.2.tgz}
       # 插件读取的容器内变量；值分别来自新实例独立的 DSH_OFFLINE_* 配置。
       WECOM_BOT_ID: ${DSH_OFFLINE_WECOM_BOT_ID:-}
       WECOM_BOT_SECRET: ${DSH_OFFLINE_WECOM_BOT_SECRET:-}

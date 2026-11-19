@@ -64,7 +64,7 @@ spec:
             - name: HOME
               value: /home/dsh
             - name: DSH_PROFILE
-              value: web
+              value: {{ .Values.dsh.profile | quote }}
             - name: DSH_PLUGIN_PACKAGES
               value: {{ join " " .Values.dsh.plugins.packages | quote }}
             {{- range $name, $value := .Values.dsh.pluginEnv }}

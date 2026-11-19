@@ -1,0 +1,184 @@
+# DSH 跨部署形态配置契约（唯一映射清单）
+#
+# Compose 的 DSH_OFFLINE_* 是宿主机输入名；Helm 使用 chart values；工作负载最终
+# 读取的是未加 OFFLINE 前缀的容器环境变量。三者不能靠变量名相等判断，必须通过本文件
+# 的语义映射校验。敏感值只在环境仓 CI 传入实际文件时比较，校验器不会打印值。
+version: 1
+sources:
+  env_example: .env.example
+  compose: deploy/docker/docker-compose.yml
+
+mappings:
+  - id: offline.profile
+    compose_env: DSH_OFFLINE_PROFILE
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.profile]
+    rendered_env: [DSH_PROFILE]
+    comparison: identity
+
+  - id: offline.public_url
+    compose_env: DSH_OFFLINE_PUBLIC_URL
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [global.publicUrl, ingress.path]
+    rendered_env: [DSH_PUBLIC_URL]
+    comparison: url_with_ingress_path
+
+  - id: offline.trusted_host
+    compose_env: DSH_OFFLINE_TRUSTED_HOST
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [global.publicUrl]
+    rendered_env: [DSH_TRUSTED_HOST]
+    comparison: host_from_url
+
+  - id: offline.llm_api_key
+    compose_env: DSH_OFFLINE_QWEN_API_KEY
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [secrets.dshLlmApiKey]
+    helm_name_path: dsh.llm.apiKeyEnv
+    rendered_env: [DSH_QWEN_API_KEY]
+    template_selector: dsh.llm.apiKeyEnv
+    comparison: identity
+    sensitive: true
+
+  - id: offline.customer_logs_path
+    compose_env: DSH_OFFLINE_CUSTOMER_LOGS_PATH
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [customerLogs.hostPath]
+    comparison: identity
+
+  - id: offline.tickets_path
+    compose_env: DSH_OFFLINE_TICKETS_PATH
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [tickets.hostPath]
+    comparison: identity
+
+  - id: offline.llm_provider
+    compose_env: DSH_OFFLINE_LLM_PROVIDER_ID
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.llm.providerId]
+    comparison: identity
+
+  - id: offline.llm_api
+    compose_env: DSH_OFFLINE_LLM_API
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.llm.api]
+    comparison: identity
+
+  - id: offline.llm_base_url
+    compose_env: DSH_OFFLINE_LLM_BASE_URL
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.llm.baseUrl]
+    comparison: identity
+
+  - id: offline.llm_model
+    compose_env: DSH_OFFLINE_LLM_MODEL
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.llm.model]
+    comparison: identity
+
+  - id: offline.plugins
+    compose_env: DSH_OFFLINE_PLUGIN_PACKAGES
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.plugins.packages]
+    rendered_env: [DSH_PLUGIN_PACKAGES]
+    template_selector: dsh.plugins.packages
+    comparison: space_list
+
+  - id: offline.wecom_bot_id
+    compose_env: DSH_OFFLINE_WECOM_BOT_ID
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [secrets.dshPluginEnv.WECOM_BOT_ID]
+    rendered_env: [WECOM_BOT_ID]
+    template_selector: secrets.dshPluginEnv
+    dynamic_values: true
+    comparison: identity
+    sensitive: true
+
+  - id: offline.wecom_bot_secret
+    compose_env: DSH_OFFLINE_WECOM_BOT_SECRET
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [secrets.dshPluginEnv.WECOM_BOT_SECRET]
+    rendered_env: [WECOM_BOT_SECRET]
+    template_selector: secrets.dshPluginEnv
+    dynamic_values: true
+    comparison: identity
+    sensitive: true
+
+  - id: offline.wecom_workspace
+    compose_env: DSH_OFFLINE_WECOM_WORKSPACE_ROOT
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    # 工单卷挂载目标和插件读取的 workspace 必须是同一个容器路径。
+    helm_values: [dsh.pluginEnv.WECOM_WORKSPACE_ROOT, tickets.mountPath]
+    rendered_env: [WECOM_WORKSPACE_ROOT]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.wecom_rule_workspace
+    compose_env: DSH_OFFLINE_WECOM_RULE_WORKSPACE_ROOT
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WECOM_RULE_WORKSPACE_ROOT]
+    rendered_env: [WECOM_RULE_WORKSPACE_ROOT]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.wecom_agent_preset
+    compose_env: DSH_OFFLINE_WECOM_AGENT_PRESET
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WECOM_AGENT_PRESET]
+    rendered_env: [WECOM_AGENT_PRESET]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.hci_knowledge_root
+    compose_env: DSH_OFFLINE_HCI_KNOWLEDGE_ROOT
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.HCI_KNOWLEDGE_ROOT]
+    rendered_env: [HCI_KNOWLEDGE_ROOT]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  # 以下三个变量由主业务 Compose 的 admin/api 容器消费，不是 DSH 进程变量。
+  - id: offline.routing.upstream
+    compose_env: DSH_OFFLINE_UPSTREAM
+    compose_service: admin-ui
+    helm_chart: deploy/helm/hci-platform
+    helm_values: [adminUI.dshOfflineUpstream]
+    rendered_env: [DSH_OFFLINE_UPSTREAM]
+    comparison: identity
+
+  - id: offline.routing.service_url
+    compose_env: DSH_OFFLINE_SERVICE_URL
+    compose_service: admin-ui
+    helm_chart: deploy/helm/hci-platform
+    helm_values: [apiGateway.dshOfflineServiceUrl]
+    rendered_env: [DSH_OFFLINE_SERVICE_URL]
+    comparison: identity
+
+  - id: offline.routing.public_path
+    compose_env: DSH_OFFLINE_PUBLIC_PATH
+    compose_service: admin-ui
+    helm_chart: deploy/helm/hci-platform
+    helm_values: [apiGateway.dshOfflinePublicPath]
+    rendered_env: [DSH_OFFLINE_PUBLIC_PATH]
+    comparison: identity

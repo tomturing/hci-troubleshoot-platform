@@ -121,7 +121,9 @@ jobs:
               - 'deploy/config/**'
               - 'deploy/docker/**'
               - 'deploy/helm/hci-platform/**'
+              - 'deploy/helm/hci-platform-dsh/**'
               - 'scripts/verify/verify_config_contract.py'
+              - 'scripts/verify/verify_dsh_config_contract.py'
             # Go 运行时验证的输入：hci_sim/** 与 offline-collector/** 同样不在
             # backend filter 内，此前这类 PR 没有任何 job 验证 Go 代码。
             go_code:
