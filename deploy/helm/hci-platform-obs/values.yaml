@@ -39,6 +39,7 @@ scrapeNamespaces:
   - hci-sim-dev
   - hci-sim-staging
   - hci-dsh
+  - hci-weknora
   - hci-observability
   - argocd
 

@@ -20,6 +20,13 @@ data:
   DSH_PUBLIC_PATH: {{ .Values.apiGateway.dshPublicPath | quote }}
   DSH_OFFLINE_SERVICE_URL: {{ .Values.apiGateway.dshOfflineServiceUrl | quote }}
   DSH_OFFLINE_PUBLIC_PATH: {{ .Values.apiGateway.dshOfflinePublicPath | quote }}
+  # WeKnora 知识库：服务地址与对外前缀（非敏感）。
+  # 前缀必须与 admin-ui nginx location 和 UI 构建期 VITE_BASE_PATH 三者一致，
+  # 否则 embed iframe 会 404 或 axios 打到平台自己的 /api。
+  WEKNORA_SERVICE_URL: {{ .Values.apiGateway.weknoraServiceUrl | quote }}
+  WEKNORA_PUBLIC_PATH: {{ .Values.apiGateway.weknoraPublicPath | quote }}
+  WEKNORA_EMBED_CHANNEL_ID: {{ .Values.apiGateway.weknoraEmbedChannelId | quote }}
+  WEKNORA_EMBED_ORIGIN: {{ .Values.apiGateway.weknoraEmbedOrigin | quote }}
   AGENT_SERVICE_URL: {{ .Values.config.agentServiceUrl | default "http://agent-service:8005" | quote }}
   ALLOWED_ORIGINS: {{ .Values.config.allowedOrigins | quote }}
   # Gateway 与 Diagnosis Service 必须使用相同身份模式，避免一侧校验内部 Token、另一侧校验 OIDC。

@@ -100,6 +100,14 @@ const router = createRouter({
       meta: { title: 'KBD管理', icon: 'Document', order: 6 },
     },
     {
+      // WeKnora 知识库：问答与管理台两个页签，均为同源 iframe。
+      // order 取 6.5，落在「KBD管理」(6) 与「SOP管理」(7) 之间。
+      path: '/knowledge/weknora',
+      name: 'KnowledgeBase',
+      component: () => import('@/views/KnowledgeBaseView.vue'),
+      meta: { title: '知识库', icon: 'Reading', order: 6.5 },
+    },
+    {
       path: '/knowledge/sop',
       name: 'SopManage',
       component: () => import('@/views/SopManageView.vue'),

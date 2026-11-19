@@ -46,6 +46,18 @@ class Settings(BaseSettings):
     # HCI 单 Agent 离线诊断 DSH：与旧诊断实例使用不同的 Service、路径和会话空间。
     DSH_OFFLINE_SERVICE_URL: str = "http://dsh-offline.hci-dsh.svc.cluster.local:8080"
     DSH_OFFLINE_PUBLIC_PATH: str = "/dsh-offline/"
+    # === WeKnora 知识库（独立 namespace hci-weknora） ===
+    # 直连 frontend Service 而不是 app：exchange 走的是前端 nginx 的 /api 反代，
+    # 与浏览器同一条链路，避免出现"浏览器能通、网关换不到 token"的错位。
+    WEKNORA_SERVICE_URL: str = "http://frontend.hci-weknora.svc.cluster.local:80"
+    # 对外子路径，必须与 admin-ui nginx 的 location 及 UI 构建期
+    # VITE_BASE_PATH 严格一致（weknora/ui/Dockerfile）。
+    WEKNORA_PUBLIC_PATH: str = "/weknora/"
+    # 以下三项由 chart 从集群 Secret 注入；未配置时问答入口返回 null（不是错误）。
+    WEKNORA_EMBED_CHANNEL_ID: str = ""
+    WEKNORA_EMBED_PUBLISH_TOKEN: str = ""
+    # 必须与渠道白名单一致，且含端口（浏览器实际地址）。
+    WEKNORA_EMBED_ORIGIN: str = ""
     DIAGNOSIS_IDENTITY_MODE: str = "internal"
     # internal 模式下网关代表浏览器调用方重签内部身份时使用的租户标识。
     # 必须与 chart `diagnosisService.internalIdentity.tenantId` 保持一致，
