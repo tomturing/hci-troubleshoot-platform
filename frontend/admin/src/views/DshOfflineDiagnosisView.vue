@@ -120,6 +120,8 @@ onMounted(loadDshUrl)
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* 默认 20px 的上下内边距在内嵌场景是纯浪费，收紧到 12px 直接还给 iframe */
+  padding: 12px;
 }
 
 .dsh-offline-content {
@@ -162,7 +164,7 @@ onMounted(loadDshUrl)
 /* 原生全屏下容器脱离文档流，必须自带背景色 */
 .dsh-offline-container:fullscreen {
   background: #f0f2f5;
-  padding: 16px;
+  padding: 12px;
   box-sizing: border-box;
 }
 
