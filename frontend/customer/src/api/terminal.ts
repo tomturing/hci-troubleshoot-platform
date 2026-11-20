@@ -6,7 +6,7 @@
  * 两种模式使用相同 WebSocket 协议和同一套 Go 代码。
  */
 
-const DEFAULT_BRIDGE_URL = 'ws://localhost:9999'
+const DEFAULT_BRIDGE_URL = 'ws://127.0.0.1:9999'
 // 桌面模式下与 terminal_bridge Go 端内置常量一致的两个已知端口：
 // 主端口被陌生进程占用时 Bridge 会回退到备用端口，浏览器只需探测这两个端口即可定位，
 // 无需服务端端口发现通道。
@@ -46,7 +46,10 @@ function normalizeConfiguredBridgeUrl(configured: string): string {
 }
 
 function desktopBridgeUrl(port: number): string {
-  return `ws://localhost:${port}`
+  // 固定用 127.0.0.1 而非 localhost：Bridge 只绑 IPv4 回环，而 localhost 在部分
+  // Windows（hosts 写死 ::1、或 IPv6 优先且不回退）与带系统代理的环境下会解析/转发
+  // 到别处，表现为"进程明明在跑、页面一直说未运行"（2026-11-20 现场）。
+  return `ws://127.0.0.1:${port}`
 }
 
 /**
@@ -335,7 +338,7 @@ export interface SftpMessageOptions {
  * 构建 sftp_op 消息。
  *
  * 刻意不携带本地绝对路径：落盘位置由 Bridge 决定（桌面模式下任意网页都能连
- * ws://localhost:9999，允许前端指定路径等于把“任意文件写”开放出去）。
+ * ws://127.0.0.1:9999，允许前端指定路径等于把“任意文件写”开放出去）。
  */
 export function buildSftpMessage(caseId: string, action: SftpAction, options: SftpMessageOptions = {}): string {
   return JSON.stringify({

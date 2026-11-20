@@ -37,7 +37,7 @@ vi.mock('@/api/terminal', async (importOriginal) => {
     ...actual,
     checkBridgeRunning: vi.fn().mockResolvedValue({ running: true }),
     checkBridgeBeforeOpen: vi.fn().mockResolvedValue({ available: true, message: '' }),
-    getBridgeUrl: vi.fn(() => 'ws://localhost:9999'),
+    getBridgeUrl: vi.fn(() => 'ws://127.0.0.1:9999'),
     createBridgeSocket: vi.fn(() => fakeSocket),
     buildConnectMessage: vi.fn(() => JSON.stringify({ type: 'ssh_connect' })),
     buildDisconnectMessage: vi.fn(() => JSON.stringify({ type: 'ssh_disconnect' })),

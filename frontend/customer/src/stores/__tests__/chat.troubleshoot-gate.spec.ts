@@ -62,7 +62,7 @@ vi.mock('@/api/terminal', () => ({
   checkBridgeRunning: vi.fn().mockResolvedValue(false),
   checkBridgeBeforeOpen: mockCheckBridgeBeforeOpen,
   createBridgeSocket: vi.fn(),
-  getBridgeUrl: vi.fn().mockReturnValue('ws://localhost:9999'),
+  getBridgeUrl: vi.fn().mockReturnValue('ws://127.0.0.1:9999'),
   buildConnectMessage: vi.fn(),
   buildInputMessage: vi.fn(),
   buildDisconnectMessage: vi.fn(),
@@ -141,7 +141,7 @@ describe('chat store — 排障前置门禁', () => {
     await vi.waitFor(() => expect(store.troubleshootGateStage).toBe('bridge-down'))
 
     expect(store.troubleshootGateVisible).toBe(true)
-    expect(store.troubleshootGateBridgeUrl).toBe('ws://localhost:9999')
+    expect(store.troubleshootGateBridgeUrl).toBe('ws://127.0.0.1:9999')
     // 门禁未通过前不得落消息、不得发起请求
     expect(store.messages).toHaveLength(0)
 

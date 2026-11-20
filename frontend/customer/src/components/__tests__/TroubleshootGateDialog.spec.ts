@@ -50,7 +50,7 @@ vi.mock('@/api/terminal', () => ({
   checkBridgeRunning: vi.fn().mockResolvedValue(false),
   checkBridgeBeforeOpen: vi.fn().mockResolvedValue('not-running'),
   createBridgeSocket: vi.fn(),
-  getBridgeUrl: vi.fn().mockReturnValue('ws://localhost:9999'),
+  getBridgeUrl: vi.fn().mockReturnValue('ws://127.0.0.1:9999'),
   buildConnectMessage: vi.fn(),
   buildInputMessage: vi.fn(),
   buildDisconnectMessage: vi.fn(),
@@ -93,7 +93,7 @@ describe('TroubleshootGateDialog', () => {
   it('bridge 未运行：给出下载 bridge 与重新检测，并暴露探测地址', async () => {
     const { wrapper, store } = await mountDialog()
     store.troubleshootGateBridgeStatus = 'not-running'
-    store.troubleshootGateBridgeUrl = 'ws://localhost:9999'
+    store.troubleshootGateBridgeUrl = 'ws://127.0.0.1:9999'
     store.troubleshootGateStage = 'bridge-down'
     await nextTick()
 
@@ -101,7 +101,7 @@ describe('TroubleshootGateDialog', () => {
     expect(text).toContain('未检测到 terminal_bridge')
     expect(text).toContain('下载 terminal_bridge')
     expect(text).toContain('已启动，重新检测')
-    expect(text).toContain('ws://localhost:9999')
+    expect(text).toContain('ws://127.0.0.1:9999')
     // bridge 都没有时绝不能出现 SSH 表单（否则用户会以为可以直接登录）
     expect(wrapper.find('.ssh-connect-section').exists()).toBe(false)
     wrapper.unmount()
