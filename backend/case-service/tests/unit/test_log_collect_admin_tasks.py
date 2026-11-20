@@ -429,7 +429,7 @@ async def test_list_attaches_batched_transfer_and_network_evidence(monkeypatch):
     assert item.display.conclusion == "pending"
 
 
-def _task_row(mode: str = "acli_direct") -> dict:
+def _task_row(mode: str = "acli_direct", status: str = "collecting") -> dict:
     return {
         "task_id": uuid4(),
         "case_id": "Q2026111000243",
@@ -438,6 +438,7 @@ def _task_row(mode: str = "acli_direct") -> dict:
         "created_at": _now() - timedelta(minutes=10),
         "archive_size": 885094930,
         "delivery_status": "delivered",
+        "status": status,
     }
 
 
@@ -449,9 +450,10 @@ def _patch_task(monkeypatch, row: dict) -> None:
 
 
 class _FakeClient:
-    def __init__(self, *, progress=("ok", None), status=None):
+    def __init__(self, *, progress=("ok", None), status=None, archive=None):
         self.progress = progress
         self.status = status
+        self.archive = archive
         self.calls: list[str] = []
 
     def __call__(self, *_args, **_kwargs):
@@ -464,6 +466,10 @@ class _FakeClient:
     async def upload_status(self, _client, _upload_id):
         self.calls.append("upload_status")
         return self.status
+
+    async def archive_status(self, _client, _filename):
+        self.calls.append("archive_status")
+        return self.archive
 
 
 @pytest.mark.asyncio
@@ -490,6 +496,65 @@ async def test_p1_not_found_is_not_a_failure(monkeypatch):
     result = await routes.destination_progress(row["task_id"])
     assert result.state == "no_record"
     assert result.reason and "还没有这次上传的记录" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_failed_row_sees_archive_after_session_expired(monkeypatch):
+    """终态会话会被 5888 清理；查不到会话不等于没归档。"""
+    row = _task_row(status="failed")
+    _patch_task(monkeypatch, row)
+    archive = {
+        "found": True,
+        "status": "archived",
+        "size": row["archive_size"],
+        "mtime": int((_now() - timedelta(minutes=2)).timestamp()),
+        "sha256": "d" * 64,
+        "target_path": "/sf/log/Q2026111000243/Q2026111000243.zip",
+        "finished_at": _now().isoformat(),
+    }
+    fake = _FakeClient(progress=("ok", {"found": False}), archive=archive)
+    monkeypatch.setattr(routes, "SangforRelayClient", fake)
+
+    result = await routes.destination_progress(row["task_id"])
+    assert result.state == "done"
+    assert result.target_path.endswith(".zip")
+    assert result.reason == "来自 5888 归档记录"
+    assert fake.calls == ["upload_progress", "archive_status"]
+
+
+@pytest.mark.asyncio
+async def test_stale_archive_is_not_claimed_as_this_round(monkeypatch):
+    """对抗性守门：历史包不能冒充本轮送达。"""
+    row = _task_row(status="failed")
+    _patch_task(monkeypatch, row)
+    archive = {
+        "found": True,
+        "size": row["archive_size"],
+        "mtime": int((_now() - timedelta(days=2)).timestamp()),
+        "target_path": "/sf/log/Q2026111000243/old.zip",
+    }
+    fake = _FakeClient(progress=("ok", {"found": False}), archive=archive)
+    monkeypatch.setattr(routes, "SangforRelayClient", fake)
+
+    result = await routes.destination_progress(row["task_id"])
+    assert result.state == "no_record"
+    assert "仅查到更早或不完整的归档" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_active_row_does_not_query_archive(monkeypatch):
+    """在途行仍只走会话查询，避免 N× 轮询打爆 5888。"""
+    row = _task_row()
+    _patch_task(monkeypatch, row)
+    fake = _FakeClient(
+        progress=("ok", {"found": False}),
+        archive={"found": True, "size": row["archive_size"]},
+    )
+    monkeypatch.setattr(routes, "SangforRelayClient", fake)
+
+    result = await routes.destination_progress(row["task_id"])
+    assert result.state == "no_record"
+    assert fake.calls == ["upload_progress"]
 
 
 @pytest.mark.asyncio

@@ -124,6 +124,10 @@ const (
 	// 与 003（分片上传失败）的区别：003 重试有机会成功，010 重试只会追一个
 	// 移动的目标；处置动作是"等包大小稳定后重开一次上传会话"。
 	ErrTransferSourceStillWriting = "LC-TRANSFER-010"
+	// 节点包早于本次采集开始：上一轮的旧产物，不能当成本轮结果上传。
+	// 与 008/ENV-004（磁盘空间不足）严格区分：清盘解决不了旧包，
+	// 必须等本次采集真正写完；因此 retryable=manual。
+	ErrTransferSourceStale = "LC-TRANSFER-011"
 	// P1 直传后按产物名回查 5888 归档未通过（不存在/大小不一致/时间窗外）。
 	// 与 001/006 的区别：001 是包没生成，006 是探测不了，本码是包生成了、
 	// 也（据 acli 说）传完了，但落盘侧没有一致的归档件。
@@ -241,6 +245,8 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrTransferAdmissionExceeded: {"TRANSFER", "customer", "manual", "package"},
 	// 等包写完即可恢复；这不是网络抖动，在同一个会话上重试不会变好。
 	ErrTransferSourceStillWriting: {"TRANSFER", "customer", "manual", "package"},
+	// 旧包需要人工等本轮采集写完再上传，自动重试只会反复撞旧产物。
+	ErrTransferSourceStale: {"TRANSFER", "customer", "manual", "package"},
 	// 不可自动重试：P1 成功后插件已删源包，重试没有输入。
 	ErrTransferArchiveUnverified: {"TRANSFER", "customer", "false", "upload"},
 

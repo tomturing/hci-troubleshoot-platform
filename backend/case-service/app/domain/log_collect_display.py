@@ -810,6 +810,11 @@ def _conclusion(
     if status == "cancelled" or delivery_status == "cancelled":
         return "cancelled"
     if status == "failed" or delivery_status == "failed":
+        # 已完成交付登记且 5888 侧有权威核验快照时，节点迟到写回的 failed
+        # 只是状态噪音，不能覆盖已落盘的交付事实（2026-11-20 四单审计）。
+        # 交付未登记（含手工上传/历史包/截断包）仍按失败处理，禁止据此翻正。
+        if delivered and evidence_ok:
+            return "success" if quality == "ok" else "partial"
         return "failed"
     if phase != "settled":
         return "pending"
