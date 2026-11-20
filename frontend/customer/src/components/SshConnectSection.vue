@@ -350,7 +350,7 @@ watch(
         <template #title>
           <strong>SSH Bridge 未运行</strong>
         </template>
-        <p class="bridge-desc">请下载并启动 terminal_bridge.exe，然后点击「重新检测」</p>
+        <p class="bridge-desc">请下载并启动 terminal_bridge.exe（窗口不要关闭），然后点击「重新检测」；若仍提示未运行，请确认浏览器未通过代理访问 127.0.0.1</p>
       </el-alert>
 
       <!-- 仅 Windows 下载：单一入口，按钮占满整块，避免"小按钮 + 右侧留白"的失衡 -->

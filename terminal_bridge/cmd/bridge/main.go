@@ -231,18 +231,29 @@ func main() {
 	log.Printf("[Bridge] Origin 策略已启用: allowed_origins=%s；结构化日志与状态指标已开启", resolved.AllowedOriginsRaw)
 
 	// 优雅退出：覆盖 Ctrl+C 与 SIGTERM。
-	// 边界说明（必须写清楚，别让人误以为万能）：Windows 关闭控制台窗口走 TerminateProcess，
-	// 进程收不到任何信号，仍然会"无痕消失"；但那类退出现在可以通过
-	// 「有 bridge.startup 无 bridge.shutdown」在云端被识别出来。
+	// Windows 的实际映射（runtime/os_windows.go 的 ctrlHandler）：
+	//   CTRL_C / CTRL_BREAK                       → os.Interrupt（日志 signal=interrupt）
+	//   CTRL_CLOSE / CTRL_LOGOFF / CTRL_SHUTDOWN  → syscall.SIGTERM（日志 signal=terminated）
+	// 即"关闭控制台窗口"是可以被捕获并优雅退出的，日志里会留下 bridge.shutdown；
+	// 真正无声消失的只有 TerminateProcess（taskkill /F、任务管理器结束任务、安全软件强杀），
+	// 表现为「有 bridge.startup 无 bridge.shutdown」。
+	// 旧注释曾写"关闭控制台窗口走 TerminateProcess、收不到信号"，与事实相反，会把人
+	// 引向"被强杀"的错误结论（2026-11-20 现场即按此误判过一次）。
+	// console_event 进一步区分 SIGTERM 的三种来源，避免把"用户关了窗口"当成异常退出。
+	registerConsoleCtrlProbe()
 	signalCh := make(chan os.Signal, 1)
 	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-signalCh
-		logpush.Blog("WARN", "bridge.shutdown", "terminal_bridge 收到退出信号，开始优雅退出", "", "", "", "", map[string]any{
+		extra := map[string]any{
 			"signal":          sig.String(),
 			"uptime_seconds":  int64(time.Since(app.ProcessStartedAt).Seconds()),
 			"active_sessions": bridge.SessionCount(),
-		})
+		}
+		if consoleEvent := lastConsoleCtrlEvent(); consoleEvent != "" {
+			extra["console_event"] = consoleEvent
+		}
+		logpush.Blog("WARN", "bridge.shutdown", "terminal_bridge 收到退出信号，开始优雅退出", "", "", "", "", extra)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {

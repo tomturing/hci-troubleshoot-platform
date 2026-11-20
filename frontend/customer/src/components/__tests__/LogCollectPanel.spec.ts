@@ -105,7 +105,7 @@ vi.mock('@/api/terminal', async () => {
   const actual = await vi.importActual<typeof import('@/api/terminal')>('@/api/terminal')
   return {
     ...actual,
-    resolveBridgeUrl: vi.fn().mockResolvedValue('ws://localhost:9999'),
+    resolveBridgeUrl: vi.fn().mockResolvedValue('ws://127.0.0.1:9999'),
     // 「连接 SSH」的前置检测：桩成 running，登录框才会呈现表单而不是 Bridge 引导
     checkBridgeBeforeOpen: vi.fn().mockResolvedValue('running'),
     createBridgeSocket: vi.fn(() => {

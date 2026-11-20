@@ -21,7 +21,7 @@ describe('getBridgeUrl', () => {
 
   it('未注入运行时配置时保持 Windows 桌面 Bridge 地址', () => {
     resetBridgeUrlCache()
-    expect(getBridgeUrl()).toBe('ws://localhost:9999')
+    expect(getBridgeUrl()).toBe('ws://127.0.0.1:9999')
   })
 
   it('将集群相对路径解析为当前页面的同源 WebSocket 地址', () => {
@@ -95,8 +95,8 @@ describe('getBridgeUrl', () => {
   })
 })
 
-const PRIMARY_URL = 'ws://localhost:9999'
-const BACKUP_URL = 'ws://localhost:47324'
+const PRIMARY_URL = 'ws://127.0.0.1:9999'
+const BACKUP_URL = 'ws://127.0.0.1:47324'
 
 // 可控制的 WebSocket 替身：按 URL 决定行为——
 // live：open 后立即下发 bridge_hello（确认为存活 Bridge）；
@@ -145,13 +145,13 @@ describe('terminal_bridge 端口冲突自愈探测', () => {
     delete window.__HCI_RUNTIME_CONFIG__
   })
 
-  it('无配置且主端口存活时解析为 ws://localhost:9999', async () => {
+  it('无配置且主端口存活时解析为 ws://127.0.0.1:9999', async () => {
     vi.useFakeTimers()
     const { FakeWebSocket } = createBridgeStub({ [PRIMARY_URL]: 'live' })
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const pending = resolveBridgeUrl()
     await vi.runAllTimersAsync()
-    await expect(pending).resolves.toBe('ws://localhost:9999')
+    await expect(pending).resolves.toBe('ws://127.0.0.1:9999')
   })
 
   it('主端口被陌生进程占用（可连但无 Bridge 回包）时回落到备用端口 47324', async () => {
@@ -163,7 +163,7 @@ describe('terminal_bridge 端口冲突自愈探测', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const pending = resolveBridgeUrl()
     await vi.runAllTimersAsync()
-    await expect(pending).resolves.toBe('ws://localhost:47324')
+    await expect(pending).resolves.toBe('ws://127.0.0.1:47324')
     // 先探主端口，未确认存活才回落备用端口
     expect(constructed).toEqual([PRIMARY_URL, BACKUP_URL])
   })
@@ -174,8 +174,8 @@ describe('terminal_bridge 端口冲突自愈探测', () => {
     vi.stubGlobal('WebSocket', FakeWebSocket)
     const pending = resolveBridgeUrl()
     await vi.runAllTimersAsync()
-    await expect(pending).resolves.toBe('ws://localhost:9999')
-    expect(getBridgeUrl()).toBe('ws://localhost:9999')
+    await expect(pending).resolves.toBe('ws://127.0.0.1:9999')
+    expect(getBridgeUrl()).toBe('ws://127.0.0.1:9999')
   })
 
   it('注入集群配置时零探测直接解析同源地址', async () => {
@@ -199,7 +199,7 @@ describe('terminal_bridge 端口冲突自愈探测', () => {
     await vi.runAllTimersAsync()
     await expect(pending).resolves.toBe('running')
     // 缓存记住备用端口，同步读取与后续连接复用同一端口
-    expect(getBridgeUrl()).toBe('ws://localhost:47324')
+    expect(getBridgeUrl()).toBe('ws://127.0.0.1:47324')
   })
 
   it('目标不可用时 checkBridgeRunning 返回 false 并清除缓存', async () => {
@@ -210,7 +210,7 @@ describe('terminal_bridge 端口冲突自愈探测', () => {
     const warm = resolveBridgeUrl()
     await vi.runAllTimersAsync()
     await warm
-    expect(getBridgeUrl()).toBe('ws://localhost:9999')
+    expect(getBridgeUrl()).toBe('ws://127.0.0.1:9999')
     // 随后 Bridge 关闭：所有端口均 dead
     vi.unstubAllGlobals()
     vi.stubGlobal('WebSocket', createBridgeStub({}).FakeWebSocket)
@@ -218,7 +218,7 @@ describe('terminal_bridge 端口冲突自愈探测', () => {
     await vi.runAllTimersAsync()
     await expect(pending).resolves.toBe(false)
     // 失效后清缓存，回到默认地址文案
-    expect(getBridgeUrl()).toBe('ws://localhost:9999')
+    expect(getBridgeUrl()).toBe('ws://127.0.0.1:9999')
   })
 })
 
