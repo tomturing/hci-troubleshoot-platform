@@ -11,7 +11,6 @@ package logcollect
 //  4. 分片与整包均计算 SHA-256，供平台側 complete 校验，避免弱网静默损坏。
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"crypto/sha256"
@@ -29,6 +28,7 @@ import (
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
 	"time"
 
@@ -41,10 +41,11 @@ const (
 	// 20 GiB @100 Mbps ≈ 27 分钟；留足余量覆盖弱网与重试。
 	logCollectTransferTimeout = 2 * time.Hour
 	logCollectPullBlock       = remote.DefaultPullBlock
-	LogCollectPartRetries     = 3
-	LogCollectPartTimeout     = 5 * time.Minute
-	logCollectMaxChunkSize    = 64 * 1024 * 1024
-	logCollectMinChunkSize    = 1 * 1024 * 1024
+	// S1 收口：分片上传原语归 shared/uplink，这里保留别名使既有引用不断。
+	LogCollectPartRetries  = uplink.PartRetries
+	LogCollectPartTimeout  = uplink.DefaultPartTimeout
+	logCollectMaxChunkSize = 64 * 1024 * 1024
+	logCollectMinChunkSize = 1 * 1024 * 1024
 )
 
 // 插件产物固定落在该目录；HCI ≥6.12 的 progress 会把前缀改写为 /support，需还原。
@@ -59,8 +60,8 @@ var logCollectArchivePathPattern = regexp.MustCompile(`^/sf/data/local/acli/tmp/
 // 使 delivery_runner 与 handleLogCollectTransfer 里的 errors.Is 判定链不断。
 var ErrPullSizeMismatch = remote.ErrPullSizeMismatch
 
-// 平台数据面默认路径，与 case-service 路由保持一致。
-const LogCollectDirectUploadPrefix = "/api/direct/log-collect-uploads"
+// 平台数据面默认路径，与 case-service 路由保持一致（别名：唯一实现在 uplink）。
+const LogCollectDirectUploadPrefix = uplink.DirectUploadPrefix
 
 type logCollectTransferProgress struct {
 	Stage         string `json:"stage"` // pulling | uploading | done
@@ -229,101 +230,6 @@ func FileDigest(path, algo string) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// putPart 上传单个分片。4xx 视为不可重试的客户端错误，由调用方决定是否终止。
-func putPart(ctx context.Context, client *http.Client, target, token, sha256Hex string, payload []byte) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target, bytes.NewReader(payload))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("X-Upload-Token", token)
-	request.Header.Set("X-Part-SHA256", sha256Hex)
-	request.Header.Set("Content-Type", "application/octet-stream")
-	request.ContentLength = int64(len(payload))
-
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, response.Body)
-
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("平台返回 HTTP %d", response.StatusCode)
-	}
-	return nil
-}
-
-// uploadArchiveParts 顺序上传缺失分片，跳过 uploaded_parts 中已完成的序号。
-func uploadArchiveParts(
-	ctx context.Context,
-	platformURL string,
-	taskID string,
-	token string,
-	localPath string,
-	chunkSize int64,
-	partCount int,
-	totalSize int64,
-	uploaded map[int]bool,
-	onProgress func(uploadedParts int),
-) error {
-	file, err := os.Open(localPath)
-	if err != nil {
-		return fmt.Errorf("打开本地文件失败: %w", err)
-	}
-	defer file.Close()
-
-	client := &http.Client{Timeout: LogCollectPartTimeout}
-	done := len(uploaded)
-	target := fmt.Sprintf("%s%s/%s/parts", platformURL, LogCollectDirectUploadPrefix, taskID)
-
-	for number := 1; number <= partCount; number++ {
-		if uploaded[number] {
-			continue
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-
-		offset := int64(number-1) * chunkSize
-		expected := chunkSize
-		if totalSize > 0 && offset+expected > totalSize {
-			expected = totalSize - offset
-		}
-		if expected <= 0 {
-			return fmt.Errorf("分片 %d 大小计算异常", number)
-		}
-
-		payload := make([]byte, expected)
-		if _, err := file.ReadAt(payload, offset); err != nil && err != io.EOF {
-			return fmt.Errorf("读取分片 %d 失败: %w", number, err)
-		}
-		digest := sha256.Sum256(payload)
-
-		var lastErr error
-		for attempt := 1; attempt <= LogCollectPartRetries; attempt++ {
-			lastErr = putPart(ctx, client, fmt.Sprintf("%s/%d", target, number), token,
-				hex.EncodeToString(digest[:]), payload)
-			if lastErr == nil {
-				break
-			}
-			if attempt == LogCollectPartRetries {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
-			}
-		}
-		if lastErr != nil {
-			return fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
-		}
-		done++
-		onProgress(done)
-	}
-	return nil
-}
-
 // handleLogCollectTransfer 执行「HCI 拉取 → 平台分块上传」。
 //
 // 平台的 init / complete 由前端调用（需要客户身份），bridge 只拿到数据面 token，
@@ -432,12 +338,30 @@ func handleLogCollectTransfer(b *app.Bridge,
 	progress.UploadedParts = len(uploaded)
 	emit("ok", progress, "", "")
 
-	err = uploadArchiveParts(ctx, platformURL, taskID, token, localPath, chunkSize, partCount,
-		progress.Size, uploaded, func(done int) {
+	done := len(uploaded)
+	pushRes := uplink.Push(ctx, uplink.PushSpec{
+		BaseURL:   platformURL,
+		Prefix:    uplink.DirectUploadPrefix,
+		TaskID:    taskID,
+		Token:     token,
+		LocalPath: localPath,
+		ChunkSize: chunkSize,
+		PartCount: partCount,
+		TotalSize: progress.Size,
+		Uploaded:  uploaded,
+		Workers:   1,
+		Client:    &http.Client{Timeout: uplink.DefaultPartTimeout},
+		OnPart: func(_ int, _ int64) {
+			done++
 			progress.UploadedParts = done
 			progress.Percent = 50 + int(done*50/partCount)
 			emit("ok", progress, "", "")
-		})
+		},
+	})
+	err = pushRes.Err
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return fail(ErrTransferChunkFailed, err.Error(), progress)
 	}

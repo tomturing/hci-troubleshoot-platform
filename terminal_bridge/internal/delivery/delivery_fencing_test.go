@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync/atomic"
+	"terminal_bridge/internal/shared/uplink"
 	"testing"
 	"time"
 )
@@ -112,14 +113,27 @@ func TestUploadOnePartFencedBeforePut(t *testing.T) {
 	defer srv.Close()
 
 	job := prepareJob(t, srv.URL, "task-fence-put", "tok", 128, 64)
-	job.Pace = uploadPace{Parts: 1, PartTimeout: 1, Reason: "test"}
+	job.Pace = uplink.Pace{Parts: 1, PartTimeout: 1, Reason: "test"}
 	client := platformHTTPClient(job, time.Second)
 
-	_, err := uploadOnePart(context.Background(), client, job, job.SourceSize, 1, time.Second, func() error {
-		return errDeliverySuperseded
+	res := uplink.Push(context.Background(), uplink.PushSpec{
+		BaseURL:    uplink.NormalizeBaseURL(job.PlatformURL),
+		Prefix:     uplink.DirectUploadPrefix,
+		TaskID:     job.TaskID,
+		Token:      job.UploadToken,
+		LocalPath:  job.LocalPath,
+		ChunkSize:  job.ChunkSize,
+		PartCount:  1,
+		TotalSize:  job.SourceSize,
+		Workers:    1,
+		PartBudget: time.Second,
+		Client:     client,
+		Fence: func() error {
+			return errDeliverySuperseded
+		},
 	})
-	if !errors.Is(err, errDeliverySuperseded) {
-		t.Fatalf("闸门拒绝时必须返回 superseded，实际 %v", err)
+	if !errors.Is(res.Err, errDeliverySuperseded) {
+		t.Fatalf("闸门拒绝时必须返回 superseded，实际 %v", res.Err)
 	}
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("被顶替作业不得发出任何 PUT，实际 %d 次", got)

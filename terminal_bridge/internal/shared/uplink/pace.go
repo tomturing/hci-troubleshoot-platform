@@ -1,6 +1,6 @@
-package delivery
+package uplink
 
-// 分片上传的「节奏」决策：并发数 × 单片墙钟预算。
+// 分片上传的「节奏」决策：并发数 × 单片墙钟预算（云面通用原语，delivery/logcollect 共用）。
 //
 // 第一性原理
 // ----------
@@ -22,7 +22,7 @@ package delivery
 //
 // 单侧收敛（只降不升）是刻意的：健康链路永远不会触发（没有超时证据），
 // 而一旦降下来就说明这条链路确实撑不住并发，来回调整只会让进度抖动。
-// 收敛结果随 job 落盘，跨重试轮次保持——否则每一轮都从 300 s/并发 2 重新开始，
+// 收敛结果随作业落盘，跨重试轮次保持——否则每一轮都从 300 s/并发 2 重新开始，
 // 15 分钟一轮的学费要一直交下去。
 
 import (
@@ -32,48 +32,47 @@ import (
 	"net"
 	"os"
 	"strings"
-	"terminal_bridge/internal/logcollect"
 	"time"
 )
 
 const (
 	// 单片墙钟预算的上限。封顶而不是无限放大：TCP 黑洞时用户要能等到一个结论，
 	// 不能看起来永远在"上传中"。20 分钟 ≈ 8 MiB 在 7 KB/s 下刚好够。
-	paceMaxPartTimeout = 20 * time.Minute
+	maxPartTimeout = 20 * time.Minute
 	// 超时安全系数：预测需求时间 × 1.6 作为预算，吸收速率抖动。
-	paceSafetyFactor = 1.6
+	safetyFactor = 1.6
 )
 
-// paceMinPartTimeout 是单片预算下限，默认等于既有常量（生产行为不变）。
+// MinPartTimeout 是单片预算下限，默认等于既有常量（生产行为不变）。
 //
 // 之所以做成变量而不是常量：弱网收敛的唯一验收方式是把"链路慢到必然超时"
 // 真实跑一遍（见 delivery_weak_link_test.go），而 5 分钟的常量会让这种用例
 // 跑上十几分钟。测试里临时改成 1 秒，生产路径永远读默认值。
-var paceMinPartTimeout = logcollect.LogCollectPartTimeout
+var MinPartTimeout = DefaultPartTimeout
 
-// uploadPace 是「这一轮按什么节奏传」的决策结果，随 job 落盘。
-type uploadPace struct {
+// Pace 是「这一轮按什么节奏传」的决策结果，随作业落盘。
+type Pace struct {
 	Parts int `json:"parts"`
-	// PartTimeout 用秒存：job 文件是给人 cat 的，纳秒数字读不出含义。
+	// PartTimeout 用秒存：作业文件是给人 cat 的，纳秒数字读不出含义。
 	PartTimeout int64 `json:"part_timeout_sec"`
 	// Reason 只用于事件日志与现场解释，不参与任何判定。
 	Reason string `json:"reason,omitempty"`
 }
 
-// timeout 返回本轮的 http.Client 超时（单片预算）。
-func (p uploadPace) timeout() time.Duration {
+// Timeout 返回本轮的 http.Client 超时（单片预算）。
+func (p Pace) Timeout() time.Duration {
 	if p.PartTimeout <= 0 {
-		return paceMinPartTimeout
+		return MinPartTimeout
 	}
 	return time.Duration(p.PartTimeout) * time.Second
 }
 
-// resolve 把 pace 归一化到合法区间。
+// Resolve 把 pace 归一化到合法区间。
 //
 // 必须做这一步，因为 pace 会落盘、会被现场手工 cat 甚至改坏、也会读到没有该字段的
-// 旧版本作业文件（零值）。一个 Parts=0 的作业会让 upload 起 0 个 worker 然后死等，
+// 旧版本作业文件（零值）。一个 Parts=0 的作业会让 Push 起 0 个 worker 然后死等，
 // 比不做自适应更糟。
-func (p uploadPace) resolve(ceiling int) uploadPace {
+func (p Pace) Resolve(ceiling int) Pace {
 	if ceiling < 1 {
 		ceiling = 1
 	}
@@ -84,39 +83,39 @@ func (p uploadPace) resolve(ceiling int) uploadPace {
 	if parts > ceiling {
 		parts = ceiling
 	}
-	timeout := p.timeout()
-	if timeout < paceMinPartTimeout {
-		timeout = paceMinPartTimeout
+	timeout := p.Timeout()
+	if timeout < MinPartTimeout {
+		timeout = MinPartTimeout
 	}
-	if timeout > paceMaxPartTimeout {
-		timeout = paceMaxPartTimeout
+	if timeout > maxPartTimeout {
+		timeout = maxPartTimeout
 	}
 	reason := p.Reason
 	if reason == "" {
 		reason = "default"
 	}
-	return uploadPace{Parts: parts, PartTimeout: int64(timeout / time.Second), Reason: reason}
+	return Pace{Parts: parts, PartTimeout: int64(timeout / time.Second), Reason: reason}
 }
 
-// defaultUploadPace 是本轮未拿到任何实测证据时的起点：沿用资源决策的并发，
+// DefaultPace 是本轮未拿到任何实测证据时的起点：沿用资源决策的并发，
 // 单片超时用既有常量，行为与改造前完全一致（不带 pace 的旧作业也一样）。
-func defaultUploadPace(parts int, partTimeout time.Duration) uploadPace {
+func DefaultPace(parts int, partTimeout time.Duration) Pace {
 	if partTimeout <= 0 {
-		partTimeout = logcollect.LogCollectPartTimeout
+		partTimeout = DefaultPartTimeout
 	}
-	return uploadPace{
+	return Pace{
 		Parts:       parts,
 		PartTimeout: int64(partTimeout / time.Second),
 		Reason:      "default",
 	}
 }
 
-// uploadRoundSample 是一轮上传结束后能观测到的最小事实集。
+// RoundSample 是一轮上传结束后能观测到的最小事实集。
 //
 // 只收这些，是因为它们是"物理上可测"的量：传上去多少字节、花了多少墙钟、
 // 有几个分片是被超时掐断的。任何需要推测的量（比如"平台带宽配额"）都不能进来，
 // 否则自适应会变成猜谜。
-type uploadRoundSample struct {
+type RoundSample struct {
 	// UploadedParts / UploadedBytes 本轮真正成功的部分（不含历史已传分片）。
 	UploadedParts int
 	UploadedBytes int64
@@ -126,11 +125,11 @@ type uploadRoundSample struct {
 	Elapsed time.Duration
 }
 
-// nextUploadPace 由上一轮节奏与本轮样本推导下一轮节奏。
+// NextPace 由上一轮节奏与本轮样本推导下一轮节奏。
 //
 // 这是整个修复的核心判据，做成纯函数是为了让下面每条边界都能被单测钉住。
-func nextUploadPace(prev uploadPace, sample uploadRoundSample, chunkSize int64, ceiling int) uploadPace {
-	prev = prev.resolve(ceiling)
+func NextPace(prev Pace, sample RoundSample, chunkSize int64, ceiling int) Pace {
+	prev = prev.Resolve(ceiling)
 	if chunkSize <= 0 {
 		return prev
 	}
@@ -150,9 +149,9 @@ func nextUploadPace(prev uploadPace, sample uploadRoundSample, chunkSize int64, 
 				next.Parts = 1
 			}
 		}
-		timeout := next.timeout() * 2
-		if timeout > paceMaxPartTimeout {
-			timeout = paceMaxPartTimeout
+		timeout := next.Timeout() * 2
+		if timeout > maxPartTimeout {
+			timeout = maxPartTimeout
 		}
 		next.PartTimeout = int64(timeout / time.Second)
 		next.Reason = "no_progress_escalation"
@@ -165,41 +164,41 @@ func nextUploadPace(prev uploadPace, sample uploadRoundSample, chunkSize int64, 
 		return prev
 	}
 	parts := prev.Parts
-	budget := prev.timeout().Seconds()
+	budget := prev.Timeout().Seconds()
 	// 并发降到"单路放得进预算"为止；parts==1 时无论如何都不再降（最小就是单路）。
 	for parts > 1 {
 		perStream := rate / float64(parts)
 		need := float64(chunkSize) / perStream
-		if need*paceSafetyFactor <= budget {
+		if need*safetyFactor <= budget {
 			break
 		}
 		parts /= 2
 	}
 	perStream := rate / float64(parts)
 	need := float64(chunkSize) / perStream
-	want := time.Duration(need * paceSafetyFactor * float64(time.Second))
-	if want < prev.timeout() {
+	want := time.Duration(need * safetyFactor * float64(time.Second))
+	if want < prev.Timeout() {
 		// 只升不降：预算已经证明不够（本轮确实有片超时），此时把预算改小等于自欺。
-		want = prev.timeout()
+		want = prev.Timeout()
 	}
-	if want > paceMaxPartTimeout {
-		want = paceMaxPartTimeout
+	if want > maxPartTimeout {
+		want = maxPartTimeout
 	}
-	if want < paceMinPartTimeout {
-		want = paceMinPartTimeout
+	if want < MinPartTimeout {
+		want = MinPartTimeout
 	}
-	return uploadPace{
+	return Pace{
 		Parts:       parts,
 		PartTimeout: int64(want / time.Second),
 		Reason:      fmt.Sprintf("measured:%.1fKB/s", rate/1024),
 	}
 }
 
-// isPartTimeoutError 判断一个分片错误是不是"超时"。
+// IsPartTimeoutError 判断一个分片错误是不是"超时"。
 //
 // 为什么要单独判：只有超时才能推断"链路撑不住当前节奏"，5xx/401 与节奏无关，
 // 拿它们去降并发会让平台发版期间无辜地退到单路慢传。
-func isPartTimeoutError(err error) bool {
+func IsPartTimeoutError(err error) bool {
 	if err == nil {
 		return false
 	}

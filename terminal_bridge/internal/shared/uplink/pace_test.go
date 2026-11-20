@@ -1,10 +1,10 @@
-package delivery
+package uplink
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
-	"terminal_bridge/internal/logcollect"
 	"testing"
 	"time"
 )
@@ -18,8 +18,8 @@ const (
 )
 
 func TestNextUploadPaceNoTimeoutKeepsPace(t *testing.T) {
-	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
-	next := nextUploadPace(prev, uploadRoundSample{
+	prev := DefaultPace(2, DefaultPartTimeout)
+	next := NextPace(prev, RoundSample{
 		UploadedParts: 3,
 		UploadedBytes: 3 * fieldChunkSize,
 		Elapsed:       60 * time.Second,
@@ -30,12 +30,12 @@ func TestNextUploadPaceNoTimeoutKeepsPace(t *testing.T) {
 }
 
 func TestNextUploadPaceNoProgressHalvesPartsAndDoublesTimeout(t *testing.T) {
-	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
-	next := nextUploadPace(prev, uploadRoundSample{TimedOutParts: 1, Elapsed: 15 * time.Minute}, fieldChunkSize, fieldCeiling)
+	prev := DefaultPace(2, DefaultPartTimeout)
+	next := NextPace(prev, RoundSample{TimedOutParts: 1, Elapsed: 15 * time.Minute}, fieldChunkSize, fieldCeiling)
 	if next.Parts != 1 {
 		t.Fatalf("一片没过时应把并发降到 1，得到 %d", next.Parts)
 	}
-	if next.PartTimeout != int64((2*logcollect.LogCollectPartTimeout)/time.Second) {
+	if next.PartTimeout != int64((2*DefaultPartTimeout)/time.Second) {
 		t.Fatalf("超时应翻倍，得到 %d 秒", next.PartTimeout)
 	}
 	if next.Reason != "no_progress_escalation" {
@@ -44,15 +44,15 @@ func TestNextUploadPaceNoProgressHalvesPartsAndDoublesTimeout(t *testing.T) {
 }
 
 func TestNextUploadPaceNoProgressStopsAtFloorAndCeiling(t *testing.T) {
-	pace := defaultUploadPace(1, logcollect.LogCollectPartTimeout)
+	pace := DefaultPace(1, DefaultPartTimeout)
 	for i := 0; i < 10; i++ {
-		pace = nextUploadPace(pace, uploadRoundSample{TimedOutParts: 1}, fieldChunkSize, fieldCeiling)
+		pace = NextPace(pace, RoundSample{TimedOutParts: 1}, fieldChunkSize, fieldCeiling)
 	}
 	if pace.Parts != 1 {
 		t.Fatalf("并发不得低于 1，得到 %d", pace.Parts)
 	}
-	if pace.PartTimeout != int64(paceMaxPartTimeout/time.Second) {
-		t.Fatalf("超时应封顶在 %s，得到 %d 秒", paceMaxPartTimeout, pace.PartTimeout)
+	if pace.PartTimeout != int64(maxPartTimeout/time.Second) {
+		t.Fatalf("超时应封顶在 %s，得到 %d 秒", maxPartTimeout, pace.PartTimeout)
 	}
 }
 
@@ -60,15 +60,15 @@ func TestNextUploadPaceNoProgressStopsAtFloorAndCeiling(t *testing.T) {
 // 修复前：并发 2 → 单路 17 KB/s → 单片需 493 s > 300 s，每轮必然空转。
 // 修复后：必须收敛到单路，并把预算抬到 493×1.6≈789 s 以上，使单片能过。
 func TestNextUploadPaceFieldWeakLinkConverges(t *testing.T) {
-	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
-	sample := uploadRoundSample{
+	prev := DefaultPace(2, DefaultPartTimeout)
+	sample := RoundSample{
 		UploadedParts: 1,
 		UploadedBytes: fieldChunkSize,
 		TimedOutParts: 1,
 		// 2 片 × 8 MiB 在 34 KB/s 上共约 482 s（1 片成功 + 1 片超时）。
 		Elapsed: 482 * time.Second,
 	}
-	next := nextUploadPace(prev, sample, fieldChunkSize, fieldCeiling)
+	next := NextPace(prev, sample, fieldChunkSize, fieldCeiling)
 	if next.Parts != 1 {
 		t.Fatalf("弱网应收敛到单路，得到 %d 路", next.Parts)
 	}
@@ -76,7 +76,7 @@ func TestNextUploadPaceFieldWeakLinkConverges(t *testing.T) {
 	if float64(next.PartTimeout) < needSingle {
 		t.Fatalf("预算必须覆盖单路实际耗时 %.0fs，得到 %ds", needSingle, next.PartTimeout)
 	}
-	if next.PartTimeout > int64(paceMaxPartTimeout/time.Second) {
+	if next.PartTimeout > int64(maxPartTimeout/time.Second) {
 		t.Fatalf("预算不得超过封顶，得到 %d", next.PartTimeout)
 	}
 	if next.Reason == "" || next.Reason == "default" {
@@ -86,30 +86,30 @@ func TestNextUploadPaceFieldWeakLinkConverges(t *testing.T) {
 
 // 链路更差（总 17 KB/s）：单片需要约 493 s，预算应继续抬到能覆盖它。
 func TestNextUploadPaceExtremelySlowLinkRaisesTimeout(t *testing.T) {
-	prev := uploadPace{Parts: 1, PartTimeout: int64(logcollect.LogCollectPartTimeout / time.Second)}
-	sample := uploadRoundSample{
+	prev := Pace{Parts: 1, PartTimeout: int64(DefaultPartTimeout / time.Second)}
+	sample := RoundSample{
 		UploadedParts: 1,
 		UploadedBytes: fieldChunkSize,
 		TimedOutParts: 2,
 		// 总 17 KB/s：2 片 × 8 MiB 约 964 s。
 		Elapsed: 964 * time.Second,
 	}
-	next := nextUploadPace(prev, sample, fieldChunkSize, fieldCeiling)
-	if next.PartTimeout <= int64(logcollect.LogCollectPartTimeout/time.Second) {
+	next := NextPace(prev, sample, fieldChunkSize, fieldCeiling)
+	if next.PartTimeout <= int64(DefaultPartTimeout/time.Second) {
 		t.Fatalf("极慢链路必须抬高预算，得到 %d 秒", next.PartTimeout)
 	}
 }
 
 // 只升不降：预算已被证明过小（本轮确实有片超时），任何情况下都不能改小。
 func TestNextUploadPaceNeverLowersTimeout(t *testing.T) {
-	prev := uploadPace{Parts: 1, PartTimeout: 900}
-	sample := uploadRoundSample{
+	prev := Pace{Parts: 1, PartTimeout: 900}
+	sample := RoundSample{
 		UploadedParts: 20,
 		UploadedBytes: 20 * fieldChunkSize,
 		TimedOutParts: 1,
 		Elapsed:       20 * time.Second, // 看起来极快
 	}
-	next := nextUploadPace(prev, sample, fieldChunkSize, fieldCeiling)
+	next := NextPace(prev, sample, fieldChunkSize, fieldCeiling)
 	if next.PartTimeout < prev.PartTimeout {
 		t.Fatalf("有超时证据时不得下调预算，%d -> %d", prev.PartTimeout, next.PartTimeout)
 	}
@@ -117,24 +117,24 @@ func TestNextUploadPaceNeverLowersTimeout(t *testing.T) {
 
 func TestUploadPaceResolveDefendsCorruptValues(t *testing.T) {
 	// 旧版本作业文件里没有 pace 字段：零值必须落回默认节奏，而不是 0 路并发死等。
-	got := uploadPace{}.resolve(3)
-	if got.Parts != 1 || got.PartTimeout != int64(logcollect.LogCollectPartTimeout/time.Second) || got.Reason != "default" {
+	got := Pace{}.Resolve(3)
+	if got.Parts != 1 || got.PartTimeout != int64(DefaultPartTimeout/time.Second) || got.Reason != "default" {
 		t.Fatalf("零值归一化错误: %+v", got)
 	}
 	// 手改坏的超上限/超下限值。
-	got = uploadPace{Parts: 99, PartTimeout: 999999}.resolve(2)
-	if got.Parts != 2 || got.PartTimeout != int64(paceMaxPartTimeout/time.Second) {
+	got = Pace{Parts: 99, PartTimeout: 999999}.Resolve(2)
+	if got.Parts != 2 || got.PartTimeout != int64(maxPartTimeout/time.Second) {
 		t.Fatalf("越界值归一化错误: %+v", got)
 	}
-	got = uploadPace{Parts: -3, PartTimeout: 1}.resolve(4)
-	if got.Parts != 1 || got.PartTimeout != int64(logcollect.LogCollectPartTimeout/time.Second) {
+	got = Pace{Parts: -3, PartTimeout: 1}.Resolve(4)
+	if got.Parts != 1 || got.PartTimeout != int64(DefaultPartTimeout/time.Second) {
 		t.Fatalf("负值归一化错误: %+v", got)
 	}
 }
 
 func TestNextUploadPaceIgnoresUnknownChunkSize(t *testing.T) {
-	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
-	if got := nextUploadPace(prev, uploadRoundSample{TimedOutParts: 3}, 0, fieldCeiling); got != prev {
+	prev := DefaultPace(2, DefaultPartTimeout)
+	if got := NextPace(prev, RoundSample{TimedOutParts: 3}, 0, fieldCeiling); got != prev {
 		t.Fatalf("分片大小未知时不应调整，得到 %+v", got)
 	}
 }
@@ -152,15 +152,15 @@ func TestIsPartTimeoutError(t *testing.T) {
 		{"i/o 超时", fmt.Errorf("dial tcp 10.0.0.1:443: i/o timeout"), true},
 		{"网络错误", fmt.Errorf("connection reset by peer"), false},
 		{"平台 5xx", fmt.Errorf("平台返回 HTTP 503"), false},
-		{"凭据失败", &deliveryAuthError{reason: "令牌过期"}, false},
+		{"凭据失败", errors.New("令牌过期"), false},
 	}
 	for _, c := range cases {
-		if got := isPartTimeoutError(c.err); got != c.want {
+		if got := IsPartTimeoutError(c.err); got != c.want {
 			t.Fatalf("%s: 期望 %v，得到 %v", c.name, c.want, got)
 		}
 	}
 	// net.Error.Timeout 路径也必须是超时。
-	if !isPartTimeoutError(timeoutNetError{}) {
+	if !IsPartTimeoutError(timeoutNetError{}) {
 		t.Fatal("net.Error.Timeout 应判定为超时")
 	}
 }
