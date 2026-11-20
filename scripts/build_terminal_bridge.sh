@@ -42,8 +42,30 @@ CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
   -ldflags="-s -w -buildid= -X main.Version=$GIT_VER -X main.CommitID=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME" \
   -o "$DST" ./cmd/bridge
 
+# U0（架构重构设计 §6）：UPX lzma 压缩，16.47 → 4.72MB。
+# 本地无 upx 时跳过并告警（不阻塞开发构建）；CI 安装 upx 并以 ≤5MB 门禁
+# fail-closed，未压缩产物不可能溜进分发目录。
+if command -v upx >/dev/null 2>&1; then
+  # 未压缩备选产物（设计 §6.3：AppLocker/WDAC 策略环境可能拦截加壳程序）。
+  # 仅在显式指定 UNCOMPRESSED_COPY 时留档（CI 收进 artifact），不污染分发目录。
+  if [ -n "${UNCOMPRESSED_COPY:-}" ]; then
+    cp "$DST" "$UNCOMPRESSED_COPY"
+  fi
+  echo "[build_terminal_bridge] upx --lzma --best 压缩 ..."
+  upx --lzma --best "$DST" >/dev/null
+else
+  echo "[build_terminal_bridge] WARN: 未找到 upx，跳过压缩（CI 有 ≤5MB 门禁兜底）"
+fi
+
 SIZE=$(stat -c%s "$DST" 2>/dev/null || wc -c < "$DST")
 echo "[build_terminal_bridge] OK -> $DST ($SIZE bytes)"
+
+# 清单 sha256 必须按**压缩后**产物计算（设计 §8#11）：先压缩再取摘要，
+# 顺序颠倒会让客户侧校验永远失配。sha256sum 缺失时退回 shasum（macOS）。
+SHA256="$(sha256sum "$DST" 2>/dev/null | awk '{print $1}')"
+if [ -z "$SHA256" ]; then
+  SHA256="$(shasum -a 256 "$DST" | awk '{print $1}')"
+fi
 
 # 版本清单：与 exe 同一次构建、同一组变量产出，前端据此判断客户机上正在跑的
 # bridge 是否就是平台当前分发的那个版本。
@@ -54,7 +76,7 @@ echo "[build_terminal_bridge] OK -> $DST ($SIZE bytes)"
 # 被误报「版本过旧」——这是本机制最容易被无意打破的地方。
 if [ "$GOOS" = "windows" ] && [ "$GOARCH" = "amd64" ]; then
   MANIFEST="$DST_DIR/bridge-version.json"
-  printf '{\n  "version": "%s",\n  "commit": "%s",\n  "build_time": "%s",\n  "goos": "%s",\n  "goarch": "%s"\n}\n' \
-    "$GIT_VER" "$GIT_COMMIT" "$BUILD_TIME" "$GOOS" "$GOARCH" > "$MANIFEST"
+  printf '{\n  "version": "%s",\n  "commit": "%s",\n  "build_time": "%s",\n  "goos": "%s",\n  "goarch": "%s",\n  "sha256": "%s"\n}\n' \
+    "$GIT_VER" "$GIT_COMMIT" "$BUILD_TIME" "$GOOS" "$GOARCH" "$SHA256" > "$MANIFEST"
   echo "[build_terminal_bridge] 版本清单 -> $MANIFEST ($GIT_VER)"
 fi
