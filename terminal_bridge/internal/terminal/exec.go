@@ -13,14 +13,11 @@ import (
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"time"
 	"unicode/utf8"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
 	"golang.org/x/text/encoding/simplifiedchinese"
@@ -57,21 +54,18 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	maxOutputBytes := bruntime.EnvIntOrDefault("HCI_BRIDGE_EXEC_MAX_OUTPUT_BYTES", 4*1024*1024)
 	ctx, cancel := context.WithTimeout(req.Context, timeout)
 	defer cancel()
-	ctx, span := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.ssh.exec",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("exec.id", req.ExecID),
-			attribute.String("case.id", req.CaseID),
-			attribute.String("conversation.id", req.ConversationID),
-			attribute.String("server.Address", req.NodeIP),
-			attribute.String("hci.container", req.Container),
-			attribute.String("command.sha256", req.CommandSHA256),
-		),
+	ctx, span := telemetry.StartClient(ctx, "terminal_bridge.ssh.exec",
+		telemetry.String("exec.id", req.ExecID),
+		telemetry.String("case.id", req.CaseID),
+		telemetry.String("conversation.id", req.ConversationID),
+		telemetry.String("server.Address", req.NodeIP),
+		telemetry.String("hci.container", req.Container),
+		telemetry.String("command.sha256", req.CommandSHA256),
 	)
 	defer span.End()
 	startTime := time.Now()
 	traceparent := logpush.TraceparentFromContext(ctx)
-	traceID := span.SpanContext().TraceID().String()
+	traceID := span.TraceID()
 	artifactID := logpush.DeterministicArtifactID(req.ExecID)
 
 	logpush.BlogContext(ctx, "INFO", "exec.start", "开始执行命令", req, map[string]any{
@@ -83,7 +77,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	isolatedClient, err := ssh.Dial("tcp", s.Address, s.ClientConfig)
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "session_creation_failed")
+		span.SetStatus(telemetry.StatusError, "session_creation_failed")
 		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 连接失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 连接失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
@@ -94,7 +88,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	session, err := isolatedClient.NewSession()
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "session_creation_failed")
+		span.SetStatus(telemetry.StatusError, "session_creation_failed")
 		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 会话失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 会话失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
@@ -106,7 +100,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	if req.Pty {
 		if err := session.RequestPty("xterm-256color", PtyTerminalHeight, PtyTerminalWidth, PtyTerminalModes()); err != nil {
 			span.RecordError(err)
-			span.SetStatus(codes.Error, "pty_request_failed")
+			span.SetStatus(telemetry.StatusError, "pty_request_failed")
 			MetricsExecErrors(1)
 			logpush.BlogContext(ctx, "ERROR", "exec.error", "申请伪终端失败", req, map[string]any{"error": err.Error(), "error_type": "pty_request_failed"})
 			models.SendMsg(ws, models.OutMessage{
@@ -132,7 +126,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 			}
 			if err := session.Setenv(name, value); err != nil {
 				span.RecordError(err)
-				span.SetStatus(codes.Error, "simulation_env_rejected")
+				span.SetStatus(telemetry.StatusError, "simulation_env_rejected")
 				MetricsExecErrors(1)
 				logpush.BlogContext(ctx, "ERROR", "exec.error", "hci-sim 拒绝执行上下文", req, map[string]any{"error": err.Error(), "error_type": "simulation_env_rejected", "env_name": name})
 				models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "hci-sim 拒绝执行上下文", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "simulation_env_rejected"})
@@ -144,7 +138,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "stdout_pipe_failed")
+		span.SetStatus(telemetry.StatusError, "stdout_pipe_failed")
 		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "获取 StdoutPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stdout_pipe_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准输出失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stdout_pipe_failed"})
@@ -158,7 +152,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		stderrPipe, err = session.StderrPipe()
 		if err != nil {
 			span.RecordError(err)
-			span.SetStatus(codes.Error, "stderr_pipe_failed")
+			span.SetStatus(telemetry.StatusError, "stderr_pipe_failed")
 			MetricsExecErrors(1)
 			logpush.BlogContext(ctx, "ERROR", "exec.error", "获取 StderrPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stderr_pipe_failed"})
 			models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准错误失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stderr_pipe_failed", PtyMode: ptyMode})
@@ -168,7 +162,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 
 	if err := session.Start(req.Command); err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "command_start_failed")
+		span.SetStatus(telemetry.StatusError, "command_start_failed")
 		MetricsExecErrors(1)
 		logpush.BlogContext(ctx, "ERROR", "exec.error", "启动命令失败", req, map[string]any{"error": err.Error(), "error_type": "command_start_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "启动命令失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "command_start_failed"})
@@ -254,7 +248,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	}
 	if exitCode != 0 {
 		MetricsExecErrors(1)
-		span.SetStatus(codes.Error, errorType)
+		span.SetStatus(telemetry.StatusError, errorType)
 	}
 
 	duration := time.Since(startTime)
@@ -263,22 +257,22 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		level = "ERROR"
 	}
 	span.SetAttributes(
-		attribute.Bool("exec.pty", req.Pty),
-		attribute.Int("process.exit.code", exitCode),
-		attribute.Int64("exec.duration_ms", duration.Milliseconds()),
-		attribute.Int64("stdout.bytes", stdoutCapture.Total),
-		attribute.Int64("stderr.bytes", stderrCapture.Total),
-		attribute.Int64("stdout.raw_bytes", stdoutStats.RawBytes),
-		attribute.Int64("stderr.raw_bytes", stderrStats.RawBytes),
-		attribute.Int64("stdout.scanned_lines", stdoutStats.ScannedLines),
-		attribute.Int64("stderr.scanned_lines", stderrStats.ScannedLines),
-		attribute.Int64("stdout.kept_lines", stdoutStats.KeptLines),
-		attribute.Int64("stderr.kept_lines", stderrStats.KeptLines),
-		attribute.Bool("stdout.filter_applied", stdoutStats.Filtered),
-		attribute.Bool("stderr.filter_applied", stderrStats.Filtered),
-		attribute.Bool("stdout.Truncated", stdoutCapture.Truncated),
-		attribute.Bool("stderr.Truncated", stderrCapture.Truncated),
-		attribute.String("artifact.id", artifactID),
+		telemetry.Bool("exec.pty", req.Pty),
+		telemetry.Int("process.exit.code", exitCode),
+		telemetry.Int64("exec.duration_ms", duration.Milliseconds()),
+		telemetry.Int64("stdout.bytes", stdoutCapture.Total),
+		telemetry.Int64("stderr.bytes", stderrCapture.Total),
+		telemetry.Int64("stdout.raw_bytes", stdoutStats.RawBytes),
+		telemetry.Int64("stderr.raw_bytes", stderrStats.RawBytes),
+		telemetry.Int64("stdout.scanned_lines", stdoutStats.ScannedLines),
+		telemetry.Int64("stderr.scanned_lines", stderrStats.ScannedLines),
+		telemetry.Int64("stdout.kept_lines", stdoutStats.KeptLines),
+		telemetry.Int64("stderr.kept_lines", stderrStats.KeptLines),
+		telemetry.Bool("stdout.filter_applied", stdoutStats.Filtered),
+		telemetry.Bool("stderr.filter_applied", stderrStats.Filtered),
+		telemetry.Bool("stdout.Truncated", stdoutCapture.Truncated),
+		telemetry.Bool("stderr.Truncated", stderrCapture.Truncated),
+		telemetry.String("artifact.id", artifactID),
 	)
 	logpush.BlogContext(ctx, level, "exec.done", "命令执行完成", req, map[string]any{
 		"artifact_id":            artifactID,
@@ -312,8 +306,8 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		"stderr_preview": sshx.TruncateString(stderrCapture.String(), 512),
 	})
 
-	resultCtx, resultSpan := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.websocket.result.send",
-		trace.WithAttributes(attribute.String("exec.id", req.ExecID)),
+	resultCtx, resultSpan := telemetry.Start(ctx, "terminal_bridge.websocket.result.send",
+		telemetry.String("exec.id", req.ExecID),
 	)
 	finalStdout := stdoutCapture.String()
 	if req.Pty {

@@ -104,6 +104,22 @@ jobs:
           # R0c：架构 import 禁令扫描（shared 不认识上层 / remote↔uplink 隔离 /
           # sshx·app 不反向依赖业务域 / 域间依赖冻结基线只减不增）。
           python3 ../scripts/check_bridge_imports.py
+          # U1：集群实现（带 telemetry tag）测试/vet 不回归；
+          # 桌面产物（不带 tag）编译期零 otel 符号（设计 §九 U1 验收）。
+          go test -tags telemetry -timeout 180s ./...
+          go vet -tags telemetry ./...
+          # nm 验收不能 strip（-s -w 会删符号段），故这里用裸 go build。
+          go build -o /tmp/bridge_u1_desktop ./cmd/bridge
+          if go tool nm /tmp/bridge_u1_desktop | grep -q "go.opentelemetry.io"; then
+            echo "::error::桌面产物泄漏 otel 符号（U1 验收失败）"
+            exit 1
+          fi
+          # 阳性对照：带 tag 的集群产物必须含 otel，防止门禁空转。
+          go build -tags telemetry -o /tmp/bridge_u1_cluster ./cmd/bridge
+          if ! go tool nm /tmp/bridge_u1_cluster | grep -q "go.opentelemetry.io"; then
+            echo "::error::集群产物缺失 otel 符号（telemetry tag 未生效）"
+            exit 1
+          fi
 
   manifest-and-helm:
     name: published bundle and Helm gate

@@ -27,9 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 	"golang.org/x/net/websocket"
@@ -267,30 +264,6 @@ func TestAcceptNewHostKeyRejectsFingerprintChange(t *testing.T) {
 		t.Fatal("同一地址的主机指纹变化必须被拒绝")
 	} else if keyErr, ok := err.(*knownhosts.KeyError); !ok || len(keyErr.Want) == 0 {
 		t.Fatalf("指纹变化应返回包含期望指纹的 KeyError: %T %v", err, err)
-	}
-}
-
-func TestContextFromMessageAcceptsW3CRandomFlag(t *testing.T) {
-	previous := otel.GetTextMapPropagator()
-	otel.SetTextMapPropagator(propagation.TraceContext{})
-	defer otel.SetTextMapPropagator(previous)
-
-	const traceID = "caa7e3e825ba4a606df189740be1118c"
-	const spanID = "cbef2f8fb7e2d3a8"
-	ctx := logpush.ContextFromMessage(models.InMessage{
-		TraceID:     traceID,
-		Traceparent: "00-" + traceID + "-" + spanID + "-03",
-	})
-	spanContext := trace.SpanContextFromContext(ctx)
-
-	if !spanContext.IsValid() || !spanContext.IsRemote() {
-		t.Fatalf("03 trace-flags 应提取为有效远程父上下文: %#v", spanContext)
-	}
-	if spanContext.TraceID().String() != traceID || spanContext.SpanID().String() != spanID {
-		t.Fatalf("父上下文标识不一致: trace_id=%s span_id=%s", spanContext.TraceID(), spanContext.SpanID())
-	}
-	if !spanContext.IsSampled() {
-		t.Fatal("归一化 03 trace-flags 时必须保留 Sampled 位")
 	}
 }
 

@@ -20,10 +20,9 @@ import (
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/shared/telemetry"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -732,7 +731,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 			}
 		}()
 
-		span := trace.SpanFromContext(ctx)
+		span := telemetry.SpanFromContext(ctx)
 
 		// 1. node_ip:22 TCP 可达性
 		tcpTarget := s.Address
@@ -745,10 +744,10 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 		} else {
 			_ = tcpConn.Close()
 		}
-		span.AddEvent("probe.tcp_reachability", trace.WithAttributes(
-			attribute.Bool("probe.tcp.ok", tcpOK),
-			attribute.String("probe.tcp.target", tcpTarget),
-		))
+		span.AddEvent("probe.tcp_reachability",
+			telemetry.Bool("probe.tcp.ok", tcpOK),
+			telemetry.String("probe.tcp.target", tcpTarget),
+		)
 		logpush.BlogContext(ctx, ProbeLevel(tcpOK), "probe.tcp_reachability", "TCP:22 可达性探测", req, map[string]any{
 			"target": tcpTarget, "ok": tcpOK, "detail": tcpDetail, "artifact_id": artifactID,
 		})
@@ -769,7 +768,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 		if !sshOK {
 			sshDetail = sshErr.Error()
 		}
-		span.AddEvent("probe.ssh_handshake", trace.WithAttributes(attribute.Bool("probe.ssh.ok", sshOK)))
+		span.AddEvent("probe.ssh_handshake", telemetry.Bool("probe.ssh.ok", sshOK))
 		logpush.BlogContext(ctx, ProbeLevel(sshOK), "probe.ssh_handshake", "SSH 握手探测", req, map[string]any{
 			"target": tcpTarget, "ok": sshOK, "auth_failed": authFailed, "detail": sshDetail, "artifact_id": artifactID,
 		})
@@ -822,9 +821,9 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 		// 5.5 设备存在性判别：命令引用的 /dev 盘符若全部不在现场 lsblk 整盘清单中 → device_absent（§4/§5）。
 		if lsblkOK {
 			if devAbsent, referenced := DeviceAbsentFromProbe(req.Command, lsblkOut); devAbsent {
-				span.AddEvent("probe.device_absent", trace.WithAttributes(
-					attribute.String("probe.device.referenced", strings.Join(referenced, ",")),
-				))
+				span.AddEvent("probe.device_absent",
+					telemetry.String("probe.device.referenced", strings.Join(referenced, ",")),
+				)
 				logpush.BlogContext(ctx, "WARN", "probe.conclusion", "辅助探测结论：设备不存在/已摘除", req, map[string]any{
 					"conclusion": "device_absent", "referenced_devices": referenced,
 					"lsblk_devices": TruncateString(lsblkOut, 256), "artifact_id": artifactID,

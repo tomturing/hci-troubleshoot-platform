@@ -17,11 +17,9 @@ import (
 	"sync/atomic"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/shared/telemetry"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/net/websocket"
 )
 
@@ -739,11 +737,11 @@ func BlogContext(ctx context.Context, level, event, message string, req models.E
 	if !DefaultHub.levelEnabled(level) {
 		return
 	}
-	spanContext := trace.SpanContextFromContext(ctx)
+	info := telemetry.TraceInfo(ctx)
 	e := LogEntry{
 		Level: normalizeLogLevel(level), Service: "terminal_bridge", Event: event,
-		Message: message, TraceID: spanContext.TraceID().String(), SpanID: spanContext.SpanID().String(),
-		TraceFlags: fmt.Sprintf("%02x", byte(spanContext.TraceFlags())), Traceparent: TraceparentFromContext(ctx),
+		Message: message, TraceID: info.TraceID, SpanID: info.SpanID,
+		TraceFlags: fmt.Sprintf("%02x", info.TraceFlags), Traceparent: TraceparentFromContext(ctx),
 		CaseID: req.CaseID, NodeIP: req.NodeIP, CustomUI: req.CustomUI,
 		ConversationID: req.ConversationID, ExecID: req.ExecID, ToolCallID: req.ToolCallID,
 		Extra: sanitizeExtra(extra),
@@ -809,11 +807,7 @@ func CommandSHA256(command string) string {
 }
 
 func TraceparentFromContext(ctx context.Context) string {
-	spanContext := trace.SpanContextFromContext(ctx)
-	if !spanContext.IsValid() {
-		return ""
-	}
-	return fmt.Sprintf("00-%s-%s-%02x", spanContext.TraceID(), spanContext.SpanID(), byte(spanContext.TraceFlags()))
+	return telemetry.Traceparent(ctx)
 }
 
 func NormalizeTraceparentForLegacyGo(traceparent string) string {
@@ -836,14 +830,9 @@ func NormalizeTraceparentForLegacyGo(traceparent string) string {
 }
 
 func ContextFromMessage(msg models.InMessage) context.Context {
-	carrier := propagation.MapCarrier{}
-	if msg.Traceparent != "" {
-		carrier.Set("traceparent", NormalizeTraceparentForLegacyGo(msg.Traceparent))
-	}
-	if msg.Tracestate != "" {
-		carrier.Set("tracestate", msg.Tracestate)
-	}
-	return otel.GetTextMapPropagator().Extract(context.Background(), carrier)
+	// 传播解析归 telemetry 门面（纯 W3C，零 otel 依赖）：logpush 是证据通道，
+	// 桌面剥离 otel 后日志仍须携带平台下发的 trace 关联（设计 §2.6 裁决）。
+	return telemetry.Extract(context.Background(), NormalizeTraceparentForLegacyGo(msg.Traceparent), msg.Tracestate)
 }
 
 // ── WebSocket Handler ─────────────────────────────────────────────────────────

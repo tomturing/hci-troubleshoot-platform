@@ -23,13 +23,9 @@ import (
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/sftp"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 func init() {
@@ -54,10 +50,9 @@ func init() {
 }
 
 func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
-	connectCtx, connectSpan := otel.Tracer("terminal_bridge").Start(
+	connectCtx, connectSpan := telemetry.StartClient(
 		logpush.ContextFromMessage(msg), "terminal_bridge.ssh.connect",
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(attribute.String("case.id", msg.CaseID), attribute.String("server.Address", msg.Host)),
+		telemetry.String("case.id", msg.CaseID), telemetry.String("server.Address", msg.Host),
 	)
 	_ = connectCtx
 	key := app.SessionKey(msg.CaseID, msg.NodeIP)
@@ -82,7 +77,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	session, err := sshx.NewSSHSession(msg)
 	if err != nil {
 		connectSpan.RecordError(err)
-		connectSpan.SetStatus(codes.Error, "ssh_connect_failed")
+		connectSpan.SetStatus(telemetry.StatusError, "ssh_connect_failed")
 		connectSpan.End()
 		atomic.AddUint64(&app.PromMetrics.SshConnectionErrors, 1)
 		message, detail := sshx.BuildSSHError(err)
@@ -92,7 +87,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	stdout, err := session.Start()
 	if err != nil {
 		connectSpan.RecordError(err)
-		connectSpan.SetStatus(codes.Error, "ssh_start_failed")
+		connectSpan.SetStatus(telemetry.StatusError, "ssh_start_failed")
 		connectSpan.End()
 		atomic.AddUint64(&app.PromMetrics.SshConnectionErrors, 1)
 		session.Close()
@@ -410,9 +405,9 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 	})
 
 	atomic.AddUint64(&app.PromMetrics.ExecCommandsTotal, 1)
-	receiveCtx, receiveSpan := otel.Tracer("terminal_bridge").Start(
+	receiveCtx, receiveSpan := telemetry.Start(
 		logpush.ContextFromMessage(msg), "terminal_bridge.websocket.receive",
-		trace.WithAttributes(attribute.String("exec.id", msg.ExecID), attribute.String("message.type", msg.Type)),
+		telemetry.String("exec.id", msg.ExecID), telemetry.String("message.type", msg.Type),
 	)
 	receiveSpan.End()
 	req := models.ExecRequestContext{
