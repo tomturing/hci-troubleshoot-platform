@@ -537,8 +537,8 @@ func handleScriptRestore(b *app.Bridge, ctx context.Context, s *sshx.SSHSession,
 		codes = append(codes, state.Slots...)
 	}
 	for _, code := range codes {
-		if !scriptNameRe.MatchString(code) {
-			return nil, "invalid_script", fmt.Sprintf("非法的脚本文件名：%s", code)
+		if !scriptCodeRe.MatchString(code) {
+			return nil, "invalid_script", fmt.Sprintf("非法的脚本相对路径：%s", code)
 		}
 	}
 

@@ -6,9 +6,9 @@
  * 两份实现必然在"自动输入""已停用""值不在库里"这些边界上漂移。
  *
  * 语义：
- * - 选项来自「收集脚本」库，值是落盘文件名（即 spc 的 path）；
+ * - 选项来自「收集脚本」库，值是相对 script/ 的路径（即 spc 的 path，可含子目录）；
  * - 库里的脚本被停用时仍展示但置灰，管理员能看见"为什么不能选"；
- * - 「自动输入」进入手填模式，用于引用节点自带脚本（如 vs_collect_upgrade_info.py）；
+ * - 「自动输入」进入手填模式，用于引用节点自带脚本（如 vs_script/vs_collect_upgrade_info.py）；
  * - 当前值不在库中（历史数据/自由输入）时自动进入手填模式，不把值吞掉。
  */
 import { onMounted, ref, watch } from 'vue'
@@ -103,13 +103,13 @@ onMounted(load)
         :value="row.code"
         :disabled="!row.enabled"
       />
-      <el-option label="自动输入（手填节点上已有的文件名）" :value="CUSTOM_VALUE" />
+      <el-option label="自动输入（手填节点上已有的相对路径）" :value="CUSTOM_VALUE" />
     </el-select>
     <div v-else class="sps-custom">
       <el-input
         :model-value="modelValue"
         size="small"
-        placeholder="手填节点 script 目录下已有的脚本文件名"
+        placeholder="手填节点 script 目录下的相对路径，如 vs_script/vs_collect_upgrade_info.py"
         @update:model-value="emit('update:modelValue', $event)"
       />
       <el-button size="small" text @click="backToList">从列表选择</el-button>

@@ -33,8 +33,8 @@ from ..services.log_collect_script_service import (
     ScriptError,
     baseline_scripts,
     baseline_source,
-    infer_interpreter,
     normalize_content,
+    resolve_interpreter,
     sha256_of,
     validate_code,
 )
@@ -140,16 +140,15 @@ async def validate_script(payload: LogCollectScriptValidateRequest) -> LogCollec
     try:
         code = validate_code(payload.code)
         content = normalize_content(payload.content)
-        interpreter = (payload.interpreter or infer_interpreter(code, content)).strip().lower()
-        guessed = infer_interpreter(code, content)
-        if interpreter != guessed:
-            raise ScriptError(f"{code} 应使用 {guessed} 解释器（与文件后缀/shebang 不一致）", "LC-SCRIPT-400")
+        interpreter, interpreter_source, warnings = resolve_interpreter(code, content, payload.interpreter)
     except ScriptError as exc:
         return LogCollectScriptValidationResponse(ok=False, code=payload.code, issues=[str(exc)])
     return LogCollectScriptValidationResponse(
         ok=True,
         code=code,
         interpreter=interpreter,
+        interpreter_source=interpreter_source,
+        warnings=warnings,
         content_sha256=sha256_of(content),
         content_bytes=len(content.encode("utf-8")),
     )

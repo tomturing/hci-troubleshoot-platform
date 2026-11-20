@@ -37,9 +37,13 @@ const (
 // 「清单写进去了、脚本写到另一个目录」这种极难定位的故障。
 var scriptDeployDir = path.Dir(SpcDeployDir) + "/script"
 
-// scriptNameRe 与服务端 CODE_RE 同源：单层文件名，禁止斜杠与 ..，
-// 因为 code 会直接拼进 shell 命令并决定节点上的路径。
-var scriptNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+// scriptCodeRe 与服务端 CODE_RE 同源：相对 script/ 的路径，最多三层。
+//
+// 为什么允许子目录：插件自带脚本不全在顶层（内置采集脚本在 vs_script/ 等子目录），
+// 只认单层文件名等于"这些脚本永远无法被平台覆写"。
+// 每段必须以字母/数字开头，天然排除绝对路径、空段（a//b）与 ".."；
+// 尾随斜杠与路径越界另由 scriptFilePath 的 path.Clean 比对兜住。
+var scriptCodeRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*){0,2}$`)
 
 // scriptFile 是归一化后的一份待写脚本。
 type scriptFile struct {
@@ -50,15 +54,22 @@ type scriptFile struct {
 	Revision    int
 }
 
-// scriptFilePath 拼出目标文件路径；目录与文件名都必须先过白名单。
+// scriptFilePath 拼出目标文件路径；目录与相对路径都必须先过白名单。
+//
+// path.Clean 比对是第二道闸：即使正则将来被放宽，a//b、a/./b、a/b/ 这类
+// 规范化后会改变路径语义的写法也会在这里被拒，而不是靠调用方自觉。
 func scriptFilePath(dir, code string) (string, error) {
 	if !strings.HasPrefix(dir, "/") || strings.Contains(dir, "..") {
 		return "", fmt.Errorf("脚本目录非法：%s", dir)
 	}
-	if !scriptNameRe.MatchString(code) {
-		return "", fmt.Errorf("脚本文件名非法：%s", code)
+	if !scriptCodeRe.MatchString(code) {
+		return "", fmt.Errorf("脚本相对路径非法：%s", code)
 	}
-	return dir + "/" + code, nil
+	joined := dir + "/" + code
+	if path.Clean(joined) != joined || !strings.HasPrefix(joined, dir+"/") {
+		return "", fmt.Errorf("脚本相对路径越界：%s", code)
+	}
+	return joined, nil
 }
 
 // scriptBackupPath 备份必须按任务隔离：固定文件名会让两次任务互相覆盖。
@@ -190,8 +201,8 @@ func parseScriptFiles(msg models.InMessage) ([]scriptFile, *spcRejection) {
 	files := make([]scriptFile, 0, len(msg.ScriptFiles))
 	for _, raw := range msg.ScriptFiles {
 		code := strings.TrimSpace(raw.Code)
-		if !scriptNameRe.MatchString(code) {
-			return nil, &spcRejection{ErrType: "invalid_script", Message: fmt.Sprintf("非法的脚本文件名：%s", code)}
+		if !scriptCodeRe.MatchString(code) {
+			return nil, &spcRejection{ErrType: "invalid_script", Message: fmt.Sprintf("非法的脚本相对路径：%s", code)}
 		}
 		if seen[code] {
 			return nil, &spcRejection{ErrType: "invalid_script", Message: fmt.Sprintf("脚本重复：%s", code)}

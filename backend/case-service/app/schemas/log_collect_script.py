@@ -95,9 +95,14 @@ class LogCollectScriptValidationResponse(BaseModel):
     ok: bool
     code: str = ""
     interpreter: str = ""
+    # 判定依据：shebang / suffix / default / manual。界面据此解释"为什么是 python"，
+    # 避免管理员在无后缀脚本上反复改解释器却不知道谁在生效。
+    interpreter_source: str = ""
     content_sha256: str = ""
     content_bytes: int = 0
     issues: list[str] = Field(default_factory=list)
+    # 不阻断保存的提示：后缀与 shebang 冲突、无 shebang 默认 bash 等。
+    warnings: list[str] = Field(default_factory=list)
 
 
 class LogCollectScriptReference(BaseModel):
