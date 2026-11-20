@@ -101,9 +101,16 @@ type acliPluginManifestResponse struct {
 
 // acliPluginError 是阶段二的原因码载体：回执里必须能回答"到底哪一步、为什么"，
 // 而不是只剩一句"插件同步失败"。
+//
+// 它同时承担错误链的包装职责：原因码要给人看，底层错误要留给机器判定
+// （例如 uplink.IsUntrustedCertificateError 需要穿透到 *url.Error 里的 x509 原因）。
+// 只存 Detail 字符串会让"证书不受信"退化成无法识别的字符串匹配，兜底重试就会
+// 永远不触发——2026-11-20 Q2026112001180 的实现过程中已被单测当场抓到，
+// 因此传输层失败必须保留 cause。
 type acliPluginError struct {
 	Code   string
 	Detail string
+	cause  error
 }
 
 func (e *acliPluginError) Error() string {
@@ -113,8 +120,21 @@ func (e *acliPluginError) Error() string {
 	return e.Code + ": " + e.Detail
 }
 
+// Unwrap 暴露底层错误，供 errors.As / errors.Is 穿透。
+func (e *acliPluginError) Unwrap() error { return e.cause }
+
 func newAcliPluginError(code, detail string) error {
 	return &acliPluginError{Code: code, Detail: detail}
+}
+
+// wrapAcliPluginError 在保留原因码的同时保留底层错误链；
+// 传输层失败（证书、DNS、超时）必须走它，不能用字符串把 cause 丢掉。
+func wrapAcliPluginError(code string, cause error) error {
+	detail := ""
+	if cause != nil {
+		detail = cause.Error()
+	}
+	return &acliPluginError{Code: code, Detail: detail, cause: cause}
 }
 
 // acliPluginErrorCode 取原因码；非结构化错误统一归到 stage2_unknown。
@@ -172,22 +192,61 @@ func validatePluginPlatformURL(raw string) (string, error) {
 //
 // 失败一律回原因码，绝不回空清单当"没有插件要装"：那会把一次网络故障
 // 洗成一次成功的同步（B6 同族错误）。
+//
+// 证书策略（第一性原理）：桥跑在客户机上，平台在客户内网普遍用自签证书，
+// 而"前端记得传 tls_insecure"是已经被现场证伪的前提——交付通道 2026-10-27
+// 就是因此每次交付停在「已传 0/N 片」，本通道 2026-11-20 同族复现（Q2026112001180）。
+// 正确模型不是"求前端多传一个布尔位"，而是把它当作可自证的失败类别：
+//   - 先用严格校验发起，这是默认且唯一可信的路径；
+//   - 只有命中「证书不受信」这一确定类别才放宽**本次**调用重试一次，并回报
+//     relaxed=true 供调用方留痕；
+//   - 超时 / DNS / 401 / 5xx / 清单解析失败一律不重试、不放宽——放宽校验
+//     只解决信任链前提不成立，解决不了别的问题，盲目重试只会延迟失败。
+//
+// 鉴权不放松：票据仍走 X-Plugin-Ticket，且放宽范围仅限本函数的两次调用，
+// 不写任何全局状态（与 delivery / logpush 通道同口径）。
 func fetchAcliPluginManifest(b *app.Bridge,
 	ctx context.Context,
 	platformURL, ticket, caseID string,
 	insecure bool,
-) (*acliPluginManifestResponse, error) {
+) (*acliPluginManifestResponse, bool, error) {
 	base, err := validatePluginPlatformURL(platformURL)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if strings.TrimSpace(ticket) == "" {
-		return nil, newAcliPluginError("plugin_ticket_missing", "缺少 plugin_ticket")
+		return nil, false, newAcliPluginError("plugin_ticket_missing", "缺少 plugin_ticket")
 	}
 	if strings.TrimSpace(caseID) == "" {
-		return nil, newAcliPluginError("case_id_missing", "acli_sync 未带 case_id")
+		return nil, false, newAcliPluginError("case_id_missing", "acli_sync 未带 case_id")
 	}
 	endpoint := base + "/api/acli-plugins/manifest?case_id=" + url.QueryEscape(strings.TrimSpace(caseID))
+
+	manifest, err := fetchAcliPluginManifestOnce(ctx, endpoint, ticket, caseID, insecure)
+	if err == nil {
+		return manifest, false, nil
+	}
+	// 前端已显式授权过放宽，或失败不属于"证书不受信"：原样上报，不制造第二次请求。
+	if insecure || !uplink.IsUntrustedCertificateError(err) {
+		return nil, false, err
+	}
+	manifest, retryErr := fetchAcliPluginManifestOnce(ctx, endpoint, ticket, caseID, true)
+	if retryErr != nil {
+		// 放宽后仍失败：报放宽后的原因（它更接近真相，例如网络确实不通）。
+		return nil, false, retryErr
+	}
+	return manifest, true, nil
+}
+
+// fetchAcliPluginManifestOnce 是单次尝试：构造请求 → 校验状态码 → 解析清单。
+//
+// 每次尝试各自持有一份 fetchTimeout 预算，父 ctx 只做总兜底：这样一次握手
+// 失败不会把重试的余量一起吃掉。
+func fetchAcliPluginManifestOnce(
+	ctx context.Context,
+	endpoint, ticket, caseID string,
+	insecure bool,
+) (*acliPluginManifestResponse, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, acliPluginFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
@@ -198,7 +257,7 @@ func fetchAcliPluginManifest(b *app.Bridge,
 	req.Header.Set("Accept", "application/json")
 	resp, err := uplink.HttpClientFor(insecure, acliPluginFetchTimeout).Do(req)
 	if err != nil {
-		return nil, newAcliPluginError("manifest_unreachable", err.Error())
+		return nil, wrapAcliPluginError("manifest_unreachable", err)
 	}
 	defer resp.Body.Close()
 	switch resp.StatusCode {
