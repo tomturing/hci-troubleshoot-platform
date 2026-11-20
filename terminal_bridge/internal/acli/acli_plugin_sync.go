@@ -88,9 +88,12 @@ func prepareAcliPluginStage(b *app.Bridge, msg models.InMessage, cui, traceID st
 		"platform_url": strings.TrimSpace(msg.PlatformURL),
 	})
 	plan := &acliPluginStagePlan{started: time.Now()}
-	fetchCtx, cancel := context.WithTimeout(context.Background(), acliPluginFetchTimeout)
+	// 预算按"最多两次尝试"给（严格 + 命中证书不受信后的放宽），否则父 ctx 会
+	// 把第二次的余量吃掉，形成"有兜底但永远跑不到"的假修复。
+	// 这仍远小于阶段二 30min 与前端等待器（1800s），不会改变任何超时语义。
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 2*acliPluginFetchTimeout)
 	defer cancel()
-	manifest, err := fetchAcliPluginManifest(b,
+	manifest, tlsRelaxed, err := fetchAcliPluginManifest(b,
 		fetchCtx,
 		strings.TrimSpace(msg.PlatformURL),
 		strings.TrimSpace(msg.PluginTicket),
@@ -105,6 +108,14 @@ func prepareAcliPluginStage(b *app.Bridge, msg models.InMessage, cui, traceID st
 			"reason": acliPluginErrorCode(err), "detail": err.Error(),
 		})
 		return plan
+	}
+	// 放宽过必须留痕：这是"平台证书不受信"的唯一证据，事后排查不能只剩一条成功日志。
+	// 只写桥日志、不上屏——对用户而言插件最终收敛了就是成功，多一条告警只是噪音。
+	if tlsRelaxed {
+		logpush.Blog("WARN", "acli_plugin_sync.tls_relaxed", "平台证书不受信，插件期望态通道已放宽证书校验", traceID, caseID, msg.NodeIP, cui, map[string]any{
+			"platform_url": strings.TrimSpace(msg.PlatformURL),
+			"reason":       "self-signed-certificate",
+		})
 	}
 	plan.manifest = manifest
 	plan.plugins = manifest.Plugins
