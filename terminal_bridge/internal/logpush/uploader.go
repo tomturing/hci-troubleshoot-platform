@@ -114,8 +114,9 @@ type logUploader struct {
 	dropped      uint64
 	// spilled 统计"内存满、仅落盘"的条数（L2 后不再丢弃，只是慢一拍）。
 	spilled uint64
-	// persistOK 标记落盘链路是否健康：任何一次写失败后置 false，
-	// 游标停止前进（磁盘与内存不再一一对应），重复交给后端 event_id 幂等。
+	// persistOK 标记落盘链路是否健康：任何一次写失败后置 false（refill 暂停、
+	// 游标停止前进，避免把同一批数据无限重放）；下一次写成功即复位，复位时由
+	// markPersistedLocked 把游标钳回本条起点，保证游标不会越过磁盘上不存在的空洞。
 	persistOK bool
 	started   bool
 	wake      chan struct{}
@@ -219,15 +220,22 @@ func (u *logUploader) enqueue(entry LogEntry) {
 		return
 	}
 	u.Mu.Lock()
-	gaps := u.persistLocked(entry)
+	gaps, outcome := u.persistLocked(entry)
 	u.totalEnqueued++
-	if len(u.queue) < memoryQueueCap {
+	queued := len(u.queue) < memoryQueueCap
+	if queued {
 		u.queue = append(u.queue, entry)
 		if entry.Seq > u.maxQueuedSeq {
 			u.maxQueuedSeq = entry.Seq
 		}
 	} else {
 		u.spilled++
+	}
+	// 真丢判定：既进不了内存队列、又没落盘。必须计数并留痕，否则"零静默丢弃"
+	// 在磁盘满（写失败）+ 队列满时会变成静默丢弃——此时平台与本地都无从得知。
+	if !queued && outcome == persistFailed {
+		u.dropped++
+		u.reportLostLocked(entry)
 	}
 	// gap 标记已写独立文件，内存按余量入队（紧跟触发条目，与段生命周期对齐）。
 	for _, gap := range gaps {
@@ -239,6 +247,19 @@ func (u *logUploader) enqueue(entry LogEntry) {
 	}
 	u.Mu.Unlock()
 	u.notify()
+}
+
+// reportLostLocked 记录一条真实丢失（落盘失败且内存队列已满）。调用方持有 u.Mu。
+//
+// 为什么走 stderr 而不是 Blog：Blog 会经 publish 回到 enqueue 重入 u.Mu（自死锁）。
+// stderr 在桌面形态被 redirectStderrToFile 落进 bridge-stderr.log，由 L3 补传通道
+// 包装上报，因此"平台可知洞"仍然成立。按首条 + 每 100 条节流，避免满盘时刷爆文件。
+func (u *logUploader) reportLostLocked(entry LogEntry) {
+	if u.dropped != 1 && u.dropped%100 != 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "log_upload.lost event=%s seq=%d reason=outbox_write_failed_and_queue_full dropped_total=%d\n",
+		entry.Event, entry.Seq, u.dropped)
 }
 
 // notify 非阻塞唤醒 worker。
@@ -516,6 +537,9 @@ func LogUploadStats() map[string]any {
 		"spilled":  u.spilled,
 		"instance": u.instance,
 		"outbox":   u.outboxAt,
+		// persist_ok=false 是现场最重要的一个信号：落盘链路已坏（磁盘满/目录不可写），
+		// refill 已暂停、游标已冻结；此时 dropped 增长代表真实丢失，需立即清理磁盘。
+		"persist_ok": u.persistOK,
 		// source 让排障第一眼就能区分"部署期注入生效"与"只有浏览器下发"。
 		"source": u.source,
 	}

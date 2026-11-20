@@ -100,18 +100,31 @@ func migrateLegacyOutbox(dir, instance string) {
 	_ = os.Rename(legacy, filepath.Join(instDir, legacyOutboxSegment))
 }
 
-// persistLocked 追加一条到活动分段；返回磁盘预算触发的 gap 标记事件（可为空）。
-// 调用方持有 u.Mu。写失败置 persistOK=false：游标停止前进，重复交给后端幂等。
-func (u *logUploader) persistLocked(entry LogEntry) []LogEntry {
+// persistOutcome 描述一次落盘尝试的结果。区分"未启用落盘"与"落盘失败"：
+// 前者是正常形态（无日志目录），后者意味着磁盘与内存不再一一对应。
+type persistOutcome uint8
+
+const (
+	// persistSkipped：未配置落盘目录，条目只走内存队列（非故障）。
+	persistSkipped persistOutcome = iota
+	// persistWritten：本条已落盘。
+	persistWritten
+	// persistFailed：落盘失败（目录不可写 / 磁盘满 / 句柄耗尽）。
+	persistFailed
+)
+
+// persistLocked 追加一条到活动分段；返回磁盘预算触发的 gap 标记事件（可为空）与落盘结果。
+// 调用方持有 u.Mu。写失败置 persistOK=false：refill 暂停、游标停止前进，重复交给后端幂等。
+func (u *logUploader) persistLocked(entry LogEntry) ([]LogEntry, persistOutcome) {
 	dir := outboxDir()
 	if dir == "" || u.instance == "" {
-		return nil
+		return nil, persistSkipped
 	}
 	instDir := outboxInstanceDir(dir, u.instance)
 	if u.outbox == nil {
 		if err := os.MkdirAll(instDir, 0o700); err != nil {
 			u.persistOK = false
-			return nil
+			return nil, persistFailed
 		}
 		// 续接最新段（游标可能还在更旧的段上消费，追加不影响顺序）。
 		segments := listOutboxSegments(instDir)
@@ -123,7 +136,7 @@ func (u *logUploader) persistLocked(entry LogEntry) []LogEntry {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			u.persistOK = false
-			return nil
+			return nil, persistFailed
 		}
 		u.outbox, u.outboxAt = file, path
 		if info, statErr := file.Stat(); statErr == nil {
@@ -145,7 +158,7 @@ func (u *logUploader) persistLocked(entry LogEntry) []LogEntry {
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
 			u.persistOK = false
-			return nil
+			return nil, persistFailed
 		}
 		u.outbox, u.outboxAt, u.written = file, path, 0
 		if u.segEntryIndex == nil {
@@ -155,24 +168,53 @@ func (u *logUploader) persistLocked(entry LogEntry) []LogEntry {
 	}
 	line, err := json.Marshal(entry)
 	if err != nil {
-		return nil
+		// 序列化失败是条目自身问题，不影响落盘链路健康度。
+		return nil, persistSkipped
 	}
 	line = append(line, '\n')
+	entryStart := u.written
 	written, writeErr := u.outbox.Write(line)
 	if writeErr != nil {
 		u.persistOK = false
-		return nil
+		return nil, persistFailed
 	}
 	u.written += int64(written)
-	return u.enforceDiskBudgetLocked(instDir)
+	u.markPersistedLocked(instDir, entryStart)
+	return u.enforceDiskBudgetLocked(instDir), persistWritten
+}
+
+// markPersistedLocked 在落盘链路从故障态恢复时把游标钳回本条起点。
+//
+// 为什么必须钳回：故障期间的条目没有写入磁盘，游标若随批次字节继续前进，就会
+// 越过磁盘上并不存在的空洞，进而在 advanceCursorLocked 里把后续段判成"已消费完"
+// 并删除——那是真实的未发送数据。钳回本条起点后，本条与之后条目仍会被消费一次，
+// 崩溃窗口内的重复由后端 event_id 幂等抵消。
+//
+// 只在游标仍指向活动段时复位：跨段复位会跳过已落盘但未消费的旧段数据，宁可重复不可丢。
+func (u *logUploader) markPersistedLocked(instDir string, entryStart int64) {
+	if u.persistOK {
+		return
+	}
+	u.persistOK = true
+	if u.outboxAt == "" {
+		return
+	}
+	cursor := loadOutboxCursor(instDir)
+	if cursor.Segment != filepath.Base(u.outboxAt) {
+		return
+	}
+	saveOutboxCursor(instDir, outboxCursor{Segment: cursor.Segment, Offset: entryStart})
 }
 
 // enforceDiskBudgetLocked 总磁盘预算超限时 drop-oldest 段并生成 gap 标记事件。
 // 活动段（正在写）绝不触碰。被丢段的数据条目同步从内存队列剔除（按全局索引定位，
 // 跳过 gap 标记）——丢弃即真丢，gap 区间与实际丢失逐条对齐；而 gap 标记本身一律保留
 // （它们描述的是更早段的丢失，是平台知洞的唯一证据，落独立文件不占预算）。
+//
+// 落盘链路已故障（persistOK=false）时直接跳过：此时删除分段既不能让磁盘可写，
+// 又会让内存/磁盘对应关系进一步错位。
 func (u *logUploader) enforceDiskBudgetLocked(instDir string) []LogEntry {
-	if u.maxBytes <= 0 {
+	if u.maxBytes <= 0 || !u.persistOK {
 		return nil
 	}
 	segments := listOutboxSegments(instDir)
@@ -274,9 +316,12 @@ func (u *logUploader) enforceDiskBudgetLocked(instDir string) []LogEntry {
 					}
 				}
 			}
-			Blog("WARN", "log_upload.gap", "outbox 磁盘预算超限，已丢弃最旧分段并上报缺口", "", "", "", "", map[string]any{
-				"segment": name, "dropped_entries": count, "seq_min": minSeq, "seq_max": maxSeq,
-			})
+			// 这里绝不能调用 Blog：Blog → DefaultHub.publish → LogUpload.enqueue 会在
+			// 同一 goroutine 重入 u.Mu（本函数由 persistLocked 在持锁状态下调用），造成
+			// 自死锁；同时还会再产生一条重复的 gap 事件并占用 outbox 预算。
+			// 改走 stderr：桌面形态由 redirectStderrToFile 落进 bridge-stderr.log，
+			// 再由 L3 补传通道包装上报——既不死锁，本地与平台也都留痕。
+			fmt.Fprintf(os.Stderr, "log_upload.gap segment=%s dropped=%d seq=[%d,%d]\n", name, count, minSeq, maxSeq)
 		}
 		if name == cursor.Segment || cursor.Segment == "" {
 			cursor = outboxCursor{Segment: nextSegment(instDir, name)}
@@ -398,7 +443,13 @@ func nextSegment(dir, given string) string {
 
 // refillFromDiskLocked 内存实时队列空时从游标读回最多 memoryQueueCap 条（L2 溢出消费）。
 // 游标本身不前进——只有批次确认成功后才前进，refill 只是把磁盘数据搬进内存。
+//
+// persistOK=false 时直接返回：落盘故障期间游标被冻结，继续从旧游标 refill 会把
+// 同一批数据反复读回、反复发送，形成无限重放（发送成功→游标不动→再读回）。
 func (u *logUploader) refillFromDiskLocked() {
+	if !u.persistOK {
+		return
+	}
 	dir := outboxDir()
 	instDir := outboxInstanceDir(dir, u.instance)
 	if instDir == "" {
