@@ -1,0 +1,2022 @@
+package delivery
+
+// 交付作业执行器：进程内唯一的串行调度者。
+//
+// 为什么必须"唯一"：交付是 20GB 级的长任务，两路并发会在客户机上互相拖到双双超时
+// （2026-10-27 现场内存 95%、CPU 83%）。跨任务并发默认 1，只有高配机才允许 2；
+// 任务内的分片并发由资源探测决定，见 delivery_concurrency.go。
+//
+// 与浏览器彻底解耦：submit 之后所有阶段都在这里推进，页面关闭不影响；
+// 前端只通过 job_status 轮询进度，重连后继续轮询即可。
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
+	"terminal_bridge/internal/shared/uplink"
+	"terminal_bridge/internal/sshx"
+	"time"
+)
+
+const (
+	// 等待 acli 采集完成的上限：单次采集超 4 小时基本可以判死，避免 job 永久占位。
+	deliveryCollectTimeout = 4 * time.Hour
+	// 单个 job 的拉取+上传整体预算：20GiB @ 100Mbps 约 27 分钟，给足重试余量。
+	//
+	// 从 6 小时抬到 48 小时，是因为 6 小时在弱网上小到没有意义：1.94 GiB 的包在
+	// 实测 34 KB/s 的上行下需要约 16 小时（Q2026110600112），作业会在传完之前
+	// 被墙砍断，而每一轮都已经"有进展"——这不是占位，是真在传。
+	// 真正防占位的判据换成了 deliveryStallTimeout（无进展即终止），
+	// 这个绝对上限只作为最后一道保险，不需要贴着业务时长设。
+	deliveryJobMaxTimeout = 48 * time.Hour
+	// 停摆判定：拉取/上传阶段连续这么久没有任何字节或分片增量，就认定链路已死。
+	//
+	// 阈值取 30 分钟 = 单片预算上限（20 分钟）+ 10 分钟余量：只要单片还能在预算内
+	// 完成，就一定会刷出一次进度；刷不出来说明连最保守的节奏也走不动了，
+	// 再等只是让用户盯着"上传中"看一晚上。等采集与平台合并这两个阶段不参与判定
+	// （它们各自有 deliveryCollectTimeout / deliveryCompleteTimeout）。
+	deliveryStallTimeout = 30 * time.Minute
+	// 停摆巡检间隔：判定粒度，取 30 秒足够细，且不产生任何 I/O。
+	deliveryStallPollInterval = 30 * time.Second
+	// 每传多少片落一次盘：太频繁会把磁盘打满（5120 片 × 写盘），太稀疏会丢进度。
+	deliverySaveEveryParts = 10
+	// 节点与客户机的时钟偏差容忍。判断"包是否属于本次采集"靠 mtime 与任务开始时间比较，
+	// 两边时钟不可能严格对齐；5 分钟既足以吸收常见 NTP 漂移，
+	// 又远小于一次真实采集的时长（十几分钟起），不会放过串味的旧包。
+	deliveryClockSkewTolerance = 5 * time.Minute
+	// 平台收尾（合并）的超时。合并 12.8 GiB 要在服务端读一遍、写一遍、算一遍
+	// SHA-256，慢盘上远超分片的 5 分钟；原来复用分片超时会让桥先断开，
+	// 服务端随后才写完——桥侧只看到 ClientDisconnect，分片全白传。
+	deliveryCompleteTimeout = 30 * time.Minute
+	// 非凭据类失败的最大尝试次数（含首次）。超过即终态失败，等人介入。
+	// 抽成常量是因为它同时出现在"判定"和"重排"两处，写死两遍必然漂移。
+	maxDeliveryAttempts = 5
+	// 平台"暂时不可用"（5xx / 连接失败）时的最大尝试次数。
+	//
+	// 为什么要单独一个更大的预算：一次 K8s 滚动更新或 ArgoCD 同步的空窗通常
+	// 30~90 秒，慢的时候更久；而普通预算只有 5 次 × 1..16 秒（累计约 31 秒），
+	// 比空窗还短。2026-10-27 现场就是这样：5 次收尾请求全部落在
+	// 18:29:20–18:29:46，而新 Pod 18:29:21 才创建、18:29:41 才启动完成，
+	// 于是"平台发版"把用户的一次上传整成了终态失败。
+	maxDeliveryTransientAttempts = 8
+	// DNS「域名不存在」（NXDOMAIN / no such host）的尝试次数（含首次）。
+	//
+	// 为什么必须比 5xx 的 8 次小得多：8 次 × 最长 60s 退避约 5 分钟，
+	// 而 hosts/DNS/代理配错不会在 5 分钟内自愈——2026-11-09 Q2026110900185
+	// 就是让用户对着「平台暂时不可用」白等了 8 轮，真实原因却是本机解析不了域名。
+	// 但也不能一次都不重试：VPN/代理切换存在秒级空窗，给 2 次机会足够区分
+	// 「抖动」与「配错」。
+	maxDeliveryDNSAttempts = 3
+)
+
+// deliveryRunner 是进程级单例。
+type deliveryRunner struct {
+	bridge      *app.Bridge
+	store       *deliveryStore
+	concurrency deliveryConcurrency
+
+	mu       sync.Mutex
+	jobs     map[string]*deliveryJob
+	cancels  map[string]context.CancelFunc
+	queue    chan *deliveryJob
+	started  bool
+	inflight int
+}
+
+var DeliveryRunnerInstance *deliveryRunner
+
+// NewDeliveryRunner 构造执行器；store 目录来自日志目录（与 job 文件同级，便于现场打包取证）。
+func NewDeliveryRunner(bridge *app.Bridge) *deliveryRunner {
+	runner := &deliveryRunner{
+		bridge:      bridge,
+		store:       newDeliveryStore(logpush.DefaultHub.LogDir),
+		concurrency: decideDeliveryConcurrency(),
+		jobs:        make(map[string]*deliveryJob),
+		cancels:     make(map[string]context.CancelFunc),
+		queue:       make(chan *deliveryJob, 16),
+	}
+	return runner
+}
+
+// start 启动调度器并恢复未完成的 job。
+//
+// 恢复策略：平台任务状态优先（已完成直接归档），其余按落盘阶段继续；
+// 读不出来的 job 文件跳过并留痕，绝不阻塞其它 job。
+func (r *deliveryRunner) Start() {
+	r.mu.Lock()
+	if r.started {
+		r.mu.Unlock()
+		return
+	}
+	r.started = true
+	r.mu.Unlock()
+
+	logpush.Blog("INFO", "delivery.runner_started", "交付执行器已启动", "", "", "", "",
+		describeDeliveryConcurrency(r.concurrency))
+
+	go r.schedule()
+
+	recovered := r.store.list()
+	for _, job := range recovered {
+		r.mu.Lock()
+		r.jobs[job.JobID] = job
+		r.mu.Unlock()
+		logpush.Blog("INFO", "delivery.recovered", "恢复未完成的交付作业", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "task_id": job.TaskID, "phase": string(job.Phase),
+			"pulled_bytes": job.PulledBytes, "uploaded_parts": len(job.UploadedParts),
+			"needs_reauth": job.NeedsReauth,
+		})
+		// needs_reauth 的 job 不自动入队：没有凭据跑起来只会立刻失败，等前端重连后再唤醒。
+		if !job.NeedsReauth {
+			r.enqueue(job)
+		}
+	}
+	// 终态 job 文件保留 7 天供取证，之后清理。
+	if removed := r.store.purgeOlderThan(7 * 24 * time.Hour); removed > 0 {
+		logpush.Blog("INFO", "delivery.purged", "清理过期交付作业记录", "", "", "", "", map[string]any{"removed": removed})
+	}
+	// 本地中转副本的回收与 job 记录回收是两条独立生命周期：
+	// 记录留 7 天是为了取证，副本留 3 天是为了给重试机会——GB 级副本不能跟着记录一起攒。
+	r.startLocalCopyCleanup()
+}
+
+// requeueEligible 判断作业是否仍有资格重排（fencing + membership）。
+//
+// 新会话 submit 时会把旧作业从 r.jobs 删除并放入新指针；指针不相等说明
+// "这已经不是当前作业"，即使它还停在 retrying 也不得重新入队。
+// 少了这两个判据，旧作业会在 ctx 取消后靠退避重排复活，并重建一个全新的
+// context 继续拉包/上传（2026-11-06 Q2026110601054）。
+func (r *deliveryRunner) requeueEligible(job *deliveryJob) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return job.Phase == phaseRetrying && !job.NeedsReauth &&
+		!job.Superseded && r.jobs[job.JobID] == job
+}
+
+// errDeliverySuperseded 表示"本作业已不是该任务的合法交付执行者"。
+//
+// 它必须是独立哨兵而不是 context.Canceled：取消是**通知**（可能没送到、可能
+// 被别的 cancel 掩盖），而顶替是**资格丧失**，两者的正确处理都是落终态，
+// 但现场需要能分清"用户取消/看门狗掐断"和"被新会话顶替"。
+var errDeliverySuperseded = errors.New("superseded_by_new_session")
+
+// ownerIntact 判定作业此刻是否仍占据该任务的执行位（fencing 的唯一判据）。
+//
+// 第一性原理：一个作业能不能产生对外副作用，与它"收没收到取消信号"无关，
+// 只与它"还是不是当前执行者"有关。后者是三个可观测事实的合取：
+//  1. 没被新会话顶替（Superseded）；
+//  2. r.jobs 里占着同一个键的位置仍是指向自己——submit 顶替时会在锁内换掉指针；
+//  3. 键上没有任何作业（独立构造的作业/单测直调），视为未受管，保持放行。
+//
+// 第 3 条是刻意保留的宽松分支：把"未注册"当失败会让所有直接调用
+// upload/complete 的既有路径（含单测）无法工作，而它们本来就不存在竞争。
+func (r *deliveryRunner) ownerIntact(job *deliveryJob) bool {
+	if job == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if job.Superseded {
+		return false
+	}
+	return r.jobs[job.JobID] == nil || r.jobs[job.JobID] == job
+}
+
+// fence 是每个对外副作用之前的必过关口：返回非 nil 即不得继续。
+//
+// 调用点必须在不持有 r.mu 的位置调用（ownerIntact 内部会取锁）。
+func (r *deliveryRunner) fence(ctx context.Context, job *deliveryJob) error {
+	if !r.ownerIntact(job) {
+		return errDeliverySuperseded
+	}
+	if ctx != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// saveJob 是落盘的统一入口：只有"仍是当前执行者"的作业才能写 journal。
+//
+// 为什么必须拦：journal 文件名就是 task_id（dj-<task>），旧作业收尾时若无条件
+// save，会把新作业刚写好的记录**覆盖回旧会话的字节数/阶段**——平台上明明是
+// 19/233，本地文件却是 0/233，下一轮续传又从第一片开始。
+func (r *deliveryRunner) saveJob(job *deliveryJob) error {
+	// 这里不打日志：拉取进度回调会高频调用，僵尸作业被跳过时逐次打点会变成日志洪泛。
+	// "被顶替"本身已经由 submit 的 delivery.superseded 事件留痕。
+	if !r.ownerIntact(job) {
+		return nil
+	}
+	return r.store.save(job)
+}
+
+// saveJobLocked 是同语义的变体，要求调用方已持有 r.mu。
+func (r *deliveryRunner) saveJobLocked(job *deliveryJob) error {
+	if job == nil || job.Superseded || (r.jobs[job.JobID] != nil && r.jobs[job.JobID] != job) {
+		return nil
+	}
+	return r.store.save(job)
+}
+
+// enqueue 非阻塞入队；队列满时保持 job 在 store 里等下一轮启动，不丢。
+func (r *deliveryRunner) enqueue(job *deliveryJob) {
+	select {
+	case r.queue <- job:
+	default:
+		logpush.Blog("WARN", "delivery.queue_full", "交付队列已满，作业留待下一轮", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "phase": string(job.Phase),
+		})
+	}
+}
+
+// schedule 按「跨任务并发」限制串行消费队列。
+func (r *deliveryRunner) schedule() {
+	semaphore := make(chan struct{}, r.concurrency.Tasks)
+	for job := range r.queue {
+		semaphore <- struct{}{}
+		go func(job *deliveryJob) {
+			defer func() { <-semaphore }()
+			r.runJob(job)
+		}(job)
+	}
+}
+
+// submit 接收前端下发的交付请求：落盘 + 入队，立即返回 job_id（不再让前端等 2 小时）。
+func (r *deliveryRunner) submit(job *deliveryJob) *deliveryJob {
+	if job.JobID == "" {
+		job.JobID = "dj-" + job.TaskID
+	}
+	job.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	job.Phase = phaseWaitingCollect
+	var stale *deliveryJob
+	var staleCancel context.CancelFunc
+	r.mu.Lock()
+	if existing, ok := r.jobs[job.JobID]; ok && !existing.Phase.terminal() {
+		// 同一个平台会话的重放（前端刷新/重复点击）直接复用，避免重复占位。
+		if sameDeliverySession(existing, job) {
+			r.mu.Unlock()
+			return existing
+		}
+		// 会话参数变了：平台已签发新令牌 / 新 total_size / 新分片方案，
+		// 旧作业的 SubmittedSize 与 PartCount 已经作废。若继续复用，
+		// 新会话会按上一轮的基线校验，每一片都必然失败且重试不会自愈。
+		existing.Phase = phaseFailed
+		existing.LastError = "superseded_by_new_session"
+		existing.Superseded = true
+		stale, staleCancel = existing, r.cancels[job.JobID]
+		delete(r.cancels, job.JobID)
+		delete(r.jobs, job.JobID)
+	}
+	r.jobs[job.JobID] = job
+	r.mu.Unlock()
+
+	if stale != nil {
+		// 旧作业的 goroutine 必须在锁外终止。
+		//
+		// 这里**不改 stale.JobID**：JobID 既是 r.cancels 的键，也是 ownerIntact
+		// 判据里的身份。在锁外改写它会与旧 goroutine 的读写形成 data race，还会让
+		// runJob 收尾时按新键 delete，把取消函数留在 map 里成孤儿。
+		// "独立的落盘文件名"只改副本（见下），共享结构从此刻起只读。
+		oldID := stale.JobID
+		if staleCancel != nil {
+			staleCancel()
+		}
+		// 浅拷贝足够：save 只 marshal，不追加 UploadedParts。
+		snapshot := *stale
+		snapshot.JobID = oldID + "-superseded"
+		_ = r.store.save(&snapshot)
+		logpush.Blog("WARN", "delivery.superseded", "同一任务的新上传会话覆盖了旧作业", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "old_job_id": oldID,
+			"old_submitted_size": stale.SubmittedSize, "new_submitted_size": job.SubmittedSize,
+			"old_part_count": stale.PartCount, "new_part_count": job.PartCount,
+		})
+	}
+
+	if err := r.store.save(job); err != nil {
+		logpush.Blog("WARN", "delivery.save_failed", "交付作业落盘失败（本次仅内存）", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "error": err.Error(),
+		})
+	}
+	logpush.Blog("INFO", "delivery.submitted", "交付作业已提交", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "task_id": job.TaskID, "source_path": job.SourcePath,
+		"source_size": job.SourceSize, "part_count": job.PartCount, "chunk_size": job.ChunkSize,
+	})
+	r.enqueue(job)
+	return job
+}
+
+// sameDeliverySession 判断两次提交是否指向同一个平台上传会话。
+//
+// 不能只看 task_id：同一任务失败重试时，平台会签发新令牌、新 total_size
+// 和新分片方案，而 bridge 里的旧作业可能仍处于 retrying（非终态）。
+// 复用旧作业会让 SubmittedSize/PartCount 停在上一轮，新会话每片都校验不过。
+func sameDeliverySession(a, b *deliveryJob) bool {
+	return a.UploadToken == b.UploadToken &&
+		a.SubmittedSize == b.SubmittedSize &&
+		a.PartCount == b.PartCount &&
+		a.ChunkSize == b.ChunkSize &&
+		a.Direct == b.Direct
+}
+
+// status 返回 job 快照（深拷贝，避免调用方读到并发修改中的结构）。
+func (r *deliveryRunner) status(jobID string) *deliveryJob {
+	r.mu.Lock()
+	job, ok := r.jobs[jobID]
+	r.mu.Unlock()
+	if !ok {
+		// 内存里没有就回查磁盘：进程重启后前端仍会按 job_id 轮询。
+		job = r.store.load(jobID)
+		if job == nil {
+			return nil
+		}
+	}
+	snapshot := *job
+	snapshot.UploadedParts = append([]int(nil), job.UploadedParts...)
+	return &snapshot
+}
+
+// resume 在用户重连后唤醒 needs_reauth 的 job。
+func (r *deliveryRunner) resume(jobID string) bool {
+	r.mu.Lock()
+	job, ok := r.jobs[jobID]
+	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	job.NeedsReauth = false
+	job.LastError = ""
+	// 唤醒时必须把阶段从终态里拉出来：needs_reauth 时 phase 是 failed（终态），
+	// 只清标志位会让 advance 立刻以"终态拒绝推进"再次失败——用户点"继续"等于没点。
+	// 归一化成 retrying，由 advance 按已拉字节/已传分片决定从哪续。
+	job.Phase = phaseRetrying
+	r.mu.Unlock()
+	_ = r.saveJob(job)
+	r.enqueue(job)
+	return true
+}
+
+// cancel 取消正在跑的 job（用户显式取消，或平台任务已被取消）。
+func (r *deliveryRunner) cancel(jobID string) bool {
+	r.mu.Lock()
+	cancel, running := r.cancels[jobID]
+	job := r.jobs[jobID]
+	r.mu.Unlock()
+	if running {
+		cancel()
+	}
+	if job == nil {
+		return false
+	}
+	job.Phase = phaseFailed
+	job.LastError = "cancelled_by_user"
+	_ = r.saveJob(job)
+	return true
+}
+
+// runJob 推进单个 job 到终态。
+func (r *deliveryRunner) runJob(job *deliveryJob) {
+	r.mu.Lock()
+	abandoned := job.Superseded
+	r.mu.Unlock()
+	if abandoned {
+		logpush.Blog("INFO", "delivery.superseded_skipped", "被顶替的作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "task_id": job.TaskID,
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), deliveryJobMaxTimeout)
+	// "检查是否已被顶替"与"注册取消函数"必须在同一把锁内完成。
+	//
+	// 分开做会留下一个窗口：读到 abandoned=false 之后、注册 cancels 之前被 submit
+	// 顶替，此时 submit 从 cancels 里取不到 cancel（还没注册），旧作业于是永远收不到
+	// 取消信号，会一路拉包、传分片、甚至收尾——这就是"僵尸作业重写已存在数据"。
+	r.mu.Lock()
+	if job.Superseded || (r.jobs[job.JobID] != nil && r.jobs[job.JobID] != job) {
+		r.mu.Unlock()
+		cancel()
+		logpush.Blog("INFO", "delivery.superseded_skipped", "注册时已被顶替，作业不再推进任何阶段", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "task_id": job.TaskID, "stage": "register",
+		})
+		return
+	}
+	r.cancels[job.JobID] = cancel
+	partsBefore := len(job.UploadedParts)
+	pulledBefore := job.PulledBytes
+	r.mu.Unlock()
+	// 停摆看门狗与绝对上限并存：绝对上限只防"永久占位"，是否还在干活由字节增量判定。
+	// stalled 标志用于把"看门狗掐断"与"用户取消/superseded"区分开：三者都表现为
+	// context.Canceled，但前者的正确处理是重排下一轮，后两者必须落终态。
+	var stalled atomic.Bool
+	watchDone := make(chan struct{})
+	go r.watchStall(ctx, cancel, job, watchDone, func() { stalled.Store(true) })
+	// 证据数据面：每 2 秒上报一次阶段速率/ETA。无票据（旧前端）时直接空转退出，
+	// 不产生任何 HTTP 请求，也不影响交付状态机。
+	go r.streamEvidenceMetrics(ctx, job)
+	defer func() {
+		close(watchDone)
+		cancel()
+		r.mu.Lock()
+		delete(r.cancels, job.JobID)
+		r.mu.Unlock()
+	}()
+
+	err := r.advance(ctx, job)
+	// 预算按错误性质分流：平台暂时不可用（5xx/连接失败）值得等，
+	// 业务性失败（分片长度不符、本地缺文件）等再久也不会变好。
+	budget := deliveryAttemptBudget(err)
+	r.mu.Lock()
+	if err != nil {
+		// 本轮只要真的推进过分片或字节，就不该消耗重试预算。
+		//
+		// 第一性原理：attempt 预算要防的是"无意义重试"，而"每轮都多传上去几片"
+		// 有确定的意义——只是慢。按旧逻辑（transient 8 次）计算，弱网下每轮 15 分钟、
+		// 8 轮约 2 小时就把一个仍在稳定推进的 20 GiB 交付判死，平台侧只剩 19/233 片
+		// 和一个再也不会有人接的 failed。进度型重试的收敛由停摆看门狗负责。
+		progressed := len(job.UploadedParts) > partsBefore || job.PulledBytes > pulledBefore
+		if progressed {
+			job.Attempt = 0
+			logpush.Blog("INFO", "delivery.progress_renewed", "本轮有新增进度，重试预算复位", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "task_id": job.TaskID,
+				"uploaded_parts_before": partsBefore, "uploaded_parts_after": len(job.UploadedParts),
+				"pulled_bytes_before": pulledBefore, "pulled_bytes_after": job.PulledBytes,
+			})
+		} else {
+			job.Attempt++
+		}
+		job.LastError = err.Error()
+		// 停摆优先于"取消"判定：看门狗也是靠 cancel 收工的，但它的语义是
+		// "这一轮链路已经死了，换下一轮"，不是"这条作业废了"。
+		if stalled.Load() {
+			job.Attempt = 0
+			job.Phase = phaseRetrying
+			job.LastError = fmt.Sprintf("交付停摆：%s 内没有任何新增进度，换下一轮继续", deliveryStallTimeout)
+			job.LastErrorCode = "delivery_stalled"
+		} else if job.Superseded || errors.Is(err, errDeliverySuperseded) {
+			// 最高优先级：作业已被新会话顶替（fencing）。
+			// 这类错误必须直接落终态，绝不能进 retrying——否则退避重排会给它
+			// 创建一个全新的 ctx，旧作业就此"复活"并把过期失败写回平台。
+			job.Phase = phaseFailed
+			job.LastError = "superseded_by_new_session"
+			job.LastErrorCode = ""
+		} else if errors.Is(err, context.Canceled) {
+			// 用户取消 / 绝对上限：同样是终态，但**不得冒充"被顶替"**。
+			// cancel() 已经把 LastError 写成 cancelled_by_user，这里覆盖成
+			// superseded_by_new_session 会让现场误以为"又被新会话顶掉了"。
+			job.Phase = phaseFailed
+		} else if isDeliveryAuthError(err) {
+			// 凭据类失败单独标记：它不是"重试能好"的错误，必须等人。
+			job.NeedsReauth = true
+			job.Phase = phaseFailed
+		} else if isDeliveryFatalError(err) {
+			// 完整性类失败同理：源包与基线不一致，重试只会再白拉一遍 20 GiB。
+			job.Phase = phaseFailed
+		} else if job.Attempt < budget {
+			// 可恢复失败：后台会退避重排，因此对外只能表现为 retrying。
+			// 写成 phaseFailed 会让前端先于 bridge 把任务判死（并回写平台 failed），
+			// 而字节其实还在继续传——这正是"界面说失败、平台记 failed、包却传完了"的来源。
+			job.Phase = phaseRetrying
+		} else {
+			job.Phase = phaseFailed
+		}
+	} else {
+		job.Attempt = 0
+		job.LastError = ""
+		job.LastErrorCode = ""
+	}
+	finalPhase := job.Phase
+	finalAttempt := job.Attempt
+	needsReauth := job.NeedsReauth
+	r.mu.Unlock()
+
+	// 已不是当前执行者的作业不得写 journal：dj-<task>.json 是所有同任务作业共用的
+	// 文件名，僵尸收尾会把新作业的记录覆盖回旧会话的阶段与字节数。
+	_ = r.saveJob(job)
+	logpush.Blog("INFO", "delivery.job_finished", "交付作业状态更新", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "task_id": job.TaskID, "phase": string(finalPhase),
+		"attempt": finalAttempt, "needs_reauth": needsReauth, "error": job.LastError,
+		"pulled_bytes": job.PulledBytes, "uploaded_parts": len(job.UploadedParts),
+	})
+
+	// 可恢复的失败按退避重排，避免弱网下一抖就判死。
+	if err != nil && !needsReauth && finalAttempt < budget {
+		delay := deliveryBackoff(finalAttempt)
+		go func() {
+			time.Sleep(delay)
+			// 阶段归一化交给 advance（按已拉字节/已传分片决定从哪续）。
+			// 这里只认 retrying：若期间用户重新提交或作业已被取消/判终态，
+			// 旧协程不得把作业再拽回执行队列（否则同一 job 会被两条流程同时推进）。
+			// 抽成方法是为了让"旧作业不得复活"这条约束能被单测直接锁住。
+			if r.requeueEligible(job) {
+				r.enqueue(job)
+			} else {
+				logpush.Blog("INFO", "delivery.requeue_rejected", "被顶替或已取消的作业不再重排", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "superseded": job.Superseded, "phase": string(job.Phase),
+				})
+			}
+		}()
+	}
+}
+
+// watchStall 在拉取/上传阶段监视"是否还在动"，连续 deliveryStallTimeout 无增量即终止本轮。
+//
+// 为什么不是继续用固定墙钟：墙钟既会砍掉"只是慢但在传"的作业（弱网 16 小时 > 旧 6 小时），
+// 又会放过"卡死但没到点"的作业（用户盯着"上传中"熬一晚上）。字节增量是唯一既排除死锁
+// 又不排斥慢网的可测事实，所以判据换成它。
+func (r *deliveryRunner) watchStall(ctx context.Context, cancel context.CancelFunc, job *deliveryJob, done <-chan struct{}, markStalled func()) {
+	ticker := time.NewTicker(deliveryStallPollInterval)
+	defer ticker.Stop()
+	tracker := newStallTracker(deliveryStallTimeout)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case now := <-ticker.C:
+			signature, watched := r.progressSignature(job)
+			if !tracker.observe(now, signature, watched) {
+				continue
+			}
+			logpush.Blog("WARN", "delivery.stalled", "交付长时间无进展，终止本轮等下一轮重排", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "task_id": job.TaskID,
+				"stalled_sec": int64(deliveryStallTimeout / time.Second), "signature": signature,
+			})
+			markStalled()
+			cancel()
+			return
+		}
+	}
+}
+
+// progressSignature 返回"这个作业是否在动"的可比签名。
+//
+// 第二返回值表示当前阶段是否适合用字节增量判定。签名只取单调量（已传分片数、
+// 已拉字节、当前分片序号），不取时间戳，避免"签名自己会变"造成假进展。
+func (r *deliveryRunner) progressSignature(job *deliveryJob) (string, bool) {
+	r.mu.Lock()
+	phase := job.Phase
+	parts := len(job.UploadedParts)
+	pulled := job.PulledBytes
+	r.mu.Unlock()
+	switch phase {
+	case phasePulling, phaseUploading:
+		return fmt.Sprintf("%s|parts=%d|pulled=%d", phase, parts, pulled), true
+	default:
+		return fmt.Sprintf("%s", phase), false
+	}
+}
+
+// advance 按阶段推进；每个阶段都可重入。
+func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
+	// 协作式取消：每个阶段入口都必须先问一次。旧实现只在个别子步骤里检查，
+	// 被 cancel 的作业仍会继续 waitCollect / 拉取 / 上传，正是"取消不生效"的根因。
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// 先做与外部资源无关的守卫：把中间态归一化，并拒绝推进终态/未知阶段。
+	// 顺序很关键——放在 sessionFor 之前，既省掉一次无意义的会话解析，
+	// 也让"作业不会被误标成功"这条约束可以被单测直接验证。
+	r.mu.Lock()
+	phase, phaseErr := normalizeDeliveryPhase(job)
+	if phaseErr == nil {
+		job.Phase = phase
+	}
+	r.mu.Unlock()
+	if phaseErr != nil {
+		return phaseErr
+	}
+
+	session := r.sessionFor(job)
+	if session != nil {
+		// 交付的每个需要节点的步骤都是"业务使用"：与日志采集一样没有显式包裹，
+		// 靠时间窗保护会话不被空闲租约回收（见 sshx.SSHSession.markBusy）。
+		session.MarkBusy()
+	}
+	if err := requireSessionForPhase(job.Phase, session); err != nil {
+		return err
+	}
+
+	switch job.Phase {
+	case phaseWaitingCollect, "":
+		// 交付只有两条物理前提：节点上有完整包、平台有会话。
+		// "采集是否仍在跑"与"能不能传这个已有的包"没有因果关系，
+		// 所以补交付（Direct）必须跳过 waitCollect，否则会被节点全局的
+		// progress 态拖住甚至误判——那正是 2026-10-27 现场 4 秒"采集完成"的来源。
+		if job.Direct {
+			if err := r.prepareDirect(ctx, session, job); err != nil {
+				return err
+			}
+		} else if err := r.waitCollect(ctx, session, job); err != nil {
+			return err
+		}
+		fallthrough
+	case phasePulling:
+		if err := r.pull(ctx, session, job); err != nil {
+			return err
+		}
+		fallthrough
+	case phaseUploading:
+		if err := r.upload(ctx, job); err != nil {
+			return err
+		}
+		fallthrough
+	case phaseCompleting:
+		if err := r.complete(ctx, job); err != nil {
+			return err
+		}
+	}
+
+	// 平台已确认收到完整包（complete 返回 2xx），本地副本再无用途。
+	// 留着只会挤占下一次交付的空间：P2 中转盘就是客户机 C 盘（2026-11-03 Q2026110300988）。
+	//
+	// 但删除之前必须重新确认执行者资格：本地副本路径按 task_id 命名，新旧两代作业
+	// 指向**同一个文件**。被顶替的作业若在此处收尾，删掉的是新作业正在上传的那个包，
+	// 新作业下一片就会以"本地副本不存在"失败——比它自己的失败更糟。
+	// 这里只判"还是不是执行者"，**不判 ctx**：走到这一步时 complete 已经 2xx，
+	// 包已经落到平台。此时若因为看门狗/绝对上限刚巧 cancel 就返回错误，
+	// 会把一次成功的交付写成 failed——比不删副本严重得多。
+	if !r.ownerIntact(job) {
+		return errDeliverySuperseded
+	}
+	// 删除本地副本之前读一次 zip 中央目录：包还在盘上时才有内容级证据，
+	// 删完就只剩体积推断，608 字节空壳包会被误判成功（Q2026111200624）。
+	if cfg, ok := logcollect.EvidenceFor(job.TaskID); ok {
+		evidenceCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		logcollect.ReportLocalArchive(evidenceCtx, cfg, job.LocalPath)
+		cancel()
+	}
+	r.discardDeliveredCopy(job)
+
+	r.mu.Lock()
+	if job.Superseded {
+		// 极窄窗口：fence 通过之后到置终态之前被顶替。此时不得把自己的结论写成 done。
+		r.mu.Unlock()
+		return errDeliverySuperseded
+	}
+	job.Phase = phaseDone
+	r.mu.Unlock()
+	return nil
+}
+
+// sessionFor 按 case+node 解析会话；会话掉线但桥持有该工单的认证信息时，
+// 后台自动重连并续传，把"需要人工回面板重连"变成自愈（见 ReconnectDeliveryNode）。
+// 仅当本阶段确实需要节点时才尝试重连：上传/收尾只读本地副本与平台，不该为它们
+// 去敲一条 SSH 连接（否则会在不需要时开连接、甚至因节点不可达而误报 needs_reauth）。
+// 两个分支都落空才返回 nil（由调用方转成 needs_reauth）。
+func (r *deliveryRunner) sessionFor(job *deliveryJob) *sshx.SSHSession {
+	session, _, _ := logcollect.ResolveLogCollectSession(r.bridge, models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
+	if session != nil {
+		return session
+	}
+	if !deliveryPhaseNeedsNode(job.Phase) {
+		return nil
+	}
+	if reconnected, err := r.bridge.ReconnectDeliveryNode(job.CaseID, job.NodeIP, "delivery-auto"); err == nil {
+		return reconnected
+	}
+	return nil
+}
+
+// deliveryPhaseNeedsNode 判断该阶段是否必须访问节点（因此必须有 SSH 会话）。
+//
+// 物理事实：上传与收尾只读**本地副本**、只访问平台 HTTP，全程不碰 HCI。
+// 把它们一并绑在 SSH 会话上，等于让"节点连接掉了"去否决一件根本不需要节点的事。
+// 现场 Q2026102800720（3.6 GiB）就是这条错误绑定收尾的：平台收尾连续 500 的
+// 几分钟里 SSH 会话被回收，第 5 次重试直接按"凭据失效"判死，而当时 110/110 片
+// 已在平台、本地副本也完整——差一步就归档成功。
+func deliveryPhaseNeedsNode(phase deliveryPhase) bool {
+	switch phase {
+	case phaseWaitingCollect, phasePulling:
+		return true
+	default:
+		return false
+	}
+}
+
+// requireSessionForPhase 只在真的需要节点时，把"没有会话"判定为需要重新认证。
+func requireSessionForPhase(phase deliveryPhase, session *sshx.SSHSession) error {
+	if session == nil && deliveryPhaseNeedsNode(phase) {
+		return &deliveryAuthError{reason: "SSH 会话不存在（需重新连接节点）"}
+	}
+	return nil
+}
+
+// waitCollect 只读 progress，直到 acli 报 done == total。
+//
+// 硬约束：**绝不 cancel、绝不发 create**——采集是节点侧的事，交付只负责搬运。
+//
+// ⚠️ 完成判据必须叠加"包归属"：`acli log_collect progress` 是**节点全局态、不带任务身份**
+// （bridge_execution_logs 里 task_id 恒为空）。新任务 create 后它立刻返回上一次的
+// `done=1/total=1`，只看 Done>=Total 就会在 4 秒内把上一次的完成当成本次完成，
+// 然后去拉一个已被覆盖/不存在的包（2026-10-27 现场 48f890d5）。
+// 归属判据：磁盘上那个包的 mtime 不能早于本次任务开始时间。
+func (r *deliveryRunner) waitCollect(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
+	deadline := time.Now().Add(deliveryCollectTimeout)
+	interval := 10 * time.Second
+	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("等待采集完成超时（%s）", deliveryCollectTimeout)
+		}
+		output, _, err := logcollect.RunCommandPty(session, ctx, "acli log_collect progress", 60*time.Second)
+		if err == nil {
+			progress := logcollect.ParseLogCollectProgress(output)
+			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
+				sourcePath := logcollect.FirstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
+				if sourcePath == "" {
+					// progress 到 100% 却没有包路径：不能就这么进入拉取。
+					// 空路径会让后面每一步都失败（digest_unavailable、stat 失败、
+					// 拉取命令 status 1），错误文案却指向"源包可能已被清理"。
+					logpush.Blog("WARN", "delivery.archive_path_missing", "采集已完成但未取到压缩包路径，继续等待", "", job.CaseID, job.NodeIP, "", map[string]any{
+						"job_id": job.JobID, "total": progress.Total,
+					})
+				} else {
+					// 串味判定：包比任务还老 ⇒ 这是上一次采集的产物，不能当本次结果。
+					if startedAt, ok := job.startedAt(); ok {
+						if mtime, statErr := statArchiveMTime(ctx, session, sourcePath); statErr == nil {
+							if mtime.Before(startedAt.Add(-deliveryClockSkewTolerance)) {
+								return fmt.Errorf(
+									"节点上的压缩包（%s，修改于 %s）早于本次采集开始（%s），判定为上一次任务的产物；"+
+										"请等本次采集真正结束后再交付，或确认节点上确有本次的包",
+									sourcePath,
+									mtime.Local().Format("2006-01-02 15:04:05"),
+									startedAt.Local().Format("2006-01-02 15:04:05"),
+								)
+							}
+						}
+					}
+
+					// done>=total 只代表 acli 的采集任务结束，zip 仍在收尾追加。
+					// 必须等它真正写完再交付，否则拉取追的是一个移动目标：
+					// 2026-11-04 Q2026110400883 提交 882701883 字节，拉取期间还在长到 892074444，
+					// 最终本地副本与平台会话基线不符，每片都过不了校验。
+					settledSize, settleErr := r.waitArchiveSettled(ctx, session, job, sourcePath)
+					if settleErr != nil {
+						return settleErr
+					}
+
+					r.mu.Lock()
+					job.SourcePath = sourcePath
+					if settledSize > 0 {
+						job.SourceSize = settledSize
+					}
+					job.Phase = phasePulling
+					r.mu.Unlock()
+					_ = r.saveJob(job)
+					logpush.Blog("INFO", "delivery.collect_finished", "节点采集已完成且压缩包已落定，开始交付", "", job.CaseID, job.NodeIP, "", map[string]any{
+						"job_id": job.JobID, "total": progress.Total, "archive_path": sourcePath, "size": settledSize,
+					})
+					// 包已确认写完，此刻取基线最可靠。
+					r.ensureSourceDigest(ctx, session, job)
+					return nil
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+		// 自适应降频：采集通常十几分钟，10s→30s 减少对节点与桥的打扰。
+		if interval < 30*time.Second {
+			interval += 10 * time.Second
+		}
+	}
+}
+
+// 压缩包落定判定：两次采样间隔与最长等待。
+const (
+	// 太短会与 acli 的写缓冲撞车（大小看起来"没变"其实在攒），
+	// 太长会让正常交付白白多等十几秒。
+	deliveryArchiveSettleInterval = 3 * time.Second
+	// 正常 zip 收尾是秒级；5 分钟还没写完基本是采集异常（进程卡死/盘满）。
+	deliveryArchiveSettleTimeout = 5 * time.Minute
+)
+
+// statArchiveSize 取节点上压缩包的字节数；stat 不可用时退回两级探测。
+func statArchiveSize(ctx context.Context, session *sshx.SSHSession, path string) (int64, bool) {
+	if strings.TrimSpace(path) == "" {
+		return 0, false
+	}
+	if out, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", logcollect.ShellQuote(path))); err == nil {
+		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
+			return size, true
+		}
+	}
+	probed := logcollect.ProbeLogCollectArchive(ctx, session, path)
+	if probed.Exists != nil && *probed.Exists && probed.Size > 0 {
+		return probed.Size, true
+	}
+	return 0, false
+}
+
+// waitArchiveSettled 等"压缩包真正写完"再允许拉取。
+//
+// 为什么 done>=total 不够：acli 的 progress 到 100% 只说明采集任务结束，
+// zip 仍在追加尾部。2026-11-04 Q2026110400883：提交时 882701883 字节，
+// 拉取前 889677835，拉取完 892074444——三次大小都不同，而平台会话按
+// 提交时的大小校验，末片长度必然对不上，每片都会失败。
+//
+// 判据必须两条同时成立：
+//  1. 连续两次 stat 大小相同（不再增长）；
+//  2. 尾部存在 zip EOCD 标记（确实收尾）。
+//
+// EOCD 校验手段缺失（受限 shell 没有 tail/od/tr/grep）时降级为只看大小稳定，
+// 与 prepareDirect 同一取舍：少一个观测手段不该阻断交付。
+func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *sshx.SSHSession, job *deliveryJob, path string) (int64, error) {
+	deadline := time.Now().Add(deliveryArchiveSettleTimeout)
+	var last int64
+	for {
+		if time.Now().After(deadline) {
+			return 0, newFatal(
+				logcollect.ErrTransferSourceStillWriting,
+				"节点压缩包在 %s 内仍未写完（最后一次大小为 %d 字节）：采集进程可能异常或节点磁盘已满；"+
+					"请先确认节点采集状态，再决定是等待还是重新采集，不要在当前包上继续交付",
+				deliveryArchiveSettleTimeout, last,
+			)
+		}
+		size, ok := statArchiveSize(ctx, session, path)
+		if ok && size == last {
+			completeErr := verifyArchiveComplete(ctx, session, path)
+			if completeErr == nil {
+				return size, nil
+			}
+			if errors.Is(completeErr, errArchiveCompleteUnverifiable) {
+				logpush.Blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，仅按大小稳定判定包已写完", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "source_path": path, "size": size, "reason": completeErr.Error(),
+				})
+				return size, nil
+			}
+			// EOCD 缺失＝还在写，继续观察。
+		}
+		if ok {
+			last = size
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(deliveryArchiveSettleInterval):
+		}
+	}
+}
+
+// prepareDirect 为"补交付"准备源包：不碰 progress，只量物理事实。
+//
+// 为什么要校验 zip 结束标记：acli 边采集边写 zip，"文件存在"不等于"包完整"。
+// 只 stat 大小会把半截包传上去，用户下载时才发现打不开——那时已经白跑一趟
+// 460MB~20GB 的传输。EOCD（PK\x05\x06）在 zip 写完时必然出现在尾部，
+// zip64 同样保留该标记（只是字段填 0xFFFF/0xFFFFFFFF），因此判据对所有尺寸都成立。
+//
+// 大小探测必须与 progress/stat 动作共用 logcollect.ProbeLogCollectArchive：Q2026102900165
+// （2026-10-29）现场证明 aSV 受限 shell 没有 stat（exit 127），只写单条 stat 的实现
+// 会把盘上 29.9 MB 的包报成"源包不可读"，让补交付在最后一步永远走不通。
+func (r *deliveryRunner) prepareDirect(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
+	sourcePath := strings.TrimSpace(job.SourcePath)
+	if sourcePath == "" {
+		return fmt.Errorf("缺少源包路径，无法交付")
+	}
+
+	probed := logcollect.ProbeLogCollectArchive(ctx, session, sourcePath)
+	if probed.Exists == nil {
+		// 探测不出来 ≠ 包没了：返回普通错误交给重试，不得写成 fatal。
+		return fmt.Errorf(
+			"无法确认源包状态（%s）：%s；若节点 shell 缺少 stat，需确认 ls -l 可用",
+			sourcePath, logcollect.FirstNonEmpty(probed.Diag, "探测命令不可用"),
+		)
+	}
+	if !*probed.Exists {
+		return &deliveryFatalError{reason: fmt.Sprintf(
+			"节点上已确认没有源包（%s）：%s；重试无意义，请重新采集后再交付",
+			sourcePath, logcollect.FirstNonEmpty(probed.Diag, "命令已执行且明确报文件不存在"),
+		)}
+	}
+	if probed.Size <= 0 {
+		return fmt.Errorf(
+			"源包大小无法确认（探测级 %s，诊断 %s，路径 %s）；零字节包无法分片上传",
+			probed.Level, logcollect.FirstNonEmpty(probed.Diag, "无"), sourcePath,
+		)
+	}
+	size := probed.Size
+
+	if err := verifyArchiveComplete(ctx, session, sourcePath); err != nil {
+		if !errors.Is(err, errArchiveCompleteUnverifiable) {
+			// 包没写完就必须终态失败：补交付里重试同样会读到半截包，
+			// 而且每轮都会重新校验一遍几十 GB 的文件尾。给 010 让前端
+			// 明确告诉用户"等压缩结束再点"，而不是反复清盘/重点。
+			return newFatal(logcollect.ErrTransferSourceStillWriting,
+				"源包尚未写完：%v；请等待节点采集/压缩真正结束后再点「上传到平台」，不要连续重试",
+				err.Error(),
+			)
+		}
+		// 校验手段缺失不是包坏了：只能降级为"未校验"并留痕，不能因此阻断交付。
+		logpush.Blog("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，跳过完整性预检", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "source_path": sourcePath, "reason": err.Error(),
+		})
+	}
+
+	r.mu.Lock()
+	submittedSize := job.SubmittedSize
+	job.SourcePath = sourcePath
+	// 以节点上的真实大小为准：前端 stat 与这里可能来自不同时刻，
+	// 用旧值会把末片长度算错，导致最后一片永远校验不过。
+	job.SourceSize = size
+	job.Phase = phasePulling
+	r.mu.Unlock()
+
+	// 但"以真实大小为准"只对**本地拉取**成立：平台会话的分片方案仍是提交时的
+	// total_size。两者一旦分叉，后面每一片都会与平台校验不符，而且会白拉一次
+	// 几十 GB 的包。所以在拉取之前就判死。
+	if err := sourceSizeGuard(submittedSize, size); err != nil {
+		return err
+	}
+	_ = r.saveJob(job)
+
+	logpush.Blog("INFO", "delivery.direct_ready", "补交付源包校验通过，开始拉取", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "source_path": sourcePath, "size": size,
+	})
+	// 摘要必须在拉取前取：拉完再取，节点上的包可能已被下一次采集同名覆盖，
+	// 拿到的基线就不属于本次交付，后面每一跳的"校验通过"都会变成假证据。
+	r.ensureSourceDigest(ctx, session, job)
+	return nil
+}
+
+// ensureSourceDigest 取一次节点侧源包摘要，作为端到端完整性的唯一基线。
+//
+// 为什么失败不阻断：HCI 可能既没有 sha256sum 也没有 md5sum（精简系统），取不到
+// 摘要不等于包坏了。此时降级为 unverified，并在 UI 上明示"未校验源包"，
+// 让用户自己决定是否接受——比直接让 20 GiB 的采集白跑更合理。
+func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) {
+	if session == nil || strings.TrimSpace(job.SourcePath) == "" {
+		return
+	}
+	r.mu.Lock()
+	already := job.SourceSHA256 != "" || job.SourceMD5 != ""
+	r.mu.Unlock()
+	if already {
+		return
+	}
+
+	algo, digest, err := logcollect.ProbeSourceDigest(session, ctx, job.SourcePath)
+	r.mu.Lock()
+	if err != nil {
+		job.Integrity = integrityUnverified
+		job.IntegrityNote = "未取得源包摘要：" + err.Error()
+		r.mu.Unlock()
+		_ = r.saveJob(job)
+		logpush.Blog("WARN", "delivery.digest_unavailable", "节点无法计算源包摘要，完整性校验降级", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "source_path": job.SourcePath, "error": err.Error(),
+		})
+		return
+	}
+	job.DigestSource = algo
+	if algo == "sha256" {
+		job.SourceSHA256 = digest
+	} else {
+		job.SourceMD5 = digest
+	}
+	// 这里只拿到"基线"，还不代表任何一跳校验通过；Integrity 留给 pull/complete 定论。
+	r.mu.Unlock()
+	_ = r.saveJob(job)
+	logpush.Blog("INFO", "delivery.digest_probed", "已取得节点源包摘要", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "algorithm": algo, "digest": digest, "source_size": job.SourceSize,
+	})
+}
+
+// errArchiveCompleteUnverifiable 表示节点缺少校验 zip 结束标记所需的命令。
+// 它必须与"包不完整"严格区分：前者只是少了一个可观测手段，后者是数据真的坏了。
+var errArchiveCompleteUnverifiable = errors.New("节点缺少 tail/od/tr/grep，无法校验 zip 结束标记")
+
+// verifyArchiveComplete 通过 zip 尾部的 EOCD 标记判断包是否写完。
+// 只看尾部 64KiB：EOCD 在最末尾（含最大 65535 字节注释），无需读全文件。
+//
+// 失败必须分两类：命令不可用（126/127 或 stderr 报 not found）返回
+// errArchiveCompleteUnverifiable，由调用方降级放行；只有命令真跑了且没找到标记，
+// 才说明包还在写入中。混在一起会让没有 tail 的受限 shell 永远交付不上去。
+func verifyArchiveComplete(ctx context.Context, session *sshx.SSHSession, path string) error {
+	command := fmt.Sprintf(
+		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
+		logcollect.ShellQuote(path),
+	)
+	stdout, stderr, exitCode, err := session.RunQuickCommandStreams(ctx, command)
+	combined := stdout + "\n" + stderr
+	// 注意：runQuickCommandStreams 在非零退出时也会返回 ssh.ExitError，
+	// 因此不能用 err != nil 判“命令不可用”——grep 未命中（exit 1）同样是 err != nil，
+	// 那是“包不完整”的正面证据，不能当成“没法校验”放行。
+	if exitCode < 0 {
+		return fmt.Errorf("%w（通道异常 %s）", errArchiveCompleteUnverifiable, logcollect.ErrString(err))
+	}
+	if exitCode == 126 || exitCode == 127 || logcollect.ArchiveProbeToolMissingRe.MatchString(combined) {
+		return fmt.Errorf("%w（exit=%d %s）", errArchiveCompleteUnverifiable, exitCode, logcollect.TruncateForDiag(combined, 120))
+	}
+	// grep -c 命中返回 0；未命中返回 1（此时 exitCode != 0）
+	if strings.TrimSpace(stdout) == "0" || exitCode != 0 {
+		return fmt.Errorf("压缩包不完整（尾部无 zip 结束标记），可能仍在采集写入中：%s", path)
+	}
+	return nil
+}
+
+// statArchiveMTime 读取节点上文件的修改时间，用于判断包归属。
+func statArchiveMTime(ctx context.Context, session *sshx.SSHSession, path string) (time.Time, error) {
+	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", logcollect.ShellQuote(path)))
+	if err != nil {
+		return time.Time{}, err
+	}
+	epoch, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
+	if parseErr != nil {
+		return time.Time{}, fmt.Errorf("解析 mtime 失败：%q", strings.TrimSpace(output))
+	}
+	return time.Unix(epoch, 0), nil
+}
+
+// startedAt 解析 job 的创建时间；解析不出来时返回 false（调用方跳过归属判定，
+// 宁可少判一次也不误杀正常交付）。
+func (j *deliveryJob) startedAt() (time.Time, bool) {
+	raw := strings.TrimSpace(j.CreatedAt)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// pull 把包从 HCI 拉到本地；断点依据是本地文件大小（tail -c +N）。
+// pendingLocalBytes 汇总"同目录其它进行中作业还没落地的字节"。
+//
+// 只算同目录：不同卷的作业互不挤占，算进来会凭空放大需求。
+// 不算终态作业：副本要么已删（交付成功），要么不再增长（失败终态）。
+// SourceSize<=0 的作业无法估算，按 0 处理——宁可少算（放行），
+// 也不要把"未知"当成"已占满"，误拦一次本来能完成的交付。
+func (r *deliveryRunner) pendingLocalBytes(excludeJobID, dir string) int64 {
+	if dir == "" {
+		return 0
+	}
+	cleaned := filepath.Clean(dir)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var total int64
+	for id, other := range r.jobs {
+		if other == nil || id == excludeJobID || other.Phase.terminal() {
+			continue
+		}
+		if other.SourceSize <= 0 || other.LocalPath == "" {
+			continue
+		}
+		if filepath.Clean(filepath.Dir(other.LocalPath)) != cleaned {
+			continue
+		}
+		if remaining := other.SourceSize - other.PulledBytes; remaining > 0 {
+			total += remaining
+		}
+	}
+	return total
+}
+
+func (r *deliveryRunner) pull(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
+	if strings.TrimSpace(job.SourcePath) == "" {
+		return fmt.Errorf("缺少源包路径，无法拉取")
+	}
+	if job.LocalPath == "" {
+		job.LocalPath = filepath.Join(os.TempDir(), "hci-log-collect", job.TaskID+".zip")
+	}
+	// 每次都重新量源包大小，而不是只在"未知"时量：
+	// 前端 stat 与本阶段可能相隔很久（用户点了补交付又放了半小时），陈旧的大小
+	// 会让末片长度算错，也会把"源包已被同名覆盖"误判成"网络中断"，然后无限重拉。
+	if output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", logcollect.ShellQuote(job.SourcePath))); err == nil {
+		if size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64); parseErr == nil && size > 0 {
+			r.mu.Lock()
+			job.SourceSize = size
+			r.mu.Unlock()
+		}
+	}
+	// 拉取是唯一必须长期占用 SSH 的环节：12.8 GiB @ ~10 MB/s 需要 20 分钟以上，
+	// 远超 HCI 交互式 shell 的 TMOUT=600。两条防线同时上：
+	//   1) 周期性注入 NUL，让 shell 根本不会因空闲退出；
+	//   2) 标记长任务，即使 shell 真的退了也不让连接被连坐销毁/被空闲租约回收。
+	session.BeginLongTask()
+	defer session.EndLongTask()
+	stopHeartbeat := session.StartShellHeartbeat(job.CaseID)
+	defer stopHeartbeat()
+
+	// 空间预检：12.8 GiB 要完整落地再分片上传，写满一半才失败的话
+	// 用户已经白等 20 分钟，而且报错会伪装成"拉取中断"。
+	//
+	// 判定式必须带余量（见 diskNeed）：写盘期间同盘还要写 job json、日志与
+	// 平台响应体，只按"剩余字节"卡边界会刚好在最后一刻失败。
+	if job.SourceSize > 0 {
+		if dir := filepath.Dir(job.LocalPath); dir != "" {
+			_ = os.MkdirAll(dir, 0o700)
+			var existing int64
+			if info, statErr := os.Stat(job.LocalPath); statErr == nil {
+				existing = info.Size()
+			}
+			if need := job.SourceSize - existing; need > 0 {
+				// 同盘还可能躺着别的交付作业：把它们的未落地字节叠加进来，
+				// 否则两个 20 GiB 作业各自预检都"够"，一起写就把盘写满。
+				reserved := r.pendingLocalBytes(job.JobID, dir)
+				verdict := admissionCheck(job.LocalPath, job.SourceSize, existing, reserved)
+				logpush.Blog("INFO", "delivery.disk_precheck", "交付前磁盘预检", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "local_path": job.LocalPath, "dir": dir,
+					"need_bytes": verdict.Need, "free_bytes": verdict.Free,
+					"reserved_bytes": reserved, "probed": verdict.Probed, "ok": verdict.OK,
+				})
+				if !verdict.OK {
+					if verdict.Concurrent {
+						// 单任务本来能通过，是别的作业把空间占走了：
+						// 让用户等，而不是让他去清一个清不出来的盘。
+						return &deliveryAdmissionError{
+							Need: verdict.Need - verdict.Reserved, Free: verdict.Free,
+							Reserved: verdict.Reserved, LocalPath: job.LocalPath,
+						}
+					}
+					return &deliveryDiskFullError{
+						Written: existing, Need: verdict.Need, Free: verdict.Free, LocalPath: job.LocalPath,
+					}
+				}
+			}
+		}
+	}
+
+	written, localSum, err := logcollect.PullArchive(session, ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
+		r.mu.Lock()
+		job.PulledBytes = done
+		if job.SourceSize <= 0 && total > 0 {
+			job.SourceSize = total
+		}
+		r.mu.Unlock()
+		_ = r.saveJob(job)
+	})
+	if err != nil {
+		// 失败时也必须回填真实已写字节：进度上报按块步进（见 progressStep），
+		// 88 MB 的包在 64 MiB 步进下从头到尾一次都不上报，库里 pulled_bytes 恒为 0，
+		// 用户看到"已拉 9.3 MB"、作业记录却写着 0（2026-11-03 Q2026110300988）。
+		r.mu.Lock()
+		job.PulledBytes = written
+		remaining := job.SourceSize - written
+		r.mu.Unlock()
+		_ = r.saveJob(job)
+
+		if isLocalDiskFull(err) {
+			// ENOSPC 之后重新探测一次：此刻的可用值才是用户真正需要看到的证据。
+			// 探测失败留 -1（文案显示"未知"），不得伪造成 0。
+			free := int64(-1)
+			if dir := filepath.Dir(job.LocalPath); dir != "" {
+				if probed, ok := probeDisk(dir); ok {
+					free = probed
+				}
+			}
+			return &deliveryDiskFullError{
+				Written: written, Need: diskNeed(remaining),
+				Free: free, LocalPath: job.LocalPath, Cause: err,
+			}
+		}
+
+		wrapped := fmt.Errorf("拉取中断（已拉 %d 字节）: %w", written, err)
+		// 拉取失败后立刻复量源包：与拉取前不同就说明它还在写（或被重建）。
+		// 这条判据必须优先于 logcollect.ErrPullSizeMismatch 的"被覆盖/截断"归因——
+		// 2026-11-04 Q2026110400883 现场，bridge 把"包还在长"报成
+		// "源包可能已被清理"，于是按普通错误重试了 4 轮，每轮都在追一个移动的目标。
+		if current, ok := statArchiveSize(ctx, session, job.SourcePath); ok && job.SourceSize > 0 && current != job.SourceSize {
+			// 残包不能留：否则下次续传会把旧内容当"已拉部分"接着追加。
+			r.discardLocalCopy(job, "source_still_writing")
+			return newFatal(
+				logcollect.ErrTransferSourceStillWriting,
+				"源包在拉取期间仍在写入（拉取前 %d 字节，当前 %d 字节），本次交付作废："+
+					"平台上传会话已按拉取前的大小建立，继续传只会每片都失败。"+
+					"请等待采集/压缩真正结束、包大小不再变化后，重新点击「上传到平台」",
+				job.SourceSize, current,
+			)
+		}
+		if errors.Is(err, logcollect.ErrPullSizeMismatch) {
+			// 字节数对不上且大小已不再变化：源包被整体覆盖或截断，重试没有意义。
+			return newFatal(logcollect.ErrTransferSourceStillWriting, "%s；源包可能已被覆盖或截断，重试无意义", wrapped.Error())
+		}
+		return wrapped
+	}
+
+	r.mu.Lock()
+	job.PulledBytes = written
+	job.LocalSHA256 = localSum
+	sourceSHA := job.SourceSHA256
+	sourceMD5 := job.SourceMD5
+	localPath := job.LocalPath
+	expectedSize := job.SourceSize
+	r.mu.Unlock()
+
+	// ── 段① 完整性结论（比对逻辑抽成纯函数便于单测钉住）─────────────────
+	localMD5 := ""
+	if sourceSHA == "" && sourceMD5 != "" {
+		localMD5, err = logcollect.FileDigest(localPath, "md5")
+		if err != nil {
+			return fmt.Errorf("计算本地副本 MD5 失败: %w", err)
+		}
+	}
+	if verifyErr := verifyPulledIntegrity(sourceSHA, sourceMD5, localSum, localMD5, written, expectedSize); verifyErr != nil {
+		if isDeliveryFatalError(verifyErr) {
+			// 残包不能留：下次续传会把它当"已拉部分"接着追加，永远修不好。
+			r.discardLocalCopy(job, verifyErr.Error())
+		}
+		return verifyErr
+	}
+
+	r.mu.Lock()
+	job.PulledBytes = written
+	job.Phase = phaseUploading
+	if sourceSHA != "" || sourceMD5 != "" {
+		job.Integrity = integrityVerified
+		job.IntegrityNote = ""
+	} else {
+		// 没有基线时不得宣称"已校验"：这只证明了单跳传输一致，证明不了上游。
+		job.Integrity = integrityUnverified
+		job.IntegrityNote = "节点未提供源包摘要，仅校验了传输一致性"
+	}
+	r.mu.Unlock()
+	_ = r.saveJob(job)
+	logpush.Blog("INFO", "delivery.pull_verified", "拉取完成并完成完整性比对", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "size": written, "sha256": localSum,
+		"source_sha256": sourceSHA, "source_md5": sourceMD5, "integrity": job.Integrity,
+	})
+	return nil
+}
+
+// verifyPulledIntegrity 判定"拉下来的字节"是否就是节点上的那个包。
+//
+// 判据顺序刻意固定：先大小、再摘要。大小不等时摘要必然不等，先报大小可以给出
+// 更可操作的提示（"包被截断/覆盖"），而不是一串 64 位 hex 让用户去猜。
+//
+// 返回的错误一律是 fatal：源包内容已经变了，重试只会重复拉一遍。
+func verifyPulledIntegrity(sourceSHA, sourceMD5, localSHA, localMD5 string, written, expected int64) error {
+	if expected > 0 && written != expected {
+		return &deliveryFatalError{reason: fmt.Sprintf(
+			"拉取字节数与源包不一致：期望 %d，实际 %d；节点上的包可能已被覆盖或截断，请重新采集后再交付",
+			expected, written,
+		)}
+	}
+	if sourceSHA != "" {
+		if !strings.EqualFold(sourceSHA, localSHA) {
+			return &deliveryFatalError{reason: fmt.Sprintf(
+				"源包完整性校验失败：节点 SHA-256 %s，本地副本 %s；已丢弃本地残包，需重新采集后再交付",
+				sourceSHA, localSHA,
+			)}
+		}
+		return nil
+	}
+	if sourceMD5 != "" && !strings.EqualFold(sourceMD5, localMD5) {
+		return &deliveryFatalError{reason: fmt.Sprintf(
+			"源包完整性校验失败：节点 MD5 %s，本地副本 %s；已丢弃本地残包，需重新采集后再交付",
+			sourceMD5, localMD5,
+		)}
+	}
+	return nil
+}
+
+// discardLocalCopy 丢弃不可信的本地副本，并清空分片进度。
+//
+// 为什么必须连 UploadedParts 一起清：平台上的分片是按旧包内容算的哈希，
+// 源包变了以后继续"跳过已传分片"会拼出前半旧包 + 后半新包的杂交产物；
+// 那种包连大小都可能对，只有整包摘要能发现，代价是又白跑一轮。
+func (r *deliveryRunner) discardLocalCopy(job *deliveryJob, reason string) {
+	// 本地副本路径按 task_id 命名（os.TempDir()/hci-log-collect/<task>.zip），
+	// 新旧两代作业指向同一个文件。被顶替的作业在这里删"自己的残包"，
+	// 删掉的其实是新作业正在上传的那个包——下一片立刻以"本地副本不存在"失败。
+	// 资格丧失时连进度都不该重置：那些字节现在是新作业的续传基线。
+	if !r.ownerIntact(job) {
+		logpush.Blog("WARN", "delivery.local_discard_skipped", "作业已不是当前执行者，不删共享本地副本", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "local_path": job.LocalPath, "reason": reason,
+		})
+		return
+	}
+	r.mu.Lock()
+	path := job.LocalPath
+	job.PulledBytes = 0
+	job.UploadedParts = nil
+	job.Integrity = integrityUnverified
+	job.IntegrityNote = reason
+	r.mu.Unlock()
+	if path != "" {
+		_ = os.Remove(path)
+	}
+	_ = r.saveJob(job)
+	logpush.Blog("WARN", "delivery.local_discarded", "本地副本校验失败，已丢弃并重置分片进度", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id": job.JobID, "local_path": path, "reason": reason,
+	})
+}
+
+// platformHTTPClient 构造访问平台的 HTTP 客户端。
+//
+// 为什么需要它：平台在客户内网普遍用自签证书（staging 实测 acli.sangfor.com.cn:4443），
+// 客户机的系统根证书库不可能预置该 CA，默认 Transport 必然
+// `x509: certificate signed by unknown authority`，且失败点在分片 1——用户看到的是
+// "上传中继失败"，与真实原因（证书不受信）毫无关系。
+//
+// 为什么不做全局开关：放宽校验的范围必须与"用户这一次的明确授权"等长。
+// 授权随 job 落盘（TLSInsecure），只影响本任务的 client；job 结束即失效，
+// 用户撤销后新 job 自动回到严格校验，不存在"一次放宽永久放宽"。
+func platformHTTPClient(job *deliveryJob, timeout time.Duration) *http.Client {
+	return uplink.HttpClientFor(job != nil && job.TLSInsecure, timeout)
+}
+
+// upload 分片上传；并发与单片预算按实测速率收敛，已传分片自动跳过。
+func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
+	if job.UploadToken == "" || job.PlatformURL == "" {
+		return &deliveryAuthError{reason: "缺少上传令牌或平台地址"}
+	}
+	if job.PartCount <= 0 || job.ChunkSize <= 0 {
+		return fmt.Errorf("分片参数缺失（part_count=%d chunk_size=%d）", job.PartCount, job.ChunkSize)
+	}
+	info, err := os.Stat(job.LocalPath)
+	if err != nil {
+		return fmt.Errorf("本地副本不存在: %w", err)
+	}
+	totalSize := info.Size()
+	// 兜底：本地副本与提交基线不一致时（拉取后才被替换、或恢复旧作业时基线缺失后补齐），
+	// 同样不能按新大小切片——平台会话不会跟着变。
+	if err := sourceSizeGuard(job.SubmittedSize, totalSize); err != nil {
+		return err
+	}
+
+	uploaded := job.uploadedSet()
+	// ceiling 是"资源允许的上限"（内存/CPU），pace 是"这条链路实际撑得住的节奏"。
+	// 两者取小：资源够但链路差时，以链路为准。
+	ceiling := chunkConcurrencyFor(r.concurrency, job.ChunkSize, availableMemoryMB())
+	r.mu.Lock()
+	pace := job.Pace.resolve(ceiling)
+	r.mu.Unlock()
+	parts := pace.Parts
+	partBudget := pace.timeout()
+	client := platformHTTPClient(job, partBudget)
+
+	var (
+		errMu     sync.Mutex
+		firstErr  error
+		pending   = make(chan int)
+		wg        sync.WaitGroup
+		sinceSave int
+
+		// 本轮实测样本：只在这里被累加，用于推导下一轮节奏。
+		statMu         sync.Mutex
+		roundDoneParts int
+		roundDoneBytes int64
+		roundTimedOut  int
+	)
+	roundStart := time.Now()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	worker := func() {
+		defer wg.Done()
+		for number := range pending {
+			if ctx.Err() != nil {
+				return
+			}
+			written, err := uploadOnePart(ctx, client, job, totalSize, number, partBudget, func() error {
+				return r.fence(ctx, job)
+			})
+			if err != nil {
+				// 先取作业自身状态再 cancel：只有"作业还活着时超时"才算链路证据。
+				// 被 stall watchdog 或绝对上限掐断的作业若被记成弱网证据，
+				// 会把一个已经判死的作业的节奏也一起拖到最保守档，下一轮白等 20 分钟。
+				jobAlive := ctx.Err() == nil
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				if jobAlive && isPartTimeoutError(err) {
+					statMu.Lock()
+					roundTimedOut++
+					statMu.Unlock()
+				}
+				cancel()
+				return
+			}
+			statMu.Lock()
+			roundDoneParts++
+			roundDoneBytes += written
+			statMu.Unlock()
+			// job 是共享结构（status() 会并发读快照，save() 也会 marshal 它），
+			// 所有对 job 的读写都必须在 r.mu 下完成：addUploadedPart 改 UploadedParts，
+			// 而 store.save 会 marshal 整个 job（含 UploadedParts）。锁外 save 会与
+			// 其它 worker 的 addUploadedPart 形成 data race（CI -race 已抓到）。
+			r.mu.Lock()
+			job.addUploadedPart(number)
+			sinceSave++
+			shouldSave := sinceSave >= deliverySaveEveryParts
+			if shouldSave {
+				sinceSave = 0
+				_ = r.saveJobLocked(job)
+			}
+			r.mu.Unlock()
+		}
+	}
+
+	wg.Add(parts)
+	for i := 0; i < parts; i++ {
+		go worker()
+	}
+	for number := 1; number <= job.PartCount; number++ {
+		if uploaded[number] {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			break
+		case pending <- number:
+		}
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	close(pending)
+	wg.Wait()
+
+	r.adjustPace(job, pace, uploadRoundSample{
+		UploadedParts: roundDoneParts,
+		UploadedBytes: roundDoneBytes,
+		TimedOutParts: roundTimedOut,
+		Elapsed:       time.Since(roundStart),
+	}, ceiling)
+
+	// 只有"本轮正常收口"才可以把阶段推到 completing：被取消/被顶替的作业
+	// 一片都没传也会走到这里，无条件覆写会让前端先看到"收尾中"再变失败。
+	if ctx.Err() == nil && r.ownerIntact(job) {
+		r.mu.Lock()
+		job.Phase = phaseCompleting
+		r.mu.Unlock()
+		_ = r.saveJob(job)
+	}
+
+	if firstErr != nil {
+		// 自签证书不能靠"前端记得传 tls_insecure"来兜底：前端从未传过该字段，
+		// 于是客户内网自签平台上的每一次交付都停在「已传 0/N 片」。
+		// 与桥日志直传通道保持一致：命中证书不受信就自动放宽一次并留痕，
+		// 鉴权不放松（上传令牌仍绑定 task_id）。
+		if !job.TLSInsecure && uplink.IsUntrustedCertificateError(firstErr) {
+			r.mu.Lock()
+			job.TLSInsecure = true
+			job.Phase = phaseUploading
+			job.LastError = "平台证书不受信，已放宽校验并重新上传"
+			r.mu.Unlock()
+			_ = r.saveJob(job)
+			logpush.Blog("WARN", "delivery.tls_relaxed", "平台证书不受信，交付通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
+			})
+			// 归为 transient：此刻不需要人，只需要下一轮用放宽后的 client 重传。
+			return &deliveryTransientError{reason: "平台证书不受信，已放宽校验，将自动重试"}
+		}
+		return fmt.Errorf("上传中断（已传 %d/%d 片）: %w", len(job.UploadedParts), job.PartCount, firstErr)
+	}
+	return nil
+}
+
+// adjustPace 把本轮实测结果收敛成下一轮的节奏并留痕。
+//
+// 留痕是硬要求：节奏一变，现场看到的"每片多久、几路并发"就变了，事后只有事件日志
+// 能把"为什么这一轮突然慢了/快了"解释清楚。事件里同时记前后值与本轮样本，
+// 便于用一条 SQL 复现收敛轨迹。
+func (r *deliveryRunner) adjustPace(job *deliveryJob, prev uploadPace, sample uploadRoundSample, ceiling int) {
+	next := nextUploadPace(prev, sample, job.ChunkSize, ceiling)
+	if next == prev {
+		return
+	}
+	r.mu.Lock()
+	job.Pace = next
+	_ = r.saveJobLocked(job)
+	r.mu.Unlock()
+	logpush.Blog("WARN", "delivery.pace_adjusted", "按实测速率调整上传节奏", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id":                  job.JobID,
+		"chunk_size":              job.ChunkSize,
+		"part_count":              job.PartCount,
+		"parts_before":            prev.Parts,
+		"parts_after":             next.Parts,
+		"part_timeout_before_sec": prev.PartTimeout,
+		"part_timeout_after_sec":  next.PartTimeout,
+		"reason":                  next.Reason,
+		"round_uploaded_parts":    sample.UploadedParts,
+		"round_uploaded_bytes":    sample.UploadedBytes,
+		"round_timed_out_parts":   sample.TimedOutParts,
+		"round_elapsed_ms":        sample.Elapsed.Milliseconds(),
+	})
+}
+
+// uploadOnePart 上传单片（含 SHA-256 与重试），返回实际提交的字节数。
+//
+// budget 是"这一片的总墙钟预算"，由 pacing 按实测速率给出，**所有重试共享它**。
+// 改造前是"每次尝试各给 300 s"，弱网下单片最坏要烧 15 分钟才肯放手：
+// 一轮 3 次重试刚好吃满 15 分钟空转，作业就在这个循环里永远推进不了一格。
+// 共享预算后，单片最坏占用 = budget，重试只在"早早失败"时才有意义（那才是它该救的场景）。
+func uploadOnePart(ctx context.Context, client *http.Client, job *deliveryJob, totalSize int64, number int, budget time.Duration, fence func() error) (int64, error) {
+	// 分片要整片读进内存（8 MiB），所以在分配之前就先问一次资格：
+	// 已被顶替的作业连读盘都不该做，更不该把内存占住让新作业起不来 worker。
+	if fence != nil {
+		if err := fence(); err != nil {
+			return 0, err
+		}
+	}
+	offset := int64(number-1) * job.ChunkSize
+	expected := job.ChunkSize
+	if offset+expected > totalSize {
+		expected = totalSize - offset
+	}
+	if expected <= 0 {
+		return 0, fmt.Errorf("分片 %d 大小异常", number)
+	}
+	file, err := os.Open(job.LocalPath)
+	if err != nil {
+		return 0, err
+	}
+	defer file.Close()
+	payload := make([]byte, expected)
+	if _, readErr := file.ReadAt(payload, offset); readErr != nil && readErr != io.EOF {
+		return 0, readErr
+	}
+	digest := remote.Sha256Hex(payload)
+
+	if budget <= 0 {
+		budget = logcollect.LogCollectPartTimeout
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	target := fmt.Sprintf("%s%s/%s/parts/%d", normalizePlatformURL(job.PlatformURL), logcollect.LogCollectDirectUploadPrefix, job.TaskID, number)
+	var lastErr error
+	for attempt := 1; attempt <= logcollect.LogCollectPartRetries; attempt++ {
+		// 每次真正发 PUT 之前重新确认资格：分片按 (task_id, part_number) 落盘，
+		// 被顶替的作业迟到的 PUT 会改写新会话的同名分片。平台侧 epoch fencing
+		// 是第一道防线，这里是不依赖对端版本的本地防线。
+		if fence != nil {
+			if err := fence(); err != nil {
+				return 0, err
+			}
+		}
+		lastErr = putPartBytes(attemptCtx, client, target, job.UploadToken, digest, payload)
+		if lastErr == nil {
+			return expected, nil
+		}
+		if attempt == logcollect.LogCollectPartRetries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-attemptCtx.Done():
+			// 预算耗尽：再用同一条已证明不够的链路重放，只会把这一轮剩余时间也吃掉。
+			return 0, fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
+		case <-time.After(time.Duration(attempt) * time.Second):
+		}
+	}
+	return 0, fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
+}
+
+// buildCompletePayload 组装收尾请求体。
+//
+// 硬约束：**不要放空 sha256**。平台对该字段有 `^[0-9a-f]{64}$` 的格式约束，
+// 空串会在请求体校验层直接 422——业务代码都进不去，现场只看到
+// "平台收尾失败 HTTP 422"，而 15 个分片已经全部传完（2026-10-27：1.4 GB 白传）。
+// "不声明"用字段缺省表达，而不是用空串表达。
+//
+// size 同理：0 表示尚未量到，缺省即"不校验"，避免刚恢复的作业被 ge=1 拦下。
+// 抽成纯函数是为了让这条契约能被单测钉住（字段一多就有人顺手加回去）。
+func buildCompletePayload(job *deliveryJob) map[string]any {
+	payload := map[string]any{"parts": job.UploadedParts}
+	if job.SourceSize > 0 {
+		payload["size"] = job.SourceSize
+	}
+	// 声明整包摘要，让平台的合并结果有可比对的对象。
+	// 优先节点基线（端到端），没有基线时退本地副本摘要（至少覆盖 ②→③）；
+	// 两者都为空就保持字段缺省，绝不能传空串（会 422，见上）。
+	if sum := strings.TrimSpace(job.SourceSHA256); sum != "" {
+		payload["sha256"] = sum
+	} else if sum := strings.TrimSpace(job.LocalSHA256); sum != "" {
+		payload["sha256"] = sum
+	}
+	return payload
+}
+
+// complete 调平台数据面收尾（用上传令牌，不需要客户 Cookie），平台随后自动做代传。
+func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
+	// 收尾是**不可撤销**的对外动作：平台收到即合并分片、启动代传。
+	// 被顶替的作业若还能收尾，就会用旧分片集把新会话的合并结果盖掉。
+	// 这道闸门同时也是平台侧 epoch fencing 之外的第二道防线（老平台 epoch=0）。
+	if err := r.fence(ctx, job); err != nil {
+		return err
+	}
+	payload := buildCompletePayload(job)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	target := fmt.Sprintf("%s%s/%s/complete", normalizePlatformURL(job.PlatformURL), logcollect.LogCollectDirectUploadPrefix, job.TaskID)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Upload-Token", job.UploadToken)
+
+	client := platformHTTPClient(job, deliveryCompleteTimeout)
+	response, err := client.Do(request)
+	if err != nil {
+		if !job.TLSInsecure && uplink.IsUntrustedCertificateError(err) {
+			r.mu.Lock()
+			job.TLSInsecure = true
+			job.Phase = phaseCompleting
+			r.mu.Unlock()
+			_ = r.saveJob(job)
+			logpush.Blog("WARN", "delivery.tls_relaxed", "平台证书不受信，收尾通道已放宽证书校验", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "endpoint": job.PlatformURL, "reason": "self-signed-certificate",
+			})
+			return &deliveryTransientError{reason: "平台证书不受信，已放宽校验，将自动重试"}
+		}
+		return wrapTransientTransport(err)
+	}
+	defer response.Body.Close()
+	ackBody, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return &deliveryAuthError{reason: fmt.Sprintf("上传令牌失效（HTTP %d）", response.StatusCode)}
+	}
+	if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusUnprocessableEntity {
+		// 4xx 是业务校验失败（大小/摘要不一致、parts 不完整），重试同样失败；
+		// 且每次重试都要在服务端重新合并一遍整包，代价远高于一次重拉。
+		detail := strings.TrimSpace(string(ackBody))
+		if len(detail) > 400 {
+			detail = detail[:400]
+		}
+		return &deliveryFatalError{reason: fmt.Sprintf("平台收尾校验未通过（HTTP %d）：%s", response.StatusCode, detail)}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return platformStatusError("平台收尾失败", response.StatusCode)
+	}
+
+	// 平台回执里的 integrity_state 才是最终结论：真正做过整包比对的是服务端，
+	// bridge 侧只能证明"拉下来的字节"没问题。
+	var ack struct {
+		IntegrityState string `json:"integrity_state"`
+		SHA256         string `json:"sha256"`
+	}
+	if jsonErr := json.Unmarshal(ackBody, &ack); jsonErr == nil && strings.TrimSpace(ack.IntegrityState) != "" {
+		r.mu.Lock()
+		job.Integrity = strings.TrimSpace(ack.IntegrityState)
+		if job.Integrity == integrityVerified {
+			job.IntegrityNote = ""
+		}
+		r.mu.Unlock()
+		_ = r.saveJob(job)
+		logpush.Blog("INFO", "delivery.integrity_confirmed", "平台确认交付完整性", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "integrity": ack.IntegrityState, "sha256": ack.SHA256,
+		})
+	}
+	return nil
+}
+
+// deliveryAuthError 表示"重试无用，必须人工/前端介入"的失败。
+type deliveryAuthError struct{ reason string }
+
+func (e *deliveryAuthError) Error() string { return e.reason }
+
+// deliveryFatalError 表示"重试必然同样失败"的完整性/数据错误。
+//
+// 与 authError 的区别：它不需要人做任何额外动作，只是继续重试没有意义。
+// 典型场景：节点源包与拉取结果摘要不一致（包已被同名覆盖），重试会再白拉
+// 一次 20 GiB，一天之内就能把客户机带宽和磁盘打满。
+type deliveryFatalError struct {
+	reason string
+	// code 是可选的规范错误码。前端与平台要靠它分支处置，
+	// 只匹配中文文案会在文案一改就静默失效（磁盘满 008 的教训）。
+	code string
+}
+
+func (e *deliveryFatalError) Error() string { return e.reason }
+
+// ErrorCode 让 deliveryErrorCode 能统一取出可落库的码。
+func (e *deliveryFatalError) ErrorCode() string { return e.code }
+
+// newFatal 构造带规范错误码的 fatal 失败。
+func newFatal(code, format string, args ...any) *deliveryFatalError {
+	return &deliveryFatalError{code: code, reason: fmt.Sprintf(format, args...)}
+}
+
+// isDeliveryFatalError 用 errors.As 穿透包装。
+func isDeliveryFatalError(err error) bool {
+	var target *deliveryFatalError
+	return errors.As(err, &target)
+}
+
+// sourceSizeGuard 判断交付期间源包是否被重新生成（重新采集/重新打包覆盖同名文件）。
+//
+// 为什么必须是 fatal 而不是 transient：平台上传会话的 total_size 是**提交时快照**，
+// 包的大小一变，末片长度乃至整个切片方案都不再与平台匹配。继续按新大小切片只会
+// 把同一个 500 重复 N 轮 —— 2026-10-30 Q2026103000994 就是这样：提交 9 片 ×
+// 8 MiB（末片 1,901,494 字节），实际文件变成 172 MB，末片按新大小切出 8 MiB，
+// 平台按旧会话只允许 1.9 MB，8 轮 attempt 全 500，界面还显示"平台暂时不可用"。
+//
+// submitted/current 任一为 0 表示信息不足（老前端未上报、stat 失败），此时不做判断，
+// 保持原有行为。
+func sourceSizeGuard(submitted, current int64) error {
+	if submitted <= 0 || current <= 0 || submitted == current {
+		return nil
+	}
+	return &deliveryFatalError{reason: fmt.Sprintf(
+		"源包已变化（提交上传时 %d 字节，当前 %d 字节），本次上传已作废："+
+			"平台上传会话仍按提交时的大小校验，继续上传只会每片都失败。"+
+			"请重新点击「上传到平台」；若要交付最新内容，请先重新采集",
+		submitted, current,
+	)}
+}
+
+// deliveryTransientError 表示"平台暂时不可用，等一会儿重试就能成"。
+//
+// 与 deliveryAuthError 的本质差别：这个不需要人，只需要时间。
+// 典型场景是平台正在滚动更新——空窗几十秒，期间所有请求都会拿到 503。
+// deliveryTransientError 标记"暂时不可用，退避重试"。
+//
+// 它必须保留底层错误链（Unwrap）：类型是控制流的一部分，"这片到底是超时还是 5xx"
+// 决定了自适应节奏要不要降并发。2026-11-06 的弱网用例就是踩在这里——包装时只拼了
+// 字符串，导致 isPartTimeoutError 在上层拿到 false，于是每一轮都"没证据"地原地重试。
+type deliveryTransientError struct {
+	reason string
+	err    error
+}
+
+func (e *deliveryTransientError) Error() string { return e.reason }
+
+func (e *deliveryTransientError) Unwrap() error { return e.err }
+
+// deliveryDNSError 表示「本机无法解析平台域名」（NXDOMAIN / no such host）。
+//
+// 为什么必须与 transient 分开：transient 的语义是「平台暂时不可用，等一会儿就好」，
+// 而域名不存在是本机的 hosts / DNS / 代理 / VPN 配错——等再久也不会自己变好。
+// 混在一起会让用户按「等平台恢复」去处理，方向完全反了（2026-11-09 现场）。
+//
+// 只覆盖 IsNotFound：DNS 超时（IsTimeout）仍属链路抖动，保留 transient 语义。
+type deliveryDNSError struct {
+	reason string
+	err    error
+}
+
+func (e *deliveryDNSError) Error() string { return e.reason }
+
+func (e *deliveryDNSError) Unwrap() error { return e.err }
+
+// isDeliveryAuthError 用 errors.As 而不是类型断言：错误会被上层用 %w 包装
+// （例如 upload() 返回 "上传中断（已传 3/15 片）: <原始错误>"），
+// 类型断言遇到包装就失效，令牌失效会被当成普通失败盲重试 5 次，
+// 用户永远等不到"请重新认证"。
+func isDeliveryAuthError(err error) bool {
+	var target *deliveryAuthError
+	return errors.As(err, &target)
+}
+
+// isDeliveryTransientError 同上，穿透包装。
+func isDeliveryTransientError(err error) bool {
+	var target *deliveryTransientError
+	return errors.As(err, &target)
+}
+
+// isDeliveryDNSError 同样必须穿透包装：upload() 会把底层错误包成
+// 「上传中断（已传 N/M 片）: ...」，类型断言在那一层已经失效。
+func isDeliveryDNSError(err error) bool {
+	var target *deliveryDNSError
+	return errors.As(err, &target)
+}
+
+// isDNENotFound 判断是否为「域名不存在」（NXDOMAIN / no such host）。
+//
+// 必须先于通用 net.Error 判定：*net.DNSError 同时实现 net.Error，
+// 不提前摘出就会被当成可重试的瞬时故障（2026-11-09 现场）。
+// 只认 IsNotFound：DNS 超时/临时失败仍属链路抖动，保留 transient 语义，
+// 否则会把「DNS 服务器一时不通」也误报成「域名配错」。
+func isDNENotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
+// deliveryAttemptBudget 按错误性质给出重试预算（含首次）。
+//
+// 顺序即优先级，不能随意调换：
+//   - 磁盘满 / 准入不足：重试只会再失败一次，1 次即终态（清盘要人做）；
+//   - DNS 域名不存在：本机配置问题，只给 VPN/代理切换留 2 次窗口；
+//   - 平台 5xx / 连接失败：发版空窗可达数十秒，给足 8 次；
+//   - 其余（业务性失败）：默认 5 次。
+func deliveryAttemptBudget(err error) int {
+	switch {
+	case isDeliveryDiskFull(err), isDeliveryAdmission(err):
+		return 1
+	case isDeliveryDNSError(err):
+		return maxDeliveryDNSAttempts
+	case isDeliveryTransientError(err):
+		return maxDeliveryTransientAttempts
+	default:
+		return maxDeliveryAttempts
+	}
+}
+
+// deliveryBackoff 返回第 attempt 次失败后的退避时长：2s→4s→8s→16s→32s→60s。
+//
+// 起点刻意不是 1 秒：从 1 秒起步会把预算全部耗在一次发版空窗内部
+// （2026-10-27 现场：5 次重试挤在 26 秒里，而新 Pod 那一刻刚被创建）。
+func deliveryBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 6 {
+		attempt = 6
+	}
+	delay := time.Duration(1<<uint(attempt)) * time.Second
+	if delay > 60*time.Second {
+		delay = 60 * time.Second
+	}
+	return delay
+}
+
+// platformStatusError 把非 2xx 的平台响应分类。
+//
+// 5xx/429 = 平台暂时不可用（发版中、过载），值得等；
+// 其余 4xx = 请求本身不合法，重试没有意义，必须原样抛出。
+func platformStatusError(action string, status int) error {
+	message := fmt.Sprintf("%s HTTP %d", action, status)
+	if status == http.StatusTooManyRequests || status >= 500 {
+		return &deliveryTransientError{reason: message + "（平台暂时不可用，将退避重试）"}
+	}
+	return errors.New(message)
+}
+
+// isTransientTransportError 判断是否为"网络层暂时不可用"。
+//
+// 必须先把证书类错误摘出去：url.Error 同时实现了 net.Error，
+// 不排除的话 x509 会被当成可重试，用户白等 3 分钟才看到同样的失败。
+func isTransientTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if uplink.IsUntrustedCertificateError(err) {
+		return false
+	}
+	// 域名不存在是本机解析配置问题，不是链路抖动；混进 transient 会让用户
+	// 对着「平台暂时不可用」等到重试预算耗尽（2026-11-09 Q2026110900185）。
+	if isDNENotFound(err) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return errors.Is(err, io.EOF)
+}
+
+// wrapTransientTransport 把连接类失败标成"暂时不可用"，其余原样返回。
+func wrapTransientTransport(err error) error {
+	if err == nil {
+		return err
+	}
+	// DNS「域名不存在」必须有自己的文案：原文案把责任指向平台，用户会去等平台恢复，
+	// 而真正要做的是检查本机 hosts / DNS / 代理 / VPN。
+	if isDNENotFound(err) {
+		return &deliveryDNSError{
+			reason: "无法解析平台域名（本机 hosts / DNS / 代理 / VPN 异常，请检查后重试）: " + err.Error(),
+			err:    err,
+		}
+	}
+	if !isTransientTransportError(err) {
+		return err
+	}
+	return &deliveryTransientError{
+		reason: "平台连接失败（暂时不可用，将退避重试）: " + err.Error(),
+		err:    err,
+	}
+}
+
+// putPartBytes 上传单个分片。
+func putPartBytes(ctx context.Context, client *http.Client, target, token, digest string, payload []byte) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target, strings.NewReader(string(payload)))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("X-Upload-Token", token)
+	request.Header.Set("X-Part-SHA256", digest)
+	request.Header.Set("Content-Type", "application/octet-stream")
+	request.ContentLength = int64(len(payload))
+	response, err := client.Do(request)
+	if err != nil {
+		return wrapTransientTransport(err)
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
+	// 分片级 401/403 同样是"必须重新认证"，不能当成普通失败盲重试：
+	// 旧实现把它混在"平台返回 HTTP 401"里，5 次退避后判终态，
+	// 用户看到的是"分片 3 上传失败"而不是"令牌失效，请重新认证"。
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return &deliveryAuthError{reason: fmt.Sprintf("上传令牌失效（HTTP %d）", response.StatusCode)}
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return platformStatusError("平台返回", response.StatusCode)
+	}
+	return nil
+}
+
+// streamEvidenceMetrics 每 2 秒采样一次作业进度，速率用 EMA 平滑、ETA 用剩余字节估算。
+// 没有增量不补零：stalled 由平台按 60 秒阈值判定并写进 conditions。
+func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliveryJob) {
+	cfg, ok := logcollect.EvidenceFor(job.TaskID)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(logcollect.EvidenceMetricInterval)
+	defer ticker.Stop()
+	started := time.Now()
+	lastAt := started
+	var lastBytes int64
+	var seq int64
+	var rate float64
+	var stalledSince time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			r.mu.Lock()
+			phase := job.Phase
+			total := job.SourceSize
+			done := job.PulledBytes
+			uploaded := int64(len(job.UploadedParts)) * job.ChunkSize
+			r.mu.Unlock()
+			if phase == phaseUploading || uploaded > 0 {
+				done += uploaded
+			}
+			if total > 0 && done > total {
+				done = total
+			}
+			elapsed := now.Sub(lastAt).Seconds()
+			delta := done - lastBytes
+			instant := float64(delta) / elapsed
+			if instant < 0 {
+				instant = 0
+			}
+			// 没有新字节就必须把速率归零：EMA 会残留一个"看似还在传"的数值，
+			// 让 ETA 在停摆时继续倒数，是比显示「—」更危险的假象。
+			if delta <= 0 {
+				rate = 0
+			} else if rate == 0 {
+				rate = instant
+			} else {
+				rate = rate*0.7 + instant*0.3
+			}
+			if done == lastBytes {
+				if stalledSince.IsZero() {
+					stalledSince = now
+				}
+			} else {
+				stalledSince = time.Time{}
+			}
+			stage := "fetching"
+			if phase == phaseUploading || uploaded > 0 {
+				stage = "uploading"
+			}
+			metric := logcollect.TransferMetric{
+				Seq: seq, Stage: stage, BytesDone: done, ElapsedMS: now.Sub(started).Milliseconds(),
+				Stalled: !stalledSince.IsZero() && now.Sub(stalledSince) >= logcollect.EvidenceStallSeconds*time.Second,
+				Source:  "bridge",
+			}
+			seq++
+			if total > 0 {
+				percent := float64(done) / float64(total) * 100
+				metric.BytesTotal = &total
+				metric.Percent = &percent
+			}
+			if rate > 0 {
+				rounded := int64(rate)
+				metric.RateBps = &rounded
+				if total > done {
+					eta := int64(float64(total-done) / rate)
+					metric.EtaSec = &eta
+				}
+			}
+			postCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err := cfg.PostEvidence(postCtx, cfg.TaskPath("metrics"), metric, "")
+			cancel()
+			if err != nil {
+				logpush.Blog("WARN", "log_collect.metric_failed", "传输速率样本上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+					"task_id": cfg.TaskID, "seq": metric.Seq, "error": err.Error(),
+				})
+			}
+			lastAt, lastBytes = now, done
+		}
+	}
+}

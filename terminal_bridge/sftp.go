@@ -39,6 +39,7 @@ import (
 	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	remoteutil "terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
 	"time"
 	"unicode"
@@ -724,7 +725,7 @@ func handleSftpDownload(b *app.Bridge, ws *websocket.Conn, msg models.InMessage,
 	}
 
 	if totalSize > maxBytes {
-		fail(sftpErrTooLarge, fmt.Sprintf("文件大小 %s 超过上限 %s", formatBytesForLog(totalSize), formatBytesForLog(maxBytes)),
+		fail(sftpErrTooLarge, fmt.Sprintf("文件大小 %s 超过上限 %s", remoteutil.FormatBytesForLog(totalSize), remoteutil.FormatBytesForLog(maxBytes)),
 			sftpTransferPayload{TotalBytes: totalSize, Transport: transport})
 		return
 	}
@@ -871,22 +872,6 @@ func percentOf(done, total int64) int {
 		percent = 0
 	}
 	return percent
-}
-
-func formatBytesForLog(size int64) string {
-	const unit = 1024
-	if size < unit {
-		return strconv.FormatInt(size, 10) + " B"
-	}
-	units := []string{"KiB", "MiB", "GiB", "TiB"}
-	value := float64(size)
-	for _, name := range units {
-		value /= unit
-		if value < unit {
-			return fmt.Sprintf("%.1f %s", value, name)
-		}
-	}
-	return fmt.Sprintf("%.1f PiB", value/unit)
 }
 
 // copyRemoteToPart 把远端流写进 .part 文件，同时计算 SHA-256。

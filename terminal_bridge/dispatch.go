@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"terminal_bridge/internal/acli"
 	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/delivery"
 	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
@@ -570,16 +571,16 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 
 		case "delivery_submit":
 			// 交付作业化：立刻返回 job_id，执行权交给 bridge，前端只轮询进度。
-			go handleDeliverySubmit(b, ws, msg, cui)
+			go delivery.HandleDeliverySubmit(b, ws, msg, cui)
 
 		case "delivery_status":
-			go handleDeliveryStatus(b, ws, msg, cui)
+			go delivery.HandleDeliveryStatus(b, ws, msg, cui)
 
 		case "delivery_resume":
-			go handleDeliveryResume(b, ws, msg, cui)
+			go delivery.HandleDeliveryResume(b, ws, msg, cui)
 
 		case "delivery_cancel":
-			go handleDeliveryCancel(b, ws, msg, cui)
+			go delivery.HandleDeliveryCancel(b, ws, msg, cui)
 
 		case "log_collect":
 			go logcollect.HandleLogCollect(b, ws, msg, cui)

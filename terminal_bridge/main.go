@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/delivery"
 	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
@@ -127,8 +128,8 @@ func main() {
 	app.StartSessionReaper(bridge, app.SessionIdleTTL())
 	// 交付执行器：启动即扫描并恢复未完成作业。执行权在 bridge，
 	// 浏览器是否在线不影响；前端只通过 job_status 轮询进度。
-	deliveryRunnerInstance = newDeliveryRunner(bridge)
-	deliveryRunnerInstance.start()
+	delivery.DeliveryRunnerInstance = delivery.NewDeliveryRunner(bridge)
+	delivery.DeliveryRunnerInstance.Start()
 	logpush.Blog("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
 		"version":         getVersion(),
 		"commit":          CommitID,
