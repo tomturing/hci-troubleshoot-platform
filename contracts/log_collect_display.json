@@ -587,9 +587,16 @@
     {
       "code": "LC-ENV-004",
       "keywords": [
-        "/sf/data/local",
         "磁盘空间不足",
         "可用空间"
+      ]
+    },
+    {
+      "code": "LC-TRANSFER-011",
+      "keywords": [
+        "早于本次采集开始",
+        "上一次任务的产物",
+        "节点上的压缩包"
       ]
     },
     {
@@ -2683,6 +2690,32 @@
         "源包仍在写入"
       ]
     },
+    "LC-TRANSFER-011": {
+      "kind": "runtime",
+      "layer": "TRANSFER",
+      "component": "bridge",
+      "scope": "local",
+      "stage": "S4",
+      "business_stage": "package",
+      "title_zh": "节点产物早于本次采集",
+      "problem": "节点压缩包是上一轮任务的旧产物",
+      "action": "节点上的压缩包修改时间早于本次采集开始时间，平台拒绝把旧包当成本轮结果上传。请等本次采集真正结束、包大小不再变化后再点「上传到平台」；需要最新内容请重新采集。",
+      "check": [
+        "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+      ],
+      "fix": [
+        "等本次采集真正结束、节点包大小稳定后重新点「上传到平台」；需要最新内容请重新采集。"
+      ],
+      "admin_detail": "bridge 侧 delivery.job_finished 的 error 带节点包 mtime 与本次采集开始时间；不要按磁盘空间不足处置，无需清理 /sf/data/local。",
+      "evidence": "bridge_execution_logs（delivery.job_finished）",
+      "tone": "error",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "match_keywords": [
+        "早于本次采集开始"
+      ]
+    },
     "LC-PLATFORM-001": {
       "kind": "runtime",
       "layer": "PLATFORM",
@@ -3559,10 +3592,6 @@
       "code": "LC-TRANSFER-008"
     },
     {
-      "needle": "/sf/data/local",
-      "code": "LC-ENV-004"
-    },
-    {
       "needle": "磁盘空间不足",
       "code": "LC-ENV-004"
     },
@@ -3765,6 +3794,18 @@
     {
       "needle": "超时",
       "code": "LC-EXEC-002"
+    },
+    {
+      "needle": "早于本次采集开始",
+      "code": "LC-TRANSFER-011"
+    },
+    {
+      "needle": "上一次任务的产物",
+      "code": "LC-TRANSFER-011"
+    },
+    {
+      "needle": "节点上的压缩包",
+      "code": "LC-TRANSFER-011"
     }
   ],
   "layers": {

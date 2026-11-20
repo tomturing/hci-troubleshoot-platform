@@ -2722,6 +2722,32 @@ export const FAULT_CATALOG = {
     "stage": "S4",
     "title_zh": "源包仍在写入",
     "tone": "error"
+  },
+  "LC-TRANSFER-011": {
+    "action": "节点上的压缩包修改时间早于本次采集开始时间，平台拒绝把旧包当成本轮结果上传。请等本次采集真正结束、包大小不再变化后再点「上传到平台」；需要最新内容请重新采集。",
+    "admin_detail": "bridge 侧 delivery.job_finished 的 error 带节点包 mtime 与本次采集开始时间；不要按磁盘空间不足处置，无需清理 /sf/data/local。",
+    "business_stage": "package",
+    "check": [
+      "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+    ],
+    "component": "bridge",
+    "evidence": "bridge_execution_logs（delivery.job_finished）",
+    "fix": [
+      "等本次采集真正结束、节点包大小稳定后重新点「上传到平台」；需要最新内容请重新采集。"
+    ],
+    "http_status": 409,
+    "kind": "runtime",
+    "layer": "TRANSFER",
+    "match_keywords": [
+      "早于本次采集开始"
+    ],
+    "owner": "customer",
+    "problem": "节点压缩包是上一轮任务的旧产物",
+    "retryable": "manual",
+    "scope": "local",
+    "stage": "S4",
+    "title_zh": "节点产物早于本次采集",
+    "tone": "error"
   }
 } as const
 
@@ -3034,9 +3060,16 @@ export const FAULT_MATCHERS = [
   {
     "code": "LC-ENV-004",
     "keywords": [
-      "/sf/data/local",
       "磁盘空间不足",
       "可用空间"
+    ]
+  },
+  {
+    "code": "LC-TRANSFER-011",
+    "keywords": [
+      "早于本次采集开始",
+      "上一次任务的产物",
+      "节点上的压缩包"
     ]
   },
   {

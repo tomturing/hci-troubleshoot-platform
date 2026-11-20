@@ -3,8 +3,8 @@
  *
  * 守住四条已确认的边界：
  * 1. 客户名与 client_id 同时展示；未关联客户时显示占位而不是编造名字；
- * 2. 30s 真实进度轮询只查「进行中」的行；首次加载对已交付行一次性补查并缓存，
- *    既让终态 P1 的归档结果可见，又不把 N 个终态任务塞进轮询；
+ * 2. 30s 真实进度轮询只查「进行中」的行；首次加载对已交付/失败行一次性补查并缓存，
+ *    既让终态归档结果可见，又不把 N 个终态任务塞进轮询；
  * 3. 「查不到 ≠ 失败」：no_record/unsupported 只陈述观测，不出现失败结论；
  * 4. 页面全只读：没有重新核验/终止/重传/导出入口，也不出现删除命令；
  *    定时器在卸载时必须清理，切走页签后不能继续轮询。
@@ -129,7 +129,8 @@ describe('LogUploadPanel', () => {
       expect(api.getDestinationProgress).toHaveBeenCalledTimes(2)
       expect(api.getDestinationProgress).toHaveBeenCalledWith('task-active')
       expect(api.getDestinationProgress).toHaveBeenCalledWith('task-done')
-      expect(wrapper.text()).toContain('日志服务器已收妥（sha256 与源包一致）')
+      expect(wrapper.text()).toContain('日志服务器已收妥（服务端 sha256: cccccccccccc…）')
+      expect(wrapper.text()).not.toContain('与源包一致')
 
       api.getDestinationProgress.mockClear()
       vi.advanceTimersByTime(30_000)
@@ -164,6 +165,38 @@ describe('LogUploadPanel', () => {
       // 首次加载也不查：它既不是已交付（无需补查归档结果），也不是在途。
       expect(api.getDestinationProgress).not.toHaveBeenCalled()
 
+      vi.advanceTimersByTime(30_000)
+      await flushPromises()
+      expect(api.getDestinationProgress).not.toHaveBeenCalled()
+      wrapper.unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('失败行首次加载核对归档事实，并与最近一次失败并列展示', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const failed = {
+        ...activeTask,
+        task_id: 'task-failed',
+        case_id: 'Q2026111900236',
+        status: 'failed',
+        progress: 0,
+        delivery_status: 'queued',
+        error_code: 'LC-ENV-004',
+        display: { conclusion: 'failed', conclusion_label: '失败', conclusion_tone: 'error', conditions: [], phase_label: '已结束' },
+      }
+      api.listAdminTasks.mockResolvedValue({
+        items: [failed], total: 1, page: 1, page_size: 20, summary,
+      })
+      const wrapper = await mountPanel()
+      expect(api.getDestinationProgress).toHaveBeenCalledTimes(1)
+      expect(api.getDestinationProgress).toHaveBeenCalledWith('task-failed')
+      expect(wrapper.text()).toContain('本工单已有归档')
+      expect(wrapper.text()).not.toContain('与源包一致')
+
+      api.getDestinationProgress.mockClear()
       vi.advanceTimersByTime(30_000)
       await flushPromises()
       expect(api.getDestinationProgress).not.toHaveBeenCalled()

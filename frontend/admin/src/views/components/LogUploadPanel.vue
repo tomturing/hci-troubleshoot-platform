@@ -167,7 +167,8 @@ async function pollProgress(includeDelivered = false) {
   // 结果写入 progressMap 缓存后不再请求，平台侧还有 10s TTL 缓存兜底。
   const targets = rows.value
     .filter((task) => isActive(task)
-      || (includeDelivered && task.delivery_status === 'delivered'
+      || (includeDelivered
+        && (task.delivery_status === 'delivered' || task.display?.conclusion === 'failed')
         && !progressMap.value[task.task_id]))
     .map((task) => task.task_id)
   if (!targets.length || destroyed) return
@@ -311,7 +312,8 @@ function progressText(task: AdminLogCollectTask): string {
   if (!isActive(task) && !item) return '—'
   if (!item) return '查询中…'
   if (item.state === 'done') {
-    return item.sha256 ? '日志服务器已收妥（sha256 与源包一致）' : '日志服务器已收妥'
+    // 平台没有做服务端摘要与源包的逐字比对，不能声称「一致」；只转述服务端记录。
+    return item.sha256 ? `日志服务器已收妥（服务端 sha256: ${item.sha256.slice(0, 12)}…）` : '日志服务器已收妥'
   }
   if (item.state === 'uploading') {
     const received = formatBytes(item.uploaded_size)
@@ -322,6 +324,13 @@ function progressText(task: AdminLogCollectTask): string {
   if (item.state === 'unsupported') return '该日志服务器不支持进度查询'
   if (item.state === 'unavailable') return '日志服务器暂时不可用，请稍后再查'
   return '日志服务器上还没有这次上传的记录'
+}
+
+/** 工单归档事实与最近一次尝试结论相互独立，成功记录不能被后续失败重试覆盖。 */
+function hasArchiveFact(task: AdminLogCollectTask): boolean {
+  if (progressMap.value[task.task_id]?.state === 'done') return true
+  const check = task.archive_check as { verified?: boolean } | null | undefined
+  return check?.verified === true
 }
 
 /** 结论/环节/条件一律来自平台派生字段；缺失时降级为兼容文案，不自己拼。 */
@@ -602,6 +611,9 @@ const summaryCells = computed(() => [
             <div v-else class="upload-sub">合成进度 —</div>
             <div v-if="conclusionOf(row).conditions.length" class="upload-sub">
               {{ conclusionOf(row).conditions.map(item => item.label).join('、') }}
+            </div>
+            <div v-if="hasArchiveFact(row)" class="upload-sub">
+              <el-tag size="small" type="success">本工单已有归档</el-tag>
             </div>
           </template>
         </el-table-column>
