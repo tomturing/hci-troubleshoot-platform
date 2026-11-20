@@ -15,7 +15,7 @@ ARG BUILD_TIME=unknown
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -trimpath \
     -ldflags="-s -w -buildid= -X main.Version=${VERSION} -X main.CommitID=${COMMIT_ID} -X main.BuildTime=${BUILD_TIME}" \
-    -o /out/terminal_bridge .
+    -o /out/terminal_bridge ./cmd/bridge
 
 FROM alpine:3.22
 

@@ -155,7 +155,7 @@ type SSHSession struct {
 	// 于是采集跑过 10 分钟后 shell 必然被 TMOUT 踢掉，EOF 被当成整条连接失效并
 	// destroySession：后续 progress 全部 session_missing，前端只能干等到 60s 超时，
 	// 报成误导性的"progress 超时（60s）"（2026-10-28 现场）。
-	// 事实是：runCommandPty 每次都 client.NewSession() 开新 channel，
+	// 事实是：RunCommandPty 每次都 client.NewSession() 开新 channel，
 	// shell 退出只是少了一个终端回显通道，连接与 exec 通道都还能用。
 	LastBusyAt atomic.Int64
 	// orphaned 表示会话已被摘出路由表（重连覆盖），但底层连接要留给进行中的长任务。
@@ -718,7 +718,7 @@ func probeRemote(client *ssh.Client, command string) (string, int) {
 // 探测以独立 goroutine 异步运行、自带短超时，绝不阻塞主结果回传；任何探测异常都安全降级为一条记录。
 func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.ExecRequestContext, artifactID string) {
 	go func() {
-		// 主 exec ctx 在 execCommandIsolated 返回时会被 cancel，探测 goroutine 必须使用去耦合的
+		// 主 exec ctx 在 ExecCommandIsolated 返回时会被 cancel，探测 goroutine 必须使用去耦合的
 		// 派生上下文（保留 trace 值、忽略取消），并自带总体超时，否则 DialContext 会因取消立即失败。
 		probeCtx, probeCancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
 		defer probeCancel()
@@ -1154,7 +1154,7 @@ func isShellOperator(ch rune) bool {
 //  1. 本通道只接受代码枚举的固定操作 capture_baseline 与 wake_down_key，不接受任何
 //     自由文本 command、路径或键名；全部 argv 由代码常量表构造，host_node_id/vm_id/
 //     capture_id 在进入拼接前完成严格字符校验（fail-closed）。
-//  2. 执行一律走隔离 SSH 连接（与 ssh_exec_process 的 execCommandIsolated 同款通道），
+//  2. 执行一律走隔离 SSH 连接（与 ssh_exec_process 的 ExecCommandIsolated 同款通道），
 //     不经过 PTY marker 通道；目标为宿主机直连（host 直连，不做容器包装）。
 //  3. 截图文件经固定 base64 命令读取，BoundedCapture 上限 16MiB；base64 解码在 Go
 //     本地进行，解码后计算 SHA-256；原始 PPM 经 HTTP 直传平台制品服务，WS 只回
@@ -1257,8 +1257,42 @@ func (s *SSHSession) RunQuickCommandBytes(ctx context.Context, cmd string) ([]by
 // 等于给未来的人留一个绕过完整性协议的入口，因此直接删掉。
 // 唯一写入实现：remote.WriteFile（先校验再 mv，失败只删 tmp）。
 
-// parseAcliVersion 从版本探测输出里取版本号与构建时间。
+// ParseAcliVersion 从版本探测输出里取版本号与构建时间。
 //
 // S1 收口：解析唯一实现在 remote.ParseVersionOutput。acli 特有的
-// `__ACLI_BIN__=` / `__ACLI_ABSENT__` 契约由 buildAcliVersionCommand 产出，
+// `__ACLI_BIN__=` / `__ACLI_ABSENT__` 契约由 BuildAcliVersionCommand 产出，
 // 原语只负责如实解析（包括"未安装"这一结论）。
+
+// AgeSeconds 返回会话存活秒数；未记录建立时间时返回 0。
+func AgeSeconds(s *SSHSession) float64 {
+	if s == nil || s.CreatedAt.IsZero() {
+		return 0
+	}
+	return time.Since(s.CreatedAt).Seconds()
+}
+
+// 会话销毁原因：写入 session.destroyed.reason，供云端按原因聚合与告警。
+const (
+	SessionReasonWSClosed         = "ws_closed"         // 拥有它的浏览器连接关闭（连坐清理）
+	SessionReasonReconnect        = "reconnect"         // 同键再次 ssh_connect 覆盖
+	SessionReasonRemoteEOF        = "remote_eof"        // 远端 shell 退出
+	SessionReasonClientDisconnect = "client_disconnect" // 前端显式 ssh_disconnect
+	SessionReasonKeepAlive        = "keepalive_failed"  // 保活探测判定链路失效
+	SessionReasonIdleTTL          = "idle_ttl"          // 空闲租约超时，被 reaper 回收
+)
+
+// SessionHostAddress 给出发起节点的 IP：节点清单不可得时的兜底收敛目标。
+func SessionHostAddress(s *SSHSession, fallback string) string {
+	if trimmed := strings.TrimSpace(fallback); trimmed != "" {
+		return trimmed
+	}
+	if s != nil {
+		if host, _, err := net.SplitHostPort(s.Address); err == nil && host != "" {
+			return host
+		}
+		if s.Address != "" {
+			return s.Address
+		}
+	}
+	return "unknown"
+}

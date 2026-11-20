@@ -26,6 +26,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-20 | v2.1 | R0 实施留痕（不改设计结论，只记实施口径）：① R0a/R0b/R0c 完成——main.go 包内拆分、六域整域搬迁（terminal/app/acli/logcollect/delivery/sftp）、薄入口 cmd/bridge；② 消息清单口径 17→18：bridge_log_token 在本文定稿后加入，守卫测试按 18 种冻结；③ 注册式路由暂由装配层 cmd/bridge/ws_routes.go 统一注册（app 已 import logpush/terminal，域 init() 自注册会成环；待 S1-S4/uplink 解环后迁回各域）；④ kinds 拆分（kinds/acli/plugin.go）延后至 S4 两阶段接入时落地；⑤ ldflags 事实：链接器对 main 包恒用 main.* 别名（与目录位置无关），构建脚本只改目标 ./cmd/bridge，-X main.* 不变；⑥ 域间既有互 import 11 条以冻结基线管理（scripts/check_bridge_imports.py 接入 CI，只减不增，解环属逻辑收口阶段）；⑦ contract 生成器归位 internal/logcollect（ContractText/ContractFormat 导出），再生成逐字节一致 |
 | 2026-11-18 | v2.0 | 重写定稿：插件收口为 acli_sync 第二阶段（internal/acli 两阶段协议边缘 + kinds/acli/plugin.go，不独立成域）；D1 直接删除 relay 推送链路与 admin-ui 下发入口；落地顺序与验收同步收口设计 v2.0；保留范式/目录/迁移/体积/logpush 全部既有结论 |
 
 ---
@@ -34,10 +35,12 @@ owner: terminal_bridge
 
 ### 1.1 现状结构
 
-terminal_bridge 当前是**单一 `package main`、零子目录**的扁平结构：
+> 本节为 R0 实施前（2026-11-18）的现状盘点；R0 已于 2026-11-20 落地（见变更历史 v2.1），下述扁平结构已成历史。
+
+terminal_bridge 重构前是**单一 `package main`、零子目录**的扁平结构：
 
 - 非测试 Go 文件约 40 个，共 **19,576 行**；加测试共 29,119 行；
-- `terminal_bridge/main.go` 一个文件 **6,480 行**，同时承担进程骨架、WS 消息分发、
+- 旧路径 `terminal_bridge/main.go`（R0 后已删除，拆分至 cmd/bridge 与 internal/*）一个文件 **6,480 行**，同时承担进程骨架、WS 消息分发、
   SSH 交互终端、VM console、acli_sync 全链路、死代码；
 - 文件命名前缀（`delivery_*`、`log_collect_*`）是唯一的逻辑分层手段，
   **编译器不强制任何边界**，任何文件可调用任何文件的任何函数；

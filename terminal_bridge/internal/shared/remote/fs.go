@@ -2,6 +2,8 @@ package remote
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -404,4 +406,27 @@ func splitRunesByBytes(text string, limit int) []string {
 		chunks = append(chunks, builder.String())
 	}
 	return chunks
+}
+
+// Sha256Hex 计算分片校验和（与服务端 X-Part-SHA256 对齐）。
+func Sha256Hex(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// FormatBytesForLog 人类可读字节数（日志/诊断渲染用，纯工具）。
+func FormatBytesForLog(size int64) string {
+	const unit = 1024
+	if size < unit {
+		return strconv.FormatInt(size, 10) + " B"
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	value := float64(size)
+	for _, name := range units {
+		value /= unit
+		if value < unit {
+			return fmt.Sprintf("%.1f %s", value, name)
+		}
+	}
+	return fmt.Sprintf("%.1f PiB", value/unit)
 }

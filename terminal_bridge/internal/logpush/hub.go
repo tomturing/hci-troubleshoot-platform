@@ -574,6 +574,13 @@ func logEntryBefore(e LogEntry, cutoff time.Time) bool {
 // 回放口径：本工单全部事件 + 窗口内无工单上下文的事件，且跳过已投递过的 seq。
 // 库侧有 (bridge_instance_id, seq) 与 event_id 唯一索引 + 入库 ON CONFLICT DO NOTHING，
 // 因此重复回放是幂等的，不会产生脏数据。
+// BindCase 实现 app.LogCaseSubscriber 接口缝：把「归属工单」能力暴露给
+// WS 派发上下文，装配层不必认识私有订阅者类型。
+func (s *bridgeSubscriber) BindCase(caseID string) { DefaultHub.SetCase(s, caseID) }
+
+// BoundCase 返回当前归属工单（app.LogCaseSubscriber 接口缝的读侧；字段已名 CaseID，方法避让）。
+func (s *bridgeSubscriber) BoundCase() string { return s.CaseID }
+
 func (h *LogHub) SetCase(sub *bridgeSubscriber, caseID string) {
 	h.Mu.Lock()
 	if sub.CaseID != caseID {
@@ -841,4 +848,4 @@ func ContextFromMessage(msg models.InMessage) context.Context {
 
 // ── WebSocket Handler ─────────────────────────────────────────────────────────
 
-// sessionKey 生成多节点会话的唯一键
+// SessionKey 生成多节点会话的唯一键

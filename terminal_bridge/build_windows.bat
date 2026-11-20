@@ -42,7 +42,7 @@ for /f "delims=" %%i in ('git rev-parse --short=12 HEAD 2^>nul') do set GIT_COMM
 
 for /f "delims=" %%i in ('powershell -NoProfile -Command "Get-Date -UFormat '%%Y-%%m-%%dT%%H:%%M:%%SZ' -AsUTC"') do set BUILD_TIME=%%i
 
-go build -trimpath -ldflags="-s -w -buildid= -X main.Version=%GIT_VER% -X main.CommitID=%GIT_COMMIT% -X main.BuildTime=%BUILD_TIME%" -o terminal_bridge.exe .
+go build -trimpath -ldflags="-s -w -buildid= -X main.Version=%GIT_VER% -X main.CommitID=%GIT_COMMIT% -X main.BuildTime=%BUILD_TIME%" -o terminal_bridge.exe ./cmd/bridge
 
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] Compilation failed.
