@@ -12,7 +12,7 @@ HCI 排障助手 SSH Bridge。Windows 桌面客户端和 Linux/K3s 服务使用�
 架构：
 
 ```text
-Windows 客户端：Custom UI → ws://localhost:9999 → terminal_bridge.exe → SSH → HCI
+Windows 客户端：Custom UI → ws://127.0.0.1:9999 → terminal_bridge.exe → SSH → HCI
 K3s 调试模式：Custom UI → /terminal-bridge → terminal_bridge Pod → SSH → HCI
 ```
 
@@ -288,7 +288,7 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | `bridge.already_running` | INFO | 检测到本机已有存活 Bridge，本次幂等退出（重复启动/未退净） |
 | `bridge.backup_port_activated` | WARN | 主端口被陌生进程占用，已回退至备用端口 47324 |
 | `bridge.port_conflict` | ERROR | 主备端口均不可用，fail-fast 退出，含占用地址与 best-effort 占用 PID |
-| `bridge.shutdown` | WARN | 收到退出信号（Ctrl+C/SIGTERM），含 `signal`/`uptime_seconds`/`active_sessions`；**有 startup 无 shutdown = 被强杀** |
+| `bridge.shutdown` | WARN | 收到退出信号（Ctrl+C/SIGTERM），含 `signal`/`uptime_seconds`/`active_sessions`，Windows 另带 `console_event`（`ctrl_c`/`ctrl_break`/`ctrl_close`/`ctrl_logoff`/`ctrl_shutdown`）；**有 startup 无 shutdown 才是被强杀**（TerminateProcess / `taskkill /F` / 安全软件），而"关闭控制台窗口"会以 `ctrl_close` + `signal=terminated` 正常落这条事件 |
 | `bridge.panic` | ERROR | 未捕获 panic，含 `panic`/`stack`（完整栈见 `bridge-stderr.log`） |
 | `bridge.connected` | INFO | 浏览器 WebSocket 连接建立，含 `conn_id` |
 | `bridge.disconnected` | WARN | 浏览器断开（断连窗口内的命令结果会丢失）；含 `conn_id`/`role`/`duration_seconds`/`owned_keys` |
