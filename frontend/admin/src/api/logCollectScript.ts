@@ -63,9 +63,13 @@ export interface LogCollectScriptValidation {
   ok: boolean
   code: string
   interpreter: string
+  // shebang / suffix / default / manual：界面用它解释"为什么是这个解释器"
+  interpreter_source?: string
   content_sha256: string
   content_bytes: number
   issues: string[]
+  // 不阻断保存的提示（后缀与 shebang 冲突、无 shebang 默认 bash 等）
+  warnings?: string[]
 }
 
 export interface LogCollectScriptReference {
