@@ -91,15 +91,10 @@ func main() {
 	// stderr 重定向必须晚于 applyRuntimeMode：cluster 模式的日志目录由 Helm 注入，
 	// 提前重定向会把 panic 栈写到 desktop 默认目录。
 	app.RedirectStderrToFile()
-	// 云端/集群桥没有浏览器给它下发直传令牌：部署期注入了端点与令牌就自行建通道，
-	// 并把"进程崩溃前只落在本地文件、还没确认上传"的区间补传（按实例水位过滤）。
-	// 必须早于 bridge.startup 日志，否则启动事件本身不会进队列。
-	if logpush.LogUpload.BootstrapFromEnv() {
-		logpush.LogUpload.SeedFromLocalLogs(
-			bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_SEED_FILES", logpush.DefaultSeedMaxFiles),
-			bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_SEED_ENTRIES", logpush.DefaultSeedMaxEntries),
-		)
-	}
+	// 云端/集群桥没有浏览器给它下发直传令牌：部署期注入了端点与令牌就自行建通道。
+	// 建通道时会自动异步补传"水位之后"的全部本地历史（L1，含崩溃窗口与 panic 现场），
+	// 启动事件本身走实时 enqueue，不依赖补传时序。
+	logpush.LogUpload.BootstrapFromEnv()
 	// 5 分钟一条资源采样：Atom 级机器上采样本身也必须廉价（一天约 58KB）。
 	app.StartResourceSampler(5 * time.Minute)
 	// 空闲会话回收器：WS 关闭只 release 不销毁，超时无人复用的会话由 reaper 兜底回收，

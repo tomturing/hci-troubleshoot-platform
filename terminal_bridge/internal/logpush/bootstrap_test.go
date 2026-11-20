@@ -33,15 +33,24 @@ func writeLogFile(t *testing.T, path string, entries []LogEntry) {
 }
 
 // withLogDir 临时把 DefaultHub 的落盘目录指向测试目录，退出时恢复。
+// 写侧必须持锁：后台 seed/worker 经 hubLogLocation 快照读，publish 持 h.Mu 读。
 func withLogDir(t *testing.T, dir string) {
 	t.Helper()
+	hubLogLocationMu.Lock()
+	DefaultHub.Mu.Lock()
 	oldDir := DefaultHub.LogDir
 	oldPath := DefaultHub.LogPath
 	DefaultHub.LogDir = dir
 	DefaultHub.LogPath = ""
+	DefaultHub.Mu.Unlock()
+	hubLogLocationMu.Unlock()
 	t.Cleanup(func() {
+		hubLogLocationMu.Lock()
+		DefaultHub.Mu.Lock()
 		DefaultHub.LogDir = oldDir
 		DefaultHub.LogPath = oldPath
+		DefaultHub.Mu.Unlock()
+		hubLogLocationMu.Unlock()
 	})
 }
 
@@ -101,8 +110,8 @@ func TestSeedFromLocalLogsSkipsUploadedRange(t *testing.T) {
 		t.Fatalf("只应补水位之后的 2 条，实际 %d", seeded)
 	}
 	u.Mu.Lock()
-	queued := make([]uint64, 0, len(u.queue))
-	for _, entry := range u.queue {
+	queued := make([]uint64, 0, len(u.seedQueue))
+	for _, entry := range u.seedQueue {
 		queued = append(queued, entry.Seq)
 	}
 	u.Mu.Unlock()

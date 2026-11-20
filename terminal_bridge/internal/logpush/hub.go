@@ -47,6 +47,9 @@ type LogEntry struct {
 	ServiceName           string         `json:"service.name"`
 	ServiceVersion        string         `json:"service.version"`
 	DeploymentEnvironment string         `json:"deployment.environment"`
+	// StderrOffset 仅 bridge.stderr 包装条目使用：该行在 bridge-stderr.log 中的结束字节偏移。
+	// L3 的字节水位靠它推进，必须随 outbox 落盘往返，故不用 json:"-"；普通条目恒为 0（omitempty 不改变 wire 形状）。
+	StderrOffset int64 `json:"stderr_offset,omitempty"`
 }
 
 // bridgeSubscriber 代表一个已连接的 Custom-UI 浏览器（一个回采订阅者）。
