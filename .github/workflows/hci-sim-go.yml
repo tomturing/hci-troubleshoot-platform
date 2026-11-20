@@ -101,6 +101,9 @@ jobs:
           go test -timeout 180s ./...
           go test -race -timeout 180s ./...
           go vet ./...
+          # R0c：架构 import 禁令扫描（shared 不认识上层 / remote↔uplink 隔离 /
+          # sshx·app 不反向依赖业务域 / 域间依赖冻结基线只减不增）。
+          python3 ../scripts/check_bridge_imports.py
 
   manifest-and-helm:
     name: published bundle and Helm gate

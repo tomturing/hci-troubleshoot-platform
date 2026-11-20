@@ -27,7 +27,7 @@ GENERATED = [
     ROOT / "backend/case-service/app/domain/log_collect_display_generated.py",
     ROOT / "backend/case-service/app/services/log_collect_attribution_rules_generated.py",
     ROOT / "backend/shared/resolution/catalogs/log_collect_error_catalog.json",
-    ROOT / "terminal_bridge/log_collect_contract_generated.go",
+    ROOT / "terminal_bridge/internal/logcollect/log_collect_contract_generated.go",
     ROOT / "frontend/shared/src/logCollectDisplay.ts",
     ROOT / "frontend/shared/src/logCollectUi.ts",
     ROOT / "frontend/customer/src/services/logCollectErrorHints.ts",

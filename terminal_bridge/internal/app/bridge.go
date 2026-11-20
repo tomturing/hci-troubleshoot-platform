@@ -292,7 +292,7 @@ func (b *Bridge) ResolveAcliSyncSession(msg models.InMessage) (*sshx.SSHSession,
 //
 // 输入不触发自动建连（建连属于 exec 的语义），只做只读解析；
 // 顺序：精确键 → 本连接最近一次 ssh_connect 的会话 → 本工单唯一会话（多节点时不猜）。
-func (b *Bridge) ResolveInputSession(msg models.InMessage, activeKey string, ownedSessions *ownedSessionTracker) (*sshx.SSHSession, string) {
+func (b *Bridge) ResolveInputSession(msg models.InMessage, activeKey string, ownedSessions *OwnedSessionTracker) (*sshx.SSHSession, string) {
 	if s, key := b.ResolveSession(msg); s != nil {
 		return s, key
 	}
@@ -348,7 +348,7 @@ func (b *Bridge) OnlySessionForCase(caseID string) (*sshx.SSHSession, string) {
 
 // autoConnectNode 使用已保存的认证信息自动连接新节点
 // connID/role 由调用方传入并写入 session.created：自动建连同样需要"谁建的"这一事实。
-func (b *Bridge) AutoConnectNode(ws *websocket.Conn, msg models.InMessage, ownedSessions *ownedSessionTracker, connID, role string) *sshx.SSHSession {
+func (b *Bridge) AutoConnectNode(ws *websocket.Conn, msg models.InMessage, ownedSessions *OwnedSessionTracker, connID, role string) *sshx.SSHSession {
 	if msg.NodeIP == "" {
 		log.Printf("[Bridge] autoConnect: nodeIP 为空，跳过")
 		return nil
@@ -469,29 +469,29 @@ func (b *Bridge) ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 	return session, nil
 }
 
-type ownedSessionTracker struct {
+type OwnedSessionTracker struct {
 	mu       sync.Mutex
 	Sessions map[string]*sshx.SSHSession
 }
 
-func NewOwnedSessionTracker() *ownedSessionTracker {
-	return &ownedSessionTracker{Sessions: make(map[string]*sshx.SSHSession)}
+func NewOwnedSessionTracker() *OwnedSessionTracker {
+	return &OwnedSessionTracker{Sessions: make(map[string]*sshx.SSHSession)}
 }
 
-func (t *ownedSessionTracker) Set(key string, session *sshx.SSHSession) {
+func (t *OwnedSessionTracker) Set(key string, session *sshx.SSHSession) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.Sessions[key] = session
 }
 
-func (t *ownedSessionTracker) Remove(key string) {
+func (t *OwnedSessionTracker) Remove(key string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	delete(t.Sessions, key)
 }
 
 // drainCase 取出当前 WebSocket 所拥有的指定工单全部会话，包括自动建立的节点会话。
-func (t *ownedSessionTracker) DrainCase(caseID string) map[string]*sshx.SSHSession {
+func (t *OwnedSessionTracker) DrainCase(caseID string) map[string]*sshx.SSHSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	Sessions := make(map[string]*sshx.SSHSession)
@@ -505,7 +505,7 @@ func (t *ownedSessionTracker) DrainCase(caseID string) map[string]*sshx.SSHSessi
 }
 
 // sessionsSnapshot 返回当前连接所拥有会话的浅拷贝，供只读遍历（持锁时间最短）。
-func (t *ownedSessionTracker) sessionsSnapshot() map[string]*sshx.SSHSession {
+func (t *OwnedSessionTracker) sessionsSnapshot() map[string]*sshx.SSHSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	snapshot := make(map[string]*sshx.SSHSession, len(t.Sessions))
@@ -515,7 +515,7 @@ func (t *ownedSessionTracker) sessionsSnapshot() map[string]*sshx.SSHSession {
 	return snapshot
 }
 
-func (t *ownedSessionTracker) Drain() map[string]*sshx.SSHSession {
+func (t *OwnedSessionTracker) Drain() map[string]*sshx.SSHSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	Sessions := t.Sessions

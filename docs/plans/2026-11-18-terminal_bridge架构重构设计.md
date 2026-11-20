@@ -26,6 +26,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-20 | v2.1 | R0 实施留痕（不改设计结论，只记实施口径）：① R0a/R0b/R0c 完成——main.go 包内拆分、六域整域搬迁（terminal/app/acli/logcollect/delivery/sftp）、薄入口 cmd/bridge；② 消息清单口径 17→18：bridge_log_token 在本文定稿后加入，守卫测试按 18 种冻结；③ 注册式路由暂由装配层 cmd/bridge/ws_routes.go 统一注册（app 已 import logpush/terminal，域 init() 自注册会成环；待 S1-S4/uplink 解环后迁回各域）；④ kinds 拆分（kinds/acli/plugin.go）延后至 S4 两阶段接入时落地；⑤ ldflags 事实：链接器对 main 包恒用 main.* 别名（与目录位置无关），构建脚本只改目标 ./cmd/bridge，-X main.* 不变；⑥ 域间既有互 import 11 条以冻结基线管理（scripts/check_bridge_imports.py 接入 CI，只减不增，解环属逻辑收口阶段）；⑦ contract 生成器归位 internal/logcollect（ContractText/ContractFormat 导出），再生成逐字节一致 |
 | 2026-11-18 | v2.0 | 重写定稿：插件收口为 acli_sync 第二阶段（internal/acli 两阶段协议边缘 + kinds/acli/plugin.go，不独立成域）；D1 直接删除 relay 推送链路与 admin-ui 下发入口；落地顺序与验收同步收口设计 v2.0；保留范式/目录/迁移/体积/logpush 全部既有结论 |
 
 ---
