@@ -579,7 +579,10 @@ async def destination_progress(task_id: UUID) -> DestinationProgressResponse:
     )
 
     payload: DestinationProgressResponse
-    if path == "unknown" or (path == "P2" and not task.get("relay_upload_id")):
+    # 终态任务即使没有代传会话，也要走归档回溯：P2 的 relay_upload_id 常随会话过期，
+    # 过早 return 会让「5888 已有包」在页面上永久显示为空。
+    terminal = str(task.get("status") or "") in {"completed", "failed", "cancelled"}
+    if path == "unknown" or (path == "P2" and not task.get("relay_upload_id") and not terminal):
         payload = _map_progress(
             task_id=task_id,
             path=path,
@@ -591,14 +594,23 @@ async def destination_progress(task_id: UUID) -> DestinationProgressResponse:
         try:
             async with httpx.AsyncClient(timeout=PROGRESS_TIMEOUT_SECONDS) as http:
                 if path == "P2":
-                    data = await client.upload_status(http, str(task["relay_upload_id"]))
-                    payload = _map_progress(
-                        task_id=task_id,
-                        path=path,
-                        data=data,
-                        state="query",
-                        reason=None if data else "日志服务器会话已结束或已过期（24h）",
-                    )
+                    if not task.get("relay_upload_id"):
+                        payload = _map_progress(
+                            task_id=task_id,
+                            path=path,
+                            data=None,
+                            state="no_record",
+                            reason="P2 代传会话尚未建立",
+                        )
+                    else:
+                        data = await client.upload_status(http, str(task["relay_upload_id"]))
+                        payload = _map_progress(
+                            task_id=task_id,
+                            path=path,
+                            data=data,
+                            state="query",
+                            reason=None if data else "日志服务器会话已结束或已过期（24h）",
+                        )
                 else:
                     probe_state, data = await client.upload_progress(http, f"{task['case_id']}.zip")
                     if probe_state == "unsupported":
