@@ -35,10 +35,12 @@ owner: terminal_bridge
 
 ### 1.1 现状结构
 
-terminal_bridge 当前是**单一 `package main`、零子目录**的扁平结构：
+> 本节为 R0 实施前（2026-11-18）的现状盘点；R0 已于 2026-11-20 落地（见变更历史 v2.1），下述扁平结构已成历史。
+
+terminal_bridge 重构前是**单一 `package main`、零子目录**的扁平结构：
 
 - 非测试 Go 文件约 40 个，共 **19,576 行**；加测试共 29,119 行；
-- `terminal_bridge/main.go` 一个文件 **6,480 行**，同时承担进程骨架、WS 消息分发、
+- 旧路径 `terminal_bridge/main.go`（R0 后已删除，拆分至 cmd/bridge 与 internal/*）一个文件 **6,480 行**，同时承担进程骨架、WS 消息分发、
   SSH 交互终端、VM console、acli_sync 全链路、死代码；
 - 文件命名前缀（`delivery_*`、`log_collect_*`）是唯一的逻辑分层手段，
   **编译器不强制任何边界**，任何文件可调用任何文件的任何函数；
