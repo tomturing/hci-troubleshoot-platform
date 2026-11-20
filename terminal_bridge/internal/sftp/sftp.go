@@ -1,4 +1,4 @@
-package main
+package sftp
 
 // SFTP 文件下载（HCI 远端 → terminal_bridge 所在机器）。
 //
@@ -186,9 +186,9 @@ func cancelSftpTask(b *app.Bridge, key string) bool {
 	return true
 }
 
-// cancelSftpTasksForConn 在 WebSocket 断开时回收本连接发起的下载。
+// CancelSftpTasksForConn 在 WebSocket 断开时回收本连接发起的下载。
 // 不回收的话，浏览器关掉后 goroutine 会继续把整个文件拉完，白占客户带宽。
-func cancelSftpTasksForConn(b *app.Bridge, connID string) int {
+func CancelSftpTasksForConn(b *app.Bridge, connID string) int {
 	b.SftpTasksMu.Lock()
 	defer b.SftpTasksMu.Unlock()
 	cancelled := 0
@@ -385,8 +385,8 @@ func sftpMaxBytes() int64 {
 
 // ── 消息入口 ──────────────────────────────────────────────────────────────────
 
-// handleSftpOp 是 sftp_op 的总入口。所有分支都收敛在这里，避免协议散落。
-func handleSftpOp(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui, connID string) {
+// HandleSftpOp 是 sftp_op 的总入口。所有分支都收敛在这里，避免协议散落。
+func HandleSftpOp(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui, connID string) {
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
 		traceID = "sftp-" + logcollect.FirstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")

@@ -1,4 +1,4 @@
-package main
+package sftp
 
 import (
 	"bytes"
@@ -440,7 +440,7 @@ func TestCancelSftpTasksForConn(t *testing.T) {
 	ctx2, cancel2, _ := registerSftpTask(bridge, sftpTaskKey("Q1", "t2"), "conn-2", "Q1")
 	defer cancel2()
 
-	if cancelled := cancelSftpTasksForConn(bridge, "conn-1"); cancelled != 1 {
+	if cancelled := CancelSftpTasksForConn(bridge, "conn-1"); cancelled != 1 {
 		t.Fatalf("应只取消本连接的任务，got=%d", cancelled)
 	}
 	select {
