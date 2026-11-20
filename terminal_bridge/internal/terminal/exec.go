@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
@@ -41,7 +41,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	}
 	if err := ValidateOutputFilters(outputFilters); err != nil {
 		errType := "invalid_output_filter"
-		logpush.BlogContext(req.Context, "ERROR", "exec.error", "输出筛选参数无效", req, map[string]any{
+		obslog.EmitContext(req.Context, "ERROR", "exec.error", "输出筛选参数无效", req, map[string]any{
 			"error": err.Error(), "error_type": errType,
 		})
 		models.SendMsg(ws, models.OutMessage{
@@ -64,11 +64,11 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 	)
 	defer span.End()
 	startTime := time.Now()
-	traceparent := logpush.TraceparentFromContext(ctx)
+	traceparent := obslog.TraceparentFromContext(ctx)
 	traceID := span.TraceID()
-	artifactID := logpush.DeterministicArtifactID(req.ExecID)
+	artifactID := obslog.DeterministicArtifactID(req.ExecID)
 
-	logpush.BlogContext(ctx, "INFO", "exec.start", "开始执行命令", req, map[string]any{
+	obslog.EmitContext(ctx, "INFO", "exec.start", "开始执行命令", req, map[string]any{
 		"command_redacted": req.CommandRedacted,
 		"command_sha256":   req.CommandSHA256,
 		"command_len":      len(req.Command),
@@ -79,7 +79,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		span.RecordError(err)
 		span.SetStatus(telemetry.StatusError, "session_creation_failed")
 		MetricsExecErrors(1)
-		logpush.BlogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 连接失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
+		obslog.EmitContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 连接失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 连接失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
 		return
 	}
@@ -90,7 +90,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		span.RecordError(err)
 		span.SetStatus(telemetry.StatusError, "session_creation_failed")
 		MetricsExecErrors(1)
-		logpush.BlogContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 会话失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
+		obslog.EmitContext(ctx, "ERROR", "exec.error", "创建隔离 SSH 会话失败", req, map[string]any{"error": err.Error(), "error_type": "session_creation_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "创建隔离 SSH 会话失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "session_creation_failed"})
 		return
 	}
@@ -102,7 +102,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 			span.RecordError(err)
 			span.SetStatus(telemetry.StatusError, "pty_request_failed")
 			MetricsExecErrors(1)
-			logpush.BlogContext(ctx, "ERROR", "exec.error", "申请伪终端失败", req, map[string]any{"error": err.Error(), "error_type": "pty_request_failed"})
+			obslog.EmitContext(ctx, "ERROR", "exec.error", "申请伪终端失败", req, map[string]any{"error": err.Error(), "error_type": "pty_request_failed"})
 			models.SendMsg(ws, models.OutMessage{
 				Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
 				Stderr: "申请伪终端失败（该命令必须使用 PTY）", ExitCode: -1,
@@ -128,7 +128,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 				span.RecordError(err)
 				span.SetStatus(telemetry.StatusError, "simulation_env_rejected")
 				MetricsExecErrors(1)
-				logpush.BlogContext(ctx, "ERROR", "exec.error", "hci-sim 拒绝执行上下文", req, map[string]any{"error": err.Error(), "error_type": "simulation_env_rejected", "env_name": name})
+				obslog.EmitContext(ctx, "ERROR", "exec.error", "hci-sim 拒绝执行上下文", req, map[string]any{"error": err.Error(), "error_type": "simulation_env_rejected", "env_name": name})
 				models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "hci-sim 拒绝执行上下文", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "simulation_env_rejected"})
 				return
 			}
@@ -140,7 +140,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		span.RecordError(err)
 		span.SetStatus(telemetry.StatusError, "stdout_pipe_failed")
 		MetricsExecErrors(1)
-		logpush.BlogContext(ctx, "ERROR", "exec.error", "获取 StdoutPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stdout_pipe_failed"})
+		obslog.EmitContext(ctx, "ERROR", "exec.error", "获取 StdoutPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stdout_pipe_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准输出失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stdout_pipe_failed"})
 		return
 	}
@@ -154,7 +154,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 			span.RecordError(err)
 			span.SetStatus(telemetry.StatusError, "stderr_pipe_failed")
 			MetricsExecErrors(1)
-			logpush.BlogContext(ctx, "ERROR", "exec.error", "获取 StderrPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stderr_pipe_failed"})
+			obslog.EmitContext(ctx, "ERROR", "exec.error", "获取 StderrPipe 失败", req, map[string]any{"error": err.Error(), "error_type": "stderr_pipe_failed"})
 			models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "获取标准错误失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "stderr_pipe_failed", PtyMode: ptyMode})
 			return
 		}
@@ -164,7 +164,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		span.RecordError(err)
 		span.SetStatus(telemetry.StatusError, "command_start_failed")
 		MetricsExecErrors(1)
-		logpush.BlogContext(ctx, "ERROR", "exec.error", "启动命令失败", req, map[string]any{"error": err.Error(), "error_type": "command_start_failed"})
+		obslog.EmitContext(ctx, "ERROR", "exec.error", "启动命令失败", req, map[string]any{"error": err.Error(), "error_type": "command_start_failed"})
 		models.SendMsg(ws, models.OutMessage{Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID, Stderr: "启动命令失败", ExitCode: -1, TraceID: traceID, Traceparent: traceparent, ArtifactID: artifactID, ErrorType: "command_start_failed"})
 		return
 	}
@@ -224,7 +224,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		exitCode = -1
 		errorType = "timeout"
 		// 超时显式成事件：此前只体现在 exec.done 的 timed_out 字段里，排障时无法独立检索。
-		logpush.BlogContext(ctx, "ERROR", "exec.timeout", "命令执行超时", req, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "exec.timeout", "命令执行超时", req, map[string]any{
 			"exec_id": req.ExecID, "error_type": "timeout",
 			"timeout_seconds": timeout.Seconds(), "stdout_len": stdoutCapture.Total,
 		})
@@ -274,7 +274,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		telemetry.Bool("stderr.Truncated", stderrCapture.Truncated),
 		telemetry.String("artifact.id", artifactID),
 	)
-	logpush.BlogContext(ctx, level, "exec.done", "命令执行完成", req, map[string]any{
+	obslog.EmitContext(ctx, level, "exec.done", "命令执行完成", req, map[string]any{
 		"artifact_id":            artifactID,
 		"exit_code":              exitCode,
 		"success":                exitCode == 0,
@@ -318,7 +318,7 @@ func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.Exec
 		Type: "exec_result", CaseID: req.CaseID, ExecID: req.ExecID,
 		Stdout: finalStdout, Stderr: stderrCapture.String(), ExitCode: exitCode,
 		PtyMode: ptyMode, StderrPtyMerged: req.Pty,
-		TraceID: traceID, Traceparent: logpush.TraceparentFromContext(resultCtx), ArtifactID: artifactID,
+		TraceID: traceID, Traceparent: obslog.TraceparentFromContext(resultCtx), ArtifactID: artifactID,
 		StdoutBytes: stdoutCapture.Total, StderrBytes: stderrCapture.Total,
 		StdoutSHA256: stdoutCapture.SHA256(), StderrSHA256: stderrCapture.SHA256(),
 		StdoutTruncated: stdoutCapture.Truncated, StderrTruncated: stderrCapture.Truncated,
@@ -538,7 +538,7 @@ func On_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 				// 缺陷 2: 回采 SSH 终端交互日志（用户手动输入/输出的关键信息）
 				// 只回采有意义的内容（过滤空行和控制序列）
 				if len(chunk) > 0 && chunk != "\r\n" && !strings.Contains(chunk, "\x1b[") {
-					logpush.Blog("INFO", "ssh.output", "SSH 终端输出", "", caseID, "", "", map[string]any{
+					obslog.Emit("INFO", "ssh.output", "SSH 终端输出", "", caseID, "", "", map[string]any{
 						"output_len":     len(chunk),
 						"output_preview": sshx.TruncateString(chunk, 200),
 					})
@@ -564,7 +564,7 @@ func On_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 			exitErr = err.Error()
 			log.Printf("[Bridge] SSH 会话退出(异常): case=%s err=%v", caseID, err)
 		}
-		logpush.Blog("WARN", "ssh.disconnected", "SSH 连接已结束", "", caseID, "", "", map[string]any{
+		obslog.Emit("WARN", "ssh.disconnected", "SSH 连接已结束", "", caseID, "", "", map[string]any{
 			"reason":           reason,
 			"exit_error":       exitErr,
 			"duration_seconds": int64(sshx.AgeSeconds(s)),
@@ -584,7 +584,7 @@ func On_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 			if s.ShellRespawns.Load() < sshx.MaxShellRespawns {
 				if reader, respawnErr := s.RespawnShell(); respawnErr == nil {
 					respawnCount := s.ShellRespawns.Add(1)
-					logpush.Blog("WARN", "session.shell_respawned", "交互 shell 被设备空闲超时踢出，已在同一条连接上重建", "", caseID, "", "", map[string]any{
+					obslog.Emit("WARN", "session.shell_respawned", "交互 shell 被设备空闲超时踢出，已在同一条连接上重建", "", caseID, "", "", map[string]any{
 						"duration_seconds":   int64(sshx.AgeSeconds(s)),
 						"respawns":           respawnCount,
 						"long_tasks":         s.LongTasks.Load(),
@@ -598,7 +598,7 @@ func On_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 					return
 				}
 			}
-			logpush.Blog("WARN", "session.shell_eof_detached", "交互式 shell 已退出，连接保留给进行中的业务", "", caseID, "", "", map[string]any{
+			obslog.Emit("WARN", "session.shell_eof_detached", "交互式 shell 已退出，连接保留给进行中的业务", "", caseID, "", "", map[string]any{
 				"duration_seconds":   int64(sshx.AgeSeconds(s)),
 				"long_tasks":         s.LongTasks.Load(),
 				"busy_age_seconds":   int64(s.BusyAgeSeconds()),

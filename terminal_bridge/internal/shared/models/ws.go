@@ -306,7 +306,7 @@ type OutMessage struct {
 // ErrorFieldsFunc 由装配方注入（logcollect 错误码表），models 不认识消费者。
 var ErrorFieldsFunc func(code string) (layer, owner, retryable string)
 
-// SendErrorHook 由装配方注入（blog 留痕 + metrics），models 不认识 logpush/app。
+// SendErrorHook 由装配方注入（blog 留痕 + metrics），models 不认识 obslog/app。
 var SendErrorHook func(msg OutMessage, err error)
 
 var WebsocketWriteLocks sync.Map

@@ -7,7 +7,7 @@ package app
 // 2026-10-27 现场只能看到 active_sessions=0，就是因为缺少这组事件。
 
 import (
-	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
@@ -15,13 +15,13 @@ import (
 
 // findLogEventSince 在全局 ring 里找指定事件（只看 seq 之后的新增条目）。
 //
-// 全局 logpush.DefaultHub 会跨用例累积，必须用起始水位隔离，否则断言会命中别的用例写入的事件。
-func findLogEventSince(t *testing.T, startSeq uint64, event string) *logpush.LogEntry {
+// 全局 obslog.DefaultHub 会跨用例累积，必须用起始水位隔离，否则断言会命中别的用例写入的事件。
+func findLogEventSince(t *testing.T, startSeq uint64, event string) *obslog.LogEntry {
 	t.Helper()
-	logpush.DefaultHub.Mu.Lock()
-	defer logpush.DefaultHub.Mu.Unlock()
-	for i := len(logpush.DefaultHub.Ring) - 1; i >= 0; i-- {
-		entry := logpush.DefaultHub.Ring[i]
+	obslog.DefaultHub.Mu.Lock()
+	defer obslog.DefaultHub.Mu.Unlock()
+	for i := len(obslog.DefaultHub.Ring) - 1; i >= 0; i-- {
+		entry := obslog.DefaultHub.Ring[i]
 		if entry.Seq <= startSeq {
 			break
 		}
@@ -33,9 +33,9 @@ func findLogEventSince(t *testing.T, startSeq uint64, event string) *logpush.Log
 }
 
 func ringSeq() uint64 {
-	logpush.DefaultHub.Mu.Lock()
-	defer logpush.DefaultHub.Mu.Unlock()
-	return logpush.DefaultHub.Seq
+	obslog.DefaultHub.Mu.Lock()
+	defer obslog.DefaultHub.Mu.Unlock()
+	return obslog.DefaultHub.Seq
 }
 
 // 销毁会话必须同时完成三件事：摘表、关闭、留痕（含原因/行为者/存活时长）。

@@ -16,9 +16,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
-	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -34,16 +35,44 @@ var ProcessStartedAt time.Time
 // 标准库 log 包，不接管它。客户现场双击 exe 后控制台窗口一闪而过，
 // 崩溃栈就永久丢失（2026-10-27 现场正是无法区分"被杀"与"panic"）。
 func RedirectStderrToFile() {
-	dir := strings.TrimSpace(logpush.DefaultHub.LogDir)
+	dir := strings.TrimSpace(obslog.DefaultHub.LogDir)
 	if dir == "" {
 		return
 	}
-	path := filepath.Join(dir, "bridge-stderr.log")
+	path := filepath.Join(dir, stderrLogName)
+	// 必须在打开句柄之前轮转：Windows 不允许 rename 一个仍被占用的文件。
+	rotateStderrIfNeeded(path)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
 	os.Stderr = file
+}
+
+const (
+	stderrLogName = "bridge-stderr.log"
+	stderrGenName = "bridge-stderr.gen"
+	// stderrLogMaxBytes 是单文件上限：启动时超过就轮转一代（.1 覆盖）。
+	// 60MB 足以容纳数万条 panic 栈，同时远低于客户机磁盘告警阈值。
+	stderrLogMaxBytes = 60 << 20
+)
+
+// rotateStderrIfNeeded 在启动时把超限的 stderr 文件轮转为 .1，并写代数标记。
+//
+// 为什么只在启动时轮转：运行期间 os.Stderr 一直持有句柄，Windows 不允许 rename
+// 被占用的文件；而"长期运行累积"这一主因恰好可由每次启动重置一代覆盖。
+// 代数（gen）供 obslog 补传侧拼进 event_id：轮转后偏移从 0 重新计数，
+// 不加代数会与轮转前的同一偏移 event_id 碰撞，被平台按幂等规则误丢。
+func rotateStderrIfNeeded(path string) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < stderrLogMaxBytes {
+		return
+	}
+	if err := os.Rename(path, path+".1"); err != nil {
+		return
+	}
+	gen := strconv.FormatInt(time.Now().UnixNano(), 10)
+	_ = os.WriteFile(filepath.Join(filepath.Dir(path), stderrGenName), []byte(gen), 0o600)
 }
 
 // connSeq 是进程内连接序号：单调递增，便于按时间排序与人工对账。
@@ -111,7 +140,7 @@ func (b *Bridge) DestroySession(key, reason, byConn string) bool {
 	if session == nil {
 		// 落空本身是重要信号：说明调用方以为自己在销毁，实际键早已不在
 		// （例如远端 EOF 已先走一遍清理），据此可判断清理链路是否重复。
-		logpush.Blog("WARN", "session.destroy_miss", "会话销毁落空：键已不存在", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+		obslog.Emit("WARN", "session.destroy_miss", "会话销毁落空：键已不存在", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 			"key":             key,
 			"reason":          reason,
 			"by_conn":         byConn,
@@ -125,7 +154,7 @@ func (b *Bridge) DestroySession(key, reason, byConn string) bool {
 	b.Remove(key)
 	// 租约簿记必须随会话一起清理，否则 reaper 会反复命中已不存在的键。
 	b.forgetLease(key)
-	logpush.Blog("WARN", "session.destroyed", "SSH 会话被销毁", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	obslog.Emit("WARN", "session.destroyed", "SSH 会话被销毁", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key":             key,
 		"reason":          reason,
 		"by_conn":         byConn,
@@ -176,7 +205,7 @@ func (b *Bridge) ReleaseSession(key, byConn string) {
 	b.sessionIdleAt[key] = time.Now()
 	b.mu.Unlock()
 
-	logpush.Blog("INFO", "session.idle", "会话已无持有者，进入空闲租约", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	obslog.Emit("INFO", "session.idle", "会话已无持有者，进入空闲租约", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key": key, "by_conn": byConn, "idle_ttl_seconds": int(SessionIdleTTL().Seconds()),
 	})
 }
@@ -244,7 +273,7 @@ func SessionIdleTTL() time.Duration {
 func (b *Bridge) detachSession(key, reason, byConn string) bool {
 	session := b.Get(key)
 	if session == nil {
-		logpush.Blog("WARN", "session.destroy_miss", "会话摘表落空：键已不存在", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+		obslog.Emit("WARN", "session.destroy_miss", "会话摘表落空：键已不存在", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 			"key":             key,
 			"reason":          reason,
 			"by_conn":         byConn,
@@ -258,7 +287,7 @@ func (b *Bridge) detachSession(key, reason, byConn string) bool {
 	session.MarkOrphaned()
 	b.Remove(key)
 	b.forgetLease(key)
-	logpush.Blog("WARN", "session.detached", "会话已摘表但保留连接（长任务进行中，禁止腰斩）", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	obslog.Emit("WARN", "session.detached", "会话已摘表但保留连接（长任务进行中，禁止腰斩）", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key":             key,
 		"reason":          reason,
 		"by_conn":         byConn,
@@ -299,7 +328,7 @@ func StartSessionReaper(bridge *Bridge, ttl time.Duration) {
 		defer ticker.Stop()
 		for range ticker.C {
 			if reaped := bridge.ReapIdleSessions(ttl); reaped > 0 {
-				logpush.Blog("INFO", "session.reaped", "空闲租约到期，已回收会话", "", "", "", "", map[string]any{
+				obslog.Emit("INFO", "session.reaped", "空闲租约到期，已回收会话", "", "", "", "", map[string]any{
 					"reaped": reaped, "active_sessions": bridge.SessionCount(),
 				})
 			}
@@ -317,7 +346,7 @@ func LogSessionCreated(session *sshx.SSHSession, key, connID, role, source strin
 	}
 	session.OwnerConn = connID
 	session.CreatedAt = time.Now()
-	logpush.Blog("INFO", "session.created", "SSH 会话已建立", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
+	obslog.Emit("INFO", "session.created", "SSH 会话已建立", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key":        key,
 		"conn_id":    connID,
 		"role":       role,
@@ -334,10 +363,10 @@ func LogSessionCreated(session *sshx.SSHSession, key, connID, role, source strin
 func resourceSnapshot() map[string]any {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
-	// ring/seq 的读写都在 logpush.LogHub.Mu 下，这里必须持锁快照，不能裸读。
-	logpush.DefaultHub.Mu.Lock()
-	ringLen, logSeq := len(logpush.DefaultHub.Ring), logpush.DefaultHub.Seq
-	logpush.DefaultHub.Mu.Unlock()
+	// ring/seq 的读写都在 obslog.LogHub.Mu 下，这里必须持锁快照，不能裸读。
+	obslog.DefaultHub.Mu.Lock()
+	ringLen, logSeq := len(obslog.DefaultHub.Ring), obslog.DefaultHub.Seq
+	obslog.DefaultHub.Mu.Unlock()
 	// 只报 Go 运行时能确定性拿到的量：Sys 是进程向 OS 申请的总内存（含堆外），
 	// 足以判断"是不是在持续膨胀"，且不需要按平台引入 syscall 分支。
 	snapshot := map[string]any{
@@ -366,7 +395,7 @@ func StartResourceSampler(interval time.Duration) {
 		for range ticker.C {
 			extra := resourceSnapshot()
 			extra["sessions"] = sessionCountSnapshot()
-			logpush.Blog("INFO", "resource.sample", "桥侧资源采样", "", "", "", "", extra)
+			obslog.Emit("INFO", "resource.sample", "桥侧资源采样", "", "", "", "", extra)
 		}
 	}()
 }

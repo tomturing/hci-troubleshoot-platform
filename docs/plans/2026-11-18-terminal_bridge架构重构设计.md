@@ -26,6 +26,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-20 | v2.8 | 命名与可靠性收敛：① `internal/logpush` → `internal/shared/obslog`、`Blog()` → `Emit()`（ADR 见《2026-11-20-terminal_bridge重构审查与优化》§15：`log+动作` 缺"日志主体"维度导致与 logcollect 混淆；经三条判据确认不并入 telemetry——变化原因、依赖方向、build tag 开关语义均不同）；事件名 `log_upload.*`、前端 `type=bridge_log`、`/status` 字段、`HCI_BRIDGE_LOG_*` 四类跨端契约不变；obslog 下沉 shared 后域间依赖基线 11 条 → 6 条；新增包文档 `obslog/doc.go` 明确"桥自身事件"与"客户节点日志采集"边界。② 阶段 1 可靠性补齐：gaps.jsonl 重启重放 + 归档 + 纳入总占用；补传扫描 seedMu 串行化；预算检查按 maxBytes/8 与 5s 双阈值节流；stderr 启动时按 60MB 轮转一代并写代数标记，event_id 带代数避免偏移复用被幂等误丢。③ 新增回归测试 3 例（gaps 重放、损坏行跳过、代数读取） |
 | 2026-11-20 | v2.7 | 实施后审查与 P0 修复（详见《2026-11-20-terminal_bridge重构审查与优化》）：L2 outbox 预算超限路径 `enforceDiskBudgetLocked` 在持 `u.Mu` 时调 `Blog`，经 `publish → enqueue` 同 goroutine 重入 `u.Mu` 造成自死锁（平台久不可达、弱网积压时触发，桥整体挂死），改为 stderr 留痕经 L3 补传上报，不再产生重复 gap 事件；`persistOK` 由单向闩锁改为可复位（写成功即复位并把游标钳回本条起点，避免越过故障期空洞误删后续段），`refillFromDiskLocked` 在故障期暂停（杜绝无限重放），落盘失败且内存队列满时计入 `dropped` 并留痕（"零静默丢弃"在磁盘满分支补全），`/status` 新增 `persist_ok`；新增 3 个生产接线回归测试（全局 `LogUpload`，非局部实例），并做缺陷回退的反向验证。审查同时记录 5 项架构债（Shared Kernel、横切 logpush、logcollect 伪公共库、delivery 未接 Runner、路由未分权）与 7 项 P1，留待后续阶段收敛 |
 | 2026-11-20 | v2.6 | 终局对账（两文档逐条核对代码事实）：全部阶段完成——P-1 止血、U0（#1581）、R0（#1575）、S1-S4/D1（收口设计 v2.0-s4b/e2e，uplink 部分 #1580）、U1（#1582）、L1（#1584）。目标树与落地的结构差异留痕（设计意图均满足，守卫钉死）：① kinds/ 目录未建——reconcile 为纯数据驱动骨架（kinds.go Kind 枚举+pipeline），消费者声明式胶水住功能域（acli/logcollect），新增链路只加 DesiredState 值+Provider 不改骨架，remote_convergence_test.go golden 逐字+形态扫描守卫；② 注册式路由由装配层 cmd/bridge/ws_routes.go 统一注册（v2.1 ③，域 init 自注册会成环），18 种消息守卫冻结；③ shared/runtime 新增（env/mode 公共助手，目标树未列）；④ uplink/token.go 未独立成文件——令牌约定住唯一消费者 logpush；⑤ models 仅 ws.go（delivery 视图 DTO 住 delivery 域，无跨进程需求）；⑥ cmd/bridge/main.go 236 行（目标 <200，超出为启动注释与装配接线，无业务逻辑）；⑦ 模块根留 5 个 package main 守卫测试（golden/静态形态扫描，跨域守卫不属任何单域）。CI 补桌面产物 logpush 符号门禁（风险 #19，实测 124 符号/otel 0）；U2 可选未做（U0 ≤5MB fail-closed 门禁已防体积回归）；手动上传入口退役为 gated 后续（等价性已过，待版本覆盖+≥2 周观察期，不占 bridge 阶段）。全量验收：544 测试函数零丢失、race/双 tag/双 GOOS 绿、import 禁令 11 条冻结未新增 |
 | 2026-11-20 | v2.5 | L1-L4 落地（§3.6）：L1 全量补传——扫全部 bridge-*.log/.log.1（含当前文件，排除 bridge-stderr.log），单轮字节 8MB/时间 2s/条数预算，进度落盘 bridge-log-seed-<instance>.json 断点续扫（DoneBefore 跳已扫旧文件、当前文件只读增量尾部），env/WS 双路径 configure 后异步 seed，worker 每轮续扫；L2 分段 outbox——seg-<纳秒>.jsonl 单段 1MB 滚段，cursor.json 只在批次确认后前进（跨段进位+删已消费段），内存满仅落盘不丢弃（spilled），队空从游标 refill，重启不 truncate 按游标恢复，旧单文件 outbox 自动迁为最旧分段；总磁盘预算（默认 8MB）超限 drop-oldest 段（活动段不碰），被丢段数据条目按全局索引从内存队列真剔除，gap 标记（log_upload.gap，携带 seq 区间/条数/段名）写独立 gaps.jsonl 不占预算不被丢——真丢真报；L3 stderr 包装——非 JSON 非空行包装 bridge.stderr/ERROR，字节水位 bridge-log-uploaded-<instance>.stderr 只进不退，确认送达才推进，尾部不完整行不消费；L4 当前文件纳入只读完整行；双队列（实时 queue 占游标/补传 seedQueue 仅内存）+补传批不推 seq 水位+落盘失败 persistOK=false 游标停进重复交后端幂等；hubLogLocationMu 快照保护 LogDir/LogPath 读侧（测试缝并发改写不竞态）；四场景等价性+gap/水位/续扫/迁移守卫共 8 新测试，race/双 tag/双 GOOS 全绿，测试函数名零丢失（本分支 +8，全量清单 544，对基线零删除），import 禁令 11 条未新增 |
@@ -216,16 +217,16 @@ terminal_bridge 现状盘点与归属裁决：
 |------|---------|--------|---------|---------|
 | Traces | initTelemetry + otel.Tracer 散布调用（main.go） | 运维 collector（OTLP HTTP） | shared/telemetry（门面 + build tags） | 桌面可剥离（从未启用） |
 | Metrics | promMetrics 自定义结构 + /metrics 手渲染 Prometheus 文本 | 运维抓取 | app/metrics.go | 否（进程运维） |
-| Logs·本地 | logHub 本地 JSONL 落盘/轮转 + bridge-stderr.log | 现场排障 | logpush/hub.go | 否 |
-| Logs·证据 | logUploader 直传（令牌/outbox/水位补传）+ WS bridge_log 实时推送 | **平台诊断 DB**（工单绑定、event_id 幂等） | logpush | **否（核心诊断功能）** |
+| Logs·本地 | logHub 本地 JSONL 落盘/轮转 + bridge-stderr.log | 现场排障 | obslog/hub.go | 否 |
+| Logs·证据 | logUploader 直传（令牌/outbox/水位补传）+ WS bridge_log 实时推送 | **平台诊断 DB**（工单绑定、event_id 幂等） | obslog | **否（核心诊断功能）** |
 
-**裁决：logpush 独立保留为功能域，不并入 telemetry。** 三条理由：
+**裁决：obslog 独立保留为功能域，不并入 telemetry。** 三条理由：
 
-1. **消费者不同**：telemetry 的 traces 去运维 collector；logpush 的事件是工单绑定的
+1. **消费者不同**：telemetry 的 traces 去运维 collector；obslog 的事件是工单绑定的
    诊断证据，进平台业务库、参与诊断流程——后者是业务功能，不是运维附属。
-2. **剥离性冲突**：telemetry 必须对桌面 build-tag 可剥离（§6）；logpush 若并入一起被剥，
+2. **剥离性冲突**：telemetry 必须对桌面 build-tag 可剥离（§6）；obslog 若并入一起被剥，
    桌面就丢了证据直传 = 功能回归。两者生命周期相反，必须分包。
-3. **协议非通用**：logpush 携带平台专有契约（X-Bridge-Upload-Token、event_id 幂等、
+3. **协议非通用**：obslog 携带平台专有契约（X-Bridge-Upload-Token、event_id 幂等、
    实例水位），不是 OTel logs 的通用语义；硬套 OTel logs 反而引入新依赖负重，与体积目标矛盾。
 
 包名取 **telemetry**（OTel SDK 自身术语，短名词），不逐字对齐 backend 的 observability——
@@ -303,7 +304,7 @@ terminal_bridge/
 │   │   ├── mem_unix.go / mem_windows.go               # 内存探测（平台差异）
 │   │   ├── concurrency.go           # 作业并发控制（与 reconcile/guard 主机键对齐）
 │   │   └── stall.go                 # 停滞检测
-│   ├── logpush/                     # 【桥事件日志域】自动直传+补传（工单证据通道，不可剥离）
+│   ├── obslog/                     # 【桥事件日志域】自动直传+补传（工单证据通道，不可剥离）
 │   │   ├── hub.go                   # logHub：publish/本地 JSONL 落盘/轮转/WS 实时订阅
 │   │   ├── outbox.go                # 落盘 outbox（分段、字节预算、补传）
 │   │   ├── uploader.go              # 单 worker 批量 gzip 直传（调 uplink）
@@ -365,11 +366,11 @@ terminal_bridge/
 | sftp | 功能域 + 四象限 pull | 面向用户的下载（文件名主权、落盘主权） | 不把用户交互语义塞进原语层 |
 | logcollect | 功能域 | 采集编排、错误码、证据；spc/config 差异下沉 kinds | 不自实现写文件/探测/传输 |
 | delivery | 功能域 | 作业状态机与执行权；传输全部委托原语 | 不自实现分片/pace |
-| logpush | 功能域 + 证据通道（§2.6） | logHub 事件管道：本地落盘/直传/补传/WS 实时推送 | 不自实现 TLS 信任/分片；**不得 build-tag 剥离**（核心诊断功能） |
+| obslog | 功能域 + 证据通道（§2.6） | logHub 事件管道：本地落盘/直传/补传/WS 实时推送 | 不自实现 TLS 信任/分片；**不得 build-tag 剥离**（核心诊断功能） |
 | shared/remote | 四象限 + 端口适配器 + io/fs 命名 | 节点面原语，只认识 Runner | 禁止期望值语义；禁止 import main/sshx/各域 |
 | shared/uplink | 两张脸·云面 + 数据面 | 云面传输原语，不依赖 Runner | 禁止 import remote（两脸互不认识） |
 | shared/reconcile | 声明式收敛（K8s/Salt/Terraform） | 编排骨架 + 消费者（acli 两阶段/spc/config） | 禁止命令字符串；禁止 import main/各域 |
-| shared/telemetry | OTel 门面 + build tags | **仅 traces**（spans/propagation）；logs 归 logpush、metrics 归 app（§2.6） | 门面签名禁止出现 otel 类型 |
+| shared/telemetry | OTel 门面 + build tags | **仅 traces**（spans/propagation）；logs 归 obslog、metrics 归 app（§2.6） | 门面签名禁止出现 otel 类型 |
 | shared/models | DTO/领域分离 | 跨进程线上契约 | 禁止领域类型（DesiredState 等） |
 
 **delivery 可扩展性边界（备注）**：delivery 的作业引擎（落盘状态机/断点续传/pace/fencing/
@@ -381,7 +382,7 @@ terminal_bridge/
 
 ```
 cmd/bridge
-    └── app ──→ {terminal, acli, sftp, logcollect, delivery, logpush, reconcile/kinds}
+    └── app ──→ {terminal, acli, sftp, logcollect, delivery, obslog, reconcile/kinds}
                     │                │              │
                     ▼                ▼              ▼
                 sshx ──→ shared/remote ←── shared/reconcile
@@ -389,7 +390,7 @@ cmd/bridge
                     │                ▼              │
                     │        （Runner 接口缝）        │
                     ▼                               ▼
-              shared/uplink ←── {delivery, logpush, logcollect}
+              shared/uplink ←── {delivery, obslog, logcollect}
               shared/telemetry ←── app（门面注入各域）
               shared/models ←── 所有需要 WS/HTTP DTO 的包
 ```
@@ -433,7 +434,7 @@ utils/models 是业界公认的耦合度腐化高发区（垃圾抽屉反模式�
   "types belong to the package that owns their behavior"。
   backend 的 models 集中是 Python/Pydantic 生态惯例，Go 侧只对齐结构不对齐内容。
 
-### 3.6 logpush 完备性增强（L1-L4）与手动上传入口退役路径
+### 3.6 obslog 完备性增强（L1-L4）与手动上传入口退役路径
 
 **现状结论（代码核实）**：自动直传与本地 HCI-TerminalBridge-Logs **尚未完全一致**，
 存在四类系统性缺口。手动兜底入口（前端 BridgeLogUploader.vue → 后端 API，
@@ -446,7 +447,7 @@ utils/models 是业界公认的耦合度腐化高发区（垃圾抽屉反模式�
 | ③ | bridge-stderr.log（panic/runtime fatal 唯一出口）不是带 seq 的 JSONL，补传逐行解析跳过，**panic 现场永不自动上传** | lifecycle.go redirectStderrToFile + readLogFileEntries |
 | ④ | 补传排除正在写的当前文件，其中被丢弃/令牌前条目须等轮转后才可能进窗口 | recentBridgeLogFiles 的 exclude 参数 |
 
-**增强设计（L1-L4，落 logpush 域；目标 = 本地保留窗口内条目至少一次必达平台）**：
+**增强设计（L1-L4，落 obslog 域；目标 = 本地保留窗口内条目至少一次必达平台）**：
 
 | # | 增强 | 要点 |
 |---|------|------|
@@ -484,7 +485,7 @@ gap 标记事件本身必须可查。
 | handleAcliSync 的 WS 入口/retry_stage/progress 信封/两阶段串联 | internal/acli/ | 功能域协议边缘（两阶段） |
 | acli 探测/下载/缓存/安装编排 + compareAcliVersions | shared/reconcile/kinds/acli/（descriptor.go/package.go/version.go） | 声明式消费者·阶段一 |
 | 插件差量同步声明式胶水（阶段二） | shared/reconcile/kinds/acli/plugin.go | 声明式消费者·阶段二 |
-| logHub（publish/本地落盘/轮转/WS 订阅） | logpush/hub.go | 事件管道 |
+| logHub（publish/本地落盘/轮转/WS 订阅） | obslog/hub.go | 事件管道 |
 | promMetrics 与 /metrics 渲染 | app/metrics.go | 进程指标 |
 | initTelemetry + 全部 otel 直接调用 | shared/telemetry/（先立门面再迁调用点） | OTel 门面 |
 | uploadStream（死代码） | **删除** | — |
@@ -516,7 +517,7 @@ gap 标记事件本身必须可查。
 | delivery_concurrency.go | 111 | delivery/concurrency.go | 与 guard 主机键对齐 |
 | delivery_stall.go | 48 | delivery/stall.go | |
 | acli_package.go | 784 | 写入协议 → shared/remote/fs.go；下载/缓存/探测 → kinds/acli/package.go | 收口 S1/S4 |
-| log_uploader.go | 661 | logpush/outbox.go + uploader.go + seed.go | 自动直传+补传；**手动上传桌面日志是前端 BridgeLogUploader.vue → 后端 API，不属 bridge**（退役路径见 §3.6） |
+| log_uploader.go | 661 | obslog/outbox.go + uploader.go + seed.go | 自动直传+补传；**手动上传桌面日志是前端 BridgeLogUploader.vue → 后端 API，不属 bridge**（退役路径见 §3.6） |
 | ~9500 行测试 | | 跟随各自包迁移 | **先迁测试再迁实现**，测试是迁移安全网 |
 | terminal_bridge*.exe / darwin 二进制 ×4 | | 移出源码目录 | 分发产物只留 frontend/customer/public/downloads/ |
 
@@ -629,7 +630,7 @@ type Span interface { AddEvent(string, ...Attr); SetStatus(code, msg string); En
 | **S3** | fanout/activate/guard + spc 消费者 | S2 | spc 测试全绿 + 竞态用例 + 抗崩溃用例 |
 | **S4** | acli_sync 两阶段接入（S4a/S4b/S4c）+ 修 B6/B7/B8 + 插件差量三态 + 票据 | S3 | 现有测试全绿 + golden + 三缺陷用例 + 差量三态 + 票据五用例 + 串联语义 |
 | **U1** | telemetry 门面 + build tag 分离（可与 S2-S4 并行） | R0 | 桌面产物 noop 编译零 otel 符号；集群 tracing 不回归 |
-| **L1** | logpush 完备性增强（§3.6 L1-L4，可与 S2-S4 并行） | R0 | 等价性测试四场景通过；零静默丢弃（gap 标记可查） |
+| **L1** | obslog 完备性增强（§3.6 L1-L4，可与 S2-S4 并行） | R0 | 等价性测试四场景通过；零静默丢弃（gap 标记可查） |
 | **D1** | relay 推送链路与 admin-ui 下发入口直接删除（可与 S2-S4 并行） | R0 | grep 零残留；admin-ui 规格维护回归；无 404 |
 
 每阶段独立可回滚；R0 之后任何 S 阶段出问题可 revert 而不影响目录骨架。
@@ -659,7 +660,7 @@ type Span interface { AddEvent(string, ...Attr); SetStatus(code, msg string); En
 | 16 | L3 stderr 包装产生重复条目 | 字节偏移水位 + 后端 event_id 幂等 |
 | 17 | L4 当前文件补传与实时 enqueue 重复 | event_id 幂等去重（现有机制，不新造） |
 | 18 | 手动上传入口过早退役 | 三前置（等价性验收 + 版本覆盖 + 观察期），后端开关保留一个版本周期可回滚 |
-| 19 | logpush 被误并入 telemetry 后随 build tag 剥离，桌面丢证据直传 | §2.6 裁决 logpush 独立域、不可剥离；CI 检查桌面产物含 logpush 符号 |
+| 19 | obslog 被误并入 telemetry 后随 build tag 剥离，桌面丢证据直传 | §2.6 裁决 obslog 独立域、不可剥离；CI 检查桌面产物含 obslog 符号 |
 | 20 | 插件被重新独立成域/独立链路，制造链路分裂 | 硬禁令：插件协议边缘归 acli 域、胶水归 kinds/acli/plugin.go；不设 internal/plugin、不设回退开关 |
 | 21 | D1 删不干净或误删规格维护 | grep 零残留 + 规格维护回归 + 无 404 用例；规格表保留 |
 
@@ -676,7 +677,7 @@ type Span interface { AddEvent(string, ...Attr); SetStatus(code, msg string); En
 | S2-S3 | 收口设计 S2-S3 验收 | CI |
 | S4 | 收口设计 S4 验收（两阶段串联、差量三态、票据五用例、B6/B7/B8 修正） | CI + 单测 |
 | U1 | 桌面产物 go tool nm 零 otel 符号；集群 tracing 端到端不回归 | CI + 集成 |
-| L1 | 等价性测试（令牌前历史/上限溢出/panic/重启四场景）；gap 标记可查；桌面产物含 logpush 符号 | 单测 + 集成 |
+| L1 | 等价性测试（令牌前历史/上限溢出/panic/重启四场景）；gap 标记可查；桌面产物含 obslog 符号 | 单测 + 集成 |
 | D1 | grep 零残留；admin-ui 规格维护回归；无 404 | CI 脚本 + 集成 |
 | 全程 | gofmt / go vet / 双 GOOS 冒烟构建 | CI |
 
@@ -695,7 +696,7 @@ type Span interface { AddEvent(string, ...Attr); SetStatus(code, msg string); En
 | 文件-as-状态 / 文件-as-流 | fs（原子替换+校验）与 transfer（断点+分片）的语义分界 |
 | 微内核 + 注册式路由 | app 只做骨架，各域自注册消息 handler |
 | 门面（Facade） | telemetry 对调用方暴露的最小 API，隔离 OTel 实现 |
-| 证据通道（logpush） | 工单绑定的结构化事件直传，消费者是平台诊断 DB；区别于运维可观测性（telemetry/metrics），不可剥离 |
+| 证据通道（obslog） | 工单绑定的结构化事件直传，消费者是平台诊断 DB；区别于运维可观测性（telemetry/metrics），不可剥离 |
 | DTO / 领域类型 | 线上契约结构（models）vs 拥有不变量的行为类型（住行为包） |
 | 二维分离 | 目录搬迁（R0）与逻辑收口（S1-S4/D1）独立 PR，不混做 |
 | 两阶段 | acli_sync 阶段一工具同步 + 阶段二插件差量同步，串行、同触发、同骨架 |
@@ -714,7 +715,7 @@ type Span interface { AddEvent(string, ...Attr); SetStatus(code, msg string); En
 | terminal_bridge/log_collect_spc_fanout.go | fanout 泛化来源（1292 行） |
 | terminal_bridge/delivery_runner.go | 传输原语抽取来源（1933 行） |
 | terminal_bridge/log_collect_transfer.go | Pull/Push 两张脸分拆来源 |
-| terminal_bridge/log_uploader.go | logpush 域来源（自动直传+水位补传，§3.6 增强对象） |
+| terminal_bridge/log_uploader.go | obslog 域来源（自动直传+水位补传，§3.6 增强对象） |
 | terminal_bridge/lifecycle.go | stderr 重定向（bridge-stderr.log）出处，L3 包装对象 |
 | frontend/customer/src/components/BridgeLogUploader.vue | 手动兜底上传入口（前端→后端，不经 bridge）；退役前置见 §3.6 |
 | frontend/customer/src/stores/chat.ts | 连接后 acli 检查与 acli_sync 触发点，S4b 改总是触发 |

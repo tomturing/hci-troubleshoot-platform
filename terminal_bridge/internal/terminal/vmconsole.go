@@ -14,8 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -237,7 +237,7 @@ func (r *vmConsoleRunner) close() { _ = r.client.Close() }
 // 超时通过 ctx 强制：deadline 触发时关闭连接确定性中止远端命令。
 func (r *vmConsoleRunner) run(ctx context.Context, argv []string, maxStdout int) (stdout []byte, stderrText string, exitCode int, truncated bool, err error) {
 	// 模拟会话透传执行上下文（与 ExecCommandIsolated 的 Setenv 约定一致）。
-	traceparent := logpush.TraceparentFromContext(ctx)
+	traceparent := obslog.TraceparentFromContext(ctx)
 	// 新建 Session 前先检查 ctx，避免无谓拨号。
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, "", -1, false, ctxErr
@@ -351,7 +351,7 @@ func VmConsoleResultMessage(req VmConsoleRequest, exitCode int, traceID, tracepa
 // send 为结果回传函数（生产路径封装 models.SendMsg(ws, ...)，测试可注入记录器）。
 func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmConsoleRequest) {
 	startTime := time.Now()
-	baseCtx := logpush.ContextFromMessage(models.InMessage{Traceparent: req.Traceparent, Tracestate: req.Tracestate})
+	baseCtx := obslog.ContextFromMessage(models.InMessage{Traceparent: req.Traceparent, Tracestate: req.Tracestate})
 	ctx, cancel := context.WithTimeout(baseCtx, time.Duration(req.TimeoutSeconds)*time.Second)
 	defer cancel()
 	ctx, span := telemetry.StartClient(ctx, "terminal_bridge.vm_console."+req.Operation,
@@ -382,7 +382,7 @@ func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmCons
 		result.CaptureID = req.CaptureID
 		result.Operation = req.Operation
 		result.TraceID = traceID
-		result.Traceparent = logpush.TraceparentFromContext(ctx)
+		result.Traceparent = obslog.TraceparentFromContext(ctx)
 		result.DurationMS = time.Since(startTime).Milliseconds()
 		send(result)
 	}
@@ -391,13 +391,13 @@ func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmCons
 			MetricsVmConsoleOpErrors(1)
 			span.SetStatus(telemetry.StatusError, errorType)
 		}
-		result := VmConsoleResultMessage(req, exitCode, traceID, logpush.TraceparentFromContext(ctx), time.Since(startTime).Milliseconds())
+		result := VmConsoleResultMessage(req, exitCode, traceID, obslog.TraceparentFromContext(ctx), time.Since(startTime).Milliseconds())
 		result.ErrorType = errorType
 		result.TimedOut = timedOut
 		send(result)
 	}
 
-	logpush.BlogContext(ctx, "INFO", "vm_console.start", "开始执行虚拟机控制台固定操作", logReq, map[string]any{
+	obslog.EmitContext(ctx, "INFO", "vm_console.start", "开始执行虚拟机控制台固定操作", logReq, map[string]any{
 		"operation": req.Operation, "capture_id": req.CaptureID,
 		"host_node_id": req.HostNodeID, "vm_id": req.VMID, "timeout_seconds": req.TimeoutSeconds,
 	})
@@ -405,7 +405,7 @@ func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmCons
 	runner, err := startVMConsoleRunner(s, req)
 	if err != nil {
 		span.RecordError(err)
-		logpush.BlogContext(ctx, "ERROR", "vm_console.error", "创建隔离 SSH 连接失败", logReq, map[string]any{"error": err.Error(), "error_type": vmConsoleErrSessionCreate})
+		obslog.EmitContext(ctx, "ERROR", "vm_console.error", "创建隔离 SSH 连接失败", logReq, map[string]any{"error": err.Error(), "error_type": vmConsoleErrSessionCreate})
 		failResult(vmConsoleErrSessionCreate, -1, false)
 		return
 	}
@@ -425,7 +425,7 @@ func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if err != nil {
 		span.RecordError(err)
-		logpush.BlogContext(ctx, "ERROR", "vm_console.wake_failed", "固定唤醒操作失败", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.wake_failed", "固定唤醒操作失败", logReq, map[string]any{
 			"error": err.Error(), "error_type": VmConsoleErrWakeFailed, "timed_out": timedOut,
 		})
 		if timedOut {
@@ -438,11 +438,11 @@ func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 	errorType := ""
 	if exitCode != 0 {
 		errorType = VmConsoleErrWakeFailed
-		logpush.BlogContext(ctx, "ERROR", "vm_console.wake_failed", "固定唤醒操作退出码非零", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.wake_failed", "固定唤醒操作退出码非零", logReq, map[string]any{
 			"exit_code": exitCode, "stderr_len": len(stderrText),
 		})
 	} else {
-		logpush.BlogContext(ctx, "INFO", "vm_console.wake_done", "固定唤醒操作完成", logReq, map[string]any{"exit_code": 0})
+		obslog.EmitContext(ctx, "INFO", "vm_console.wake_done", "固定唤醒操作完成", logReq, map[string]any{"exit_code": 0})
 	}
 	result := VmConsoleResultMessage(req, exitCode, "", "", 0)
 	result.UploadStatus = VmConsoleUploadNotApplicable
@@ -476,7 +476,7 @@ func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner
 		MetricsVmConsoleOpErrors(1)
 		span.SetStatus(telemetry.StatusError, errorType)
 	}
-	logpush.BlogContext(ctx, "INFO", "vm_console.capture_done", "基线截图流程结束", logReq, map[string]any{
+	obslog.EmitContext(ctx, "INFO", "vm_console.capture_done", "基线截图流程结束", logReq, map[string]any{
 		"exit_code": result.ExitCode, "upload_status": result.UploadStatus,
 		"sha256": result.SHA256, "size_bytes": result.SizeBytes,
 		"error_type": errorType, "timed_out": timedOut,
@@ -493,7 +493,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	if err != nil {
 		span.RecordError(err)
 		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-		logpush.BlogContext(ctx, "ERROR", "vm_console.capture_failed", "screendump 命令执行失败", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.capture_failed", "screendump 命令执行失败", logReq, map[string]any{
 			"error": err.Error(), "timed_out": timedOut,
 		})
 		if timedOut {
@@ -504,7 +504,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 		return result, VmConsoleErrCaptureFailed, false
 	}
 	if exitCode != 0 {
-		logpush.BlogContext(ctx, "ERROR", "vm_console.capture_failed", "screendump 命令退出码非零", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.capture_failed", "screendump 命令退出码非零", logReq, map[string]any{
 			"exit_code": exitCode, "stderr_len": len(stderrText),
 		})
 		result.ExitCode = exitCode
@@ -532,7 +532,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	}
 	if !found {
 		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-		logpush.BlogContext(ctx, "ERROR", "vm_console.capture_file_missing", "有界轮询后截图文件仍不存在", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.capture_file_missing", "有界轮询后截图文件仍不存在", logReq, map[string]any{
 			"probe_attempts": vmConsoleProbeMaxAttempts, "timed_out": timedOut,
 		})
 		result.ExitCode = -1
@@ -547,7 +547,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	if readErr != nil {
 		span.RecordError(readErr)
 		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-		logpush.BlogContext(ctx, "ERROR", "vm_console.read_failed", "base64 读取命令执行失败", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.read_failed", "base64 读取命令执行失败", logReq, map[string]any{
 			"error": readErr.Error(), "timed_out": timedOut,
 		})
 		result.ExitCode = -1
@@ -557,7 +557,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 		return result, vmConsoleErrReadFailed, false
 	}
 	if readCode != 0 {
-		logpush.BlogContext(ctx, "ERROR", "vm_console.read_failed", "base64 读取命令退出码非零", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.read_failed", "base64 读取命令退出码非零", logReq, map[string]any{
 			"exit_code": readCode, "stderr_len": len(readStderr),
 		})
 		result.ExitCode = readCode
@@ -568,7 +568,7 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	encoded := bytes.TrimSpace(stdoutBytes)
 	if readTruncated {
 		// 捕获被截断说明原始文件必然超过安全上限，绝不把不完整数据传给制品服务。
-		logpush.BlogContext(ctx, "ERROR", "vm_console.capture_too_large", "base64 输出超过有界捕获上限", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.capture_too_large", "base64 输出超过有界捕获上限", logReq, map[string]any{
 			"limit_bytes": vmConsoleMaxBase64Bytes,
 		})
 		result.ExitCode = -1
@@ -576,14 +576,14 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	}
 	decoded, decodeErr := base64Decode(encoded)
 	if decodeErr != nil {
-		logpush.BlogContext(ctx, "ERROR", "vm_console.capture_decode_failed", "base64 解码失败", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.capture_decode_failed", "base64 解码失败", logReq, map[string]any{
 			"error": decodeErr.Error(), "encoded_len": len(encoded),
 		})
 		result.ExitCode = -1
 		return result, vmConsoleErrDecodeFailed, false
 	}
 	if len(decoded) > vmConsoleMaxCaptureBytes {
-		logpush.BlogContext(ctx, "ERROR", "vm_console.capture_too_large", "解码后截图超过大小上限", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.capture_too_large", "解码后截图超过大小上限", logReq, map[string]any{
 			"size_bytes": len(decoded), "limit_bytes": vmConsoleMaxCaptureBytes,
 		})
 		result.ExitCode = -1
@@ -596,12 +596,12 @@ func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmCon
 	// PLATFORM_ARTIFACT_URL 未配置 → fail-closed artifact_upload_disabled，不降级 base64 over WS。
 	uploadStatus, uploadErr := UploadVMConsolePPM(context.Background(), req.CaptureID, req.CaseID, decoded, result.SHA256)
 	if uploadErr != nil {
-		logpush.BlogContext(ctx, "ERROR", "vm_console.upload_failed", "PPM 直传失败", logReq, map[string]any{
+		obslog.EmitContext(ctx, "ERROR", "vm_console.upload_failed", "PPM 直传失败", logReq, map[string]any{
 			"error": uploadErr.Error(), "sha256": result.SHA256, "size_bytes": result.SizeBytes,
 			"capture_id": req.CaptureID, "upload_status": uploadStatus,
 		})
 	} else {
-		logpush.BlogContext(ctx, "INFO", "vm_console.upload_done", "PPM 直传完成", logReq, map[string]any{
+		obslog.EmitContext(ctx, "INFO", "vm_console.upload_done", "PPM 直传完成", logReq, map[string]any{
 			"upload_status": uploadStatus, "sha256": result.SHA256, "size_bytes": result.SizeBytes,
 		})
 	}
@@ -627,16 +627,16 @@ func vmConsoleCleanup(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 	}
 	_, stderrText, exitCode, _, err := runner.run(cleanupCtx, VmConsoleCleanupArgv(req.CaptureID), vmConsoleMaxStderrBytes)
 	if err != nil {
-		logpush.BlogContext(ctx, "WARN", "vm_console.cleanup_failed", "清理临时截图文件失败", logReq, map[string]any{"error": err.Error()})
+		obslog.EmitContext(ctx, "WARN", "vm_console.cleanup_failed", "清理临时截图文件失败", logReq, map[string]any{"error": err.Error()})
 		return err
 	}
 	if exitCode != 0 {
-		logpush.BlogContext(ctx, "WARN", "vm_console.cleanup_failed", "清理临时截图文件退出码非零", logReq, map[string]any{
+		obslog.EmitContext(ctx, "WARN", "vm_console.cleanup_failed", "清理临时截图文件退出码非零", logReq, map[string]any{
 			"exit_code": exitCode, "stderr_len": len(stderrText),
 		})
 		return fmt.Errorf("rm -f 退出码 %d", exitCode)
 	}
-	logpush.BlogContext(ctx, "INFO", "vm_console.cleanup_done", "临时截图文件已清理", logReq, nil)
+	obslog.EmitContext(ctx, "INFO", "vm_console.cleanup_done", "临时截图文件已清理", logReq, nil)
 	return nil
 }
 

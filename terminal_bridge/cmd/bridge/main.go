@@ -21,8 +21,8 @@ import (
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/delivery"
 	"terminal_bridge/internal/logcollect"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
@@ -41,19 +41,19 @@ var (
 func getVersion() string { return app.GetVersion() }
 
 func main() {
-	// R0 装配缝：models/logpush 的注入钩子在此接线（所有权仍归 app/cmd）。
+	// R0 装配缝：models/obslog 的注入钩子在此接线（所有权仍归 app/cmd）。
 	models.ErrorFieldsFunc = logcollect.LogCollectErrorFields
 	models.SendErrorHook = func(msg models.OutMessage, err error) {
-		logpush.Blog("ERROR", "ws.send_failed", "WebSocket 发送失败", msg.TraceID, msg.CaseID, "", msg.CustomUI, map[string]any{
+		obslog.Emit("ERROR", "ws.send_failed", "WebSocket 发送失败", msg.TraceID, msg.CaseID, "", msg.CustomUI, map[string]any{
 			"out_type": msg.Type, "exec_id": msg.ExecID, "error": err.Error(),
 		})
 		atomic.AddUint64(&app.PromMetrics.LogsCollectErrors, 1)
 	}
-	logpush.MetricsReplayed = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsReplayedTotal, n) }
-	logpush.MetricsDropped = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsDroppedTotal, n) }
-	logpush.MetricsCollectErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectErrors, n) }
-	logpush.MetricsCollected = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectedTotal, n) }
-	logpush.VersionFunc = getVersion
+	obslog.MetricsReplayed = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsReplayedTotal, n) }
+	obslog.MetricsDropped = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsDroppedTotal, n) }
+	obslog.MetricsCollectErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectErrors, n) }
+	obslog.MetricsCollected = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectedTotal, n) }
+	obslog.VersionFunc = getVersion
 	sshx.IsLiveBridgeFunc = app.IsLiveBridge
 	sshx.SelfPortFunc = func() int { return app.BridgeSelfPort }
 	app.WSHandlerFunc = handle
@@ -82,19 +82,19 @@ func main() {
 	app.ProcessStartedAt = time.Now()
 	app.BridgeSingleton = bridge
 	// 把所有标准库日志重定向为结构化日志并回采（统一可观测性）
-	log.SetOutput(logpush.BridgeLogWriter{})
+	log.SetOutput(obslog.BridgeLogWriter{})
 	log.SetFlags(0)
 
 	// 按运行模式校正落盘策略，并记录启动事件：日志路径必须可自证，
 	// 否则排障时无法回答"日志到底写在哪"（工单 Q2026092010235 的直接教训）。
-	logpush.DefaultHub.ApplyRuntimeMode(config.Mode)
+	obslog.DefaultHub.ApplyRuntimeMode(config.Mode)
 	// stderr 重定向必须晚于 applyRuntimeMode：cluster 模式的日志目录由 Helm 注入，
 	// 提前重定向会把 panic 栈写到 desktop 默认目录。
 	app.RedirectStderrToFile()
 	// 云端/集群桥没有浏览器给它下发直传令牌：部署期注入了端点与令牌就自行建通道。
 	// 建通道时会自动异步补传"水位之后"的全部本地历史（L1，含崩溃窗口与 panic 现场），
 	// 启动事件本身走实时 enqueue，不依赖补传时序。
-	logpush.LogUpload.BootstrapFromEnv()
+	obslog.LogUpload.BootstrapFromEnv()
 	// 5 分钟一条资源采样：Atom 级机器上采样本身也必须廉价（一天约 58KB）。
 	app.StartResourceSampler(5 * time.Minute)
 	// 空闲会话回收器：WS 关闭只 release 不销毁，超时无人复用的会话由 reaper 兜底回收，
@@ -104,17 +104,17 @@ func main() {
 	// 浏览器是否在线不影响；前端只通过 job_status 轮询进度。
 	delivery.DeliveryRunnerInstance = delivery.NewDeliveryRunner(bridge)
 	delivery.DeliveryRunnerInstance.Start()
-	logpush.Blog("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
+	obslog.Emit("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
 		"version":         getVersion(),
 		"commit":          CommitID,
 		"built":           BuildTime,
 		"mode":            config.Mode,
 		"listen":          config.Address(),
 		"allowed_origins": config.AllowedOriginsRaw,
-		"log_dir":         logpush.DefaultHub.LogDir,
-		"log_path":        logpush.DefaultHub.LogPath,
-		"log_dir_source":  logpush.DefaultHub.LogDirSource,
-		"log_level":       logpush.DefaultHub.LogLevelName(),
+		"log_dir":         obslog.DefaultHub.LogDir,
+		"log_path":        obslog.DefaultHub.LogPath,
+		"log_dir_source":  obslog.DefaultHub.LogDirSource,
+		"log_level":       obslog.DefaultHub.LogLevelName(),
 		"pid":             os.Getpid(),
 		"goos":            runtime.GOOS,
 		// 起跑线资源快照：与 resource.sample / bridge.shutdown 对齐，
@@ -126,7 +126,7 @@ func main() {
 	// 服务身份由装配层注入，门面不认识任何业务域。
 	shutdownTelemetry, telemetryErr := telemetry.Init(context.Background(),
 		os.Getenv("HCI_BRIDGE_OTEL_ENDPOINT"), getVersion(),
-		logpush.DefaultHub.InstanceID, bruntime.EnvOrDefault("HCI_DEPLOYMENT_ENVIRONMENT", "local"))
+		obslog.DefaultHub.InstanceID, bruntime.EnvOrDefault("HCI_DEPLOYMENT_ENVIRONMENT", "local"))
 	if telemetryErr != nil {
 		log.Printf("[Bridge] ERROR: OpenTelemetry 初始化失败: %v", telemetryErr)
 		shutdownTelemetry = func(context.Context) error { return nil }
@@ -146,7 +146,7 @@ func main() {
 	listener, resolved, alreadyRunning, listenErr := app.AcquireListener(config, allowBackup)
 	if listenErr != nil {
 		holders := app.FindPortHolders(config.Port)
-		logpush.Blog("ERROR", "bridge.port_conflict", "监听端口不可用，启动失败", "", "", "", "", map[string]any{
+		obslog.Emit("ERROR", "bridge.port_conflict", "监听端口不可用，启动失败", "", "", "", "", map[string]any{
 			"requested_listen": config.Address(),
 			"port":             config.Port,
 			"backup_port":      app.BackupWSPort,
@@ -169,7 +169,7 @@ func main() {
 	}
 	if alreadyRunning {
 		// 同机已有一个存活 Bridge：这是"双击重复启动/上一个没退净"，非故障，幂等退出。
-		logpush.Blog("INFO", "bridge.already_running", "检测到本机已有存活的 terminal_bridge，无需重复启动", "", "", "", "", map[string]any{
+		obslog.Emit("INFO", "bridge.already_running", "检测到本机已有存活的 terminal_bridge，无需重复启动", "", "", "", "", map[string]any{
 			"listen": config.Address(),
 			"pid":    os.Getpid(),
 		})
@@ -183,13 +183,13 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if resolved.Port != config.Port {
-		logpush.Blog("WARN", "bridge.backup_port_activated", "主端口被占用，已回退至备用端口", "", "", "", "", map[string]any{
+		obslog.Emit("WARN", "bridge.backup_port_activated", "主端口被占用，已回退至备用端口", "", "", "", "", map[string]any{
 			"primary_port": config.Port,
 			"backup_port":  resolved.Port,
 			"listen":       resolved.Address(),
 		})
 	}
-	logpush.Blog("INFO", "bridge.listening", "terminal_bridge 监听已就绪", "", "", "", "", map[string]any{
+	obslog.Emit("INFO", "bridge.listening", "terminal_bridge 监听已就绪", "", "", "", "", map[string]any{
 		"listen": resolved.Address(),
 		"port":   resolved.Port,
 	})
@@ -221,7 +221,7 @@ func main() {
 		if consoleEvent := lastConsoleCtrlEvent(); consoleEvent != "" {
 			extra["console_event"] = consoleEvent
 		}
-		logpush.Blog("WARN", "bridge.shutdown", "terminal_bridge 收到退出信号，开始优雅退出", "", "", "", "", extra)
+		obslog.Emit("WARN", "bridge.shutdown", "terminal_bridge 收到退出信号，开始优雅退出", "", "", "", "", extra)
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {

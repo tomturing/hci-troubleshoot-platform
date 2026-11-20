@@ -21,16 +21,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "terminal_bridge"
 BASE = "terminal_bridge/internal/"
-DOMAINS = ["acli", "logcollect", "delivery", "sftp", "terminal", "logpush"]
+DOMAINS = ["acli", "logcollect", "delivery", "sftp", "terminal"]
 BUSINESS = ["acli", "logcollect", "delivery", "sftp"]
 
 # R0 搬迁完成时的域间依赖现状（含测试）；逻辑收口阶段逐步清零。
 BASELINE_DOMAIN_EDGES = {
-    ("acli", "logcollect"), ("acli", "logpush"), ("acli", "terminal"),
-    ("logcollect", "logpush"), ("logcollect", "terminal"),
-    ("delivery", "logcollect"), ("delivery", "logpush"), ("delivery", "terminal"),
-    ("sftp", "logcollect"), ("sftp", "logpush"),
-    ("terminal", "logpush"),
+    ("acli", "logcollect"), ("acli", "terminal"),
+    ("logcollect", "terminal"),
+    ("delivery", "logcollect"), ("delivery", "terminal"),
+    ("sftp", "logcollect"),
 }
 
 IMP_RE = re.compile(r'"(terminal_bridge/[^"]+)"')

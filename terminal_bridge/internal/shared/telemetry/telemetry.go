@@ -5,7 +5,7 @@
 // OTel SDK；默认实现为零成本 noop（桌面 exe，OTel 从未在桌面启用过）。
 //
 // 传播（W3C traceparent）在本包内用纯标准库解析，不依赖 otel propagator——
-// logpush 是证据通道、不可随 build tag 剥离（设计 §2.6 裁决），桌面剥离 otel
+// obslog 是证据通道、不可随 build tag 剥离（设计 §2.6 裁决），桌面剥离 otel
 // 后日志仍须携带平台下发的 trace 关联。两种实现的日志字段形状完全一致：
 // 无效上下文一律返回全零 ID（对齐 OTel SpanContext 零值语义）。
 package telemetry
@@ -129,7 +129,7 @@ func Traceparent(ctx context.Context) string {
 
 // Extract 从 W3C traceparent/tracestate 还原远程父上下文（纯标准库解析）。
 // traceparent 非法时原样返回 ctx。调用方负责旧版 Go SDK 的 flags 归一化
-// （logpush.NormalizeTraceparentForLegacyGo），本函数按规范解析 flags 字节。
+// （obslog.NormalizeTraceparentForLegacyGo），本函数按规范解析 flags 字节。
 func Extract(ctx context.Context, traceparent, tracestate string) context.Context {
 	info := parseTraceparent(traceparent)
 	if !info.Valid {

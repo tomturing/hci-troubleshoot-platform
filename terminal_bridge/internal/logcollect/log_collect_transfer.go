@@ -26,8 +26,8 @@ import (
 	"regexp"
 	"strings"
 	"terminal_bridge/internal/app"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -254,7 +254,7 @@ func handleLogCollectTransfer(b *app.Bridge,
 	fail := func(code, message string, progress logCollectTransferProgress) error {
 		progress.Stage = "failed"
 		emit("error", progress, message, code)
-		logpush.Blog("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		obslog.Emit("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "error_code": code, "error": message,
 			"stage": progress.Stage, "pulled_bytes": progress.PulledBytes,
 			"uploaded_parts": progress.UploadedParts, "part_count": progress.PartCount,
@@ -369,7 +369,7 @@ func handleLogCollectTransfer(b *app.Bridge,
 	progress.Stage = "done"
 	progress.Percent = 100
 	emit("ok", progress, "", "")
-	logpush.Blog("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	obslog.Emit("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"task_id": taskID, "size": progress.Size, "sha256": progress.Sha256,
 		"part_count": partCount, "local_path": localPath,
 	})

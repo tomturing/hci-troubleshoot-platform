@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 // 云端桥日志直传的单测。
 //

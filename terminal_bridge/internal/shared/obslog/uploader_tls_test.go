@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 // 桥日志直传在自签平台上的行为护栏。
 //

@@ -2,8 +2,8 @@ package main
 
 // R0c 注册式路由：18 种 WS 消息的 handler 统一在装配层注册。
 //
-// 为什么暂不由各域 init() 自注册：app 目前仍 import logpush/terminal（搬迁前
-// 既有依赖），域反向 import app 会成环；app→logpush 解环（接缝注入）属逻辑
+// 为什么暂不由各域 init() 自注册：app 目前仍 import obslog/terminal（搬迁前
+// 既有依赖），域反向 import app 会成环；app→obslog 解环（接缝注入）属逻辑
 // 收口阶段，届时各域注册迁回本域，装配层只留终端协议边缘。
 //
 // 终端/SSH 协议边缘（ssh_connect 跨 logcollect 还原意图、exec_process 跨
@@ -20,9 +20,9 @@ import (
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/delivery"
 	"terminal_bridge/internal/logcollect"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/sftp"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
@@ -51,7 +51,7 @@ func init() {
 
 func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	connectCtx, connectSpan := telemetry.StartClient(
-		logpush.ContextFromMessage(msg), "terminal_bridge.ssh.connect",
+		obslog.ContextFromMessage(msg), "terminal_bridge.ssh.connect",
 		telemetry.String("case.id", msg.CaseID), telemetry.String("server.Address", msg.Host),
 	)
 	_ = connectCtx
@@ -111,7 +111,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	// 会话建立事件与会话销毁事件成对出现：只有销毁没有建立时，
 	// 无法区分「会话从没建过」和「建了又被清掉」——这两种处置完全不同。
 	app.LogSessionCreated(session, key, ctx.ConnID, ctx.Role, "ssh_connect")
-	logpush.Blog("INFO", "ssh.connected", "SSH 认证成功", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+	obslog.Emit("INFO", "ssh.connected", "SSH 认证成功", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 		"user": msg.Username, "host": msg.Host, "port": msg.Port, "key": key,
 		"conn_id": ctx.ConnID, "ctx.Role": ctx.Role,
 	})
@@ -139,7 +139,7 @@ func handleSSHInput(ctx *app.WSContext, msg models.InMessage) {
 		// 现在必须留痕：先入库，再（节流）提示前端，避免再次无声无息。
 		if ctx.LastInputRejectAt.IsZero() || time.Since(ctx.LastInputRejectAt) >= app.InputRejectNoticeInterval {
 			ctx.LastInputRejectAt = time.Now()
-			logpush.Blog("ERROR", "ssh_input.session_missing", "SSH 会话不存在，键盘输入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+			obslog.Emit("ERROR", "ssh_input.session_missing", "SSH 会话不存在，键盘输入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 				"input_type": "ssh_input", "active_key": ctx.ActiveKey,
 				"exact_key": app.SessionKey(msg.CaseID, msg.NodeIP), "data_len": len(msg.Data),
 			})
@@ -165,7 +165,7 @@ func handleSSHInjectCommand(ctx *app.WSContext, msg models.InMessage) {
 	if s == nil {
 		if ctx.LastInputRejectAt.IsZero() || time.Since(ctx.LastInputRejectAt) >= app.InputRejectNoticeInterval {
 			ctx.LastInputRejectAt = time.Now()
-			logpush.Blog("ERROR", "ssh_input.session_missing", "SSH 会话不存在，命令注入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+			obslog.Emit("ERROR", "ssh_input.session_missing", "SSH 会话不存在，命令注入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 				"input_type": "ssh_inject_command", "active_key": ctx.ActiveKey,
 				"exact_key": app.SessionKey(msg.CaseID, msg.NodeIP),
 			})
@@ -224,13 +224,13 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 			key = app.SessionKey(ctx.Sub.BoundCase(), "")
 			log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", ctx.Sub.BoundCase(), key)
 			// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
-			logpush.Blog("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, ctx.Sub.BoundCase(), msg.NodeIP, ctx.CUI, map[string]any{
+			obslog.Emit("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, ctx.Sub.BoundCase(), msg.NodeIP, ctx.CUI, map[string]any{
 				"original_case_id": msg.CaseID, "key": key, "exec_id": msg.ExecID,
 			})
 		}
 	}
 	if s == nil {
-		logpush.Blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"exec_id": msg.ExecID, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
 			"sub_case_id": ctx.Sub.BoundCase(), "has_fallback_target": ctx.Sub.BoundCase() != "",
 		})
@@ -243,7 +243,7 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 	}
 	if msg.ExecID == "" {
 		// 参数缺失属"命令被拒绝"：此前只回消息不打日志，云端完全无痕。
-		logpush.Blog("ERROR", "exec.rejected", "命令被拒绝：缺少 exec_id 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "exec.rejected", "命令被拒绝：缺少 exec_id 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"error_type": "missing_exec_id", "channel": "marker", "node_ip": msg.NodeIP,
 			"container": msg.Container, "cmd_len": len(msg.Command),
 		})
@@ -255,7 +255,7 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 		return
 	}
 	if msg.Command == "" {
-		logpush.Blog("ERROR", "exec.rejected", "命令被拒绝：缺少 command 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "exec.rejected", "命令被拒绝：缺少 command 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"error_type": "missing_command", "channel": "marker", "exec_id": msg.ExecID,
 			"node_ip": msg.NodeIP, "container": msg.Container,
 		})
@@ -269,12 +269,12 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 
 	// 包装容器命令
 	wrappedCmd := sshx.WrapContainerCommand(msg.Command, msg.Container, s.Simulation)
-	logpush.Blog("INFO", "exec.start", "开始执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+	obslog.Emit("INFO", "exec.start", "开始执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 		"exec_id": msg.ExecID, "key": key, "container": msg.Container, "cmd_len": len(wrappedCmd),
 	})
 	log.Printf("[Bridge] EXEC_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
 		key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
-	log.Printf("[Bridge] EXEC_CMD: sha256=%s redacted=%q", logpush.CommandSHA256(wrappedCmd), logpush.RedactCommand(wrappedCmd))
+	log.Printf("[Bridge] EXEC_CMD: sha256=%s redacted=%q", obslog.CommandSHA256(wrappedCmd), obslog.RedactCommand(wrappedCmd))
 
 	resultChan := s.ExecCommand(wrappedCmd, msg.ExecID, 60*time.Second)
 	atomic.AddUint64(&app.PromMetrics.ExecCommandsTotal, 1)
@@ -305,18 +305,18 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 
 		// P0-1: 增强日志完整性 - 回采命令执行的完整输出
 		// 输出过长时截断为预览（避免日志字段过大），但完整记录长度和退出码
-		logpush.Blog("INFO", "exec.output", "命令执行输出", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("INFO", "exec.output", "命令执行输出", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"exec_id":          msg.ExecID,
 			"exit_code":        exitCode,
 			"timeout":          result.Timeout,
 			"error_type":       errType,
 			"output_len":       outLen,
-			"output_sha256":    logpush.CommandSHA256(output),
-			"command_redacted": logpush.RedactCommand(wrappedCmd),
-			"command_sha256":   logpush.CommandSHA256(wrappedCmd),
+			"output_sha256":    obslog.CommandSHA256(output),
+			"command_redacted": obslog.RedactCommand(wrappedCmd),
+			"command_sha256":   obslog.CommandSHA256(wrappedCmd),
 		})
 
-		logpush.Blog(logLevel, "exec.done", "命令执行完成", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit(logLevel, "exec.done", "命令执行完成", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"exec_id": msg.ExecID, "exit_code": exitCode, "timeout": result.Timeout,
 			"error_type": errType, "output_len": outLen,
 		})
@@ -348,13 +348,13 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 			key = app.SessionKey(ctx.Sub.BoundCase(), "")
 			log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", ctx.Sub.BoundCase(), key)
 			// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
-			logpush.Blog("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, ctx.Sub.BoundCase(), msg.NodeIP, ctx.CUI, map[string]any{
+			obslog.Emit("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, ctx.Sub.BoundCase(), msg.NodeIP, ctx.CUI, map[string]any{
 				"original_case_id": msg.CaseID, "key": key, "exec_id": msg.ExecID,
 			})
 		}
 	}
 	if s == nil {
-		logpush.Blog("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令(隔离通道)", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令(隔离通道)", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"exec_id": msg.ExecID, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
 			"sub_case_id": ctx.Sub.BoundCase(), "has_fallback_target": ctx.Sub.BoundCase() != "",
 		})
@@ -366,7 +366,7 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 		return
 	}
 	if msg.ExecID == "" {
-		logpush.Blog("ERROR", "exec.rejected", "命令被拒绝：缺少 exec_id 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "exec.rejected", "命令被拒绝：缺少 exec_id 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"error_type": "missing_exec_id", "channel": "isolated", "node_ip": msg.NodeIP,
 			"container": msg.Container, "cmd_len": len(msg.Command),
 		})
@@ -378,7 +378,7 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 		return
 	}
 	if msg.Command == "" {
-		logpush.Blog("ERROR", "exec.rejected", "命令被拒绝：缺少 command 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "exec.rejected", "命令被拒绝：缺少 command 参数", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"error_type": "missing_command", "channel": "isolated", "exec_id": msg.ExecID,
 			"node_ip": msg.NodeIP, "container": msg.Container,
 		})
@@ -393,12 +393,12 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 	wrappedCmd := sshx.WrapContainerCommand(msg.Command, msg.Container, s.Simulation)
 	log.Printf("[Bridge] EXEC_ISOLATED_START: key=%s node=%s container=%s exec_id=%s cmd_len=%d",
 		key, msg.NodeIP, msg.Container, msg.ExecID, len(wrappedCmd))
-	commandHash := logpush.CommandSHA256(wrappedCmd)
+	commandHash := obslog.CommandSHA256(wrappedCmd)
 
 	// P0: 记录命令发起（包含 trace_id）
-	logpush.Blog("INFO", "exec.request", "收到命令执行请求", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+	obslog.Emit("INFO", "exec.request", "收到命令执行请求", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 		"exec_id":          msg.ExecID,
-		"command_redacted": logpush.RedactCommand(wrappedCmd),
+		"command_redacted": obslog.RedactCommand(wrappedCmd),
 		"command_sha256":   commandHash,
 		"container":        msg.Container,
 		"trace_id":         msg.TraceID,
@@ -406,7 +406,7 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 
 	atomic.AddUint64(&app.PromMetrics.ExecCommandsTotal, 1)
 	receiveCtx, receiveSpan := telemetry.Start(
-		logpush.ContextFromMessage(msg), "terminal_bridge.websocket.receive",
+		obslog.ContextFromMessage(msg), "terminal_bridge.websocket.receive",
 		telemetry.String("exec.id", msg.ExecID), telemetry.String("message.type", msg.Type),
 	)
 	receiveSpan.End()
@@ -415,7 +415,7 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 		ExecID: msg.ExecID, ToolCallID: msg.ToolCallID, TraceID: msg.TraceID,
 		Traceparent: msg.Traceparent, Tracestate: msg.Tracestate, TestRunID: msg.TestRunID, NodeIP: msg.NodeIP,
 		Container: msg.Container, CustomUI: ctx.CUI, Command: wrappedCmd,
-		CommandRedacted: logpush.RedactCommand(wrappedCmd), CommandSHA256: commandHash,
+		CommandRedacted: obslog.RedactCommand(wrappedCmd), CommandSHA256: commandHash,
 		Pty: msg.Pty,
 	}
 	var requestedTimeout time.Duration
@@ -431,7 +431,7 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 	// 找不到目标会话时 fail-closed，绝不把截图命令发到错误节点。
 	vmReq, errType := terminal.ParseVMConsoleRequest(msg, ctx.CUI)
 	if errType != "" {
-		logpush.Blog("ERROR", "vm_console.rejected", "vm_console_op 入口校验失败，已拒绝执行", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "vm_console.rejected", "vm_console_op 入口校验失败，已拒绝执行", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"exec_id": msg.ExecID, "operation": msg.Operation, "capture_id": msg.CaptureID, "error_type": errType,
 		})
 		rejected := terminal.VmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
@@ -449,7 +449,7 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 	}
 	if s == nil {
 		atomic.AddUint64(&app.PromMetrics.VmConsoleOpErrors, 1)
-		logpush.Blog("ERROR", "vm_console.session_missing", "SSH 会话不存在，无法执行控制台固定操作", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		obslog.Emit("ERROR", "vm_console.session_missing", "SSH 会话不存在，无法执行控制台固定操作", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"exec_id": msg.ExecID, "operation": msg.Operation, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
 		})
 		missing := terminal.VmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
@@ -459,7 +459,7 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 		return
 	}
 
-	logpush.Blog("INFO", "vm_console.request", "收到虚拟机控制台固定操作请求", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+	obslog.Emit("INFO", "vm_console.request", "收到虚拟机控制台固定操作请求", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 		"exec_id": vmReq.ExecID, "operation": vmReq.Operation, "capture_id": vmReq.CaptureID,
 		"host_node_id": vmReq.HostNodeID, "vm_id": vmReq.VMID, "key": key,
 		"timeout_seconds": vmReq.TimeoutSeconds,
@@ -474,7 +474,7 @@ func handleAcliSyncRoute(ctx *app.WSContext, msg models.InMessage) {
 
 func handleListSessions(ctx *app.WSContext, msg models.InMessage) {
 	// 管理端枚举「custom-ui + bridge 已登录」的环境；只回会话摘要，不回凭据。
-	logpush.Blog("INFO", "session.list", "管理端查询已登录 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{})
+	obslog.Emit("INFO", "session.list", "管理端查询已登录 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{})
 	models.SendMsg(ctx.WS, models.OutMessage{
 		Type: "list_sessions_result", CaseID: msg.CaseID,
 		Sessions: ctx.B.ListSessions(), TraceID: msg.TraceID, CustomUI: ctx.CUI,
@@ -484,9 +484,9 @@ func handleListSessions(ctx *app.WSContext, msg models.InMessage) {
 func handleBridgeLogTokenRoute(ctx *app.WSContext, msg models.InMessage) {
 	// 前端下发的直传凭据：拿到即启动后台 worker，此后桥侧日志不再依赖浏览器。
 	// 令牌为空/endpoint 非法时 configure 直接返回，前端保持原有的浏览器回采链路。
-	logpush.LogUpload.Configure(msg.LogToken, msg.LogEndpoint, msg.CaseID, logpush.DefaultHub.InstanceID)
+	obslog.LogUpload.Configure(msg.LogToken, msg.LogEndpoint, msg.CaseID, obslog.DefaultHub.InstanceID)
 	models.SendMsg(ctx.WS, models.OutMessage{Type: "bridge_log_token_ack", CaseID: msg.CaseID, Status: "ok"})
-	logpush.Blog("INFO", "log_upload.token_received", "收到桥日志直传凭据", msg.TraceID, msg.CaseID, "", ctx.CUI, map[string]any{
+	obslog.Emit("INFO", "log_upload.token_received", "收到桥日志直传凭据", msg.TraceID, msg.CaseID, "", ctx.CUI, map[string]any{
 		"endpoint":     msg.LogEndpoint,
 		"token_length": len(msg.LogToken),
 	})

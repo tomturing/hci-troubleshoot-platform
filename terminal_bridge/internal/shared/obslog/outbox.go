@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 // L2 分段 outbox：溢出落盘代替丢弃（设计 §3.6）。
 //
@@ -32,6 +32,14 @@ type outboxCursor struct {
 }
 
 const legacyOutboxSegment = "seg-0000000000000000000.jsonl"
+
+// gap 标记事件落独立文件（不占分段预算、不会被 drop-oldest 误删），
+// 但必须参与"总磁盘占用"计算，且在重启时重放——否则崩溃窗口内的 gap
+// 永远不会上报，"平台可知洞"只在进程不崩时成立。
+const (
+	gapsFileName    = "gaps.jsonl"
+	gapsArchiveName = "gaps.replayed.jsonl"
+)
 
 // outboxInstanceDir 返回实例的分段目录：bridge-log-outbox/<instance>/。
 func outboxInstanceDir(dir, instance string) string {
@@ -180,7 +188,30 @@ func (u *logUploader) persistLocked(entry LogEntry) ([]LogEntry, persistOutcome)
 	}
 	u.written += int64(written)
 	u.markPersistedLocked(instDir, entryStart)
-	return u.enforceDiskBudgetLocked(instDir), persistWritten
+	return u.checkDiskBudgetLocked(instDir, int64(written)), persistWritten
+}
+
+// checkDiskBudgetLocked 对 enforceDiskBudgetLocked 做节流。
+//
+// 为什么需要：预算检查要 ReadDir + 逐段 Stat，publish 是每条日志都走的热路径，
+// 客户机慢盘上会明显拖慢日志产生侧。按写入字节（maxBytes/8，下限 1KB）与 5s 间隔
+// 双阈值触发：生产 8MB 预算即每约 1MB 检查一次；测试的小预算下退化为近乎每条检查，
+// 保持既有断言语义不变。
+func (u *logUploader) checkDiskBudgetLocked(instDir string, written int64) []LogEntry {
+	if u.maxBytes <= 0 {
+		return nil
+	}
+	u.budgetCheckBytes += written
+	interval := u.maxBytes / 8
+	if interval < 1024 {
+		interval = 1024
+	}
+	if u.budgetCheckBytes < interval && time.Since(u.lastBudgetAt) < 5*time.Second {
+		return nil
+	}
+	u.budgetCheckBytes = 0
+	u.lastBudgetAt = time.Now()
+	return u.enforceDiskBudgetLocked(instDir)
 }
 
 // markPersistedLocked 在落盘链路从故障态恢复时把游标钳回本条起点。
@@ -225,6 +256,10 @@ func (u *logUploader) enforceDiskBudgetLocked(instDir string) []LogEntry {
 			sizes[name] = info.Size()
 			total += info.Size()
 		}
+	}
+	// gap 文件虽不参与 drop-oldest，但必须在预算里可见，否则它会成为无上限的盲区。
+	if info, err := os.Stat(filepath.Join(instDir, gapsFileName)); err == nil {
+		total += info.Size()
 	}
 	if total <= u.maxBytes {
 		return nil
@@ -303,20 +338,22 @@ func (u *logUploader) enforceDiskBudgetLocked(instDir string) []LogEntry {
 					"dropped_entries": count, "seq_min": minSeq, "seq_max": maxSeq, "segment": name,
 				},
 			}
-			// gap 写独立文件（不占预算、不会被丢、不占游标字节），内存由调用方入队。
+			// gap 写独立文件：不参与 drop-oldest（不会被误删），但纳入总占用计算。
+			// 无论落盘是否成功都返回给调用方入内存队列——落盘只是崩溃恢复的备份，
+			// 写不进去时"平台可知洞"仍要靠实时上报，不能因此静默丢弃。
 			if u.gapsFile == nil {
-				if file, openErr := os.OpenFile(filepath.Join(instDir, "gaps.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); openErr == nil {
+				if file, openErr := os.OpenFile(filepath.Join(instDir, gapsFileName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); openErr == nil {
 					u.gapsFile = file
 				}
 			}
 			if u.gapsFile != nil {
 				if line, err := json.Marshal(gap); err == nil {
-					if _, writeErr := u.gapsFile.Write(append(line, '\n')); writeErr == nil {
-						gaps = append(gaps, gap)
-					}
+					_, _ = u.gapsFile.Write(append(line, '\n'))
 				}
 			}
-			// 这里绝不能调用 Blog：Blog → DefaultHub.publish → LogUpload.enqueue 会在
+			gaps = append(gaps, gap)
+			u.gapsReported++
+			// 这里绝不能调用 Emit：Emit → DefaultHub.publish → LogUpload.enqueue 会在
 			// 同一 goroutine 重入 u.Mu（本函数由 persistLocked 在持锁状态下调用），造成
 			// 自死锁；同时还会再产生一条重复的 gap 事件并占用 outbox 预算。
 			// 改走 stderr：桌面形态由 redirectStderrToFile 落进 bridge-stderr.log，
@@ -530,16 +567,62 @@ func (u *logUploader) recoverOutbox() {
 	}
 	migrateLegacyOutbox(dir, instance)
 	u.Mu.Lock()
-	u.rebuildSegEntryIndexLocked(outboxInstanceDir(dir, instance))
+	instDir := outboxInstanceDir(dir, instance)
+	u.rebuildSegEntryIndexLocked(instDir)
+	gaps := u.replayGapsLocked(instDir)
 	before := len(u.queue)
 	u.refillFromDiskLocked()
 	recovered := len(u.queue) - before
+	if len(gaps) > 0 {
+		// gap 描述更早段的丢失，插到队首：平台应先看到洞，再看到其后的数据。
+		u.queue = append(gaps, u.queue...)
+		recovered += len(gaps)
+	}
 	u.Mu.Unlock()
 	if recovered > 0 {
-		Blog("INFO", "log_upload.recovered", "已从 outbox 恢复未发送日志", "", "", "", "", map[string]any{
-			"recovered": recovered, "instance": instance,
+		Emit("INFO", "log_upload.recovered", "已从 outbox 恢复未发送日志与缺口标记", "", "", "", "", map[string]any{
+			"recovered": recovered, "gaps": len(gaps), "instance": instance,
 		})
 	}
+}
+
+// replayGapsLocked 重放崩溃前写入 gaps.jsonl、但未及入内存队列的缺口标记。
+//
+// 为什么需要：预算超限时会先落 gaps.jsonl 再入队，两者之间进程崩溃则 gap 永久留在
+// 磁盘上无人读取——平台就永远不知道那批数据丢了。读完后把文件归档为
+// gaps.replayed.jsonl（只保留最近一次），避免重启后重复上报；归档文件不参与预算，
+// 下次重放时直接覆盖删除。真正重放失败（文件为空/损坏）时删除原文件，防止无限堆积。
+func (u *logUploader) replayGapsLocked(instDir string) []LogEntry {
+	if instDir == "" {
+		return nil
+	}
+	path := filepath.Join(instDir, gapsFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var gaps []LogEntry
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		var gap LogEntry
+		if json.Unmarshal([]byte(line), &gap) == nil && gap.Event != "" {
+			gaps = append(gaps, gap)
+		}
+	}
+	// 句柄还指向被重命名的旧 inode，必须关闭，让后续写入重新打开 gaps.jsonl。
+	if u.gapsFile != nil {
+		_ = u.gapsFile.Close()
+		u.gapsFile = nil
+	}
+	archived := filepath.Join(instDir, gapsArchiveName)
+	_ = os.Remove(archived)
+	if os.Rename(path, archived) != nil {
+		_ = os.Remove(path)
+	}
+	u.replayed += uint64(len(gaps))
+	return gaps
 }
 
 // rebuildSegEntryIndexLocked 重启后重建段首索引：以游标为原点（consumedEntries 归零），

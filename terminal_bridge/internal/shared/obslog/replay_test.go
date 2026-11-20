@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 import (
 	"testing"
