@@ -10,8 +10,8 @@ import (
 	"strings"
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logcollect"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"time"
 
 	"golang.org/x/net/websocket"
@@ -126,7 +126,7 @@ func HandleDeliverySubmit(b *app.Bridge, ws *websocket.Conn, msg models.InMessag
 	}
 	submitted := DeliveryRunnerInstance.submit(job)
 
-	logpush.Blog("INFO", "delivery.submit", "收到交付作业请求", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	obslog.Emit("INFO", "delivery.submit", "收到交付作业请求", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"job_id": submitted.JobID, "task_id": taskID, "source_path": sourcePath,
 		"part_count": job.PartCount, "chunk_size": job.ChunkSize, "direct": job.Direct,
 	})
@@ -164,7 +164,7 @@ func HandleDeliveryResume(b *app.Bridge, ws *websocket.Conn, msg models.InMessag
 	if ok {
 		status = "ok"
 	}
-	logpush.Blog("INFO", "delivery.resume", "请求恢复交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	obslog.Emit("INFO", "delivery.resume", "请求恢复交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"job_id": jobID, "ok": ok,
 	})
 	models.SendMsg(ws, models.OutMessage{
@@ -177,7 +177,7 @@ func HandleDeliveryResume(b *app.Bridge, ws *websocket.Conn, msg models.InMessag
 func HandleDeliveryCancel(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
 	jobID := strings.TrimSpace(msg.JobID)
 	ok := DeliveryRunnerInstance != nil && DeliveryRunnerInstance.cancel(jobID)
-	logpush.Blog("WARN", "delivery.cancel", "取消交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	obslog.Emit("WARN", "delivery.cancel", "取消交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"job_id": jobID, "ok": ok,
 	})
 	status := "error"

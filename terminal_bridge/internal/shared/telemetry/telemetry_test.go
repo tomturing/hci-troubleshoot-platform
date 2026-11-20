@@ -54,7 +54,7 @@ func TestExtractRejectsInvalidTraceparent(t *testing.T) {
 
 func TestTraceInfoZeroValueMatchesOTelShape(t *testing.T) {
 	// 无效上下文必须返回全零 ID（对齐 OTel SpanContext 零值）：
-	// 桌面剥离 otel 前后，logpush 日志字段形状不能变。
+	// 桌面剥离 otel 前后，obslog 日志字段形状不能变。
 	info := TraceInfo(context.Background())
 	if info.Valid || info.TraceID != zeroTraceID || info.SpanID != zeroSpanID || info.TraceFlags != 0 {
 		t.Fatalf("零值口径不一致: %#v", info)

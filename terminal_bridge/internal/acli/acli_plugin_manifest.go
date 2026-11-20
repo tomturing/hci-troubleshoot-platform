@@ -204,7 +204,7 @@ func validatePluginPlatformURL(raw string) (string, error) {
 //     只解决信任链前提不成立，解决不了别的问题，盲目重试只会延迟失败。
 //
 // 鉴权不放松：票据仍走 X-Plugin-Ticket，且放宽范围仅限本函数的两次调用，
-// 不写任何全局状态（与 delivery / logpush 通道同口径）。
+// 不写任何全局状态（与 delivery / obslog 通道同口径）。
 func fetchAcliPluginManifest(b *app.Bridge,
 	ctx context.Context,
 	platformURL, ticket, caseID string,

@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 import (
 	"bufio"
@@ -105,7 +105,7 @@ func newBridgeInstanceID() string {
 	return deterministicUUID(fmt.Sprintf("%s:%d:%d", hostname, os.Getpid(), time.Now().UnixNano()))
 }
 
-// 注入缝（R0 结构性 seams）：metrics 所有权归 app、版本归 cmd，logpush 只调用。
+// 注入缝（R0 结构性 seams）：metrics 所有权归 app、版本归 cmd，obslog 只调用。
 var (
 	MetricsReplayed      func(n uint64)
 	MetricsDropped       func(n uint64)
@@ -494,7 +494,7 @@ func (h *LogHub) enqueue(sub *bridgeSubscriber, e LogEntry) {
 			MetricsDropped(1)
 		}
 		if markDroppedLogEmitted() {
-			go Blog("WARN", "log.dropped", "回采队列溢出，丢弃最早一条日志", e.TraceID, e.CaseID, e.NodeIP, "", map[string]any{
+			go Emit("WARN", "log.dropped", "回采队列溢出，丢弃最早一条日志", e.TraceID, e.CaseID, e.NodeIP, "", map[string]any{
 				"reason": "pending_overflow", "event_id": e.EventID, "seq": e.Seq,
 			})
 		}
@@ -714,8 +714,8 @@ func (BridgeLogWriter) Write(p []byte) (int, error) {
 	return len(p), err
 }
 
-// Blog 记录带上下文（trace/case/node/custom_ui）的结构化日志并回采。
-func Blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map[string]any) {
+// Emit 记录带上下文（trace/case/node/custom_ui）的结构化日志并回采。
+func Emit(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map[string]any) {
 	if !DefaultHub.levelEnabled(level) {
 		return
 	}
@@ -736,7 +736,7 @@ func Blog(level, event, msg, traceID, caseID, nodeIP, customUI string, extra map
 	}
 }
 
-func BlogContext(ctx context.Context, level, event, message string, req models.ExecRequestContext, extra map[string]any) {
+func EmitContext(ctx context.Context, level, event, message string, req models.ExecRequestContext, extra map[string]any) {
 	if !DefaultHub.levelEnabled(level) {
 		return
 	}
@@ -833,7 +833,7 @@ func NormalizeTraceparentForLegacyGo(traceparent string) string {
 }
 
 func ContextFromMessage(msg models.InMessage) context.Context {
-	// 传播解析归 telemetry 门面（纯 W3C，零 otel 依赖）：logpush 是证据通道，
+	// 传播解析归 telemetry 门面（纯 W3C，零 otel 依赖）：obslog 是证据通道，
 	// 桌面剥离 otel 后日志仍须携带平台下发的 trace 关联（设计 §2.6 裁决）。
 	return telemetry.Extract(context.Background(), NormalizeTraceparentForLegacyGo(msg.Traceparent), msg.Tracestate)
 }

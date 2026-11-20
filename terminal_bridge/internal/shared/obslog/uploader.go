@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 // 桥日志直传：把结构化日志直接从 bridge 送到平台，不经过浏览器。
 //
@@ -37,7 +37,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/shared/uplink"
 	"time"
@@ -112,15 +111,26 @@ type logUploader struct {
 	segmentBytes int64
 	written      int64
 	dropped      uint64
+	// gapsReported 是产生的缺口标记数（drop-oldest 与重放合并计），
+	// replayed 是重启后从 gaps.jsonl 重放的条数；两者用于现场判断"洞是否真的报出去了"。
+	gapsReported uint64
+	replayed     uint64
 	// spilled 统计"内存满、仅落盘"的条数（L2 后不再丢弃，只是慢一拍）。
 	spilled uint64
 	// persistOK 标记落盘链路是否健康：任何一次写失败后置 false（refill 暂停、
 	// 游标停止前进，避免把同一批数据无限重放）；下一次写成功即复位，复位时由
 	// markPersistedLocked 把游标钳回本条起点，保证游标不会越过磁盘上不存在的空洞。
 	persistOK bool
-	started   bool
-	wake      chan struct{}
-	attempt   int
+	// seedMu 串行化本地补传扫描：configure（env/WS 两条路径）与 worker 每轮都会触发，
+	// 并发跑会重复入队，并让进度文件的 tmp 写入互相覆盖（可能读到半截 JSON 导致全量重扫）。
+	seedMu sync.Mutex
+	// 预算检查节流：每条日志都 ReadDir + Stat 全段会放大 publish 热路径 IO。
+	// 累计写入字节达到 maxBytes/8（下限 1KB）或距上次检查 5s 才真正扫描一次。
+	budgetCheckBytes int64
+	lastBudgetAt     time.Time
+	started          bool
+	wake             chan struct{}
+	attempt          int
 	// relaxed 记录"已确认平台使用自签证书、允许跳过校验"的 endpoint。
 	//
 	// 只记忆进程生命周期：重启后第一次会多一次握手失败，随后自愈。
@@ -171,7 +181,7 @@ func (u *logUploader) configureWithSource(token, endpoint, caseID, instance, sou
 
 	u.recoverOutbox()
 
-	Blog("INFO", "log_upload.configured", "桥日志直传已启用", "", caseID, "", "", map[string]any{
+	Emit("INFO", "log_upload.configured", "桥日志直传已启用", "", caseID, "", "", map[string]any{
 		"endpoint": endpoint, "instance": instance, "token_changed": changed, "source": source,
 	})
 	if needStart {
@@ -251,7 +261,7 @@ func (u *logUploader) enqueue(entry LogEntry) {
 
 // reportLostLocked 记录一条真实丢失（落盘失败且内存队列已满）。调用方持有 u.Mu。
 //
-// 为什么走 stderr 而不是 Blog：Blog 会经 publish 回到 enqueue 重入 u.Mu（自死锁）。
+// 为什么走 stderr 而不是 Emit：Emit 会经 publish 回到 enqueue 重入 u.Mu（自死锁）。
 // stderr 在桌面形态被 redirectStderrToFile 落进 bridge-stderr.log，由 L3 补传通道
 // 包装上报，因此"平台可知洞"仍然成立。按首条 + 每 100 条节流，避免满盘时刷爆文件。
 func (u *logUploader) reportLostLocked(entry LogEntry) {
@@ -300,7 +310,7 @@ func (u *logUploader) run() {
 			sent, err := u.flushOnce()
 			if err != nil {
 				delay := u.backoff()
-				Blog("WARN", "log_upload.failed", "桥日志直传失败，稍后重试", "", "", "", "", map[string]any{
+				Emit("WARN", "log_upload.failed", "桥日志直传失败，稍后重试", "", "", "", "", map[string]any{
 					"error": err.Error(), "backoff_seconds": int(delay.Seconds()), "queued": u.queueLen(),
 				})
 				time.Sleep(delay)
@@ -474,7 +484,7 @@ func (u *logUploader) sendBatch(payload []byte, endpoint, token string) (*http.R
 
 	// 命中自签证书：放宽一次重试，并记住该 endpoint，避免每一批都先失败一轮。
 	u.markTLSRelaxed(endpoint)
-	Blog("WARN", "log_upload.tls_relaxed", "平台证书不受信，桥日志直传已放宽证书校验", "", "", "", "", map[string]any{
+	Emit("WARN", "log_upload.tls_relaxed", "平台证书不受信，桥日志直传已放宽证书校验", "", "", "", "", map[string]any{
 		"endpoint": endpoint, "reason": "self-signed-certificate",
 	})
 	retry, buildErr := build()
@@ -530,17 +540,29 @@ func LogUploadStats() map[string]any {
 	u := LogUpload
 	u.Mu.Lock()
 	defer u.Mu.Unlock()
-	return map[string]any{
-		"enabled":  u.token != "" && u.endpoint != "",
-		"queued":   len(u.queue) + len(u.seedQueue),
-		"dropped":  atomic.LoadUint64(&u.dropped),
-		"spilled":  u.spilled,
-		"instance": u.instance,
-		"outbox":   u.outboxAt,
+	stats := map[string]any{
+		"enabled": u.token != "" && u.endpoint != "",
+		"queued":  len(u.queue) + len(u.seedQueue),
+		// dropped 与写入侧（持 u.Mu 时 u.dropped++）用同一把锁读写；
+		// 混用 atomic.Load 与互斥写不构成 happens-before，是数据竞争。
+		"dropped":      u.dropped,
+		"spilled":      u.spilled,
+		"gaps":         u.gapsReported,
+		"replayed":     u.replayed,
+		"seed_pending": len(u.seedQueue),
+		"instance":     u.instance,
+		"outbox":       u.outboxAt,
 		// persist_ok=false 是现场最重要的一个信号：落盘链路已坏（磁盘满/目录不可写），
 		// refill 已暂停、游标已冻结；此时 dropped 增长代表真实丢失，需立即清理磁盘。
 		"persist_ok": u.persistOK,
 		// source 让排障第一眼就能区分"部署期注入生效"与"只有浏览器下发"。
 		"source": u.source,
 	}
+	// 游标是判断"投递是否真的在推进"的硬指标：偏移长时间不变 = 平台不可达或鉴权失败。
+	if dir := outboxDir(); dir != "" && u.instance != "" {
+		cursor := loadOutboxCursor(outboxInstanceDir(dir, u.instance))
+		stats["cursor_segment"] = cursor.Segment
+		stats["cursor_offset"] = cursor.Offset
+	}
+	return stats
 }

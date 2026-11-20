@@ -1,6 +1,6 @@
 //go:build telemetry
 
-// U1 集群实现守卫：W3C Random 标志位（0x03）经 logpush 归一化后必须被
+// U1 集群实现守卫：W3C Random 标志位（0x03）经 obslog 归一化后必须被
 // 门面提取为有效远程父上下文，且真实实现开的子 span 继承其 trace。
 // 本测试只在 -tags telemetry 下编译运行（CI 双 tag 各跑一遍）；
 // 测试函数名自 main_test.go 随迁守恒（原 otel 直调断言改门面断言）。
@@ -11,8 +11,8 @@ import (
 	"context"
 	"testing"
 
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/telemetry"
 
 	"go.opentelemetry.io/otel"
@@ -32,7 +32,7 @@ func TestContextFromMessageAcceptsW3CRandomFlag(t *testing.T) {
 
 	const traceID = "caa7e3e825ba4a606df189740be1118c"
 	const spanID = "cbef2f8fb7e2d3a8"
-	ctx := logpush.ContextFromMessage(models.InMessage{
+	ctx := obslog.ContextFromMessage(models.InMessage{
 		TraceID:     traceID,
 		Traceparent: "00-" + traceID + "-" + spanID + "-03",
 	})

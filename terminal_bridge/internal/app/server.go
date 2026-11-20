@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
-	"terminal_bridge/internal/logpush"
+	"terminal_bridge/internal/shared/obslog"
 
 	"golang.org/x/net/websocket"
 )
@@ -17,7 +17,7 @@ func (b *Bridge) corsWebSocketHandler(config runtimeConfig) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 		if !config.OriginAllowed(origin, r.Host) {
-			logpush.Blog("WARNING", "websocket.origin_rejected", "拒绝非授权 Origin 的 WebSocket 请求", "", "", "", CustomUIHost(origin), map[string]any{
+			obslog.Emit("WARNING", "websocket.origin_rejected", "拒绝非授权 Origin 的 WebSocket 请求", "", "", "", CustomUIHost(origin), map[string]any{
 				"origin": origin,
 				"host":   r.Host,
 				"mode":   config.Mode,
@@ -74,7 +74,7 @@ func prometheusLabelValue(value string) string {
 
 func getPrometheusMetrics(bridge *Bridge, config runtimeConfig) string {
 	bridgeState := bridge.status()
-	logState := logpush.DefaultHub.Status()
+	logState := obslog.DefaultHub.Status()
 	return fmt.Sprintf(`# HELP bridge_logs_collected_total Total logs collected
 # TYPE bridge_logs_collected_total counter
 bridge_logs_collected_total %d
@@ -180,17 +180,17 @@ bridge_log_file_bytes %d
 }
 
 type serviceStatus struct {
-	Status        string               `json:"status"`
-	Service       string               `json:"service"`
-	Version       string               `json:"version"`
-	Commit        string               `json:"commit"`
-	BuildTime     string               `json:"build_time"`
-	Mode          string               `json:"mode"`
-	ListenAddress string               `json:"listen_address"`
-	WebSockets    int64                `json:"websocket_connections"`
-	Bridge        bridgeStatus         `json:"bridge"`
-	Logs          logpush.LogHubStatus `json:"logs"`
-	// logpush.LogUpload 暴露日志直传状态：现场第一句话往往是"到底有没有直传"，
+	Status        string              `json:"status"`
+	Service       string              `json:"service"`
+	Version       string              `json:"version"`
+	Commit        string              `json:"commit"`
+	BuildTime     string              `json:"build_time"`
+	Mode          string              `json:"mode"`
+	ListenAddress string              `json:"listen_address"`
+	WebSockets    int64               `json:"websocket_connections"`
+	Bridge        bridgeStatus        `json:"bridge"`
+	Logs          obslog.LogHubStatus `json:"logs"`
+	// obslog.LogUpload 暴露日志直传状态：现场第一句话往往是"到底有没有直传"，
 	// 没有这个字段就只能靠猜（浏览器关掉后是否还有日志进来）。
 	LogUpload map[string]any `json:"log_upload"`
 }
@@ -206,8 +206,8 @@ func buildServiceStatus(bridge *Bridge, config runtimeConfig) serviceStatus {
 		ListenAddress: config.Address(),
 		WebSockets:    atomic.LoadInt64(&activeWebSockets),
 		Bridge:        bridge.status(),
-		Logs:          logpush.DefaultHub.Status(),
-		LogUpload:     logpush.LogUploadStats(),
+		Logs:          obslog.DefaultHub.Status(),
+		LogUpload:     obslog.LogUploadStats(),
 	}
 }
 

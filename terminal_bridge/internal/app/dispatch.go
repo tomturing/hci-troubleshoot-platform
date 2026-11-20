@@ -14,7 +14,7 @@ import (
 // 「支持哪些消息类型」以路由表为唯一事实源，路由表守卫测试逐字冻结清单。
 
 // LogCaseSubscriber 是日志订阅者的最小接口缝：协议边缘只需要「归属工单」读写能力，
-// 不认识 logpush 的私有订阅者类型（依赖倒置，避免 app/装配层反向依赖具体实现）。
+// 不认识 obslog 的私有订阅者类型（依赖倒置，避免 app/装配层反向依赖具体实现）。
 type LogCaseSubscriber interface {
 	BindCase(caseID string)
 	BoundCase() string

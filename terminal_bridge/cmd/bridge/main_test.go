@@ -19,8 +19,8 @@ import (
 	"terminal_bridge/internal/acli"
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logcollect"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
@@ -278,7 +278,7 @@ func TestNormalizeTraceparentOnlyDropsW3CRandomFlag(t *testing.T) {
 	}
 	for inputFlags, expected := range tests {
 		t.Run(inputFlags, func(t *testing.T) {
-			actual := logpush.NormalizeTraceparentForLegacyGo(prefix + inputFlags)
+			actual := obslog.NormalizeTraceparentForLegacyGo(prefix + inputFlags)
 			if actual != expected {
 				t.Fatalf("NormalizeTraceparentForLegacyGo() = %q, want %q", actual, expected)
 			}
@@ -366,7 +366,7 @@ func TestBoundedCaptureKeepsHashAndBoundsMemory(t *testing.T) {
 }
 
 func TestRedactSensitiveText(t *testing.T) {
-	redacted := logpush.RedactSensitiveText(`password=secret token: abc {"private_key":"sensitive"}`)
+	redacted := obslog.RedactSensitiveText(`password=secret token: abc {"private_key":"sensitive"}`)
 	if strings.Contains(redacted, "secret") || strings.Contains(redacted, "sensitive") {
 		t.Fatalf("敏感信息未被脱敏: %s", redacted)
 	}

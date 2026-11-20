@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"log"
 	"terminal_bridge/internal/app"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/sftp"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"time"
 
 	"golang.org/x/net/websocket"
@@ -21,11 +21,11 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 	// role 由首条业务消息确定；端口探测连接永远停在 unknown（这是它们的正常形态）。
 	role := app.ConnRoleUnknown
 	openedAt := time.Now()
-	// 订阅必须先于 logpush.Blog：否则"浏览器已连接"这条事件发生时本连接还不在 h.subs 里，
+	// 订阅必须先于 obslog.Emit：否则"浏览器已连接"这条事件发生时本连接还不在 h.subs 里，
 	// 它自己的处理函数都收不到，浏览器也就永远无法把它回采入库（实测丢过 14 条同类事件）。
-	sub := logpush.DefaultHub.AddSubscriber(ws, cui)
+	sub := obslog.DefaultHub.AddSubscriber(ws, cui)
 	// 连接建立即留痕：浏览器是否在线决定了命令能否下发，是"命令没结果"类问题的第一判据。
-	logpush.Blog("INFO", "bridge.connected", "浏览器已连接", "", "", "", cui, map[string]any{
+	obslog.Emit("INFO", "bridge.connected", "浏览器已连接", "", "", "", cui, map[string]any{
 		"origin": customUI, "custom_ui": cui, "remote": ws.RemoteAddr().String(),
 		"conn_id": connID,
 	})
@@ -33,7 +33,7 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 	// 用于端口冲突探测（避免误连占用主端口的陌生进程）。旧客户端会忽略未知类型。
 	// detail 携带 instance_id：前端要用它申请"绑定实例"的日志直传令牌，
 	// 没有它令牌只能绑定工单，无法阻止令牌被复制到另一台桥。
-	models.SendMsg(ws, models.OutMessage{Type: "bridge_hello", Message: getVersion(), Detail: logpush.DefaultHub.InstanceID, CustomUI: cui})
+	models.SendMsg(ws, models.OutMessage{Type: "bridge_hello", Message: getVersion(), Detail: obslog.DefaultHub.InstanceID, CustomUI: cui})
 	// ownedSessions 追踪 ssh_connect 显式创建的会话
 	ownedSessions := app.NewOwnedSessionTracker()
 
@@ -71,20 +71,20 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 			}
 		}
 		// 断开留痕（含原因）：断连窗口内的命令结果会丢失，是"未收到执行结果"的高频根因。
-		logpush.Blog("WARN", "bridge.disconnected", "浏览器已断开", "", sub.CaseID, "", cui, map[string]any{
+		obslog.Emit("WARN", "bridge.disconnected", "浏览器已断开", "", sub.CaseID, "", cui, map[string]any{
 			"custom_ui": cui, "remote": ws.RemoteAddr().String(), "reason": "connection_closed",
 			"conn_id": connID, "role": role,
 			"duration_seconds": int64(time.Since(openedAt).Seconds()),
 			"owned_keys":       releasedKeys,
 			"active_sessions":  b.SessionCount(),
 		})
-		logpush.DefaultHub.RemoveSubscriber(ws)
+		obslog.DefaultHub.RemoveSubscriber(ws)
 		models.WebsocketWriteLocks.Delete(ws)
 		// 浏览器断开后立即清理凭据缓存，缩短密码/私钥在内存中的生命周期。
 		b.ClearLastAuth(sub.CaseID)
 		// 本连接发起的下载一并取消：浏览器都关了还继续拉完整个文件，白占客户带宽。
 		if cancelled := sftp.CancelSftpTasksForConn(b, connID); cancelled > 0 {
-			logpush.Blog("INFO", "sftp.tasks_cancelled_on_disconnect", "连接断开，已取消未完成的下载任务", "", sub.CaseID, "", cui, map[string]any{
+			obslog.Emit("INFO", "sftp.tasks_cancelled_on_disconnect", "连接断开，已取消未完成的下载任务", "", sub.CaseID, "", cui, map[string]any{
 				"conn_id": connID, "cancelled": cancelled,
 			})
 		}
@@ -112,7 +112,7 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 		// 把真正的异常淹没了，而且它们全部没有 case_id / extra，云端也不可检索。
 		// ping/pong 连 DEBUG 都不记：它们由 WS 心跳承担，不是业务事实。
 		if msg.Type != "pong" && msg.Type != "ping" {
-			logpush.Blog("DEBUG", "ws.message", "收到消息", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			obslog.Emit("DEBUG", "ws.message", "收到消息", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"msg_type": msg.Type, "container": msg.Container,
 			})
 		}
@@ -120,7 +120,7 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 		// 不能因为探测也发了 pong 就把它当成业务连接。
 		if assigned := app.RoleOfMessageType(msg.Type); assigned != "" && ctx.Role == app.ConnRoleUnknown {
 			ctx.Role = assigned
-			logpush.Blog("INFO", "conn.role", "连接用途已确定", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			obslog.Emit("INFO", "conn.role", "连接用途已确定", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"conn_id": connID, "role": ctx.Role,
 			})
 		}

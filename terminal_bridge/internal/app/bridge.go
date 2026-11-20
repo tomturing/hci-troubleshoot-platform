@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
 	"time"
@@ -453,7 +453,7 @@ func (b *Bridge) ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 	// 后台重连的会话同样要保活：它最容易在长跑期间撞上半开连接。
 	session.StartKeepAlive(sshx.SshKeepAliveInterval())
 	LogSessionCreated(session, key, connID, "delivery", "delivery_auto_reconnect")
-	logpush.Blog("WARN", "delivery.session_reconnected", "交付期间节点会话掉线，已用已存认证自动重连", "", caseID, nodeIP, "", map[string]any{
+	obslog.Emit("WARN", "delivery.session_reconnected", "交付期间节点会话掉线，已用已存认证自动重连", "", caseID, nodeIP, "", map[string]any{
 		"key":     key,
 		"conn_id": connID,
 	})

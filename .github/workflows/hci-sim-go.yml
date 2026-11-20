@@ -114,10 +114,10 @@ jobs:
             echo "::error::桌面产物泄漏 otel 符号（U1 验收失败）"
             exit 1
           fi
-          # 风险 #19：logpush 是证据通道不可剥离——桌面产物必须含 logpush 符号，
+          # 风险 #19：obslog 是证据通道不可剥离——桌面产物必须含 obslog 符号，
           # 防止将来误随 telemetry build tag 一起剥掉（L1 验收，设计 §九）。
-          if ! go tool nm /tmp/bridge_u1_desktop | grep -q "terminal_bridge/internal/logpush"; then
-            echo "::error::桌面产物缺失 logpush 符号（证据通道被误剥离）"
+          if ! go tool nm /tmp/bridge_u1_desktop | grep -q "terminal_bridge/internal/shared/obslog"; then
+            echo "::error::桌面产物缺失 obslog 符号（证据通道被误剥离）"
             exit 1
           fi
           # 阳性对照：带 tag 的集群产物必须含 otel，防止门禁空转。

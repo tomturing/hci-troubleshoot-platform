@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 // L1/L3/L4 补传引擎：目标 = 本地保留窗口内条目至少一次必达平台（设计 §3.6）。
 //
@@ -55,6 +55,11 @@ type seedProgress struct {
 // 限制扫描范围（恒扫全量），maxEntries 解释为**单轮条数预算**（<=0 取默认 5000）。
 // 覆盖的场景：进程被 kill / OOM / Pod 重建、令牌启用前的旧历史、panic 现场。
 func (u *logUploader) SeedFromLocalLogs(maxFiles, maxEntries int) int {
+	// 串行化补传扫描：configure（env/WS 两条路径，各自 go 出去）与 worker 每轮都会触发，
+	// 并发跑会重复入队（浪费带宽），并让进度文件的 tmp 写入互相覆盖——后者可能读到
+	// 半截 JSON，被当成"无进度"而全量重扫。
+	u.seedMu.Lock()
+	defer u.seedMu.Unlock()
 	if !u.enabled() {
 		return 0
 	}
@@ -131,7 +136,7 @@ func (u *logUploader) logSeeded(seeded int, watermark uint64, pending bool) {
 	if seeded == 0 && !pending {
 		return
 	}
-	Blog("INFO", "log_upload.seeded", "已从本地日志文件补传未上传区间", "", "", "", "", map[string]any{
+	Emit("INFO", "log_upload.seeded", "已从本地日志文件补传未上传区间", "", "", "", "", map[string]any{
 		"seeded": seeded, "watermark": watermark, "pending": pending,
 	})
 }
@@ -231,6 +236,23 @@ func (u *logUploader) mergeSeedLocked(entry LogEntry) {
 // scanStderrFile 从字节水位起读 bridge-stderr.log，把非 JSON 行包装为 bridge.stderr/ERROR。
 // 返回（补传条数, 是否预算用尽）。字节水位只在上传成功后推进（flushOnce），
 // 进程内去重靠 maxStderrQueued，重启后从持久化水位续读。
+// stderrGenFileName 与 app.RedirectStderrToFile 的轮转标记保持一致：
+// 每次轮转写一个新的纳秒时间戳，作为该代 stderr 文件的身份。
+const stderrGenFileName = "bridge-stderr.gen"
+
+// stderrGeneration 读取 stderr 轮转代数；不存在或为空时返回 "0"（兼容轮转引入前的旧现场）。
+func stderrGeneration(dir string) string {
+	data, err := os.ReadFile(filepath.Join(dir, stderrGenFileName))
+	if err != nil {
+		return "0"
+	}
+	gen := strings.TrimSpace(string(data))
+	if gen == "" {
+		return "0"
+	}
+	return gen
+}
+
 func (u *logUploader) scanStderrFile(dir string, entryBudget int, bytesLeft *int64, deadline time.Time) (int, bool) {
 	path := filepath.Join(dir, "bridge-stderr.log")
 	file, err := os.Open(path)
@@ -269,13 +291,15 @@ func (u *logUploader) scanStderrFile(dir string, entryBudget int, bytesLeft *int
 			continue
 		}
 		entry := LogEntry{
-			Type:                  "bridge_log",
-			Level:                 "ERROR",
-			Service:               "terminal_bridge",
-			Event:                 "bridge.stderr",
-			Message:               text,
-			Timestamp:             time.Now().UTC().Format(time.RFC3339Nano),
-			EventID:               deterministicUUID(fmt.Sprintf("stderr:%s:%d", instance, end)),
+			Type:      "bridge_log",
+			Level:     "ERROR",
+			Service:   "terminal_bridge",
+			Event:     "bridge.stderr",
+			Message:   text,
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			// 带轮转代数：轮转后偏移从 0 重新计数，不带代数会与历史同一偏移的
+			// event_id 碰撞，被平台按幂等规则误判为重复而丢弃新现场。
+			EventID:               deterministicUUID(fmt.Sprintf("stderr:%s:%s:%d", instance, stderrGeneration(dir), end)),
 			BridgeInstanceID:      instance,
 			ServiceName:           "terminal-bridge",
 			ServiceVersion:        serviceVersion(),

@@ -18,8 +18,8 @@ import (
 	"terminal_bridge/internal/app"
 	"time"
 
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/sshx"
 )
@@ -76,7 +76,7 @@ func prepareScriptScenario(b *app.Bridge,
 		restoreState: "pending",
 		activator:    reconcile.NewActivator(),
 	}
-	logpush.Blog("INFO", "log_collect.script_fanout_start", "开始把收集脚本写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	obslog.Emit("INFO", "log_collect.script_fanout_start", "开始把收集脚本写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "codes": codes, "digests": digests,
 		"hosts_count": len(targets), "ips_all": all, "script_bytes": totalBytes,
 	})
@@ -112,7 +112,7 @@ func prepareScriptScenario(b *app.Bridge,
 			rejection.Message = sshx.TruncateString(rejection.Message+
 				ContractFormat("script_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
 		}
-		logpush.Blog("ERROR", "log_collect.script_fanout_failed", "脚本写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+		obslog.Emit("ERROR", "log_collect.script_fanout_failed", "脚本写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 			"task_id": taskID, "codes": codes, "written": written,
 			"error_code": code, "error_type": errType,
 			"failed_hosts":   spcHostAuditTrail(blocking),
@@ -124,7 +124,7 @@ func prepareScriptScenario(b *app.Bridge,
 	}
 
 	spcTaskStore.put(state)
-	logpush.Blog("INFO", "log_collect.script_fanout", "收集脚本已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	obslog.Emit("INFO", "log_collect.script_fanout", "收集脚本已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "codes": codes, "written": written,
 		"failed_hosts": spcHostAuditTrail(failed), "hosts": spcHostAuditTrail(results),
 	})
@@ -447,7 +447,7 @@ func watchScriptRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, tra
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				logpush.Blog("ERROR", "log_collect.script_restore_panic", "脚本恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
+				obslog.Emit("ERROR", "log_collect.script_restore_panic", "脚本恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
 					"task_id": st.TaskID, "panic": fmt.Sprint(recovered),
 				})
 			}
@@ -467,7 +467,7 @@ func watchScriptRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, tra
 			if err != nil || exitCode != 0 {
 				failPolls++
 				if failPolls >= spcRestoreFailPolls {
-					logpush.Blog("WARN", "log_collect.script_restore_abandon", "进度连续不可用，脚本恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
+					obslog.Emit("WARN", "log_collect.script_restore_abandon", "进度连续不可用，脚本恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
 						"task_id": st.TaskID, "error": ErrString(err), "exit_code": exitCode,
 					})
 					return
@@ -516,7 +516,7 @@ func restoreScriptTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reas
 		level = "WARN"
 	}
 	st.finishRestore(status, reason, results)
-	logpush.Blog(level, "log_collect.script_restore", "收集脚本恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
+	obslog.Emit(level, "log_collect.script_restore", "收集脚本恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
 		"task_id": st.TaskID, "codes": st.Slots, "trigger": reason,
 		"restored": restored, "failed": failed, "hosts_count": len(results),
 		"hosts": spcHostAuditTrail(results),

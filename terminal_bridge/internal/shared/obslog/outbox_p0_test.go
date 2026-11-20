@@ -1,9 +1,9 @@
-package logpush
+package obslog
 
 // P0 回归守卫（2026-11-20 架构审查）：
 //
 //  1) 磁盘预算超限的 gap 上报不得在持锁路径回到 uploader —— 此前
-//     enforceDiskBudgetLocked 里调 Blog，形成 persistLocked(持 u.Mu) → Blog →
+//     enforceDiskBudgetLocked 里调 Emit，形成 persistLocked(持 u.Mu) → Emit →
 //     publish → enqueue → u.Mu.Lock() 的同 goroutine 自死锁，桥整体挂死。
 //  2) persistOK 必须是可复位的双向信号；故障期间 refill 必须暂停，否则
 //     游标冻结 + 反复读回会造成无限重放。
@@ -89,7 +89,7 @@ func TestGapReportDoesNotDeadlockOnDiskBudget(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("预算超限路径疑似自死锁：持锁调用会回到 enqueue 的路径（Blog→publish→enqueue→u.Mu）")
+		t.Fatal("预算超限路径疑似自死锁：持锁调用会回到 enqueue 的路径（Emit→publish→enqueue→u.Mu）")
 	}
 
 	u.Mu.Lock()

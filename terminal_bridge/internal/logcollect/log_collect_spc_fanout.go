@@ -27,8 +27,8 @@ import (
 	"strings"
 	"sync"
 	"terminal_bridge/internal/app"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/sshx"
 	"time"
 
@@ -737,7 +737,7 @@ func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, 
 		restoreState: "pending",
 		activator:    reconcile.NewActivator(),
 	}
-	logpush.Blog("INFO", "log_collect.spc_fanout_start", "开始把场景写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	obslog.Emit("INFO", "log_collect.spc_fanout_start", "开始把场景写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "slots": slots, "spc_sha256": digest,
 		"spc_digests": digests, "hosts_count": len(targets), "ips_all": all, "spc_bytes": spcBytes,
 	})
@@ -780,7 +780,7 @@ func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, 
 			rejection.Message = sshx.TruncateString(rejection.Message+
 				ContractFormat("spc_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
 		}
-		logpush.Blog("ERROR", "log_collect.spc_fanout_failed", "场景写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+		obslog.Emit("ERROR", "log_collect.spc_fanout_failed", "场景写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 			"task_id": taskID, "slot": slot, "written": written,
 			"error_code": code, "error_type": errType,
 			"failed_hosts":   spcHostAuditTrail(blocking),
@@ -795,7 +795,7 @@ func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, 
 	// 抗崩溃（§3.2）：终态还原的责任先落盘再交给内存 watcher。
 	// bridge 被杀后 watcher 消失，重启时凭意图 + 自描述备份名收尾。
 	persistSpcRestoreIntent(b, state, traceID, msg.CaseID, msg.NodeIP, customUI)
-	logpush.Blog("INFO", "log_collect.spc_fanout", "场景已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	obslog.Emit("INFO", "log_collect.spc_fanout", "场景已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "spc_sha256": digest,
 		"written": written, "failed_hosts": spcHostAuditTrail(failed),
 		"hosts": spcHostAuditTrail(results),
@@ -1281,7 +1281,7 @@ func watchSpcRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, traceI
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				logpush.Blog("ERROR", "log_collect.spc_restore_panic", "场景恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
+				obslog.Emit("ERROR", "log_collect.spc_restore_panic", "场景恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
 					"task_id": st.TaskID, "panic": fmt.Sprint(recovered),
 				})
 			}
@@ -1302,7 +1302,7 @@ func watchSpcRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, traceI
 			if err != nil || exitCode != 0 {
 				failPolls++
 				if failPolls >= spcRestoreFailPolls {
-					logpush.Blog("WARN", "log_collect.spc_restore_abandon", "进度连续不可用，恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
+					obslog.Emit("WARN", "log_collect.spc_restore_abandon", "进度连续不可用，恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
 						"task_id": st.TaskID, "error": ErrString(err), "exit_code": exitCode,
 					})
 					return
@@ -1353,12 +1353,12 @@ func restoreSpcTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason,
 	// 提前删意图会把"还没还原完"伪装成"已收尾"，崩溃后没人再管残留清单。
 	if failed == 0 {
 		if err := reconcile.DeleteIntent(reconcile.KindSpcSlot, st.TaskID); err != nil {
-			logpush.Blog("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
+			obslog.Emit("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
 				"task_id": st.TaskID, "error": err.Error(),
 			})
 		}
 	}
-	logpush.Blog(level, "log_collect.spc_restore", "场景槽位恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
+	obslog.Emit(level, "log_collect.spc_restore", "场景槽位恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
 		"task_id": st.TaskID, "slot": st.Slot, "trigger": reason,
 		"restored": restored, "failed": failed, "hosts_count": len(results),
 		"hosts": spcHostAuditTrail(results),
@@ -1471,13 +1471,13 @@ func persistSpcRestoreIntent(b *app.Bridge, st *spcTaskState, traceID, caseID, n
 		Slots: slots, CreatedAt: time.Now(), Reason: "custom_scenario",
 	}
 	if err := reconcile.SaveIntent(intent); err != nil {
-		logpush.Blog("WARN", "log_collect.spc_intent_save_failed", "还原意图落盘失败，崩溃后需显式 restore_spc 兜底", traceID, caseID, nodeIP, customUI, map[string]any{
+		obslog.Emit("WARN", "log_collect.spc_intent_save_failed", "还原意图落盘失败，崩溃后需显式 restore_spc 兜底", traceID, caseID, nodeIP, customUI, map[string]any{
 			"task_id": st.TaskID, "error": err.Error(),
 		})
 		return
 	}
 	superseded := supersedeSpcRestoreIntents(intent)
-	logpush.Blog("INFO", "log_collect.spc_intent_persisted", "终态还原意图已落盘", traceID, caseID, nodeIP, customUI, map[string]any{
+	obslog.Emit("INFO", "log_collect.spc_intent_persisted", "终态还原意图已落盘", traceID, caseID, nodeIP, customUI, map[string]any{
 		"task_id": st.TaskID, "hosts_count": len(intent.NodeIPs), "slots": slots, "superseded": superseded,
 	})
 }
@@ -1549,7 +1549,7 @@ func findSpcRestoreIntent(taskID string) *reconcile.RestoreIntent {
 func RecoverSpcRestoreIntents(b *app.Bridge, s *sshx.SSHSession, traceID, caseID, nodeIP, customUI string) {
 	intents, err := reconcile.LoadIntents()
 	if err != nil {
-		logpush.Blog("WARN", "log_collect.spc_intent_load_failed", "还原意图读取失败", traceID, caseID, nodeIP, customUI, map[string]any{
+		obslog.Emit("WARN", "log_collect.spc_intent_load_failed", "还原意图读取失败", traceID, caseID, nodeIP, customUI, map[string]any{
 			"error": err.Error(),
 		})
 		return
@@ -1581,18 +1581,18 @@ func RecoverSpcRestoreIntents(b *app.Bridge, s *sshx.SSHSession, traceID, caseID
 		cancel()
 		restored, failed := spcCountRestore(results)
 		if failed > 0 {
-			logpush.Blog("WARN", "log_collect.spc_intent_recover_failed", "重启后还原未全部成功，意图保留待重试", traceID, caseID, nodeIP, customUI, map[string]any{
+			obslog.Emit("WARN", "log_collect.spc_intent_recover_failed", "重启后还原未全部成功，意图保留待重试", traceID, caseID, nodeIP, customUI, map[string]any{
 				"task_id": intent.TaskKey, "restored": restored, "failed": failed,
 				"hosts": spcHostAuditTrail(results),
 			})
 			continue
 		}
 		if err := reconcile.DeleteIntent(intent.Kind, intent.TaskKey); err != nil {
-			logpush.Blog("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
+			obslog.Emit("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
 				"task_id": intent.TaskKey, "error": err.Error(),
 			})
 		}
-		logpush.Blog("INFO", "log_collect.spc_intent_recovered", "重启后凭持久意图完成终态还原", traceID, caseID, nodeIP, customUI, map[string]any{
+		obslog.Emit("INFO", "log_collect.spc_intent_recovered", "重启后凭持久意图完成终态还原", traceID, caseID, nodeIP, customUI, map[string]any{
 			"task_id": intent.TaskKey, "restored": restored, "hosts_count": len(results),
 			"hosts": spcHostAuditTrail(results),
 		})

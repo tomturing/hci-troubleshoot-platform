@@ -10,7 +10,7 @@ owner: terminal_bridge
 
 > 本文归档 2026-11-20 对 terminal_bridge 重构线的**两轮深入审查**结论：
 > 第一轮覆盖 `#1548`–`#1581`（方向、架构、复用、耦合），第二轮覆盖 `#1582`–`#1586`
-> （U1 telemetry、logpush L1-L4、门禁与文档对账），并记录两项 P0 缺陷的修复。
+> （U1 telemetry、obslog L1-L4、门禁与文档对账），并记录两项 P0 缺陷的修复。
 >
 > 与《2026-11-18-terminal_bridge架构重构设计》的关系：该文定义**目标**，本文记录
 > **目标与落地之间的差距**、差距的业界定位、以及按 ROI 排序的收敛路线。两者不冲突，
@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-20 | v1.1 | 采纳 ADR-001：`internal/logpush` → `internal/shared/obslog`、`Blog()` → `Emit()`，并明确"不并入 telemetry"的三条判据与业界范式（§15）；路线图阶段 1（gaps 重放 / seed 互斥 / enforce 节流 / stderr 轮转）与本批同交付 |
 | 2026-11-20 | v1.0 | 首版：归并两轮审查；修复 P0-1（预算超限自死锁）与 P0-2（persistOK 单向闩锁 / 磁盘满静默丢弃），各附生产接线回归测试 |
 
 ---
@@ -36,7 +37,7 @@ owner: terminal_bridge
 | 轮次 | PR | 主题 |
 |------|----|------|
 | 第一轮 | `#1548` `#1553` `#1554` `#1557` `#1566` `#1569` `#1573` `#1575` `#1577` `#1580` `#1581` | P0 止血、D1 插件回归浏览器、S0/S1 节点面原语、R0 目录搬迁、S1 云面 uplink、U0 UPX |
-| 第二轮 | `#1582` `#1584` `#1585` `#1586` | U1 telemetry 门面、L1-L4 logpush 完备性、自动 exe、符号门禁与文档对账 |
+| 第二轮 | `#1582` `#1584` `#1585` `#1586` | U1 telemetry 门面、L1-L4 obslog 完备性、自动 exe、符号门禁与文档对账 |
 
 ### 1.2 方法
 
@@ -54,10 +55,10 @@ owner: terminal_bridge
 ```
 go test ./...              → 540 个测试全部通过（noop 构建）
 go test -tags telemetry    → 539 个测试全部通过（集群构建）
-go test -race ./internal/logpush → 通过
+go test -race ./internal/shared/obslog → 通过
 GOOS=windows/linux go build → 双平台通过
 python3 scripts/check_bridge_imports.py → 11 条域间依赖，未新增
-go tool nm（桌面构建）      → otel 符号 0，logpush 符号 124
+go tool nm（桌面构建）      → otel 符号 0，obslog 符号 124
 go tool nm（telemetry 构建） → otel 符号 2099
 分发产物                   → terminal_bridge.exe 3,130,368 B（UPX 压缩后）
 ```
@@ -124,7 +125,7 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | S2 / S3 reconcile 消费者 | **未完成** | 骨架 + 77 例测试已建，`kinds/` 目录不存在，消费者逻辑内联在 logcollect/acli |
 | S4 acli 两阶段 | **部分** | 两阶段协议已落地，声明式胶水未迁 kinds |
 | U1 telemetry | 完成 | `#1582`，桌面 otel 符号 0 |
-| L1 logpush 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
+| L1 obslog 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
 | D1 删除 relay | 完成 | `#1553` `#1554` |
 
 ---
@@ -157,17 +158,17 @@ go tool nm（telemetry 构建） → otel 符号 2099
 `sessionRefs`/`sessionIdleAt`），`SftpTasks`/`AcliCache` 归还各域自持（域内 `Handler`
 结构体）。这是后续所有解耦的**总钥匙**。
 
-### A2 横切关注点做成了具体依赖：logpush 被 20 个文件 import
+### A2 横切关注点做成了具体依赖：obslog 被 20 个文件 import
 
 **证据**：`internal/app`(3)、`sshx`(1)、`terminal`(2)、`acli`(2)、`logcollect`(5)、
-`delivery`(3)、`sftp`(1)、`cmd`(3) 直接 import `internal/logpush`；缺一个 `Publisher`
+`delivery`(3)、`sftp`(1)、`cmd`(3) 直接 import `internal/shared/obslog`；缺一个 `Publisher`
 端口。11 条冻结基线中 5 条由此产生。
 
 **业界定位**：横切关注点必须依赖**接口**而非实现（Go 谚语 "accept interfaces"；
 OTel 用 no-op provider 解耦，本项目的 `shared/telemetry` 已经做对了这件事）。同一个仓库里
-telemetry 走了门面，logpush 却让 7 个包直接依赖——**同一范式在两条链路上执行不一致**。
+telemetry 走了门面，obslog 却让 7 个包直接依赖——**同一范式在两条链路上执行不一致**。
 
-**影响**：域单测必须构造 `logHub`；logpush 签名变更波及 7 个包；日志级别/采样等策略
+**影响**：域单测必须构造 `logHub`；obslog 签名变更波及 7 个包；日志级别/采样等策略
 无法按域替换。
 
 ### A3 `logcollect` 变成伪公共库
@@ -210,7 +211,7 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 **业界定位**：微内核 + 注册表的价值是"新增能力不改核心"。当前形态只是把 `main.go` 的
 中央 switch 换成另一个中央文件——新增消息仍须改这个 524 行文件，收益只剩"路由表可单测"。
 
-**根因**（代码自述）：域反向 import `app` 会成环，`app` 又 import `logpush`/`terminal`，
+**根因**（代码自述）：域反向 import `app` 会成环，`app` 又 import `obslog`/`terminal`，
 所以只能在装配层注册。**A1 解不开，A5 就解不开**。
 
 ---
@@ -219,14 +220,14 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 
 | 域 | 目标职责（设计） | 实际状况 | 耦合出口 |
 |---|---|---|---|
-| `app` | 微内核，不认识业务语义 | 仍是状态宿主 + 生命周期 + 指标，`bridge.go` 524 行 | → terminal, logpush |
-| `sshx` | 端口适配器，不含 WS 知识 | 1657 行，**0 测试**，含会话租约/keepalive/端口恢复/SFTP channel | → logpush |
-| `terminal` | 交互终端、EXEC、VM console | 1469 行 / 5 例测试；仍被 logcollect/acli 借 `FormatOutputPreview`、PTY 常量 | → logpush |
-| `acli` | 两阶段协议边缘，零编排 | 3119 行，编排仍内联；借 logcollect 错误码与 SPC 五件套 | → app, logcollect, logpush, terminal |
-| `logcollect` | 采集编排 + 错误码 + 证据 | 7414 行（未拆），同时充当公共库 | → app, logpush, terminal, reconcile |
-| `delivery` | 作业状态机，传输全委托原语 | 3439 行，仍持 `*sshx.SSHSession` | → app, logcollect, logpush |
-| `sftp` | 下载，文件名主权 | 1030 行，单文件未三拆 | → app, logcollect, logpush |
-| `logpush` | 证据通道 | 2354 行（本轮 +840） | → app 反向被依赖 7 包 |
+| `app` | 微内核，不认识业务语义 | 仍是状态宿主 + 生命周期 + 指标，`bridge.go` 524 行 | → terminal, obslog |
+| `sshx` | 端口适配器，不含 WS 知识 | 1657 行，**0 测试**，含会话租约/keepalive/端口恢复/SFTP channel | → obslog |
+| `terminal` | 交互终端、EXEC、VM console | 1469 行 / 5 例测试；仍被 logcollect/acli 借 `FormatOutputPreview`、PTY 常量 | → obslog |
+| `acli` | 两阶段协议边缘，零编排 | 3119 行，编排仍内联；借 logcollect 错误码与 SPC 五件套 | → app, logcollect, obslog, terminal |
+| `logcollect` | 采集编排 + 错误码 + 证据 | 7414 行（未拆），同时充当公共库 | → app, obslog, terminal, reconcile |
+| `delivery` | 作业状态机，传输全委托原语 | 3439 行，仍持 `*sshx.SSHSession` | → app, logcollect, obslog |
+| `sftp` | 下载，文件名主权 | 1030 行，单文件未三拆 | → app, logcollect, obslog |
+| `obslog` | 证据通道 | 2354 行（本轮 +840） | → app 反向被依赖 7 包 |
 | `shared/remote` | 节点面原语，只认识 Runner | 1339 行 / 47 例 | 健康 |
 | `shared/uplink` | 云面原语 | 561 行 / 9 例；`Push` 3 处调用点 | 健康 |
 | `shared/reconcile` | 声明式骨架 | 2279 行 / 77 例；消费者未迁入 | 健康但空转 |
@@ -263,7 +264,9 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 
 - `logcollect` 以业务域命名，实际被当作公共库（见 A3）；
 - `app.Bridge` 以"桥"命名，实际是全局状态容器（见 A1）；
-- `shared/runtime` 名为 runtime，实际是 env 读取助手——若继续扩张会变成新的 utils 抽屉。
+- `shared/runtime` 名为 runtime，实际是 env 读取助手——若继续扩张会变成新的 utils 抽屉；
+- ~~`obslog` 与 `logcollect` 都缺少"日志主体"维度，导致"桥自身日志"被误读成"客户日志推送"~~
+  → 已按 §15 决策改为 `internal/shared/obslog`（`Blog` 同步改为 `Emit`）。
 
 ---
 
@@ -273,7 +276,7 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 
 ### P0-1【已修】磁盘预算超限路径的自死锁
 
-**位置**：`terminal_bridge/internal/logpush/outbox.go`（`enforceDiskBudgetLocked`）
+**位置**：`terminal_bridge/internal/shared/obslog/outbox.go`（`enforceDiskBudgetLocked`）
 
 **缺陷链**
 
@@ -302,13 +305,13 @@ stderr 在桌面形态由 `redirectStderrToFile` 落进 `bridge-stderr.log`，�
 包装上报——既消除重入，又避免产生重复 gap 事件（Blog 那条会再占 outbox 预算）。
 本地与平台两侧都留痕，链路不闭合也不丢。
 
-**回归测试**：`internal/logpush/outbox_p0_test.go::TestGapReportDoesNotDeadlockOnDiskBudget`，
+**回归测试**：`internal/shared/obslog/outbox_p0_test.go::TestGapReportDoesNotDeadlockOnDiskBudget`，
 刻意使用**全局 `LogUpload` + 生产接线**（而非局部实例），5 秒超时判定死锁。
 已做反向验证：把 `Blog` 改回去，该测试在 40 秒超时失败；改回修复后 0.10s 通过。
 
 ### P0-2【已修】`persistOK` 单向闩锁 → 无限重放；磁盘满时静默丢弃
 
-**位置**：`terminal_bridge/internal/logpush/outbox.go`、`uploader.go`
+**位置**：`terminal_bridge/internal/shared/obslog/outbox.go`、`uploader.go`
 
 **缺陷 1：单向闩锁**。`persistOK` 有 4 处置 `false`、0 处置回 `true`。一次瞬时
 `ENOSPC`/`EIO`/句柄耗尽后：`advanceCursorLocked` 永久不执行（游标冻结），而
@@ -335,7 +338,7 @@ stderr 在桌面形态由 `redirectStderrToFile` 落进 `bridge-stderr.log`，�
 - `TestWriteFailureCountsAsDroppedWhenQueueFull`：已关闭句柄模拟磁盘满 + 队列填满，
   断言 `dropped+1` 且 `persistOK=false`。
 
-### P1【未修】
+### P1（阶段 1 已修 P1-1/2/4/5/7；P1-3/6 仍未修）
 
 | # | 位置 | 缺陷 | 后果 | 修复方向 |
 |---|---|---|---|---|
@@ -399,10 +402,10 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 
 | 信号 | 归属 | 评价 |
 |---|---|---|
-| Traces | `shared/telemetry` 门面 + build tag 双实现 | **标杆**：签名零 otel 类型、nm 双向门禁、传播解析用纯标准库保证 logpush 不随 tag 剥离 |
-| Metrics | `app/metrics.go` | 可用；logpush 侧缺"重放/丢弃/游标"指标 |
-| Logs·本地 | `logpush/hub.go` | 可用；`bridge-stderr.log` 无轮转 |
-| Logs·证据 | `logpush` 直传 + L1-L4 补传 | 本轮补强；缺口见 §7-P1 |
+| Traces | `shared/telemetry` 门面 + build tag 双实现 | **标杆**：签名零 otel 类型、nm 双向门禁、传播解析用纯标准库保证 obslog 不随 tag 剥离 |
+| Metrics | `app/metrics.go` | 可用；obslog 侧缺"重放/丢弃/游标"指标 |
+| Logs·本地 | `obslog/hub.go` | 可用；`bridge-stderr.log` 无轮转 |
+| Logs·证据 | `obslog` 直传 + L1-L4 补传 | 本轮补强；缺口见 §7-P1 |
 
 **`/status` 现状**：`enabled`/`queued`/`dropped`/`spilled`/`instance`/`outbox`/`source`，
 本次新增 `persist_ok`。仍缺：`gaps`（已上报缺口数）、`seed_pending`、`cursor`（当前
@@ -423,7 +426,7 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 | gofmt / vet / test / race | CI terminal-bridge job | 有效 |
 | import 禁令（4 条规则 + 11 条冻结基线） | `scripts/check_bridge_imports.py` | 部分有效 |
 | 桌面零 otel + 集群阳性对照 | CI | **范本**：双向断言防门禁空转 |
-| 桌面含 logpush 符号 | `#1586`（待合并） | 有效（防证据通道被误剥） |
+| 桌面含 obslog 符号 | `#1586`（待合并） | 有效（防证据通道被误剥） |
 | UPX ≤5MB fail-closed + 清单 sha256 | CI | 有效 |
 | docs-governance 失效引用 | CI | 有效（`#1586` 正被它拦下） |
 
@@ -447,7 +450,7 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 | 测试函数 | 540（noop）/ 539（telemetry） | 本次 +3 |
 | 分发 exe | 3,130,368 B | 16.47MB → 3.13MB，-81% |
 | 桌面 otel 符号 | 0 | 集群 2099 |
-| 桌面 logpush 符号 | 124 | 证据通道保留 |
+| 桌面 obslog 符号 | 124 | 证据通道保留 |
 | 域间依赖边 | 11 | 未新增 |
 | 最大实现文件 | 2255 行（`log_collect.go`） | 未变 |
 | 零测试包 | `sshx`（1657 行）、`models`、`runtime` | 未变 |
@@ -464,7 +467,7 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 
 **验收**：双 tag 全量测试绿、race 绿、双 GOOS 绿、禁令 11 条未新增；缺陷回退时新测试必失败。
 
-### 阶段 1：可靠性补齐（下一 PR，1 周内）
+### 阶段 1：可靠性补齐（本轮完成）
 
 1. `gaps.jsonl` 重放 + 归档截断 + 纳入预算（P1-1）
 2. `SeedFromLocalLogs` 互斥（P1-2）
@@ -475,16 +478,27 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 **验收**：四个崩溃场景（进程 kill / 断电模拟 / 磁盘满 / 平台长不可达）下，
 "收到的集合 ∪ gap 区间"覆盖本地窗口；`/status` 能独立判定链路健康。
 
+> **落地说明**（本阶段与 §15 的命名调整同批交付，路径统一为 `internal/shared/obslog`）：
+>
+> | 项 | 实现 | 边界 / 权衡 |
+> |---|---|---|
+> | gaps 重放 | `replayGapsLocked` 在 `recoverOutbox` 时读取 `gaps.jsonl`，插到内存队首；原文件归档为 `gaps.replayed.jsonl`（仅保留最近一次），损坏行跳过 | 重放后、入队前若再次崩溃，归档仍在但不自动重放（`/status` 的 `replayed` 可发现停滞） |
+> | gaps 预算 | 计入总占用但**不参与** drop-oldest，落盘失败仍返回内存队列 | 避免"预算满了先删证据" |
+> | seed 互斥 | `SeedFromLocalLogs` 加 `seedMu`，configure（env/WS）与 worker 两路串行 | 最坏让 worker 等一个 2s 预算窗口 |
+> | enforce 节流 | `checkDiskBudgetLocked` 按 `maxBytes/8`（下限 1KB）与 5s 双阈值 | 生产 8MB 预算 ≈ 每 1MB 检查一次；测试小预算下退化为近乎每条检查，既有断言语义不变 |
+> | stderr 轮转 | **启动时**检查 60MB，超限轮转为 `.1` 并写 `bridge-stderr.gen`；`event_id` 改为 `stderr:<inst>:<gen>:<offset>` | 运行中不轮转（Windows 不允许 rename 被 `os.Stderr` 占用的文件）；`.1` 中未补传的旧尾部不自动补传，属已知残余风险，见 §7-P1-5 |
+> | `/status` | 新增 `gaps`/`replayed`/`seed_pending`/`cursor_segment`/`cursor_offset`；`dropped` 改为锁内读写（消除 atomic 与互斥混用） | `cursor_offset` 长时间不变 = 平台不可达或鉴权失败 |
+
 ### 阶段 2：架构解耦（真正的总钥匙）
 
 1. **拆 `app.Bridge`**：会话簿记 → `sshx.SessionRegistry`；`SftpTasks`/`AcliCache` 归还各域；
    消除 52 个函数首参与 11 处反向 import。
-2. **logpush 接口化**：定义最小 `Publisher` 端口，装配层注入；基线从 11 条降到 ≤3 条。
+2. **obslog 接口化**：定义最小 `Publisher` 端口，装配层注入；基线从 11 条降到 ≤3 条。
 3. **logcollect 瘦身**：符号物归原主 + 错误码独立契约包 + SPC 迁 reconcile 消费者。
 4. **delivery 接 Runner**：`*sshx.SSHSession` 换成端口 + FakeRunner 编排单测。
 5. **门禁加固**：新增"域→app""域→sshx 具体类型"两条规则；基线加 sunset。
 
-**验收**：`grep internal/app internal/*/` 为 0；`grep internal/logpush` 在域内为 0；
+**验收**：`grep internal/app internal/*/` 为 0；`grep internal/shared/obslog` 在域内为 0；
 delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 
 ### 阶段 3：结构收敛
@@ -501,14 +515,15 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 
 | 编号 | 层 | 位置 | 状态 |
 |---|---|---|---|
-| P0-1 | 代码 | `logpush/outbox.go` 预算超限路径 | 已修（含回归） |
-| P0-2 | 代码 | `logpush/outbox.go` / `uploader.go` persistOK、静默丢 | 已修（含回归） |
+| P0-1 | 代码 | `shared/obslog/outbox.go` 预算超限路径 | 已修（含回归） |
+| P0-2 | 代码 | `shared/obslog/outbox.go` / `uploader.go` persistOK、静默丢 | 已修（含回归） |
 | A1 | 架构 | `internal/app/bridge.go` Shared Kernel | 未修 |
-| A2 | 架构 | logpush 被 20 文件 import | 未修 |
+| A2 | 架构 | obslog 被 23 文件 import | 未修 |
 | A3 | 架构 | logcollect 伪公共库 | 未修 |
 | A4 | 架构 | delivery 持 `*sshx.SSHSession` | 未修 |
 | A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | 未修 |
-| P1-1~7 | 代码 | 见 §7 | 未修 |
+| P1-1/2/4/5 | 代码 | gaps 重放、seed 互斥、enforce 节流、stderr 轮转 | 已修（阶段 1） |
+| P1-3/6/7 | 代码 | 无 fsync、seed O(n²)、观测字段（7 项已补齐） | P1-3/6 未修；P1-7 已修 |
 | P2-1~6 | 文档/门禁 | 见 §7 | 未修 |
 
 ---
@@ -519,8 +534,85 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 |---|---|
 | `docs/plans/2026-11-18-terminal_bridge架构重构设计.md` | 架构总纲（目标态） |
 | `docs/plans/2026-11-18-节点同步链路统一收口设计.md` | 四条链路收口子方案（含 27 条待修失效引用） |
-| `docs/solution/events/2026-11-17-云端桥日志直传补全.md` | logpush 直传的引入背景 |
-| `terminal_bridge/internal/logpush/outbox.go` | L2 分段 outbox 实现（P0 修复点） |
-| `terminal_bridge/internal/logpush/uploader.go` | 发送/游标/预算（P0 修复点） |
-| `terminal_bridge/internal/logpush/outbox_p0_test.go` | P0 回归守卫 |
+| `docs/solution/events/2026-11-17-云端桥日志直传补全.md` | obslog 直传的引入背景 |
+| `terminal_bridge/internal/shared/obslog/outbox.go` | L2 分段 outbox 实现（P0 修复点） |
+| `terminal_bridge/internal/shared/obslog/uploader.go` | 发送/游标/预算（P0 修复点） |
+| `terminal_bridge/internal/shared/obslog/outbox_p0_test.go` | P0 回归守卫 |
 | `scripts/check_bridge_imports.py` | 架构禁令扫描（门禁加固落点） |
+
+---
+
+## 十五、决策记录：obslog 命名（ADR-001）
+
+> 状态：已采纳（2026-11-20）｜影响面：23 个 import、306 处包前缀、207 处调用点
+
+### 15.1 问题
+
+`logcollect`（采集**客户节点**日志）与 `logpush`（推送**桥自身**日志）都以 `log + 动作` 命名，
+**缺少"日志主体"这一维**。首次接触者（含本项目的长期维护者）会把两者混为一谈，
+误以为 `logpush` 也是客户日志链路。这不是名字难听，而是命名丢失了区分度最高的一维。
+
+### 15.2 备选方案
+
+| 方案 | 语义 | 关键取舍 |
+|---|---|---|
+| **`shared/obslog`（采纳）** | 可观测性日志（含操作审计事件） | 顺应"这是可观测性"的正确直觉；与 `logcollect` 词形差异大 |
+| `shared/selflog` | 桥自身日志 | 直白，但不体现投递形态，也不像基建术语 |
+| `shared/bridgelog` | 桥日志 | 最无歧义，但产品名进入包名，组件更名需二次返工 |
+| 并入 `shared/telemetry` | "都是可观测性" | **否决**，见 15.3 |
+| 不改名，只加文档 | — | 否决：正确理解依赖"先查文档"，误解仍是默认路径 |
+
+### 15.3 为什么不是并入 `shared/telemetry`
+
+按包内聚的三条硬判据（变化原因 / 依赖方向 / 开关语义），两者均不满足同包条件：
+
+| 判据 | `telemetry` | `obslog` | 结论 |
+|---|---|---|---|
+| 变化原因 | 追踪后端、采样、传播格式（随 OTel 规范） | 投递链路、事件 schema、outbox 策略（随平台接口） | 两条独立变化轴 |
+| 依赖方向 | **叶子包**：本体纯标准库，otel 只在 `//go:build telemetry` 文件里 | 依赖 `x/net/websocket`、`models`、`runtime`、HTTP 与文件系统，**并消费 telemetry 取 Traceparent** | 合并会污染稳定层 |
+| 开关语义 | build tag 控制"是否导出 trace" | 桌面**必须常驻**（CI 有"桌面产物含 obslog 符号"门禁） | 两个正交开关不可绑死 |
+
+合并还会让两条 nm 门禁失效：`桌面零 otel` 与 `桌面必须含日志管道符号` 依赖**两个不同包路径**
+才能分别表达，合并后符号层面无法区分。
+
+**业界范式佐证**：
+
+- OpenTelemetry 自身四层严格分离：API（`otel`）→ SDK（`otel/sdk`）→ Exporter → Collector pipeline/WAL；
+  其中 API 层可 no-op，Exporter 与队列是重 I/O 层，从不合并。
+- OTel Collector 的 "internal telemetry"（采集器观测自己）与其处理的业务日志管道是两套实现。
+- Go 标准库：`log/slog`（日志 API）、`runtime/trace`、`expvar` 分属不同包。
+- Promtail：`clients`（推送）、`positions`（游标）、`targets`（发现）分属不同包。
+- Go 包设计原则：包是**变化与复用单元**，不是**主题单元**；被依赖多的包必须保持薄（Stable Dependencies Principle）。
+
+**反向判据（何时可以合并）**：若 `obslog` 退化到几十行、只做"把 TraceID 拼进一行 JSON"，
+即可并入 `telemetry`。当前它是 2354 行、有本地环形文件、WS 推送、直传/outbox/补传、游标与
+崩溃恢复的**有状态 I/O 管道**，与"薄门面"是两类东西。
+
+### 15.4 决策
+
+```
+internal/shared/
+  telemetry/   trace 门面（API 层，可 noop，叶子）
+  obslog/      桥自身事件日志（管道层，依赖 telemetry）
+```
+
+依赖单向：`obslog → telemetry`，禁止反向。业务域按需分别依赖，互不传递。
+
+### 15.5 不动的跨端契约
+
+| 契约 | 值 | 原因 |
+|---|---|---|
+| 事件名前缀 | `log_upload.*` | 平台证据表与前端按此过滤 |
+| 前端消息类型 | `type === "bridge_log"` | 前端契约 |
+| `/status` 字段 | `enabled`/`queued`/`dropped`/`spilled`/`persist_ok` 等 | 运维脚本与排障手册 |
+| 环境变量 | `HCI_BRIDGE_LOG_*` | 已写入部署契约与现场手册 |
+
+改名只作用于**代码标识符与目录**，不触碰线上协议。
+
+### 15.6 后果
+
+- 正面：新人默认理解正确；`obslog.Emit(...)` 表达"产生一条自身事件"，语义自洽；
+  与 `logcollect`/`delivery` 的边界在目录树下即可区分。
+- 负面：一次性 300+ 处机械改动，与在途分支冲突（本次已确认仅 release PR 在途）；
+  文档与门禁脚本需同步。
+- 缓解：纯重命名不做逻辑变更，编译器与全量测试兜底；单独 PR，便于 review 与回滚。

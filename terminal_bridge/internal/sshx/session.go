@@ -17,8 +17,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/shared/telemetry"
 	"time"
@@ -297,7 +297,7 @@ func (s *SSHSession) StartShellHeartbeat(caseID string) func() {
 			}
 		}
 	}()
-	logpush.Blog("INFO", "delivery.shell_heartbeat", "拉取期间向交互式 shell 注入保活输入，避免 TMOUT 退出", "", caseID, "", "", map[string]any{
+	obslog.Emit("INFO", "delivery.shell_heartbeat", "拉取期间向交互式 shell 注入保活输入，避免 TMOUT 退出", "", caseID, "", "", map[string]any{
 		"interval_seconds": int(shellHeartbeatInterval.Seconds()),
 	})
 	return func() { once.Do(func() { close(done) }) }
@@ -712,7 +712,7 @@ func probeRemote(client *ssh.Client, command string) (string, int) {
 }
 
 // RunUnreachabilityProbes 在命令超时/对端建会话失败/SSH 等待失败时，触发一组廉价辅助探测，
-// 各自落 logpush.BlogContext(event=probe.*) 与 OTel span event，为复盘区分“网络不可达 / 认证失败 /
+// 各自落 obslog.EmitContext(event=probe.*) 与 OTel span event，为复盘区分“网络不可达 / 认证失败 /
 // 设备不存在 / 工具缺失 / 命令超时”提供可判别依据（修复 E）。
 // 探测以独立 goroutine 异步运行、自带短超时，绝不阻塞主结果回传；任何探测异常都安全降级为一条记录。
 func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.ExecRequestContext, artifactID string) {
@@ -725,7 +725,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 
 		defer func() {
 			if r := recover(); r != nil {
-				logpush.BlogContext(ctx, "WARN", "probe.error", "辅助探测异常", req, map[string]any{
+				obslog.EmitContext(ctx, "WARN", "probe.error", "辅助探测异常", req, map[string]any{
 					"panic": fmt.Sprintf("%v", r), "artifact_id": artifactID,
 				})
 			}
@@ -748,11 +748,11 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 			telemetry.Bool("probe.tcp.ok", tcpOK),
 			telemetry.String("probe.tcp.target", tcpTarget),
 		)
-		logpush.BlogContext(ctx, ProbeLevel(tcpOK), "probe.tcp_reachability", "TCP:22 可达性探测", req, map[string]any{
+		obslog.EmitContext(ctx, ProbeLevel(tcpOK), "probe.tcp_reachability", "TCP:22 可达性探测", req, map[string]any{
 			"target": tcpTarget, "ok": tcpOK, "detail": tcpDetail, "artifact_id": artifactID,
 		})
 		if !tcpOK {
-			logpush.BlogContext(ctx, "ERROR", "probe.conclusion", "辅助探测结论：网络不可达", req, map[string]any{
+			obslog.EmitContext(ctx, "ERROR", "probe.conclusion", "辅助探测结论：网络不可达", req, map[string]any{
 				"conclusion": "network_unreachable", "artifact_id": artifactID,
 			})
 			return
@@ -769,7 +769,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 			sshDetail = sshErr.Error()
 		}
 		span.AddEvent("probe.ssh_handshake", telemetry.Bool("probe.ssh.ok", sshOK))
-		logpush.BlogContext(ctx, ProbeLevel(sshOK), "probe.ssh_handshake", "SSH 握手探测", req, map[string]any{
+		obslog.EmitContext(ctx, ProbeLevel(sshOK), "probe.ssh_handshake", "SSH 握手探测", req, map[string]any{
 			"target": tcpTarget, "ok": sshOK, "auth_failed": authFailed, "detail": sshDetail, "artifact_id": artifactID,
 		})
 		if !sshOK {
@@ -777,7 +777,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 			if authFailed {
 				conclusion = "auth_failed"
 			}
-			logpush.BlogContext(ctx, "ERROR", "probe.conclusion", "辅助探测结论", req, map[string]any{
+			obslog.EmitContext(ctx, "ERROR", "probe.conclusion", "辅助探测结论", req, map[string]any{
 				"conclusion": conclusion, "artifact_id": artifactID,
 			})
 			return
@@ -792,7 +792,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 		if bridgeSelfPort > 0 {
 			selfAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(bridgeSelfPort))
 			bridgeOK := IsLiveBridgeFunc != nil && IsLiveBridgeFunc(selfAddr)
-			logpush.BlogContext(ctx, ProbeLevel(bridgeOK), "probe.bridge_health", "Bridge 自身存活探测", req, map[string]any{
+			obslog.EmitContext(ctx, ProbeLevel(bridgeOK), "probe.bridge_health", "Bridge 自身存活探测", req, map[string]any{
 				"target": selfAddr, "ok": bridgeOK, "artifact_id": artifactID,
 			})
 		}
@@ -800,21 +800,21 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 		// 4. 工具能力探测：acli / jq ONIGURUMA（佐证“工具缺失”而非“设备不可达”）
 		acliOut, acliCode := probeRemote(sshClient, "command -v acli >/dev/null 2>&1 && acli --version 2>&1 || echo __ACLI_ABSENT__")
 		acliOK := acliCode == 0 && !strings.Contains(acliOut, "__ACLI_ABSENT__")
-		logpush.BlogContext(ctx, ProbeLevel(acliOK), "probe.tool_capability.acli", "acli 工具能力探测", req, map[string]any{
+		obslog.EmitContext(ctx, ProbeLevel(acliOK), "probe.tool_capability.acli", "acli 工具能力探测", req, map[string]any{
 			"ok": acliOK, "exit_code": acliCode, "detail": TruncateString(acliOut, 256), "artifact_id": artifactID,
 		})
 
 		jqOut, jqCode := probeRemote(sshClient, `jq --version 2>&1 || echo __JQ_ABSENT__; echo 1 | jq -R 'test("a")' 2>&1 || true`)
 		jqOK := jqCode == 0 && !strings.Contains(jqOut, "__JQ_ABSENT__")
 		jqHasOniguruma := strings.Contains(strings.ToLower(jqOut), "oniguruma")
-		logpush.BlogContext(ctx, ProbeLevel(jqOK), "probe.tool_capability.jq", "jq 工具能力/ONIGURUMA 探测", req, map[string]any{
+		obslog.EmitContext(ctx, ProbeLevel(jqOK), "probe.tool_capability.jq", "jq 工具能力/ONIGURUMA 探测", req, map[string]any{
 			"ok": jqOK, "oniguruma": jqHasOniguruma, "exit_code": jqCode, "detail": TruncateString(jqOut, 256), "artifact_id": artifactID,
 		})
 
 		// 5. 最小现场探测：lsblk 盘符清单，佐证“设备已摘除/不存在”
 		lsblkOut, lsblkCode := probeRemote(sshClient, "lsblk -dno NAME 2>&1 || echo __LSBLK_ABSENT__")
 		lsblkOK := lsblkCode == 0 && !strings.Contains(lsblkOut, "__LSBLK_ABSENT__")
-		logpush.BlogContext(ctx, ProbeLevel(lsblkOK), "probe.field.lsblk", "现场盘符探测", req, map[string]any{
+		obslog.EmitContext(ctx, ProbeLevel(lsblkOK), "probe.field.lsblk", "现场盘符探测", req, map[string]any{
 			"ok": lsblkOK, "exit_code": lsblkCode, "devices": TruncateString(lsblkOut, 256), "artifact_id": artifactID,
 		})
 
@@ -824,7 +824,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 				span.AddEvent("probe.device_absent",
 					telemetry.String("probe.device.referenced", strings.Join(referenced, ",")),
 				)
-				logpush.BlogContext(ctx, "WARN", "probe.conclusion", "辅助探测结论：设备不存在/已摘除", req, map[string]any{
+				obslog.EmitContext(ctx, "WARN", "probe.conclusion", "辅助探测结论：设备不存在/已摘除", req, map[string]any{
 					"conclusion": "device_absent", "referenced_devices": referenced,
 					"lsblk_devices": TruncateString(lsblkOut, 256), "artifact_id": artifactID,
 				})
@@ -832,7 +832,7 @@ func RunUnreachabilityProbes(ctx context.Context, s *SSHSession, req models.Exec
 			}
 		}
 
-		logpush.BlogContext(ctx, "INFO", "probe.conclusion", "辅助探测结论", req, map[string]any{
+		obslog.EmitContext(ctx, "INFO", "probe.conclusion", "辅助探测结论", req, map[string]any{
 			"conclusion": "network_reachable_tools_checked", "acli_ok": acliOK, "jq_ok": jqOK,
 			"jq_oniguruma": jqHasOniguruma, "lsblk_ok": lsblkOK, "artifact_id": artifactID,
 		})
@@ -958,7 +958,7 @@ func (s *SSHSession) StartKeepAlive(interval time.Duration) {
 				return
 			case <-ticker.C:
 				if err := s.ProbeKeepAlive(); err != nil {
-					logpush.Blog("WARN", "ssh.keepalive_failed", "SSH 保活探测失败，会话判定失效", "", s.CaseID, "", "", map[string]any{
+					obslog.Emit("WARN", "ssh.keepalive_failed", "SSH 保活探测失败，会话判定失效", "", s.CaseID, "", "", map[string]any{
 						"address": s.Address, "error": err.Error(),
 					})
 					s.Close()

@@ -7,7 +7,7 @@
 // 与门面的分工：W3C 传播解析在门面本体（纯标准库），本实现负责把门面
 // ctx 里的远程父上下文还原成 otel SpanContext 再开 span——采样决策
 // （ParentBased）与直调 otel 时代完全一致；span 开启后把新标识写回门面
-// ctx，保证 logpush.TraceparentFromContext 等读到的永远是当前 span。
+// ctx，保证 obslog.TraceparentFromContext 等读到的永远是当前 span。
 
 package telemetry
 

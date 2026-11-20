@@ -28,8 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -90,7 +90,7 @@ func markEvidenceTLSRelaxed(cfg EvidenceConfig, cause error) {
 	if _, loaded := evidenceTLSRelaxed.LoadOrStore(cfg.TaskID, struct{}{}); loaded {
 		return
 	}
-	logpush.Blog("WARN", "log_collect.evidence_tls_relaxed", "证据通道命中自签证书，已放宽证书校验", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	obslog.Emit("WARN", "log_collect.evidence_tls_relaxed", "证据通道命中自签证书，已放宽证书校验", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "trace_id": cfg.TraceID, "reason": cause.Error(),
 		"scope": "仅本次任务的证据通道", "auth": "X-Evidence-Ticket 鉴权不变",
 	})
@@ -102,7 +102,7 @@ func configureEvidence(msg models.InMessage, customUI string) {
 	}
 	base, err := ValidatePlatformURL(msg.PlatformURL)
 	if err != nil {
-		logpush.Blog("WARN", "log_collect.evidence_disabled", "证据上报未启用：平台地址无效", msg.TraceID, msg.CaseID, msg.NodeIP, "", map[string]any{
+		obslog.Emit("WARN", "log_collect.evidence_disabled", "证据上报未启用：平台地址无效", msg.TraceID, msg.CaseID, msg.NodeIP, "", map[string]any{
 			"reason": err.Error(), "task_id": msg.ExecID,
 		})
 		return
@@ -121,7 +121,7 @@ func configureEvidence(msg models.InMessage, customUI string) {
 	EvidenceConfigs.Store(cfg.TaskID, cfg)
 	// 下发前探测是异步的：绝不因为弱网/平台不可达拖延 acli 下发。
 	go runNetworkProbes(cfg)
-	logpush.Blog("INFO", "log_collect.evidence_enabled", "证据上报已启用", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	obslog.Emit("INFO", "log_collect.evidence_enabled", "证据上报已启用", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "upload_mode": cfg.UploadMode, "trace_id": cfg.TraceID,
 	})
 }
@@ -313,7 +313,7 @@ func runNetworkProbes(cfg EvidenceConfig) {
 		}
 		ack, err := cfg.PostEvidence(ctx, cfg.TaskPath("network-probe"), facts, "")
 		if err != nil {
-			logpush.Blog("WARN", "log_collect.network_probe_failed", "网络探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+			obslog.Emit("WARN", "log_collect.network_probe_failed", "网络探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 				"target": target.name, "error": err.Error(),
 			})
 			continue
@@ -613,7 +613,7 @@ func postManifest(ctx context.Context, cfg EvidenceConfig, manifest artifactMani
 	if err == nil {
 		return
 	}
-	logpush.Blog("WARN", event, message, cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	obslog.Emit("WARN", event, message, cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "error": err.Error(),
 	})
 	cfg.reportEvidenceError(ctx, "artifact-manifest", err)
@@ -635,7 +635,7 @@ func (e EvidenceConfig) reportEvidenceError(ctx context.Context, kind string, ca
 	}
 	resp, postErr := uplink.HttpClientFor(true, 10*time.Second).Do(req)
 	if postErr != nil {
-		logpush.Blog("WARN", "log_collect.evidence_error_report_failed", "证据失败陈述上报失败", e.TraceID, e.CaseID, e.NodeIP, e.CustomUI, map[string]any{
+		obslog.Emit("WARN", "log_collect.evidence_error_report_failed", "证据失败陈述上报失败", e.TraceID, e.CaseID, e.NodeIP, e.CustomUI, map[string]any{
 			"task_id": e.TaskID, "kind": kind, "error": postErr.Error(),
 		})
 		return
@@ -667,7 +667,7 @@ func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg Evidenc
 	}
 	listOut, _, code, err := s.RunQuickCommandStreams(ctx, "ls -1 "+ShellQuote(processLogDir))
 	if err != nil || code != 0 {
-		logpush.Blog("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+		obslog.Emit("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 			"task_id": cfg.TaskID, "error": ErrString(err), "exit_code": code,
 		})
 		return
@@ -714,7 +714,7 @@ func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg Evidenc
 		_, postErr := cfg.PostEvidence(postCtx, cfg.TaskPath("process-logs"), payload, "")
 		cancel()
 		if postErr != nil {
-			logpush.Blog("WARN", "log_collect.process_log_failed", "采集进程日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+			obslog.Emit("WARN", "log_collect.process_log_failed", "采集进程日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 				"task_id": cfg.TaskID, "path": path, "error": postErr.Error(),
 			})
 		}

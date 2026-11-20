@@ -1,4 +1,4 @@
-package logpush
+package obslog
 
 // L1-L4 等价性验收（设计 §3.6）：构造令牌前历史、上限溢出、panic 模拟、进程重启四场景，
 // 断言平台收到的 event_id 集合 ⊇ 本地保留窗口内条目集合（gap 标记区间除外）；
