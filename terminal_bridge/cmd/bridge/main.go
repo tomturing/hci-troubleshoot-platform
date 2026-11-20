@@ -36,6 +36,16 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+// 版本注入变量：ldflags -X main.Version/CommitID/BuildTime（链接器对 main 包恒用 main 别名，与目录位置无关）。
+var (
+	Version   = "v2.16.0-dev"
+	CommitID  = "unknown" // 构建时通过 -X main.CommitID 注入 git commit
+	BuildTime = "unknown" // 构建时通过 -X main.BuildTime 注入构建时间
+)
+
+// getVersion 薄包装：真实渲染在 app.GetVersion。
+func getVersion() string { return app.GetVersion() }
+
 func initTelemetry(ctx context.Context) (func(context.Context) error, error) {
 	endpoint := strings.TrimSpace(os.Getenv("HCI_BRIDGE_OTEL_ENDPOINT"))
 	if endpoint == "" {

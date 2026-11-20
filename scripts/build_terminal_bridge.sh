@@ -40,7 +40,7 @@ echo "[build_terminal_bridge] 构建 $GOOS/$GOARCH (commit: $GIT_COMMIT) ..."
 CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
   go build -buildvcs=false -trimpath \
   -ldflags="-s -w -buildid= -X main.Version=$GIT_VER -X main.CommitID=$GIT_COMMIT -X main.BuildTime=$BUILD_TIME" \
-  -o "$DST" .
+  -o "$DST" ./cmd/bridge
 
 SIZE=$(stat -c%s "$DST" 2>/dev/null || wc -c < "$DST")
 echo "[build_terminal_bridge] OK -> $DST ($SIZE bytes)"
