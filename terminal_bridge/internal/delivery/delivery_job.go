@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"terminal_bridge/internal/shared/uplink"
 )
 
 // 交付模式。由平台/前端在 delivery_submit 中显式声明，bridge 不猜。
@@ -169,7 +171,7 @@ type deliveryJob struct {
 	// （客户机重启后从 store 恢复）发生的。不落盘的话每一轮都从 300 s/并发 2 重新
 	// 开始学，弱网下永远学不会——2026-11-06 Q2026110600112 每轮 15 分钟空转、
 	// 19/233 片十小时不动，正是"学费每次重交"的结果。
-	Pace uploadPace `json:"pace,omitempty"`
+	Pace uplink.Pace `json:"pace,omitempty"`
 
 	// ── 端到端完整性（2026-10-28）────────────────────────────────────────────
 	//

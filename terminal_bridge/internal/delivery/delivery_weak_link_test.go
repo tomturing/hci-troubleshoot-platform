@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"terminal_bridge/internal/shared/uplink"
 )
 
 // bandwidthLimiter 是全局共享的上行配额：谁先到谁先拿，总量固定。
@@ -99,9 +101,9 @@ func drainThrottled(ctx context.Context, body io.Reader, limiter *bandwidthLimit
 func TestWeakLinkUploadConvergesToSingleStreamAndSucceeds(t *testing.T) {
 	// 生产下限是 5 分钟，会让用例跑十几分钟；临时改成 1 秒，
 	// 生产路径读到的仍是 LogCollectPartTimeout。
-	prevMin := paceMinPartTimeout
-	paceMinPartTimeout = time.Second
-	defer func() { paceMinPartTimeout = prevMin }()
+	prevMin := uplink.MinPartTimeout
+	uplink.MinPartTimeout = time.Second
+	defer func() { uplink.MinPartTimeout = prevMin }()
 
 	const chunkSize = 64 << 10
 	const partCount = 2
@@ -141,14 +143,14 @@ func TestWeakLinkUploadConvergesToSingleStreamAndSucceeds(t *testing.T) {
 
 	job := prepareJob(t, srv.URL, "task-weak", "tok-weak", totalSize, chunkSize)
 	// 现场节奏：2 路、1 秒预算（等比缩小后的 300 s）。
-	job.Pace = uploadPace{Parts: 2, PartTimeout: 1, Reason: "field:34KB/s*2"}
+	job.Pace = uplink.Pace{Parts: 2, PartTimeout: 1, Reason: "field:34KB/s*2"}
 	runner := newTestDeliveryRunner(t)
 
 	firstErr := runner.upload(context.Background(), job)
 	if firstErr == nil {
 		t.Fatal("第一轮在 1 秒预算 × 2 路下不应成功，否则用例没有复现现场死结")
 	}
-	t.Logf("第一轮错误: %v（是否超时: %v）", firstErr, isPartTimeoutError(firstErr))
+	t.Logf("第一轮错误: %v（是否超时: %v）", firstErr, uplink.IsPartTimeoutError(firstErr))
 	if got := len(job.UploadedParts); got != 0 {
 		t.Fatalf("第一轮应一片都传不上去（现场 19/233 之后再无推进），实际成功 %d 片", got)
 	}
@@ -203,19 +205,19 @@ func waitInflightIdle(t *testing.T, wg *sync.WaitGroup) {
 // TestWeakLinkNoProgressKeepsEscalatingUntilSingleStream 补一条"多轮升级"的边界：
 // 并发 4 路在极窄链路上要连续降两次才到单路，中间任何一步都不得把预算改小。
 func TestWeakLinkNoProgressKeepsEscalatingUntilSingleStream(t *testing.T) {
-	prevMin := paceMinPartTimeout
-	paceMinPartTimeout = time.Second
-	defer func() { paceMinPartTimeout = prevMin }()
+	prevMin := uplink.MinPartTimeout
+	uplink.MinPartTimeout = time.Second
+	defer func() { uplink.MinPartTimeout = prevMin }()
 
-	pace := uploadPace{Parts: 4, PartTimeout: 1, Reason: "field"}
-	sample := uploadRoundSample{TimedOutParts: 2, Elapsed: 5 * time.Second}
+	pace := uplink.Pace{Parts: 4, PartTimeout: 1, Reason: "field"}
+	sample := uplink.RoundSample{TimedOutParts: 2, Elapsed: 5 * time.Second}
 	for i := 0; i < 4; i++ {
-		pace = nextUploadPace(pace, sample, 8<<20, 8)
+		pace = uplink.NextPace(pace, sample, 8<<20, 8)
 	}
 	if pace.Parts != 1 {
 		t.Fatalf("连续无进展必须收敛到单路，实际 %d 路", pace.Parts)
 	}
-	if pace.timeout() < 8*time.Second {
-		t.Fatalf("每一轮都必须放大预算，实际 %s", pace.timeout())
+	if pace.Timeout() < 8*time.Second {
+		t.Fatalf("每一轮都必须放大预算，实际 %s", pace.Timeout())
 	}
 }

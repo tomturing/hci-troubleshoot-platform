@@ -27,7 +27,6 @@ import (
 	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -1357,60 +1356,26 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 	// 两者取小：资源够但链路差时，以链路为准。
 	ceiling := chunkConcurrencyFor(r.concurrency, job.ChunkSize, availableMemoryMB())
 	r.mu.Lock()
-	pace := job.Pace.resolve(ceiling)
+	pace := job.Pace.Resolve(ceiling)
 	r.mu.Unlock()
-	parts := pace.Parts
-	partBudget := pace.timeout()
-	client := platformHTTPClient(job, partBudget)
+	client := platformHTTPClient(job, pace.Timeout())
 
-	var (
-		errMu     sync.Mutex
-		firstErr  error
-		pending   = make(chan int)
-		wg        sync.WaitGroup
-		sinceSave int
-
-		// 本轮实测样本：只在这里被累加，用于推导下一轮节奏。
-		statMu         sync.Mutex
-		roundDoneParts int
-		roundDoneBytes int64
-		roundTimedOut  int
-	)
-	roundStart := time.Now()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	worker := func() {
-		defer wg.Done()
-		for number := range pending {
-			if ctx.Err() != nil {
-				return
-			}
-			written, err := uploadOnePart(ctx, client, job, totalSize, number, partBudget, func() error {
-				return r.fence(ctx, job)
-			})
-			if err != nil {
-				// 先取作业自身状态再 cancel：只有"作业还活着时超时"才算链路证据。
-				// 被 stall watchdog 或绝对上限掐断的作业若被记成弱网证据，
-				// 会把一个已经判死的作业的节奏也一起拖到最保守档，下一轮白等 20 分钟。
-				jobAlive := ctx.Err() == nil
-				errMu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				errMu.Unlock()
-				if jobAlive && isPartTimeoutError(err) {
-					statMu.Lock()
-					roundTimedOut++
-					statMu.Unlock()
-				}
-				cancel()
-				return
-			}
-			statMu.Lock()
-			roundDoneParts++
-			roundDoneBytes += written
-			statMu.Unlock()
+	var sinceSave int
+	res := uplink.Push(ctx, uplink.PushSpec{
+		BaseURL:    uplink.NormalizeBaseURL(job.PlatformURL),
+		Prefix:     uplink.DirectUploadPrefix,
+		TaskID:     job.TaskID,
+		Token:      job.UploadToken,
+		LocalPath:  job.LocalPath,
+		ChunkSize:  job.ChunkSize,
+		PartCount:  job.PartCount,
+		TotalSize:  totalSize,
+		Uploaded:   uploaded,
+		Workers:    pace.Parts,
+		PartBudget: pace.Timeout(),
+		Client:     client,
+		Fence:      func() error { return r.fence(ctx, job) },
+		OnPart: func(number int, _ int64) {
 			// job 是共享结构（status() 会并发读快照，save() 也会 marshal 它），
 			// 所有对 job 的读写都必须在 r.mu 下完成：addUploadedPart 改 UploadedParts，
 			// 而 store.save 会 marshal 整个 job（含 UploadedParts）。锁外 save 会与
@@ -1424,51 +1389,32 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 				_ = r.saveJobLocked(job)
 			}
 			r.mu.Unlock()
-		}
-	}
+		},
+		Classify: classifyPartPut,
+	})
 
-	wg.Add(parts)
-	for i := 0; i < parts; i++ {
-		go worker()
-	}
-	for number := 1; number <= job.PartCount; number++ {
-		if uploaded[number] {
-			continue
-		}
-		select {
-		case <-ctx.Done():
-			break
-		case pending <- number:
-		}
-		if ctx.Err() != nil {
-			break
-		}
-	}
-	close(pending)
-	wg.Wait()
-
-	r.adjustPace(job, pace, uploadRoundSample{
-		UploadedParts: roundDoneParts,
-		UploadedBytes: roundDoneBytes,
-		TimedOutParts: roundTimedOut,
-		Elapsed:       time.Since(roundStart),
+	r.adjustPace(job, pace, uplink.RoundSample{
+		UploadedParts: res.DoneParts,
+		UploadedBytes: res.DoneBytes,
+		TimedOutParts: res.TimedOutParts,
+		Elapsed:       res.Elapsed,
 	}, ceiling)
 
 	// 只有"本轮正常收口"才可以把阶段推到 completing：被取消/被顶替的作业
 	// 一片都没传也会走到这里，无条件覆写会让前端先看到"收尾中"再变失败。
-	if ctx.Err() == nil && r.ownerIntact(job) {
+	if ctx.Err() == nil && res.Err == nil && r.ownerIntact(job) {
 		r.mu.Lock()
 		job.Phase = phaseCompleting
 		r.mu.Unlock()
 		_ = r.saveJob(job)
 	}
 
-	if firstErr != nil {
+	if res.Err != nil {
 		// 自签证书不能靠"前端记得传 tls_insecure"来兜底：前端从未传过该字段，
 		// 于是客户内网自签平台上的每一次交付都停在「已传 0/N 片」。
 		// 与桥日志直传通道保持一致：命中证书不受信就自动放宽一次并留痕，
 		// 鉴权不放松（上传令牌仍绑定 task_id）。
-		if !job.TLSInsecure && uplink.IsUntrustedCertificateError(firstErr) {
+		if !job.TLSInsecure && uplink.IsUntrustedCertificateError(res.Err) {
 			r.mu.Lock()
 			job.TLSInsecure = true
 			job.Phase = phaseUploading
@@ -1481,7 +1427,7 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 			// 归为 transient：此刻不需要人，只需要下一轮用放宽后的 client 重传。
 			return &deliveryTransientError{reason: "平台证书不受信，已放宽校验，将自动重试"}
 		}
-		return fmt.Errorf("上传中断（已传 %d/%d 片）: %w", len(job.UploadedParts), job.PartCount, firstErr)
+		return fmt.Errorf("上传中断（已传 %d/%d 片）: %w", len(job.UploadedParts), job.PartCount, res.Err)
 	}
 	return nil
 }
@@ -1491,8 +1437,8 @@ func (r *deliveryRunner) upload(ctx context.Context, job *deliveryJob) error {
 // 留痕是硬要求：节奏一变，现场看到的"每片多久、几路并发"就变了，事后只有事件日志
 // 能把"为什么这一轮突然慢了/快了"解释清楚。事件里同时记前后值与本轮样本，
 // 便于用一条 SQL 复现收敛轨迹。
-func (r *deliveryRunner) adjustPace(job *deliveryJob, prev uploadPace, sample uploadRoundSample, ceiling int) {
-	next := nextUploadPace(prev, sample, job.ChunkSize, ceiling)
+func (r *deliveryRunner) adjustPace(job *deliveryJob, prev uplink.Pace, sample uplink.RoundSample, ceiling int) {
+	next := uplink.NextPace(prev, sample, job.ChunkSize, ceiling)
 	if next == prev {
 		return
 	}
@@ -1516,73 +1462,21 @@ func (r *deliveryRunner) adjustPace(job *deliveryJob, prev uploadPace, sample up
 	})
 }
 
-// uploadOnePart 上传单片（含 SHA-256 与重试），返回实际提交的字节数。
-//
-// budget 是"这一片的总墙钟预算"，由 pacing 按实测速率给出，**所有重试共享它**。
-// 改造前是"每次尝试各给 300 s"，弱网下单片最坏要烧 15 分钟才肯放手：
-// 一轮 3 次重试刚好吃满 15 分钟空转，作业就在这个循环里永远推进不了一格。
-// 共享预算后，单片最坏占用 = budget，重试只在"早早失败"时才有意义（那才是它该救的场景）。
-func uploadOnePart(ctx context.Context, client *http.Client, job *deliveryJob, totalSize int64, number int, budget time.Duration, fence func() error) (int64, error) {
-	// 分片要整片读进内存（8 MiB），所以在分配之前就先问一次资格：
-	// 已被顶替的作业连读盘都不该做，更不该把内存占住让新作业起不来 worker。
-	if fence != nil {
-		if err := fence(); err != nil {
-			return 0, err
-		}
+// classifyPartPut 把分片 PUT 的 (状态码, 传输错误) 映射成交付语义：
+// 分片级 401/403 同样是"必须重新认证"，不能当成普通失败盲重试：
+// 旧实现把它混在"平台返回 HTTP 401"里，5 次退避后判终态，
+// 用户看到的是"分片 3 上传失败"而不是"令牌失效，请重新认证"。
+func classifyPartPut(status int, transportErr error) error {
+	if transportErr != nil {
+		return wrapTransientTransport(transportErr)
 	}
-	offset := int64(number-1) * job.ChunkSize
-	expected := job.ChunkSize
-	if offset+expected > totalSize {
-		expected = totalSize - offset
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		return &deliveryAuthError{reason: fmt.Sprintf("上传令牌失效（HTTP %d）", status)}
 	}
-	if expected <= 0 {
-		return 0, fmt.Errorf("分片 %d 大小异常", number)
+	if status < 200 || status >= 300 {
+		return platformStatusError("平台返回", status)
 	}
-	file, err := os.Open(job.LocalPath)
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-	payload := make([]byte, expected)
-	if _, readErr := file.ReadAt(payload, offset); readErr != nil && readErr != io.EOF {
-		return 0, readErr
-	}
-	digest := remote.Sha256Hex(payload)
-
-	if budget <= 0 {
-		budget = logcollect.LogCollectPartTimeout
-	}
-	attemptCtx, cancel := context.WithTimeout(ctx, budget)
-	defer cancel()
-
-	target := fmt.Sprintf("%s%s/%s/parts/%d", normalizePlatformURL(job.PlatformURL), logcollect.LogCollectDirectUploadPrefix, job.TaskID, number)
-	var lastErr error
-	for attempt := 1; attempt <= logcollect.LogCollectPartRetries; attempt++ {
-		// 每次真正发 PUT 之前重新确认资格：分片按 (task_id, part_number) 落盘，
-		// 被顶替的作业迟到的 PUT 会改写新会话的同名分片。平台侧 epoch fencing
-		// 是第一道防线，这里是不依赖对端版本的本地防线。
-		if fence != nil {
-			if err := fence(); err != nil {
-				return 0, err
-			}
-		}
-		lastErr = putPartBytes(attemptCtx, client, target, job.UploadToken, digest, payload)
-		if lastErr == nil {
-			return expected, nil
-		}
-		if attempt == logcollect.LogCollectPartRetries {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		case <-attemptCtx.Done():
-			// 预算耗尽：再用同一条已证明不够的链路重放，只会把这一轮剩余时间也吃掉。
-			return 0, fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
-		case <-time.After(time.Duration(attempt) * time.Second):
-		}
-	}
-	return 0, fmt.Errorf("分片 %d 上传失败: %w", number, lastErr)
+	return nil
 }
 
 // buildCompletePayload 组装收尾请求体。
@@ -1623,7 +1517,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 	if err != nil {
 		return err
 	}
-	target := fmt.Sprintf("%s%s/%s/complete", normalizePlatformURL(job.PlatformURL), logcollect.LogCollectDirectUploadPrefix, job.TaskID)
+	target := fmt.Sprintf("%s%s/%s/complete", uplink.NormalizeBaseURL(job.PlatformURL), uplink.DirectUploadPrefix, job.TaskID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(body)))
 	if err != nil {
 		return err
@@ -1749,7 +1643,7 @@ func sourceSizeGuard(submitted, current int64) error {
 //
 // 它必须保留底层错误链（Unwrap）：类型是控制流的一部分，"这片到底是超时还是 5xx"
 // 决定了自适应节奏要不要降并发。2026-11-06 的弱网用例就是踩在这里——包装时只拼了
-// 字符串，导致 isPartTimeoutError 在上层拿到 false，于是每一轮都"没证据"地原地重试。
+// 字符串，导致 uplink.IsPartTimeoutError 在上层拿到 false，于是每一轮都"没证据"地原地重试。
 type deliveryTransientError struct {
 	reason string
 	err    error
@@ -1901,34 +1795,6 @@ func wrapTransientTransport(err error) error {
 		reason: "平台连接失败（暂时不可用，将退避重试）: " + err.Error(),
 		err:    err,
 	}
-}
-
-// putPartBytes 上传单个分片。
-func putPartBytes(ctx context.Context, client *http.Client, target, token, digest string, payload []byte) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target, strings.NewReader(string(payload)))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("X-Upload-Token", token)
-	request.Header.Set("X-Part-SHA256", digest)
-	request.Header.Set("Content-Type", "application/octet-stream")
-	request.ContentLength = int64(len(payload))
-	response, err := client.Do(request)
-	if err != nil {
-		return wrapTransientTransport(err)
-	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
-	// 分片级 401/403 同样是"必须重新认证"，不能当成普通失败盲重试：
-	// 旧实现把它混在"平台返回 HTTP 401"里，5 次退避后判终态，
-	// 用户看到的是"分片 3 上传失败"而不是"令牌失效，请重新认证"。
-	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return &deliveryAuthError{reason: fmt.Sprintf("上传令牌失效（HTTP %d）", response.StatusCode)}
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return platformStatusError("平台返回", response.StatusCode)
-	}
-	return nil
 }
 
 // streamEvidenceMetrics 每 2 秒采样一次作业进度，速率用 EMA 平滑、ETA 用剩余字节估算。

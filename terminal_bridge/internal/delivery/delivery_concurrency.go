@@ -17,7 +17,6 @@ package delivery
 
 import (
 	"runtime"
-	"strings"
 	bruntime "terminal_bridge/internal/shared/runtime"
 )
 
@@ -104,9 +103,4 @@ func describeDeliveryConcurrency(decision deliveryConcurrency) map[string]any {
 		"cpu":    runtime.NumCPU(),
 		"mem_mb": availableMemoryMB(),
 	}
-}
-
-// normalizePlatformURL 去掉尾部斜杠，避免拼出 //api/... 被网关判成异常路径。
-func normalizePlatformURL(raw string) string {
-	return strings.TrimRight(strings.TrimSpace(raw), "/")
 }
