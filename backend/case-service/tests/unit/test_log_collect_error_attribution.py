@@ -46,6 +46,9 @@ class TestDeriveErrorCode:
             # 制品：源包仍在写入必须先于泛化的分片失败命中
             ("源包已变化（上传会话大小不一致），需按新基线重建", "LC-TRANSFER-010"),
             ("节点压缩包在 5 分钟内仍未写完", "LC-TRANSFER-010"),
+            # 旧包守卫：路径里出现 /sf/data/local 也不得误判成磁盘不足
+            ("节点上的压缩包（/sf/data/local/acli/tmp/data/log_collect/Q.zip）早于本次采集开始，判定为上一次任务的产物", "LC-TRANSFER-011"),
+            ("节点上的压缩包修改于 14:58:36 早于本次采集开始", "LC-TRANSFER-011"),
             ("本地副本不存在，无法补交付", "LC-TRANSFER-001"),
             ("校验和不一致：期望 abc 实际 def", "LC-TRANSFER-002"),
             ("上传中断：已传 3/10 片", "LC-TRANSFER-003"),

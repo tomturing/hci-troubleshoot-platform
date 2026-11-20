@@ -39,7 +39,6 @@ ATTRIBUTION_RULES: tuple[tuple[str, str], ...] = (
     ("临时目录空间不足", "LC-TRANSFER-008"),
     ("写入本地文件失败", "LC-TRANSFER-008"),
     ("%TEMP%", "LC-TRANSFER-008"),
-    ("/sf/data/local", "LC-ENV-004"),
     ("磁盘空间不足", "LC-ENV-004"),
     ("可用空间", "LC-ENV-004"),
     ("SSH 会话不存在", "LC-ENV-006"),
@@ -91,4 +90,7 @@ ATTRIBUTION_RULES: tuple[tuple[str, str], ...] = (
     ("直传归档核验", "LC-TRANSFER-007"),
     ("归档到日志服务器失败", "LC-TRANSFER-003"),
     ("超时", "LC-EXEC-002"),
+    ("早于本次采集开始", "LC-TRANSFER-011"),
+    ("上一次任务的产物", "LC-TRANSFER-011"),
+    ("节点上的压缩包", "LC-TRANSFER-011"),
 )
