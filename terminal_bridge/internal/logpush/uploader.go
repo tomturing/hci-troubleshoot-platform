@@ -14,13 +14,19 @@ package logpush
 // 对抗性审查
 // ----------
 //  1. 令牌泄露 → 只能写绑定工单的日志，且 user_id 标记为 bridge:<instance>，可事后甄别；
-//  2. 平台不可达 → 队列落盘，恢复后补传；outbox 有字节上限，防止写满客户机磁盘；
+//  2. 平台不可达 → 队列落盘，恢复后补传；outbox 分段有总磁盘预算，防写满客户机磁盘；
 //  3. 与业务抢带宽/CPU → 单 worker 串行、批量 100 条、gzip、2 秒一次；
 //  4. 事件重复 → 后端按 event_id 唯一约束幂等，重复上传不产生重复行；
 //  5. 无令牌（前端未下发/版本旧）→ 保持原状：只落本地文件，不报错、不阻塞。
+//
+// L1-L4 完备性增强（设计 §3.6）：目标 = 本地保留窗口内条目至少一次必达平台。
+// 内存分两条队列：seedQueue（补传/stderr 包装，仅内存，源头在本地日志文件）与
+// queue（实时 enqueue，与分段 outbox 的磁盘游标一一对应）。flush 先消费 seedQueue；
+// seq 水位只在实时队列批次成功后推进（补传批次的低 seq 不得把水位拉过未发送的高 seq）；
+// stderr 字节水位按批次内 StderrOffset 推进。溢出不再静默丢弃：内存满则仅落盘，
+// 只有总磁盘预算超限才 drop-oldest 段并发 log_upload.gap 标记事件。
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
@@ -29,8 +35,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,9 +57,17 @@ const (
 	envLogUploadEndpoint = "HCI_BRIDGE_LOG_UPLOAD_ENDPOINT"
 	envLogUploadToken    = "HCI_BRIDGE_LOG_UPLOAD_TOKEN"
 	// 崩溃补传：启动时把本地日志文件里"水位之后"的条目回灌队列。
-	// 只扫最近几个文件即可覆盖进程被杀/Pod 重建的窗口，扫全量会拖慢启动。
+	// L1 后这两个常量不再是硬窗口，而是**单轮**预算：扫全量文件（含轮转件与当前文件），
+	// 预算用尽记进度、下轮继续，直到水位之后的历史全部进管道。
 	DefaultSeedMaxFiles   = 2
 	DefaultSeedMaxEntries = 5000
+	// 单轮补传的字节/时间预算：启动与 worker 续扫都不得阻塞业务太久。
+	seedByteBudget = 8 << 20
+	seedTimeBudget = 2 * time.Second
+	// 内存队列上限（实时与补传各自独立计数）：溢出部分留在磁盘等 worker 消费（L2）。
+	memoryQueueCap = 5000
+	// 单个 outbox 分段大小：到顶就滚新段，drop-oldest 与游标消费都以段为单位。
+	outboxSegmentBytes = 1 << 20
 )
 
 // logUploader 是进程级单例：**串行**发送，全局并发恒为 1。
@@ -72,16 +84,42 @@ type logUploader struct {
 	CaseID   string
 	instance string
 	// source 记录令牌来源（env / ws），排障时先看它判断"直传到底有没有被启用"。
-	source   string
-	queue    []LogEntry
-	outbox   *os.File
-	outboxAt string
-	maxBytes int64
-	written  int64
-	dropped  uint64
-	started  bool
-	wake     chan struct{}
-	attempt  int
+	source string
+	// queue 是实时队列：与分段 outbox 的磁盘游标一一对应（每条都已落盘），
+	// 批次成功后游标按字节前进；重启后从游标 refill，不再整文件读回清空。
+	queue []LogEntry
+	// seedQueue 是补传队列（本地日志 seed + stderr 包装）：源头在本地日志文件而非 outbox，
+	// 不占磁盘游标；内部按 seq 升序（stderr 条目 Seq=0 排在尾部）。
+	seedQueue []LogEntry
+	// maxQueuedSeq 是本进程已入管道的最大 seq：seed 去重用，避免把已实时入队的条目重复补传。
+	maxQueuedSeq uint64
+	// maxStderrQueued 是本进程已入管道的最大 stderr 字节偏移（字节水位只在上传成功后推进，
+	// 进程内去重靠它）。
+	maxStderrQueued int64
+	outbox          *os.File
+	outboxAt        string
+	// gapsFile 是 gap 标记事件的独立落盘文件（gaps.jsonl，不在分段列表内）：
+	// gap 不占磁盘预算、不会被 drop-oldest，也不占磁盘游标字节（flush 时扣除）。
+	gapsFile *os.File
+	// 丢失判定三件套：totalEnqueued 累计入管道条数，consumedEntries 累计已确认发送条数，
+	// segEntryIndex 记录各段首条的全局索引。内存覆盖窗口 = 未消费的前 memoryQueueCap 条
+	// （它们仍在内存/可 refill，终会发出）；drop-oldest 只把窗口之外的条目计为真丢失并发 gap。
+	totalEnqueued   uint64
+	consumedEntries uint64
+	segEntryIndex   map[string]uint64
+	maxBytes        int64
+	// segmentBytes 是单个 outbox 分段的大小上限（测试可调小以验证滚段/缺口逻辑）。
+	segmentBytes int64
+	written      int64
+	dropped      uint64
+	// spilled 统计"内存满、仅落盘"的条数（L2 后不再丢弃，只是慢一拍）。
+	spilled uint64
+	// persistOK 标记落盘链路是否健康：任何一次写失败后置 false，
+	// 游标停止前进（磁盘与内存不再一一对应），重复交给后端 event_id 幂等。
+	persistOK bool
+	started   bool
+	wake      chan struct{}
+	attempt   int
 	// relaxed 记录"已确认平台使用自签证书、允许跳过校验"的 endpoint。
 	//
 	// 只记忆进程生命周期：重启后第一次会多一次握手失败，随后自愈。
@@ -94,9 +132,12 @@ var LogUpload = newLogUploader()
 
 func newLogUploader() *logUploader {
 	return &logUploader{
-		wake:     make(chan struct{}, 1),
-		maxBytes: int64(bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES", defaultLogOutboxMaxBytes)),
-		relaxed:  make(map[string]bool),
+		wake:          make(chan struct{}, 1),
+		maxBytes:      int64(bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES", defaultLogOutboxMaxBytes)),
+		segmentBytes:  outboxSegmentBytes,
+		relaxed:       make(map[string]bool),
+		persistOK:     true,
+		segEntryIndex: make(map[string]uint64),
 	}
 }
 
@@ -135,6 +176,13 @@ func (u *logUploader) configureWithSource(token, endpoint, caseID, instance, sou
 	if needStart {
 		go u.run()
 	}
+	// L1：令牌到手即补"水位之后"的全部本地历史（含令牌启用前的旧历史）。
+	// 异步执行：历史可能很大，预算内分轮续扫，不阻塞令牌 ack 与启动；
+	// env 旋钮保留，解释为单轮预算（文件数不再限制扫描范围）。
+	go u.SeedFromLocalLogs(
+		bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_SEED_FILES", DefaultSeedMaxFiles),
+		bruntime.EnvIntOrDefault("HCI_BRIDGE_LOG_SEED_ENTRIES", DefaultSeedMaxEntries),
+	)
 	u.notify()
 }
 
@@ -154,106 +202,6 @@ func (u *logUploader) BootstrapFromEnv() bool {
 	return u.enabled()
 }
 
-// seedFromLocalLogs 把本地日志文件里尚未确认上传的条目回灌队列。
-//
-// 覆盖的场景：进程被 kill / OOM / Pod 重建时，最后一段日志只落到了本地文件，
-// 既不在 outbox 里（outbox 只在启用直传后按条追加），也没进过数据库。
-// 水位（watermark）按实例持久化，重启后只补"水位之后"的条目；
-// 后端按 event_id 幂等，重复补传不会产生重复行。
-func (u *logUploader) SeedFromLocalLogs(maxFiles, maxEntries int) int {
-	if !u.enabled() {
-		return 0
-	}
-	dir := strings.TrimSpace(DefaultHub.LogDir)
-	if dir == "" {
-		return 0
-	}
-	if maxFiles <= 0 {
-		maxFiles = DefaultSeedMaxFiles
-	}
-	if maxEntries <= 0 {
-		maxEntries = DefaultSeedMaxEntries
-	}
-	files := recentBridgeLogFiles(dir, strings.TrimSpace(DefaultHub.LogPath), maxFiles)
-	if len(files) == 0 {
-		return 0
-	}
-	watermark := u.loadWatermark()
-	candidates := make([]LogEntry, 0, 256)
-	for _, path := range files {
-		candidates = append(candidates, readLogFileEntries(path, watermark)...)
-	}
-	if len(candidates) == 0 {
-		return 0
-	}
-	// 只补最近的 maxEntries 条：更旧的窗口价值低，且会挤占 outbox 与发送带宽。
-	if len(candidates) > maxEntries {
-		candidates = candidates[len(candidates)-maxEntries:]
-	}
-
-	u.Mu.Lock()
-	if len(u.queue)+len(candidates) > 5000 {
-		drop := len(u.queue) + len(candidates) - 5000
-		if drop > len(candidates) {
-			drop = len(candidates)
-		}
-		candidates = candidates[drop:]
-		atomic.AddUint64(&u.dropped, uint64(drop))
-	}
-	u.queue = append(candidates, u.queue...)
-	u.Mu.Unlock()
-
-	Blog("INFO", "log_upload.seeded", "已从本地日志文件补传未上传区间", "", "", "", "", map[string]any{
-		"files": len(files), "seeded": len(candidates), "watermark": watermark,
-	})
-	u.notify()
-	return len(candidates)
-}
-
-// watermarkPath 记录"该实例已成功上传到哪个 seq"，用于重启后精确补传。
-func (u *logUploader) watermarkPath() string {
-	dir := strings.TrimSpace(DefaultHub.LogDir)
-	u.Mu.Lock()
-	instance := u.instance
-	u.Mu.Unlock()
-	if dir == "" || instance == "" {
-		return ""
-	}
-	return filepath.Join(dir, "bridge-log-uploaded-"+instance+".Seq")
-}
-
-func (u *logUploader) loadWatermark() uint64 {
-	path := u.watermarkPath()
-	if path == "" {
-		return 0
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return 0
-	}
-	value, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return value
-}
-
-func (u *logUploader) saveWatermark(seq uint64) {
-	path := u.watermarkPath()
-	if path == "" || seq == 0 {
-		return
-	}
-	if current := u.loadWatermark(); seq <= current {
-		return
-	}
-	// 先写临时文件再 rename：进程在写一半时被杀，水位不会变成半截数字。
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.FormatUint(seq, 10)), 0o600); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, path)
-}
-
 // enabled 返回当前是否具备直传条件（有令牌且已配置）。
 func (u *logUploader) enabled() bool {
 	u.Mu.Lock()
@@ -264,19 +212,31 @@ func (u *logUploader) enabled() bool {
 // enqueue 把一条事件放进发送队列并落盘。
 //
 // 调用点必须在 DefaultHub 解锁之后（enqueue 自己加锁，避免与 publish 的锁嵌套）。
+// L2：内存队列满不再丢弃——条目仍落盘（spill），等 worker 从磁盘游标 refill 消费；
+// 只有总磁盘预算超限才 drop-oldest 段（在 persistLocked 内执行）并发 gap 标记事件。
 func (u *logUploader) enqueue(entry LogEntry) {
 	if !u.enabled() {
 		return
 	}
 	u.Mu.Lock()
-	// 队列上限与 outbox 字节上限双重保护：客户机磁盘可能只剩几百 MB。
-	if len(u.queue) >= 5000 || (u.maxBytes > 0 && u.written >= u.maxBytes) {
-		u.dropped++
-		u.Mu.Unlock()
-		return
+	gaps := u.persistLocked(entry)
+	u.totalEnqueued++
+	if len(u.queue) < memoryQueueCap {
+		u.queue = append(u.queue, entry)
+		if entry.Seq > u.maxQueuedSeq {
+			u.maxQueuedSeq = entry.Seq
+		}
+	} else {
+		u.spilled++
 	}
-	u.queue = append(u.queue, entry)
-	u.persistLocked(entry)
+	// gap 标记已写独立文件，内存按余量入队（紧跟触发条目，与段生命周期对齐）。
+	for _, gap := range gaps {
+		if len(u.queue) < memoryQueueCap {
+			u.queue = append(u.queue, gap)
+		} else {
+			u.spilled++
+		}
+	}
 	u.Mu.Unlock()
 	u.notify()
 }
@@ -329,13 +289,18 @@ func (u *logUploader) run() {
 				break
 			}
 		}
+		// L1：补传预算用尽后续扫；当前文件有新内容（崩溃窗口/令牌前条目）时也重扫。
+		// 水位 + maxQueuedSeq 双重去重，重扫不会重复入队。
+		if u.seedPending() {
+			u.SeedFromLocalLogs(0, 0)
+		}
 	}
 }
 
 func (u *logUploader) queueLen() int {
 	u.Mu.Lock()
 	defer u.Mu.Unlock()
-	return len(u.queue)
+	return len(u.queue) + len(u.seedQueue)
 }
 
 // backoff 返回下一次重试延迟：1s→2s→…→60s。
@@ -354,6 +319,7 @@ func (u *logUploader) backoff() time.Duration {
 }
 
 // flushOnce 发送一批；返回实际发送条数。错误时不清队列（整批重试）。
+// 消费顺序：先补传队列（旧历史优先），再实时队列；实时队列空且磁盘有溢出时从游标 refill。
 func (u *logUploader) flushOnce() (int, error) {
 	// 串行化整段：worker 与手动触发（含测试/运维）并发时，不得有两条同时取批次。
 	u.sendMu.Lock()
@@ -364,16 +330,25 @@ func (u *logUploader) flushOnce() (int, error) {
 		u.Mu.Unlock()
 		return 0, nil
 	}
-	size := u.batchSize()
-	if len(u.queue) == 0 {
+	fromSeed := len(u.seedQueue) > 0
+	if !fromSeed && len(u.queue) == 0 {
+		// L2：内存队列空不代表发完——溢出部分还在磁盘，从游标 refill 后再取批。
+		u.refillFromDiskLocked()
+	}
+	source := u.queue
+	if fromSeed {
+		source = u.seedQueue
+	}
+	if len(source) == 0 {
 		u.Mu.Unlock()
 		return 0, nil
 	}
-	if size > len(u.queue) {
-		size = len(u.queue)
+	size := u.batchSize()
+	if size > len(source) {
+		size = len(source)
 	}
 	batch := make([]LogEntry, size)
-	copy(batch, u.queue[:size])
+	copy(batch, source[:size])
 	token, endpoint := u.token, u.endpoint
 	u.Mu.Unlock()
 
@@ -394,84 +369,47 @@ func (u *logUploader) flushOnce() (int, error) {
 
 	// 成功才推进队列：失败时整批保留，靠 event_id 幂等抵消重复发送。
 	maxSeq := uint64(0)
+	maxStderr := int64(0)
+	consumedBytes := int64(0)
 	for _, entry := range batch {
 		if entry.Seq > maxSeq {
 			maxSeq = entry.Seq
 		}
+		if entry.StderrOffset > maxStderr {
+			maxStderr = entry.StderrOffset
+		}
+		if !fromSeed {
+			if line, marshalErr := json.Marshal(entry); marshalErr == nil {
+				// gap 条目落在独立文件，不占分段游标字节，必须扣除。
+				if entry.Event != "log_upload.gap" {
+					consumedBytes += int64(len(line)) + 1
+				}
+			}
+		}
 	}
 	u.Mu.Lock()
-	u.queue = u.queue[size:]
+	if fromSeed {
+		u.seedQueue = u.seedQueue[size:]
+	} else {
+		u.queue = u.queue[size:]
+		u.consumedEntries += uint64(size)
+		// 磁盘游标与实时队列一一对应：批次确认成功后才按字节前进（落盘链路健康时）。
+		if u.persistOK && consumedBytes > 0 {
+			u.advanceCursorLocked(consumedBytes)
+		}
+	}
 	u.attempt = 0
 	u.Mu.Unlock()
-	// 水位只在批次确认成功后才推进：崩溃补传的边界就靠它，提前推进等于自认没发出去。
-	if maxSeq > 0 {
+	// seq 水位只在实时批次确认成功后推进：补传批次的低 seq 若推水位，
+	// 会把尚未发送的高 seq 实时条目跳过，崩溃后永久丢失。
+	if !fromSeed && maxSeq > 0 {
 		u.saveWatermark(maxSeq)
 	}
+	// stderr 字节水位：panic 现场只有确认送达后才算补完，重启后从水位续读。
+	if maxStderr > 0 {
+		u.saveStderrWatermark(maxStderr)
+	}
 	return size, nil
-}
-
-// recentBridgeLogFiles 返回目录内最近修改的 N 个 bridge-*.log（排除正在写的那个）。
-func recentBridgeLogFiles(dir, exclude string, limit int) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	type candidate struct {
-		path string
-		mod  time.Time
-	}
-	items := make([]candidate, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasPrefix(name, "bridge-") || !strings.HasSuffix(name, ".log") {
-			continue
-		}
-		path := filepath.Join(dir, name)
-		if path == exclude {
-			continue
-		}
-		info, statErr := entry.Info()
-		if statErr != nil {
-			continue
-		}
-		items = append(items, candidate{path: path, mod: info.ModTime()})
-	}
-	// 旧→新：调用方按文件顺序追加，水位过滤后仍保持 seq 递增语义。
-	sort.Slice(items, func(i, j int) bool { return items[i].mod.Before(items[j].mod) })
-	if limit > 0 && len(items) > limit {
-		items = items[len(items)-limit:]
-	}
-	paths := make([]string, 0, len(items))
-	for _, item := range items {
-		paths = append(paths, item.path)
-	}
-	return paths
-}
-
-// readLogFileEntries 读取单个日志文件中 seq 大于水位的条目。
-func readLogFileEntries(path string, watermark uint64) []LogEntry {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	entries := make([]LogEntry, 0, 128)
-	for scanner.Scan() {
-		var entry LogEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue
-		}
-		if entry.Seq <= watermark || entry.EventID == "" {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-	return entries
 }
 
 // sendBatch 发送一批日志；平台使用自签证书时自动放宽一次并记住该 endpoint。
@@ -559,91 +497,11 @@ func encodeLogBatch(batch []LogEntry) ([]byte, error) {
 
 // outboxDir 返回落盘目录（与日志同级的 bridge-log-outbox）。
 func outboxDir() string {
-	dir := strings.TrimSpace(DefaultHub.LogDir)
+	dir, _ := hubLogLocation()
 	if dir == "" {
 		return ""
 	}
 	return filepath.Join(dir, "bridge-log-outbox")
-}
-
-// persistLocked 追加一条到 outbox；失败不影响内存队列（best-effort）。
-func (u *logUploader) persistLocked(entry LogEntry) {
-	dir := outboxDir()
-	if dir == "" || u.instance == "" {
-		return
-	}
-	if u.outbox == nil {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return
-		}
-		path := filepath.Join(dir, u.instance+".jsonl")
-		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-		if err != nil {
-			return
-		}
-		u.outbox, u.outboxAt = file, path
-		// 续接已有文件时按当前大小继续累加，避免重启后 written 归零而突破上限。
-		if info, statErr := file.Stat(); statErr == nil {
-			u.written = info.Size()
-		}
-	}
-	line, err := json.Marshal(entry)
-	if err != nil {
-		return
-	}
-	line = append(line, '\n')
-	if written, writeErr := u.outbox.Write(line); writeErr == nil {
-		u.written += int64(written)
-	}
-}
-
-// recoverOutbox 在进程重启后把未发送的日志读回队列并清空文件。
-//
-// 取舍：只按文件整体恢复，不做 offset 续传——单 worker 串行 + 成功后整批出队，
-// 未出队的必然在文件里；重启时整体重放即可，重复由后端 event_id 去重。
-func (u *logUploader) recoverOutbox() {
-	dir := outboxDir()
-	if dir == "" {
-		return
-	}
-	u.Mu.Lock()
-	instance := u.instance
-	u.Mu.Unlock()
-	if instance == "" {
-		return
-	}
-	path := filepath.Join(dir, instance+".jsonl")
-	file, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer file.Close()
-
-	recovered := make([]LogEntry, 0, 256)
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		var entry LogEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue
-		}
-		recovered = append(recovered, entry)
-		if len(recovered) >= 5000 {
-			break
-		}
-	}
-	if len(recovered) == 0 {
-		return
-	}
-	u.Mu.Lock()
-	u.queue = append(recovered, u.queue...)
-	u.Mu.Unlock()
-	// 读回后清空，避免下次重启重复恢复（未发送部分已在内存队列里，
-	// 若此时进程再挂，最多丢这一批，与"发送中丢失"是同一语义）。
-	_ = os.Truncate(path, 0)
-	Blog("INFO", "log_upload.recovered", "已从 outbox 恢复未发送日志", "", "", "", "", map[string]any{
-		"recovered": len(recovered), "path": path,
-	})
 }
 
 // LogUploadStats 供 /status 暴露直传状态（排障时无需再猜是否启用）。
@@ -653,8 +511,9 @@ func LogUploadStats() map[string]any {
 	defer u.Mu.Unlock()
 	return map[string]any{
 		"enabled":  u.token != "" && u.endpoint != "",
-		"queued":   len(u.queue),
+		"queued":   len(u.queue) + len(u.seedQueue),
 		"dropped":  atomic.LoadUint64(&u.dropped),
+		"spilled":  u.spilled,
 		"instance": u.instance,
 		"outbox":   u.outboxAt,
 		// source 让排障第一眼就能区分"部署期注入生效"与"只有浏览器下发"。
