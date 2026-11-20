@@ -16,6 +16,7 @@ from app.services.log_collect_script_service import (
     baseline_scripts,
     infer_interpreter,
     normalize_content,
+    resolve_interpreter,
     sha256_of,
     validate_code,
 )
@@ -40,11 +41,24 @@ def test_demo_baseline_has_no_binary_and_no_content() -> None:
     assert all(baseline_content(code) is None for code in rows)
 
 
-def test_validate_code_rejects_path_traversal() -> None:
-    for bad in ("../x.py", "a/b.py", "..", "", "-x.py"):
+def test_validate_code_allows_subdir_but_rejects_traversal() -> None:
+    """code 是相对 script/ 的路径：内置脚本住在 vs_script/ 等子目录里。"""
+    for good in ("pl_disk_check.py", "dpcollect", "vs_script/vs_collect_upgrade_info.py", "tools/sub/x.sh"):
+        assert validate_code(good) == good
+    for bad in (
+        "../x.py",
+        "..",
+        "",
+        "-x.py",
+        ".hidden",
+        "/abs/x.py",
+        "a/",
+        "a//b.py",
+        "a\\b.py",
+        "a/b/c/d.py",
+    ):
         with pytest.raises(ScriptError):
             validate_code(bad)
-    assert validate_code("pl_disk_check.py") == "pl_disk_check.py"
 
 
 def test_normalize_content_rejects_empty_and_nul() -> None:
@@ -63,11 +77,40 @@ def test_normalize_content_converts_crlf() -> None:
     assert sha256_of(normalized) == sha256_of("echo a\necho b\n")
 
 
-def test_infer_interpreter_prefers_suffix() -> None:
-    assert infer_interpreter("a.py", "#!/bin/bash") == "python"
-    assert infer_interpreter("a.sh", "#!/usr/bin/env python3") == "bash"
+def test_infer_interpreter_prefers_shebang() -> None:
+    """shebang 是脚本自己声明的执行方式，后缀只是弱证据。
+
+    后缀优先的旧实现会把「.sh 里其实是 python」判成 bash，且让无后缀脚本
+    （插件里大量存在）无法表达真实解释器。
+    """
+    assert infer_interpreter("a.py", "#!/bin/bash") == "bash"
+    assert infer_interpreter("a.sh", "#!/usr/bin/env python3") == "python"
     assert infer_interpreter("dpcollect", "#!/bin/bash\n") == "bash"
     assert infer_interpreter("custom", "#!/usr/bin/env python3\n") == "python"
+    # 无 shebang 时退回后缀
+    assert infer_interpreter("a.py", "print(1)") == "python"
+    assert infer_interpreter("a.sh", "echo a") == "bash"
+    # 无后缀无 shebang：默认 bash
+    assert infer_interpreter("dpdoctor", "echo a") == "bash"
+
+
+def test_resolve_interpreter_manual_wins_with_warning() -> None:
+    interp, source, warnings = resolve_interpreter("a.sh", "#!/bin/bash\n", "python")
+    assert (interp, source) == ("python", "manual")
+    assert any("shebang" in item for item in warnings)
+
+
+def test_resolve_interpreter_explains_default_and_conflicts() -> None:
+    interp, source, warnings = resolve_interpreter("dpdoctor", "echo a")
+    assert (interp, source) == ("bash", "default")
+    assert any("无后缀" in item for item in warnings)
+
+    interp, source, warnings = resolve_interpreter("a.sh", "#!/usr/bin/env python3\n")
+    assert (interp, source) == ("python", "shebang")
+    assert any("后缀" in item for item in warnings)
+
+    with pytest.raises(ScriptError):
+        resolve_interpreter("a.sh", "echo a", "perl")
 
 
 def test_items_reference_only_matches_script_action() -> None:

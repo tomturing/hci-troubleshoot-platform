@@ -429,9 +429,12 @@ async def list_admin_tasks(
 
 _TASK_SQL = """
     SELECT t.task_id, t.case_id, t.upload_mode, t.relay_upload_id,
-           t.created_at, t.archive_size, t.delivery_status
+           t.created_at, t.archive_size, t.delivery_status, t.status
     FROM log_collect_task t WHERE t.task_id = :task_id
 """
+
+# 归档事实与任务时间窗的容差：与 domain.log_collect_archive 同一口径。
+_ARCHIVE_LOOKBACK_SECONDS = 300
 
 
 def _cache_get(task_id: UUID) -> DestinationProgressResponse | None:
@@ -503,6 +506,37 @@ def _map_progress(
     )
 
 
+def _archive_as_progress_data(archive: dict[str, Any] | None) -> dict[str, Any] | None:
+    """只转述 5888 的归档事实，不与平台摘要做未实现的比对。"""
+    if not archive or not archive.get("found"):
+        return None
+    return {
+        "status": "done",
+        "target_path": archive.get("target_path"),
+        "sha256": archive.get("sha256"),
+        "finished_at": archive.get("finished_at"),
+        "uploaded_size": archive.get("size"),
+        "file_size": archive.get("size"),
+    }
+
+
+def _archive_is_current(archive: dict[str, Any], task: dict[str, Any]) -> bool:
+    """排除历史包与截断包：时间早于任务窗口、体积小于记录值都不算本轮送达。"""
+    mtime = archive.get("mtime")
+    created = task.get("created_at")
+    if isinstance(mtime, (int, float)) and isinstance(created, datetime):
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        archived_at = datetime.fromtimestamp(int(mtime), tz=UTC)
+        if archived_at < created - timedelta(seconds=_ARCHIVE_LOOKBACK_SECONDS):
+            return False
+    expected = task.get("archive_size")
+    actual = archive.get("size")
+    return not (
+        isinstance(expected, int) and expected > 0 and isinstance(actual, int) and actual < expected
+    )
+
+
 def _session_matches_generation(data: dict[str, Any], task: dict[str, Any]) -> bool:
     """会话按代际绑定：同一工单可能有多轮上传，别把上一轮的 100% 当成本轮。"""
     upload_id = str(data.get("upload_id") or "")
@@ -545,7 +579,10 @@ async def destination_progress(task_id: UUID) -> DestinationProgressResponse:
     )
 
     payload: DestinationProgressResponse
-    if path == "unknown" or (path == "P2" and not task.get("relay_upload_id")):
+    # 终态任务即使没有代传会话，也要走归档回溯：P2 的 relay_upload_id 常随会话过期，
+    # 过早 return 会让「5888 已有包」在页面上永久显示为空。
+    terminal = str(task.get("status") or "") in {"completed", "failed", "cancelled"}
+    if path == "unknown" or (path == "P2" and not task.get("relay_upload_id") and not terminal):
         payload = _map_progress(
             task_id=task_id,
             path=path,
@@ -557,14 +594,23 @@ async def destination_progress(task_id: UUID) -> DestinationProgressResponse:
         try:
             async with httpx.AsyncClient(timeout=PROGRESS_TIMEOUT_SECONDS) as http:
                 if path == "P2":
-                    data = await client.upload_status(http, str(task["relay_upload_id"]))
-                    payload = _map_progress(
-                        task_id=task_id,
-                        path=path,
-                        data=data,
-                        state="query",
-                        reason=None if data else "日志服务器会话已结束或已过期（24h）",
-                    )
+                    if not task.get("relay_upload_id"):
+                        payload = _map_progress(
+                            task_id=task_id,
+                            path=path,
+                            data=None,
+                            state="no_record",
+                            reason="P2 代传会话尚未建立",
+                        )
+                    else:
+                        data = await client.upload_status(http, str(task["relay_upload_id"]))
+                        payload = _map_progress(
+                            task_id=task_id,
+                            path=path,
+                            data=data,
+                            state="query",
+                            reason=None if data else "日志服务器会话已结束或已过期（24h）",
+                        )
                 else:
                     probe_state, data = await client.upload_progress(http, f"{task['case_id']}.zip")
                     if probe_state == "unsupported":
@@ -594,6 +640,31 @@ async def destination_progress(task_id: UUID) -> DestinationProgressResponse:
                         )
                     else:
                         payload = _map_progress(task_id=task_id, path=path, data=data, state="query")
+
+                # 终态任务的上传会话通常已被 5888 清理，会话查不到不等于没归档。
+                # 只对已结束任务做一次只读归档回溯，前端也只在首次加载补查失败行，
+                # 避免把单进程日志服务器变成轮询目标。
+                if payload.state == "no_record" and str(task.get("status") or "") in {
+                    "completed", "failed", "cancelled"
+                }:
+                    archive = await client.archive_status(http, f"{task['case_id']}.zip")
+                    if archive and archive.get("found"):
+                        if _archive_is_current(archive, task):
+                            payload = _map_progress(
+                                task_id=task_id,
+                                path=path,
+                                data=_archive_as_progress_data(archive),
+                                state="query",
+                                reason="来自 5888 归档记录",
+                            )
+                        else:
+                            payload = _map_progress(
+                                task_id=task_id,
+                                path=path,
+                                data=None,
+                                state="no_record",
+                                reason="仅查到更早或不完整的归档，不能认定为本轮送达",
+                            )
         except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
             logger.warning(
                 event="admin_log_collect_progress_degraded",

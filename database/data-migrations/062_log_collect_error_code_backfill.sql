@@ -65,7 +65,7 @@ INSERT INTO lc_error_rules (ord, needle, code) VALUES
         (31, '临时目录空间不足', 'LC-TRANSFER-008'),
         (32, '写入本地文件失败', 'LC-TRANSFER-008'),
         (33, '%TEMP%', 'LC-TRANSFER-008'),
-        (34, '/sf/data/local', 'LC-ENV-004'),
+        -- 不再用 /sf/data/local 路径泛化匹配：旧包守卫也带这个路径，会误判成磁盘不足。
         (35, '磁盘空间不足', 'LC-ENV-004'),
         (36, '可用空间', 'LC-ENV-004'),
         (37, 'SSH 会话不存在', 'LC-ENV-006'),
@@ -116,7 +116,10 @@ INSERT INTO lc_error_rules (ord, needle, code) VALUES
         (82, '归档核验未通过', 'LC-TRANSFER-007'),
         (83, '直传归档核验', 'LC-TRANSFER-007'),
         (84, '归档到日志服务器失败', 'LC-TRANSFER-003'),
-        (85, '超时', 'LC-EXEC-002');
+        (85, '超时', 'LC-EXEC-002'),
+        (86, '早于本次采集开始', 'LC-TRANSFER-011'),
+        (87, '上一次任务的产物', 'LC-TRANSFER-011'),
+        (88, '节点上的压缩包', 'LC-TRANSFER-011');
 
 WITH targets AS (
     SELECT
