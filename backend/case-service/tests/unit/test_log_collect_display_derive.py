@@ -122,6 +122,43 @@ class TestConclusion:
         assert derive(make_task(status="failed"), now=NOW)["display"]["conclusion"] == "failed"
         assert derive(make_task(status="cancelled"), now=NOW)["display"]["conclusion"] == "cancelled"
 
+    def test_failed_status_with_verified_delivery_is_not_failed(self):
+        """2026-11-20：归档已由 5888 核验且交付已登记，节点迟到失败不得盖掉交付事实。"""
+        payload = derive(
+            make_task(
+                status="failed",
+                delivery_status="delivered",
+                archive_size=2 * 1024**3,
+                object_size=2 * 1024**3,
+                detail={"p1_archive_check": {"verified": True}},
+            ),
+            now=NOW,
+        )
+
+        assert payload["display"]["conclusion"] == "partial"  # 无内容清单时不冒充绿色成功
+        assert payload["display"]["conclusion"] != "failed"
+
+    def test_failed_without_evidence_is_still_failed(self):
+        """对抗性守门：delivered 但无核验快照，仍按失败处理。"""
+        payload = derive(
+            make_task(status="failed", delivery_status="delivered", archive_size=2 * 1024**3),
+            now=NOW,
+        )
+        assert payload["display"]["conclusion"] == "failed"
+
+    def test_evidence_without_delivery_registration_is_still_failed(self):
+        """对抗性守门：手工上传/旧包即使有观测，也不能绕过交付登记翻正。"""
+        payload = derive(
+            make_task(
+                status="failed",
+                delivery_status="none",
+                relay_status="success",
+                detail={"archive_confirmation": {"verified": True}},
+            ),
+            now=NOW,
+        )
+        assert payload["display"]["conclusion"] == "failed"
+
     def test_delivered_is_settled_even_if_node_never_finished(self):
         """节点卡在 uploading 但平台已收妥：不能永远算「传输中」。"""
         payload = derive(
