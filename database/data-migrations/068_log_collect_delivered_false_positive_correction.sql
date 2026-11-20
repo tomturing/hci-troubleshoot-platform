@@ -81,10 +81,13 @@ SET status = 'completed',
 FROM targets
 WHERE t.task_id = targets.task_id;
 
--- 验证不变量：4 条目标全部订正、且审计快照齐全；重跑时剩余 0、审计仍为 4。
+-- 验证不变量：
+--   · 所有「待订正」行都已订正（空库/CI 模拟库允许 0 行）；
+--   · 名单内实际存在的行都有审计快照，且重跑不会重复写入。
 DO $verify$
 DECLARE
     remaining int;
+    known int;
     audited int;
 BEGIN
     SELECT count(*) INTO remaining
@@ -111,6 +114,15 @@ BEGIN
         RAISE EXCEPTION '交付事实订正失败：仍有 % 条已核验交付被标为 failed', remaining;
     END IF;
 
+    SELECT count(*) INTO known
+    FROM log_collect_task
+    WHERE task_id IN (
+        'a02c9080-cd6a-4a68-ac96-163c3b569b9a',
+        '8bbe5e08-0abe-4cc4-b467-c00bf28ea9d5',
+        'cab9f45d-1caf-42e0-b981-8ef4befe5999',
+        'b7e0c501-66f4-430a-968d-5ebdad7fb07d'
+    );
+
     SELECT count(*) INTO audited
     FROM log_collect_task
     WHERE task_id IN (
@@ -122,10 +134,10 @@ BEGIN
       AND detail #>> '{data_correction,delivered_false_positive_20261120,trace}'
           = 'lc-correction-Q20261120-delivered-false-positive';
 
-    IF audited <> 4 THEN
-        RAISE EXCEPTION '交付事实订正审计不完整：期望 4 条，实际 % 条', audited;
+    IF audited <> known THEN
+        RAISE EXCEPTION '交付事实订正审计不完整：名单内 % 条，审计 % 条', known, audited;
     END IF;
-    RAISE NOTICE '交付事实订正完成：4 条，审计快照齐全';
+    RAISE NOTICE '交付事实订正校验通过：名单内 % 条，审计 % 条', known, audited;
 END $verify$;
 
 COMMIT;
