@@ -523,6 +523,30 @@ async def test_failed_row_sees_archive_after_session_expired(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_terminal_p2_without_relay_id_still_checks_archive(monkeypatch):
+    """P2 代传会话过期后 relay_upload_id 可能为空，归档事实仍须可见。"""
+    row = _task_row(mode="bridge_relay", status="failed")
+    row["relay_upload_id"] = None
+    _patch_task(monkeypatch, row)
+    archive = {
+        "found": True,
+        "status": "archived",
+        "size": row["archive_size"],
+        "mtime": int((_now() - timedelta(minutes=2)).timestamp()),
+        "sha256": "e" * 64,
+        "target_path": "/sf/log/Q2026111000243/Q2026111000243.zip",
+        "finished_at": _now().isoformat(),
+    }
+    fake = _FakeClient(status=None, archive=archive)
+    monkeypatch.setattr(routes, "SangforRelayClient", fake)
+
+    result = await routes.destination_progress(row["task_id"])
+    assert result.state == "done"
+    assert result.reason == "来自 5888 归档记录"
+    assert fake.calls == ["archive_status"]
+
+
+@pytest.mark.asyncio
 async def test_stale_archive_is_not_claimed_as_this_round(monkeypatch):
     """对抗性守门：历史包不能冒充本轮送达。"""
     row = _task_row(status="failed")
