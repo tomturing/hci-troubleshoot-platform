@@ -532,9 +532,9 @@ def _archive_is_current(archive: dict[str, Any], task: dict[str, Any]) -> bool:
             return False
     expected = task.get("archive_size")
     actual = archive.get("size")
-    if isinstance(expected, int) and expected > 0 and isinstance(actual, int) and actual < expected:
-        return False
-    return True
+    return not (
+        isinstance(expected, int) and expected > 0 and isinstance(actual, int) and actual < expected
+    )
 
 
 def _session_matches_generation(data: dict[str, Any], task: dict[str, Any]) -> bool:
