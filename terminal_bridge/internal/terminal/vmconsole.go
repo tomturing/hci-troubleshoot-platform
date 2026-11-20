@@ -16,13 +16,10 @@ import (
 	"sync"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
 
 	"terminal_bridge/internal/shared/remote"
@@ -357,21 +354,18 @@ func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmCons
 	baseCtx := logpush.ContextFromMessage(models.InMessage{Traceparent: req.Traceparent, Tracestate: req.Tracestate})
 	ctx, cancel := context.WithTimeout(baseCtx, time.Duration(req.TimeoutSeconds)*time.Second)
 	defer cancel()
-	ctx, span := otel.Tracer("terminal_bridge").Start(ctx, "terminal_bridge.vm_console."+req.Operation,
-		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("exec.id", req.ExecID),
-			attribute.String("case.id", req.CaseID),
-			attribute.String("conversation.id", req.ConversationID),
-			attribute.String("server.Address", req.NodeIP),
-			attribute.String("vm_console.operation", req.Operation),
-			attribute.String("vm_console.capture_id", req.CaptureID),
-			attribute.String("vm_console.host_node_id", req.HostNodeID),
-			attribute.String("vm_console.vm_id", req.VMID),
-		),
+	ctx, span := telemetry.StartClient(ctx, "terminal_bridge.vm_console."+req.Operation,
+		telemetry.String("exec.id", req.ExecID),
+		telemetry.String("case.id", req.CaseID),
+		telemetry.String("conversation.id", req.ConversationID),
+		telemetry.String("server.Address", req.NodeIP),
+		telemetry.String("vm_console.operation", req.Operation),
+		telemetry.String("vm_console.capture_id", req.CaptureID),
+		telemetry.String("vm_console.host_node_id", req.HostNodeID),
+		telemetry.String("vm_console.vm_id", req.VMID),
 	)
 	defer span.End()
-	traceID := span.SpanContext().TraceID().String()
+	traceID := span.TraceID()
 
 	logReq := models.ExecRequestContext{
 		Context: ctx, CaseID: req.CaseID, ConversationID: req.ConversationID,
@@ -395,7 +389,7 @@ func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmCons
 	failResult := func(errorType string, exitCode int, timedOut bool) {
 		if errorType != "" {
 			MetricsVmConsoleOpErrors(1)
-			span.SetStatus(codes.Error, errorType)
+			span.SetStatus(telemetry.StatusError, errorType)
 		}
 		result := VmConsoleResultMessage(req, exitCode, traceID, logpush.TraceparentFromContext(ctx), time.Since(startTime).Milliseconds())
 		result.ErrorType = errorType
@@ -426,7 +420,7 @@ func RunVMConsoleOp(s *sshx.SSHSession, send func(models.OutMessage), req VmCons
 
 // runVMConsoleWake 执行固定唤醒操作（sendkey down），不做任何上传。
 func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext,
-	span trace.Span, failResult func(string, int, bool), sendResult func(models.OutMessage)) {
+	span telemetry.Span, failResult func(string, int, bool), sendResult func(models.OutMessage)) {
 	_, stderrText, exitCode, _, err := runner.run(ctx, VmConsoleWakeArgv(req.HostNodeID, req.VMID), vmConsoleMaxStderrBytes)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if err != nil {
@@ -455,7 +449,7 @@ func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 	result.ErrorType = errorType
 	if errorType != "" {
 		MetricsVmConsoleOpErrors(1)
-		span.SetStatus(codes.Error, errorType)
+		span.SetStatus(telemetry.StatusError, errorType)
 	}
 	sendResult(result)
 }
@@ -464,7 +458,7 @@ func runVMConsoleWake(s *sshx.SSHSession, ctx context.Context, runner *vmConsole
 // screendump → 有界轮询探测 → base64 读取 → 本地解码 + SHA-256 → HTTP 直传 → 无条件清理。
 // cleanup 在发送结果前执行，保证 cleanup_failed 标记可进入最终 error_type。
 func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext,
-	span trace.Span, sendResult func(models.OutMessage)) {
+	span telemetry.Span, sendResult func(models.OutMessage)) {
 	result, errorType, timedOut := captureBaselineSteps(s, ctx, runner, req, logReq, span)
 
 	// cleanup 无条件执行：无论成功失败都尝试删除宿主机临时文件，失败仅附加标记不阻断结果。
@@ -480,7 +474,7 @@ func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner
 	result.TimedOut = timedOut
 	if errorType != "" {
 		MetricsVmConsoleOpErrors(1)
-		span.SetStatus(codes.Error, errorType)
+		span.SetStatus(telemetry.StatusError, errorType)
 	}
 	logpush.BlogContext(ctx, "INFO", "vm_console.capture_done", "基线截图流程结束", logReq, map[string]any{
 		"exit_code": result.ExitCode, "upload_status": result.UploadStatus,
@@ -491,7 +485,7 @@ func runVMConsoleCaptureBaseline(s *sshx.SSHSession, ctx context.Context, runner
 }
 
 // captureBaselineSteps 顺序执行基线截图各子步骤，返回 (部分结果, error_type, timed_out)。
-func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext, span trace.Span) (models.OutMessage, string, bool) {
+func captureBaselineSteps(s *sshx.SSHSession, ctx context.Context, runner *vmConsoleRunner, req VmConsoleRequest, logReq models.ExecRequestContext, span telemetry.Span) (models.OutMessage, string, bool) {
 	result := VmConsoleResultMessage(req, 0, "", "", 0)
 
 	// 步骤 1：固定 screendump 命令。

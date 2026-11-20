@@ -24,16 +24,10 @@ import (
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
+	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
 	"time"
-
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // 版本注入变量：ldflags -X main.Version/CommitID/BuildTime（链接器对 main 包恒用 main 别名，与目录位置无关）。
@@ -45,31 +39,6 @@ var (
 
 // getVersion 薄包装：真实渲染在 app.GetVersion。
 func getVersion() string { return app.GetVersion() }
-
-func initTelemetry(ctx context.Context) (func(context.Context) error, error) {
-	endpoint := strings.TrimSpace(os.Getenv("HCI_BRIDGE_OTEL_ENDPOINT"))
-	if endpoint == "" {
-		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
-		return func(context.Context) error { return nil }, nil
-	}
-	exporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
-	if err != nil {
-		return nil, err
-	}
-	res, err := resource.New(ctx, resource.WithAttributes(
-		attribute.String("service.name", "terminal-bridge"),
-		attribute.String("service.version", getVersion()),
-		attribute.String("service.instance.id", logpush.DefaultHub.InstanceID),
-		attribute.String("deployment.environment", bruntime.EnvOrDefault("HCI_DEPLOYMENT_ENVIRONMENT", "local")),
-	))
-	if err != nil {
-		return nil, err
-	}
-	provider := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exporter), sdktrace.WithResource(res))
-	otel.SetTracerProvider(provider)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
-	return provider.Shutdown, nil
-}
 
 func main() {
 	// R0 装配缝：models/logpush 的注入钩子在此接线（所有权仍归 app/cmd）。
@@ -158,7 +127,11 @@ func main() {
 		"goroutines": runtime.NumGoroutine(),
 		"sys_mb":     app.CurrentSysMB(),
 	})
-	shutdownTelemetry, telemetryErr := initTelemetry(context.Background())
+	// U1：跟踪导出归 telemetry 门面（桌面 noop 零 otel 链接，集群带 tag 完整导出）；
+	// 服务身份由装配层注入，门面不认识任何业务域。
+	shutdownTelemetry, telemetryErr := telemetry.Init(context.Background(),
+		os.Getenv("HCI_BRIDGE_OTEL_ENDPOINT"), getVersion(),
+		logpush.DefaultHub.InstanceID, bruntime.EnvOrDefault("HCI_DEPLOYMENT_ENVIRONMENT", "local"))
 	if telemetryErr != nil {
 		log.Printf("[Bridge] ERROR: OpenTelemetry 初始化失败: %v", telemetryErr)
 		shutdownTelemetry = func(context.Context) error { return nil }
