@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/remote"
 	"testing"
 )
 
@@ -142,8 +144,8 @@ func TestDeliveryDiskFullErrorCarriesFacts(t *testing.T) {
 	if !isLocalDiskFull(errors.Unwrap(failure)) {
 		t.Fatal("Unwrap 后应能识别原始 ENOSPC")
 	}
-	if got := deliveryErrorCode(failure); got != ErrTransferLocalDiskFull {
-		t.Fatalf("磁盘满必须映射成 %s，实际 %q", ErrTransferLocalDiskFull, got)
+	if got := deliveryErrorCode(failure); got != logcollect.ErrTransferLocalDiskFull {
+		t.Fatalf("磁盘满必须映射成 %s，实际 %q", logcollect.ErrTransferLocalDiskFull, got)
 	}
 	if got := deliveryErrorCode(errors.New("connection reset")); got != "" {
 		t.Fatalf("非磁盘错误不应编造错误码，实际 %q", got)
@@ -153,15 +155,15 @@ func TestDeliveryDiskFullErrorCarriesFacts(t *testing.T) {
 func TestProgressStepAdaptsToTotal(t *testing.T) {
 	// 88 MB 的包：1% ≈ 883 KiB < 4 MiB 下限 → 取 4 MiB，约 22 次上报。
 	// 旧实现固定 64 MiB，全程一次都不上报，pulled_bytes 恒为 0。
-	if got, want := progressStep(92325257), int64(4<<20); got != want {
+	if got, want := remote.ProgressStep(92325257), int64(4<<20); got != want {
 		t.Fatalf("小包步进错误: got=%d want=%d", got, want)
 	}
 	// 20 GiB 的包：1% > 64 MiB 上限 → 取 64 MiB，避免上万次消息。
-	if got, want := progressStep(20<<30), int64(64<<20); got != want {
+	if got, want := remote.ProgressStep(20<<30), int64(64<<20); got != want {
 		t.Fatalf("大包步进错误: got=%d want=%d", got, want)
 	}
 	// 总量未知时按上限走（保守，减少无意义的消息）。
-	if got := progressStep(0); got != 64<<20 {
+	if got := remote.ProgressStep(0); got != 64<<20 {
 		t.Fatalf("未知总量应取上限，实际 %d", got)
 	}
 }
@@ -225,8 +227,8 @@ func TestDeliveryAdmissionErrorMapsToCode(t *testing.T) {
 	if !isDeliveryAdmission(failure) {
 		t.Fatal("isDeliveryAdmission 应识别自身类型")
 	}
-	if got := deliveryErrorCode(failure); got != ErrTransferAdmissionExceeded {
-		t.Fatalf("并发准入必须映射成 %s，实际 %q", ErrTransferAdmissionExceeded, got)
+	if got := deliveryErrorCode(failure); got != logcollect.ErrTransferAdmissionExceeded {
+		t.Fatalf("并发准入必须映射成 %s，实际 %q", logcollect.ErrTransferAdmissionExceeded, got)
 	}
 	message := failure.Error()
 	for _, fragment := range []string{"并发", "等待其它任务", "无需重新采集", "50.0 MiB"} {

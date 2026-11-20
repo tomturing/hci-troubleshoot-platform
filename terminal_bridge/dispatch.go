@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"sync/atomic"
+	"terminal_bridge/internal/acli"
 	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -204,7 +206,7 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 			// 抗崩溃（收口设计 §3.2）：bridge 重启后 spc 终态还原的 watcher 没了，
 			// 凭持久意图账本把原件放回去。放进协程：集合性还原可能几十秒，
 			// 不能阻塞连接回包；无意图时几乎零开销。
-			go recoverSpcRestoreIntents(b, session, msg.TraceID, msg.CaseID, msg.NodeIP, cui)
+			go logcollect.RecoverSpcRestoreIntents(b, session, msg.TraceID, msg.CaseID, msg.NodeIP, cui)
 
 			caseID := msg.CaseID
 			terminal.On_output_start(session, ws, stdout, caseID, func(reason string) {
@@ -413,7 +415,7 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 			// 会话路由与 log_collect/acli_sync 对齐：custom-ui 登录建会话时用的
 			// case_id 可能是工单号或 terminal-only，管理端下发只需要按 node_ip
 			// 复用同一 bridge 进程里已存在的 SSH 会话，不再新建连接。
-			s, key, _ := resolveLogCollectSession(b, msg)
+			s, key, _ := logcollect.ResolveLogCollectSession(b, msg)
 			if s == nil && msg.NodeIP != "" {
 				s = b.AutoConnectNode(ws, msg, ownedSessions, connID, role)
 				key = app.SessionKey(msg.CaseID, msg.NodeIP)
@@ -546,7 +548,7 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 			go terminal.RunVMConsoleOp(s, func(result models.OutMessage) { models.SendMsg(ws, result) }, vmReq)
 
 		case "acli_sync":
-			go handleAcliSync(b, ws, msg, cui)
+			go acli.HandleAcliSync(b, ws, msg, cui)
 
 		case "list_sessions":
 			// 管理端枚举「custom-ui + bridge 已登录」的环境；只回会话摘要，不回凭据。
@@ -580,7 +582,7 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 			go handleDeliveryCancel(b, ws, msg, cui)
 
 		case "log_collect":
-			go handleLogCollect(b, ws, msg, cui)
+			go logcollect.HandleLogCollect(b, ws, msg, cui)
 
 		case "sftp_op":
 			// 下载在独立 goroutine 里跑：一个 5 GiB 的流不能把交互式 shell 的消息循环堵住。

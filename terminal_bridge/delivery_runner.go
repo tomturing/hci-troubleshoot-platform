@@ -11,8 +11,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,8 +24,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -654,9 +654,9 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	}
 	// 删除本地副本之前读一次 zip 中央目录：包还在盘上时才有内容级证据，
 	// 删完就只剩体积推断，608 字节空壳包会被误判成功（Q2026111200624）。
-	if cfg, ok := evidenceFor(job.TaskID); ok {
+	if cfg, ok := logcollect.EvidenceFor(job.TaskID); ok {
 		evidenceCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		reportLocalArchive(evidenceCtx, cfg, job.LocalPath)
+		logcollect.ReportLocalArchive(evidenceCtx, cfg, job.LocalPath)
 		cancel()
 	}
 	r.discardDeliveredCopy(job)
@@ -678,7 +678,7 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 // 去敲一条 SSH 连接（否则会在不需要时开连接、甚至因节点不可达而误报 needs_reauth）。
 // 两个分支都落空才返回 nil（由调用方转成 needs_reauth）。
 func (r *deliveryRunner) sessionFor(job *deliveryJob) *sshx.SSHSession {
-	session, _, _ := resolveLogCollectSession(r.bridge, models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
+	session, _, _ := logcollect.ResolveLogCollectSession(r.bridge, models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
 	if session != nil {
 		return session
 	}
@@ -731,11 +731,11 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session *sshx.SSHSessi
 		if time.Now().After(deadline) {
 			return fmt.Errorf("等待采集完成超时（%s）", deliveryCollectTimeout)
 		}
-		output, _, err := runCommandPty(session, ctx, "acli log_collect progress", 60*time.Second)
+		output, _, err := logcollect.RunCommandPty(session, ctx, "acli log_collect progress", 60*time.Second)
 		if err == nil {
-			progress := parseLogCollectProgress(output)
+			progress := logcollect.ParseLogCollectProgress(output)
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
-				sourcePath := firstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
+				sourcePath := logcollect.FirstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
 				if sourcePath == "" {
 					// progress 到 100% 却没有包路径：不能就这么进入拉取。
 					// 空路径会让后面每一步都失败（digest_unavailable、stat 失败、
@@ -811,12 +811,12 @@ func statArchiveSize(ctx context.Context, session *sshx.SSHSession, path string)
 	if strings.TrimSpace(path) == "" {
 		return 0, false
 	}
-	if out, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(path))); err == nil {
+	if out, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", logcollect.ShellQuote(path))); err == nil {
 		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
 			return size, true
 		}
 	}
-	probed := probeLogCollectArchive(ctx, session, path)
+	probed := logcollect.ProbeLogCollectArchive(ctx, session, path)
 	if probed.Exists != nil && *probed.Exists && probed.Size > 0 {
 		return probed.Size, true
 	}
@@ -842,7 +842,7 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *sshx.S
 	for {
 		if time.Now().After(deadline) {
 			return 0, newFatal(
-				ErrTransferSourceStillWriting,
+				logcollect.ErrTransferSourceStillWriting,
 				"节点压缩包在 %s 内仍未写完（最后一次大小为 %d 字节）：采集进程可能异常或节点磁盘已满；"+
 					"请先确认节点采集状态，再决定是等待还是重新采集，不要在当前包上继续交付",
 				deliveryArchiveSettleTimeout, last,
@@ -880,7 +880,7 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *sshx.S
 // 460MB~20GB 的传输。EOCD（PK\x05\x06）在 zip 写完时必然出现在尾部，
 // zip64 同样保留该标记（只是字段填 0xFFFF/0xFFFFFFFF），因此判据对所有尺寸都成立。
 //
-// 大小探测必须与 progress/stat 动作共用 probeLogCollectArchive：Q2026102900165
+// 大小探测必须与 progress/stat 动作共用 logcollect.ProbeLogCollectArchive：Q2026102900165
 // （2026-10-29）现场证明 aSV 受限 shell 没有 stat（exit 127），只写单条 stat 的实现
 // 会把盘上 29.9 MB 的包报成"源包不可读"，让补交付在最后一步永远走不通。
 func (r *deliveryRunner) prepareDirect(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
@@ -889,24 +889,24 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *sshx.SSHSes
 		return fmt.Errorf("缺少源包路径，无法交付")
 	}
 
-	probed := probeLogCollectArchive(ctx, session, sourcePath)
+	probed := logcollect.ProbeLogCollectArchive(ctx, session, sourcePath)
 	if probed.Exists == nil {
 		// 探测不出来 ≠ 包没了：返回普通错误交给重试，不得写成 fatal。
 		return fmt.Errorf(
 			"无法确认源包状态（%s）：%s；若节点 shell 缺少 stat，需确认 ls -l 可用",
-			sourcePath, firstNonEmpty(probed.Diag, "探测命令不可用"),
+			sourcePath, logcollect.FirstNonEmpty(probed.Diag, "探测命令不可用"),
 		)
 	}
 	if !*probed.Exists {
 		return &deliveryFatalError{reason: fmt.Sprintf(
 			"节点上已确认没有源包（%s）：%s；重试无意义，请重新采集后再交付",
-			sourcePath, firstNonEmpty(probed.Diag, "命令已执行且明确报文件不存在"),
+			sourcePath, logcollect.FirstNonEmpty(probed.Diag, "命令已执行且明确报文件不存在"),
 		)}
 	}
 	if probed.Size <= 0 {
 		return fmt.Errorf(
 			"源包大小无法确认（探测级 %s，诊断 %s，路径 %s）；零字节包无法分片上传",
-			probed.Level, firstNonEmpty(probed.Diag, "无"), sourcePath,
+			probed.Level, logcollect.FirstNonEmpty(probed.Diag, "无"), sourcePath,
 		)
 	}
 	size := probed.Size
@@ -916,7 +916,7 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *sshx.SSHSes
 			// 包没写完就必须终态失败：补交付里重试同样会读到半截包，
 			// 而且每轮都会重新校验一遍几十 GB 的文件尾。给 010 让前端
 			// 明确告诉用户"等压缩结束再点"，而不是反复清盘/重点。
-			return newFatal(ErrTransferSourceStillWriting,
+			return newFatal(logcollect.ErrTransferSourceStillWriting,
 				"源包尚未写完：%v；请等待节点采集/压缩真正结束后再点「上传到平台」，不要连续重试",
 				err.Error(),
 			)
@@ -969,7 +969,7 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *sshx.S
 		return
 	}
 
-	algo, digest, err := probeSourceDigest(session, ctx, job.SourcePath)
+	algo, digest, err := logcollect.ProbeSourceDigest(session, ctx, job.SourcePath)
 	r.mu.Lock()
 	if err != nil {
 		job.Integrity = integrityUnverified
@@ -1008,7 +1008,7 @@ var errArchiveCompleteUnverifiable = errors.New("节点缺少 tail/od/tr/grep，
 func verifyArchiveComplete(ctx context.Context, session *sshx.SSHSession, path string) error {
 	command := fmt.Sprintf(
 		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
-		shellQuote(path),
+		logcollect.ShellQuote(path),
 	)
 	stdout, stderr, exitCode, err := session.RunQuickCommandStreams(ctx, command)
 	combined := stdout + "\n" + stderr
@@ -1016,10 +1016,10 @@ func verifyArchiveComplete(ctx context.Context, session *sshx.SSHSession, path s
 	// 因此不能用 err != nil 判“命令不可用”——grep 未命中（exit 1）同样是 err != nil，
 	// 那是“包不完整”的正面证据，不能当成“没法校验”放行。
 	if exitCode < 0 {
-		return fmt.Errorf("%w（通道异常 %s）", errArchiveCompleteUnverifiable, errString(err))
+		return fmt.Errorf("%w（通道异常 %s）", errArchiveCompleteUnverifiable, logcollect.ErrString(err))
 	}
-	if exitCode == 126 || exitCode == 127 || archiveProbeToolMissingRe.MatchString(combined) {
-		return fmt.Errorf("%w（exit=%d %s）", errArchiveCompleteUnverifiable, exitCode, truncateForDiag(combined, 120))
+	if exitCode == 126 || exitCode == 127 || logcollect.ArchiveProbeToolMissingRe.MatchString(combined) {
+		return fmt.Errorf("%w（exit=%d %s）", errArchiveCompleteUnverifiable, exitCode, logcollect.TruncateForDiag(combined, 120))
 	}
 	// grep -c 命中返回 0；未命中返回 1（此时 exitCode != 0）
 	if strings.TrimSpace(stdout) == "0" || exitCode != 0 {
@@ -1030,7 +1030,7 @@ func verifyArchiveComplete(ctx context.Context, session *sshx.SSHSession, path s
 
 // statArchiveMTime 读取节点上文件的修改时间，用于判断包归属。
 func statArchiveMTime(ctx context.Context, session *sshx.SSHSession, path string) (time.Time, error) {
-	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", shellQuote(path)))
+	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", logcollect.ShellQuote(path)))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -1099,7 +1099,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *sshx.SSHSession, job
 	// 每次都重新量源包大小，而不是只在"未知"时量：
 	// 前端 stat 与本阶段可能相隔很久（用户点了补交付又放了半小时），陈旧的大小
 	// 会让末片长度算错，也会把"源包已被同名覆盖"误判成"网络中断"，然后无限重拉。
-	if output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", shellQuote(job.SourcePath))); err == nil {
+	if output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", logcollect.ShellQuote(job.SourcePath))); err == nil {
 		if size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64); parseErr == nil && size > 0 {
 			r.mu.Lock()
 			job.SourceSize = size
@@ -1154,7 +1154,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *sshx.SSHSession, job
 		}
 	}
 
-	written, localSum, err := pullArchive(session, ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
+	written, localSum, err := logcollect.PullArchive(session, ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
 		r.mu.Lock()
 		job.PulledBytes = done
 		if job.SourceSize <= 0 && total > 0 {
@@ -1190,23 +1190,23 @@ func (r *deliveryRunner) pull(ctx context.Context, session *sshx.SSHSession, job
 
 		wrapped := fmt.Errorf("拉取中断（已拉 %d 字节）: %w", written, err)
 		// 拉取失败后立刻复量源包：与拉取前不同就说明它还在写（或被重建）。
-		// 这条判据必须优先于 errPullSizeMismatch 的"被覆盖/截断"归因——
+		// 这条判据必须优先于 logcollect.ErrPullSizeMismatch 的"被覆盖/截断"归因——
 		// 2026-11-04 Q2026110400883 现场，bridge 把"包还在长"报成
 		// "源包可能已被清理"，于是按普通错误重试了 4 轮，每轮都在追一个移动的目标。
 		if current, ok := statArchiveSize(ctx, session, job.SourcePath); ok && job.SourceSize > 0 && current != job.SourceSize {
 			// 残包不能留：否则下次续传会把旧内容当"已拉部分"接着追加。
 			r.discardLocalCopy(job, "source_still_writing")
 			return newFatal(
-				ErrTransferSourceStillWriting,
+				logcollect.ErrTransferSourceStillWriting,
 				"源包在拉取期间仍在写入（拉取前 %d 字节，当前 %d 字节），本次交付作废："+
 					"平台上传会话已按拉取前的大小建立，继续传只会每片都失败。"+
 					"请等待采集/压缩真正结束、包大小不再变化后，重新点击「上传到平台」",
 				job.SourceSize, current,
 			)
 		}
-		if errors.Is(err, errPullSizeMismatch) {
+		if errors.Is(err, logcollect.ErrPullSizeMismatch) {
 			// 字节数对不上且大小已不再变化：源包被整体覆盖或截断，重试没有意义。
-			return newFatal(ErrTransferSourceStillWriting, "%s；源包可能已被覆盖或截断，重试无意义", wrapped.Error())
+			return newFatal(logcollect.ErrTransferSourceStillWriting, "%s；源包可能已被覆盖或截断，重试无意义", wrapped.Error())
 		}
 		return wrapped
 	}
@@ -1223,7 +1223,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session *sshx.SSHSession, job
 	// ── 段① 完整性结论（比对逻辑抽成纯函数便于单测钉住）─────────────────
 	localMD5 := ""
 	if sourceSHA == "" && sourceMD5 != "" {
-		localMD5, err = fileDigest(localPath, "md5")
+		localMD5, err = logcollect.FileDigest(localPath, "md5")
 		if err != nil {
 			return fmt.Errorf("计算本地副本 MD5 失败: %w", err)
 		}
@@ -1547,17 +1547,17 @@ func uploadOnePart(ctx context.Context, client *http.Client, job *deliveryJob, t
 	if _, readErr := file.ReadAt(payload, offset); readErr != nil && readErr != io.EOF {
 		return 0, readErr
 	}
-	digest := sha256Hex(payload)
+	digest := remote.Sha256Hex(payload)
 
 	if budget <= 0 {
-		budget = logCollectPartTimeout
+		budget = logcollect.LogCollectPartTimeout
 	}
 	attemptCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	target := fmt.Sprintf("%s%s/%s/parts/%d", normalizePlatformURL(job.PlatformURL), logCollectDirectUploadPrefix, job.TaskID, number)
+	target := fmt.Sprintf("%s%s/%s/parts/%d", normalizePlatformURL(job.PlatformURL), logcollect.LogCollectDirectUploadPrefix, job.TaskID, number)
 	var lastErr error
-	for attempt := 1; attempt <= logCollectPartRetries; attempt++ {
+	for attempt := 1; attempt <= logcollect.LogCollectPartRetries; attempt++ {
 		// 每次真正发 PUT 之前重新确认资格：分片按 (task_id, part_number) 落盘，
 		// 被顶替的作业迟到的 PUT 会改写新会话的同名分片。平台侧 epoch fencing
 		// 是第一道防线，这里是不依赖对端版本的本地防线。
@@ -1570,7 +1570,7 @@ func uploadOnePart(ctx context.Context, client *http.Client, job *deliveryJob, t
 		if lastErr == nil {
 			return expected, nil
 		}
-		if attempt == logCollectPartRetries {
+		if attempt == logcollect.LogCollectPartRetries {
 			break
 		}
 		select {
@@ -1623,7 +1623,7 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 	if err != nil {
 		return err
 	}
-	target := fmt.Sprintf("%s%s/%s/complete", normalizePlatformURL(job.PlatformURL), logCollectDirectUploadPrefix, job.TaskID)
+	target := fmt.Sprintf("%s%s/%s/complete", normalizePlatformURL(job.PlatformURL), logcollect.LogCollectDirectUploadPrefix, job.TaskID)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(string(body)))
 	if err != nil {
 		return err
@@ -1903,12 +1903,6 @@ func wrapTransientTransport(err error) error {
 	}
 }
 
-// sha256Hex 计算分片校验和（与服务端 X-Part-SHA256 对齐）。
-func sha256Hex(payload []byte) string {
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:])
-}
-
 // putPartBytes 上传单个分片。
 func putPartBytes(ctx context.Context, client *http.Client, target, token, digest string, payload []byte) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target, strings.NewReader(string(payload)))
@@ -1935,4 +1929,94 @@ func putPartBytes(ctx context.Context, client *http.Client, target, token, diges
 		return platformStatusError("平台返回", response.StatusCode)
 	}
 	return nil
+}
+
+// streamEvidenceMetrics 每 2 秒采样一次作业进度，速率用 EMA 平滑、ETA 用剩余字节估算。
+// 没有增量不补零：stalled 由平台按 60 秒阈值判定并写进 conditions。
+func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliveryJob) {
+	cfg, ok := logcollect.EvidenceFor(job.TaskID)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(logcollect.EvidenceMetricInterval)
+	defer ticker.Stop()
+	started := time.Now()
+	lastAt := started
+	var lastBytes int64
+	var seq int64
+	var rate float64
+	var stalledSince time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			r.mu.Lock()
+			phase := job.Phase
+			total := job.SourceSize
+			done := job.PulledBytes
+			uploaded := int64(len(job.UploadedParts)) * job.ChunkSize
+			r.mu.Unlock()
+			if phase == phaseUploading || uploaded > 0 {
+				done += uploaded
+			}
+			if total > 0 && done > total {
+				done = total
+			}
+			elapsed := now.Sub(lastAt).Seconds()
+			delta := done - lastBytes
+			instant := float64(delta) / elapsed
+			if instant < 0 {
+				instant = 0
+			}
+			// 没有新字节就必须把速率归零：EMA 会残留一个"看似还在传"的数值，
+			// 让 ETA 在停摆时继续倒数，是比显示「—」更危险的假象。
+			if delta <= 0 {
+				rate = 0
+			} else if rate == 0 {
+				rate = instant
+			} else {
+				rate = rate*0.7 + instant*0.3
+			}
+			if done == lastBytes {
+				if stalledSince.IsZero() {
+					stalledSince = now
+				}
+			} else {
+				stalledSince = time.Time{}
+			}
+			stage := "fetching"
+			if phase == phaseUploading || uploaded > 0 {
+				stage = "uploading"
+			}
+			metric := logcollect.TransferMetric{
+				Seq: seq, Stage: stage, BytesDone: done, ElapsedMS: now.Sub(started).Milliseconds(),
+				Stalled: !stalledSince.IsZero() && now.Sub(stalledSince) >= logcollect.EvidenceStallSeconds*time.Second,
+				Source:  "bridge",
+			}
+			seq++
+			if total > 0 {
+				percent := float64(done) / float64(total) * 100
+				metric.BytesTotal = &total
+				metric.Percent = &percent
+			}
+			if rate > 0 {
+				rounded := int64(rate)
+				metric.RateBps = &rounded
+				if total > done {
+					eta := int64(float64(total-done) / rate)
+					metric.EtaSec = &eta
+				}
+			}
+			postCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_, err := cfg.PostEvidence(postCtx, cfg.TaskPath("metrics"), metric, "")
+			cancel()
+			if err != nil {
+				logpush.Blog("WARN", "log_collect.metric_failed", "传输速率样本上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+					"task_id": cfg.TaskID, "seq": metric.Seq, "error": err.Error(),
+				})
+			}
+			lastAt, lastBytes = now, done
+		}
+	}
 }

@@ -98,7 +98,7 @@ func drainThrottled(ctx context.Context, body io.Reader, limiter *bandwidthLimit
 //     的唯一证据。只断言"发生了重试"没有意义：原地重试正是当时的故障。
 func TestWeakLinkUploadConvergesToSingleStreamAndSucceeds(t *testing.T) {
 	// 生产下限是 5 分钟，会让用例跑十几分钟；临时改成 1 秒，
-	// 生产路径读到的仍是 logCollectPartTimeout。
+	// 生产路径读到的仍是 LogCollectPartTimeout。
 	prevMin := paceMinPartTimeout
 	paceMinPartTimeout = time.Second
 	defer func() { paceMinPartTimeout = prevMin }()

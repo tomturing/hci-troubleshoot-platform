@@ -32,6 +32,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"terminal_bridge/internal/logcollect"
 	"time"
 )
 
@@ -48,7 +49,7 @@ const (
 // 之所以做成变量而不是常量：弱网收敛的唯一验收方式是把"链路慢到必然超时"
 // 真实跑一遍（见 delivery_weak_link_test.go），而 5 分钟的常量会让这种用例
 // 跑上十几分钟。测试里临时改成 1 秒，生产路径永远读默认值。
-var paceMinPartTimeout = logCollectPartTimeout
+var paceMinPartTimeout = logcollect.LogCollectPartTimeout
 
 // uploadPace 是「这一轮按什么节奏传」的决策结果，随 job 落盘。
 type uploadPace struct {
@@ -101,7 +102,7 @@ func (p uploadPace) resolve(ceiling int) uploadPace {
 // 单片超时用既有常量，行为与改造前完全一致（不带 pace 的旧作业也一样）。
 func defaultUploadPace(parts int, partTimeout time.Duration) uploadPace {
 	if partTimeout <= 0 {
-		partTimeout = logCollectPartTimeout
+		partTimeout = logcollect.LogCollectPartTimeout
 	}
 	return uploadPace{
 		Parts:       parts,

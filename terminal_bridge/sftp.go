@@ -36,6 +36,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
@@ -387,7 +388,7 @@ func sftpMaxBytes() int64 {
 func handleSftpOp(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui, connID string) {
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
-		traceID = "sftp-" + firstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
+		traceID = "sftp-" + logcollect.FirstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
 	}
 	msg.TraceID = traceID
 
@@ -426,7 +427,7 @@ func handleSftpList(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 		return
 	}
 
-	session, key, match := resolveLogCollectSession(b, msg)
+	session, key, match := logcollect.ResolveLogCollectSession(b, msg)
 	if session == nil {
 		// 与日志收集同一套定性字段：会话数为 0 是"连接生命周期已结束"，
 		// 会话数 >0 但键对不上是路由问题，二者的处置完全不同。
@@ -612,7 +613,7 @@ func handleSftpDownload(b *app.Bridge, ws *websocket.Conn, msg models.InMessage,
 		return
 	}
 
-	session, key, match := resolveLogCollectSession(b, msg)
+	session, key, match := logcollect.ResolveLogCollectSession(b, msg)
 	if session == nil {
 		logpush.Blog("ERROR", "sftp.session_missing", "下载任务缺少 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "requested_key": app.SessionKey(msg.CaseID, msg.NodeIP),
@@ -966,7 +967,7 @@ func hashFilePrefix(filePath string, length int64, digest io.Writer) error {
 
 // remoteFileSize 用 shell 探测远端路径：区分"目录 / 缺失 / 普通文件 + 字节数"。
 func remoteFileSize(s *sshx.SSHSession, ctx context.Context, remotePath string) (int64, bool, error) {
-	quoted := shellQuote(remotePath)
+	quoted := logcollect.ShellQuote(remotePath)
 	command := fmt.Sprintf(
 		"if [ -d %s ]; then echo __HCI_DIR__; elif [ -f %s ]; then stat -c %%s %s; else echo __HCI_MISSING__; fi",
 		quoted, quoted, quoted,
@@ -1028,7 +1029,7 @@ func openExecFileStream(s *sshx.SSHSession, ctx context.Context, remotePath stri
 		_ = session.Close()
 		return nil, err
 	}
-	command := fmt.Sprintf("tail -c +%d %s", offset+1, shellQuote(remotePath))
+	command := fmt.Sprintf("tail -c +%d %s", offset+1, logcollect.ShellQuote(remotePath))
 	if err := session.Start(command); err != nil {
 		_ = session.Close()
 		return nil, err

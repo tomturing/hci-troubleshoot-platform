@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"terminal_bridge/internal/logcollect"
 	"testing"
 	"time"
 )
@@ -17,7 +18,7 @@ const (
 )
 
 func TestNextUploadPaceNoTimeoutKeepsPace(t *testing.T) {
-	prev := defaultUploadPace(2, logCollectPartTimeout)
+	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
 	next := nextUploadPace(prev, uploadRoundSample{
 		UploadedParts: 3,
 		UploadedBytes: 3 * fieldChunkSize,
@@ -29,12 +30,12 @@ func TestNextUploadPaceNoTimeoutKeepsPace(t *testing.T) {
 }
 
 func TestNextUploadPaceNoProgressHalvesPartsAndDoublesTimeout(t *testing.T) {
-	prev := defaultUploadPace(2, logCollectPartTimeout)
+	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
 	next := nextUploadPace(prev, uploadRoundSample{TimedOutParts: 1, Elapsed: 15 * time.Minute}, fieldChunkSize, fieldCeiling)
 	if next.Parts != 1 {
 		t.Fatalf("一片没过时应把并发降到 1，得到 %d", next.Parts)
 	}
-	if next.PartTimeout != int64((2*logCollectPartTimeout)/time.Second) {
+	if next.PartTimeout != int64((2*logcollect.LogCollectPartTimeout)/time.Second) {
 		t.Fatalf("超时应翻倍，得到 %d 秒", next.PartTimeout)
 	}
 	if next.Reason != "no_progress_escalation" {
@@ -43,7 +44,7 @@ func TestNextUploadPaceNoProgressHalvesPartsAndDoublesTimeout(t *testing.T) {
 }
 
 func TestNextUploadPaceNoProgressStopsAtFloorAndCeiling(t *testing.T) {
-	pace := defaultUploadPace(1, logCollectPartTimeout)
+	pace := defaultUploadPace(1, logcollect.LogCollectPartTimeout)
 	for i := 0; i < 10; i++ {
 		pace = nextUploadPace(pace, uploadRoundSample{TimedOutParts: 1}, fieldChunkSize, fieldCeiling)
 	}
@@ -59,7 +60,7 @@ func TestNextUploadPaceNoProgressStopsAtFloorAndCeiling(t *testing.T) {
 // 修复前：并发 2 → 单路 17 KB/s → 单片需 493 s > 300 s，每轮必然空转。
 // 修复后：必须收敛到单路，并把预算抬到 493×1.6≈789 s 以上，使单片能过。
 func TestNextUploadPaceFieldWeakLinkConverges(t *testing.T) {
-	prev := defaultUploadPace(2, logCollectPartTimeout)
+	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
 	sample := uploadRoundSample{
 		UploadedParts: 1,
 		UploadedBytes: fieldChunkSize,
@@ -85,7 +86,7 @@ func TestNextUploadPaceFieldWeakLinkConverges(t *testing.T) {
 
 // 链路更差（总 17 KB/s）：单片需要约 493 s，预算应继续抬到能覆盖它。
 func TestNextUploadPaceExtremelySlowLinkRaisesTimeout(t *testing.T) {
-	prev := uploadPace{Parts: 1, PartTimeout: int64(logCollectPartTimeout / time.Second)}
+	prev := uploadPace{Parts: 1, PartTimeout: int64(logcollect.LogCollectPartTimeout / time.Second)}
 	sample := uploadRoundSample{
 		UploadedParts: 1,
 		UploadedBytes: fieldChunkSize,
@@ -94,7 +95,7 @@ func TestNextUploadPaceExtremelySlowLinkRaisesTimeout(t *testing.T) {
 		Elapsed: 964 * time.Second,
 	}
 	next := nextUploadPace(prev, sample, fieldChunkSize, fieldCeiling)
-	if next.PartTimeout <= int64(logCollectPartTimeout/time.Second) {
+	if next.PartTimeout <= int64(logcollect.LogCollectPartTimeout/time.Second) {
 		t.Fatalf("极慢链路必须抬高预算，得到 %d 秒", next.PartTimeout)
 	}
 }
@@ -117,7 +118,7 @@ func TestNextUploadPaceNeverLowersTimeout(t *testing.T) {
 func TestUploadPaceResolveDefendsCorruptValues(t *testing.T) {
 	// 旧版本作业文件里没有 pace 字段：零值必须落回默认节奏，而不是 0 路并发死等。
 	got := uploadPace{}.resolve(3)
-	if got.Parts != 1 || got.PartTimeout != int64(logCollectPartTimeout/time.Second) || got.Reason != "default" {
+	if got.Parts != 1 || got.PartTimeout != int64(logcollect.LogCollectPartTimeout/time.Second) || got.Reason != "default" {
 		t.Fatalf("零值归一化错误: %+v", got)
 	}
 	// 手改坏的超上限/超下限值。
@@ -126,13 +127,13 @@ func TestUploadPaceResolveDefendsCorruptValues(t *testing.T) {
 		t.Fatalf("越界值归一化错误: %+v", got)
 	}
 	got = uploadPace{Parts: -3, PartTimeout: 1}.resolve(4)
-	if got.Parts != 1 || got.PartTimeout != int64(logCollectPartTimeout/time.Second) {
+	if got.Parts != 1 || got.PartTimeout != int64(logcollect.LogCollectPartTimeout/time.Second) {
 		t.Fatalf("负值归一化错误: %+v", got)
 	}
 }
 
 func TestNextUploadPaceIgnoresUnknownChunkSize(t *testing.T) {
-	prev := defaultUploadPace(2, logCollectPartTimeout)
+	prev := defaultUploadPace(2, logcollect.LogCollectPartTimeout)
 	if got := nextUploadPace(prev, uploadRoundSample{TimedOutParts: 3}, 0, fieldCeiling); got != prev {
 		t.Fatalf("分片大小未知时不应调整，得到 %+v", got)
 	}

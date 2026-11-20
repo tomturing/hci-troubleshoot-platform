@@ -155,7 +155,7 @@ type SSHSession struct {
 	// 于是采集跑过 10 分钟后 shell 必然被 TMOUT 踢掉，EOF 被当成整条连接失效并
 	// destroySession：后续 progress 全部 session_missing，前端只能干等到 60s 超时，
 	// 报成误导性的"progress 超时（60s）"（2026-10-28 现场）。
-	// 事实是：runCommandPty 每次都 client.NewSession() 开新 channel，
+	// 事实是：RunCommandPty 每次都 client.NewSession() 开新 channel，
 	// shell 退出只是少了一个终端回显通道，连接与 exec 通道都还能用。
 	LastBusyAt atomic.Int64
 	// orphaned 表示会话已被摘出路由表（重连覆盖），但底层连接要留给进行中的长任务。
@@ -1257,10 +1257,10 @@ func (s *SSHSession) RunQuickCommandBytes(ctx context.Context, cmd string) ([]by
 // 等于给未来的人留一个绕过完整性协议的入口，因此直接删掉。
 // 唯一写入实现：remote.WriteFile（先校验再 mv，失败只删 tmp）。
 
-// parseAcliVersion 从版本探测输出里取版本号与构建时间。
+// ParseAcliVersion 从版本探测输出里取版本号与构建时间。
 //
 // S1 收口：解析唯一实现在 remote.ParseVersionOutput。acli 特有的
-// `__ACLI_BIN__=` / `__ACLI_ABSENT__` 契约由 buildAcliVersionCommand 产出，
+// `__ACLI_BIN__=` / `__ACLI_ABSENT__` 契约由 BuildAcliVersionCommand 产出，
 // 原语只负责如实解析（包括"未安装"这一结论）。
 
 // AgeSeconds 返回会话存活秒数；未记录建立时间时返回 0。
@@ -1280,3 +1280,19 @@ const (
 	SessionReasonKeepAlive        = "keepalive_failed"  // 保活探测判定链路失效
 	SessionReasonIdleTTL          = "idle_ttl"          // 空闲租约超时，被 reaper 回收
 )
+
+// SessionHostAddress 给出发起节点的 IP：节点清单不可得时的兜底收敛目标。
+func SessionHostAddress(s *SSHSession, fallback string) string {
+	if trimmed := strings.TrimSpace(fallback); trimmed != "" {
+		return trimmed
+	}
+	if s != nil {
+		if host, _, err := net.SplitHostPort(s.Address); err == nil && host != "" {
+			return host
+		}
+		if s.Address != "" {
+			return s.Address
+		}
+	}
+	return "unknown"
+}

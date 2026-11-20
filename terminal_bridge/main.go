@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
@@ -61,7 +62,7 @@ func initTelemetry(ctx context.Context) (func(context.Context) error, error) {
 
 func main() {
 	// R0 装配缝：models/logpush 的注入钩子在此接线（所有权仍归 app/cmd）。
-	models.ErrorFieldsFunc = logCollectErrorFields
+	models.ErrorFieldsFunc = logcollect.LogCollectErrorFields
 	models.SendErrorHook = func(msg models.OutMessage, err error) {
 		logpush.Blog("ERROR", "ws.send_failed", "WebSocket 发送失败", msg.TraceID, msg.CaseID, "", msg.CustomUI, map[string]any{
 			"out_type": msg.Type, "exec_id": msg.ExecID, "error": err.Error(),

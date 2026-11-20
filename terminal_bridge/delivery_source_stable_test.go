@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"terminal_bridge/internal/logcollect"
 	"testing"
 )
 
@@ -37,12 +38,12 @@ func TestSameDeliverySessionDetectsNewPlatformSession(t *testing.T) {
 // 源包仍在写入必须带规范码，前端/平台才能按码分支；
 // 只靠中文文案分支会在文案改动时静默失效（008 的教训）。
 func TestFatalErrorCarriesDeliveryCode(t *testing.T) {
-	err := newFatal(ErrTransferSourceStillWriting, "源包仍在写入（%d → %d 字节）", 882701883, 892074444)
+	err := newFatal(logcollect.ErrTransferSourceStillWriting, "源包仍在写入（%d → %d 字节）", 882701883, 892074444)
 	if !isDeliveryFatalError(err) {
 		t.Fatal("必须仍被识别为 fatal：重试只会追一个移动的目标")
 	}
-	if got := deliveryErrorCode(err); got != ErrTransferSourceStillWriting {
-		t.Fatalf("必须映射成 %s，实际 %q", ErrTransferSourceStillWriting, got)
+	if got := deliveryErrorCode(err); got != logcollect.ErrTransferSourceStillWriting {
+		t.Fatalf("必须映射成 %s，实际 %q", logcollect.ErrTransferSourceStillWriting, got)
 	}
 	message := err.Error()
 	for _, fragment := range []string{"882701883", "892074444"} {

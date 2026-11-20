@@ -16,7 +16,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/acli"
 	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/logpush"
 	"terminal_bridge/internal/shared/models"
 	bruntime "terminal_bridge/internal/shared/runtime"
@@ -1057,7 +1059,7 @@ func TestVMConsoleOpDispatchRejectsInvalidMessageOverWebSocket(t *testing.T) {
 
 func TestParseAcliVersion(t *testing.T) {
 	output := "1.0.0\nbuild 2026-09-02 14:34:45\n"
-	ver, build := parseAcliVersion(output)
+	ver, build := acli.ParseAcliVersion(output)
 	if ver != "1.0.0" {
 		t.Fatalf("version = %q, want 1.0.0", ver)
 	}
@@ -1066,7 +1068,7 @@ func TestParseAcliVersion(t *testing.T) {
 	}
 
 	emptyOut := "bash: acli: command not found"
-	ver2, build2 := parseAcliVersion(emptyOut)
+	ver2, build2 := acli.ParseAcliVersion(emptyOut)
 	if ver2 != "" || build2 != "" {
 		t.Fatalf("expected empty for command not found, got ver=%q build=%q", ver2, build2)
 	}
@@ -1075,20 +1077,20 @@ func TestParseAcliVersion(t *testing.T) {
 // 回归：探测命令会先打一行 __ACLI_BIN__=<路径>，版本解析不能被这一行带偏。
 func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 	output := "__ACLI_BIN__=/sf/bin/acli\n1.0.1\nbuild 2026-09-15 21:00:04\n"
-	ver, build := parseAcliVersion(output)
+	ver, build := acli.ParseAcliVersion(output)
 	if ver != "1.0.1" || build != "2026-09-15 21:00:04" {
 		t.Fatalf("ver=%q build=%q, want 1.0.1 / 2026-09-15 21:00:04", ver, build)
 	}
-	if bin := parseAcliBinary(output); bin != "/sf/bin/acli" {
+	if bin := logcollect.ParseAcliBinary(output); bin != "/sf/bin/acli" {
 		t.Fatalf("binary = %q, want /sf/bin/acli", bin)
 	}
 
 	// 未安装：既没有版本也没有路径
 	absent := "__ACLI_ABSENT__\n"
-	if v, b := parseAcliVersion(absent); v != "" || b != "" {
+	if v, b := acli.ParseAcliVersion(absent); v != "" || b != "" {
 		t.Fatalf("未安装时不应解析出版本：%q %q", v, b)
 	}
-	if bin := parseAcliBinary(absent); bin != "" {
+	if bin := logcollect.ParseAcliBinary(absent); bin != "" {
 		t.Fatalf("未安装时不应解析出路径：%q", bin)
 	}
 }
@@ -1096,7 +1098,7 @@ func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 // 版本探测必须是"绝对路径优先、PATH 兜底"：只追加 PATH 会被 sshd 默认 PATH 里的旧 acli 抢命中，
 // 导致面板显示旧版本、与运维手敲的结果不一致。
 func TestBuildAcliVersionCommandPrefersAbsolutePath(t *testing.T) {
-	cmd := buildAcliVersionCommand()
+	cmd := logcollect.BuildAcliVersionCommand()
 	for _, fragment := range []string{
 		`for p in /sf/bin/acli /sf/sbin/acli`,
 		`[ -x "$p" ]`,

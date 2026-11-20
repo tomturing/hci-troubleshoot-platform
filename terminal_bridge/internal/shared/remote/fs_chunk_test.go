@@ -55,7 +55,7 @@ func TestBuildChunkedArgvWriteCommandsKeepsUTF8(t *testing.T) {
 	}
 }
 
-// unquoteForTest 只解 shellQuote 产生的最简形式，够用于断言内容未丢字节。
+// unquoteForTest 只解 ShellQuote 产生的最简形式，够用于断言内容未丢字节。
 func unquoteForTest(t *testing.T, quoted string) string {
 	t.Helper()
 	if !strings.HasPrefix(quoted, "'") || !strings.HasSuffix(quoted, "'") {

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/remote"
 	"testing"
 	"time"
 )
@@ -39,7 +41,7 @@ type fakeUploadPlatform struct {
 func newFakeUploadPlatform(t *testing.T, taskID, token string) *fakeUploadPlatform {
 	t.Helper()
 	fake := &fakeUploadPlatform{taskID: taskID, token: token, parts: make(map[int][]byte)}
-	prefix := logCollectDirectUploadPrefix + "/" + taskID
+	prefix := logcollect.LogCollectDirectUploadPrefix + "/" + taskID
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(prefix+"/parts/", func(w http.ResponseWriter, r *http.Request) {
@@ -62,7 +64,7 @@ func newFakeUploadPlatform(t *testing.T, taskID, token string) *fakeUploadPlatfo
 			return
 		}
 		// 平台侧核对分片摘要：bridge 必须按 offset 切片且摘要自洽，否则拼出来的包是坏的
-		if got, want := r.Header.Get("X-Part-SHA256"), sha256Hex(body.Bytes()); got != want {
+		if got, want := r.Header.Get("X-Part-SHA256"), remote.Sha256Hex(body.Bytes()); got != want {
 			http.Error(w, "sha256 mismatch", http.StatusBadRequest)
 			return
 		}
