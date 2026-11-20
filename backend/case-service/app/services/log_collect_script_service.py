@@ -62,8 +62,13 @@ MAX_SCRIPT_BYTES = 4 * 1024 * 1024
 MAX_NAME_LENGTH = 64
 MAX_NOTE_LENGTH = 200
 
-# spc 的 script path 只允许这一段；服务端必须先按同一口径收窄。
-CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+# code 是相对插件 script/ 目录的路径，服务端必须先按同一口径收窄。
+# 为什么允许子目录：插件自带脚本并不全在顶层——内置采集脚本就在 vs_script/ 等
+# 子目录里，只认单层文件名等于「永远改不了这些脚本」。总长仍限 64（与库表列一致），
+# 段数限 3，且每段都必须以字母/数字开头，从而天然排除绝对路径、空段与 ".."。
+CODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*){0,2}$")
+MAX_CODE_LENGTH = 64
+MAX_CODE_DEPTH = 3
 
 INTERPRETERS = {"python", "bash"}
 
@@ -101,25 +106,80 @@ def sha256_of(data: str | bytes) -> str:
 _sha256 = sha256_of
 
 
-def infer_interpreter(code: str, content: str | None = None) -> str:
-    """按后缀优先、shebang 兜底推断解释器。
+def shebang_interpreter(content: str | None) -> str | None:
+    """取 shebang 声明的解释器；没有 shebang 返回 None。
 
-    后缀优先是有意为之：管理员把 ``.py`` 内容粘进 ``.sh`` 条目时必须报错，
-    而不是被 shebang 静默覆盖成 python。
+    为什么 shebang 优先于后缀：节点上真正决定"谁来执行"的是解释器参数，而 shebang
+    是脚本自己声明的执行方式。插件目录里大量脚本没有后缀（dpcollect、dpdoctor、
+    lmt_collect_info），只认后缀会让它们要么导不进来、要么被猜成 bash 跑错。
     """
+    if not content:
+        return None
+    first = content.split("\n", 1)[0].strip()
+    if not first.startswith("#!"):
+        return None
+    lowered = first.lower()
+    if "python" in lowered:
+        return "python"
+    if "bash" in lowered or lowered.endswith("/sh") or " sh" in lowered:
+        return "bash"
+    return None
+
+
+def suffix_interpreter(code: str) -> str | None:
+    """按后缀判断；无后缀或未知后缀返回 None。"""
     lowered = code.lower()
     if lowered.endswith(".sh") or lowered.endswith(".bash"):
         return "bash"
     if lowered.endswith(".py"):
         return "python"
-    if content:
-        first = content.split("\n", 1)[0]
-        if first.startswith("#!"):
-            if "python" in first:
-                return "python"
-            if "bash" in first or "/sh" in first:
-                return "bash"
-    return "bash"
+    return None
+
+
+def detect_interpreter(code: str, content: str | None = None) -> tuple[str, str]:
+    """返回 (解释器, 判定依据)：shebang → suffix → default(bash)。
+
+    后缀与 shebang 冲突时以 shebang 为准，由调用方提示而不是拒绝：拒绝会让
+    "内容是对的、名字带错后缀"的文件完全没法入库，而 shebang 才是执行事实。
+    """
+    from_shebang = shebang_interpreter(content)
+    if from_shebang:
+        return from_shebang, "shebang"
+    from_suffix = suffix_interpreter(code)
+    if from_suffix:
+        return from_suffix, "suffix"
+    return "bash", "default"
+
+
+def infer_interpreter(code: str, content: str | None = None) -> str:
+    """兼容入口：只取判定结果，不关心依据。"""
+    return detect_interpreter(code, content)[0]
+
+
+def resolve_interpreter(
+    code: str,
+    content: str | None,
+    explicit: str | None = None,
+) -> tuple[str, str, list[str]]:
+    """确定最终下发的解释器，返回 (解释器, 依据, 提示)。
+
+    手选值优先（管理端显式声明就是最终事实），但不静默吞掉矛盾：
+    与 shebang/后缀不一致时给提示，让"为什么节点按 X 跑"在界面上可解释。
+    """
+    detected, source = detect_interpreter(code, content)
+    chosen = (explicit or "").strip().lower() or detected
+    if chosen not in INTERPRETERS:
+        raise ScriptError("解释器只支持 python / bash", "invalid")
+    warnings: list[str] = []
+    from_shebang = shebang_interpreter(content)
+    if from_shebang and chosen != from_shebang:
+        warnings.append(f"已按手选使用 {chosen}，与 shebang 声明的 {from_shebang} 不一致，节点会按 {chosen} 执行")
+    from_suffix = suffix_interpreter(code)
+    if not explicit and from_shebang and from_suffix and from_shebang != from_suffix:
+        warnings.append(f"文件后缀指向 {from_suffix}，但 shebang 是 {from_shebang}，已按 shebang 使用 {from_shebang}")
+    if not explicit and source == "default":
+        warnings.append("无后缀且无 shebang，默认按 bash 执行；若内容是 Python 请手动选择解释器")
+    return chosen, (source if not explicit else "manual"), warnings
 
 
 @lru_cache(maxsize=1)
@@ -129,7 +189,8 @@ def _load_baseline() -> tuple[dict[str, BaselineScript], str]:
     来源优先级：环境变量 ``LOG_COLLECT_SCRIPT_BASELINE_INDEX`` → 仓库内 demo 清单。
     为什么允许环境覆盖：真实脚本清单与摘要属于设备侧事实，随 HCI 版本变化，
     既不该固化进公开仓库，也不该随镜像发布（不同设备版本内容不同）。
-    子目录条目（``tools/...``）只展示、不可被场景引用、不可覆写。
+    子目录条目（``vs_script/...``）同样可被引用与覆写：code 就是相对 ``script/``
+    的路径。是否可引用由清单里的 ``ref_usable`` 决定（二进制/附件为 false）。
     """
     scripts: dict[str, BaselineScript] = {}
     override = os.environ.get(BASELINE_ENV, "").strip()
@@ -189,13 +250,25 @@ def normalize_content(content: str) -> str:
 
 
 def validate_code(code: str) -> str:
+    """校验脚本相对路径（可含最多两层子目录）。
+
+    拒绝项都是"拼进 shell 命令后能改路径语义"的形态：绝对路径、``..``、反斜杠、
+    空段、尾随斜杠。允许子目录是因为插件内置脚本本来就住在 ``vs_script/`` 等子目录，
+    平台要覆写它们就必须能表达同一路径。
+    """
     raw = (code or "").strip()
     if not raw:
         raise ScriptError("脚本文件名不能为空")
-    if "/" in raw or "\\" in raw or ".." in raw:
-        raise ScriptError("脚本文件名只能是单层文件名，不允许斜杠或 ..")
+    if len(raw) > MAX_CODE_LENGTH:
+        raise ScriptError(f"脚本路径过长：{len(raw)}（上限 {MAX_CODE_LENGTH} 个字符）")
+    if raw.startswith("/") or raw.endswith("/"):
+        raise ScriptError("脚本路径必须是相对路径：不能以 / 开头或结尾")
+    if "\\" in raw:
+        raise ScriptError("脚本路径不允许反斜杠，请用 / 分隔目录")
+    if ".." in raw:
+        raise ScriptError("脚本路径不允许 .. 或含连续点号的目录穿越")
     if not CODE_RE.match(raw):
-        raise ScriptError("脚本文件名只允许字母、数字、下划线、点、短横线，且不能以符号开头")
+        raise ScriptError("脚本路径只允许字母、数字、下划线、点、短横线，用 / 分隔目录（最多三层）")
     return raw
 
 
@@ -423,13 +496,10 @@ class LogCollectScriptService:
         trace_id: str | None,
     ) -> dict[str, Any]:
         normalized = normalize_content(content)
-        guessed = infer_interpreter(code, normalized)
-        normalized_interp = (interpreter or guessed).strip().lower()
-        if normalized_interp not in INTERPRETERS:
-            raise ScriptError("解释器只支持 python / bash", "invalid")
-        if normalized_interp != guessed:
-            # 后缀与解释器不一致必然让 acli 用错解释器执行；直接拒绝而不是猜。
-            raise ScriptError(f"{code} 应使用 {guessed} 解释器（与文件后缀/shebang 不一致）", "invalid")
+        # 后缀只作为弱证据：真正的执行方式由 shebang 或管理员手选决定。
+        # 旧实现把"后缀 != 推断值"当成硬错误，导致无后缀脚本与非 .py/.sh 命名
+        # 的内置脚本既导不进来也存不下去。
+        normalized_interp, _, _ = resolve_interpreter(code, normalized, interpreter)
         latest = await self._latest_rows()
         current = latest.get(code)
         if current is None:

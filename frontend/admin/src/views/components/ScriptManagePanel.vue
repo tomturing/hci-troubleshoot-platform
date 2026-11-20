@@ -39,16 +39,39 @@ const baselineSource = ref<'demo' | 'env' | 'missing' | string>('demo')
 
 const editorVisible = ref(false)
 const creating = ref(false)
+// 目录与文件名分开存：code 是相对 script/ 的路径，内置脚本就在 vs_script/ 等子目录里。
+// 只让用户填"文件名"等于永远改不了子目录脚本，只让填完整路径又容易漏校验。
 const form = reactive({
-  code: '',
+  dir: '',
+  fileName: '',
   name: '',
   content: '',
   change_note: '',
   interpreter: '',
   source: 'manual' as 'manual' | 'import',
 })
+const pickedFile = ref<{ name: string; size: number } | null>(null)
+const dragging = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
 const currentRow = ref<LogCollectScriptSummary | null>(null)
 const validation = ref<LogCollectScriptValidation | null>(null)
+
+const formCode = computed(() => {
+  const dir = form.dir.trim().replace(/^\/+|\/+$/g, '')
+  const name = form.fileName.trim()
+  if (!name) return ''
+  return dir ? `${dir}/${name}` : name
+})
+
+// 目录候选来自现有脚本（含内置脚本的子目录），空值代表顶层；允许手输新目录。
+const dirOptions = computed(() => {
+  const dirs = new Set<string>([''])
+  for (const row of scripts.value) {
+    const index = row.code.lastIndexOf('/')
+    if (index > 0) dirs.add(row.code.slice(0, index))
+  }
+  return [...dirs].map((value) => ({ value, label: value || '（顶层 script 目录）' }))
+})
 
 const historyVisible = ref(false)
 const revisions = ref<LogCollectScriptRevision[]>([])
@@ -57,7 +80,7 @@ const revisionViewer = reactive({ visible: false, title: '', content: '' })
 
 const editorTitle = computed(() => {
   if (creating.value) return form.source === 'import' ? '导入脚本' : '新增脚本'
-  return `编辑脚本 · ${form.code}`
+  return `编辑脚本 · ${formCode.value}`
 })
 const customizedCount = computed(() => scripts.value.filter((row) => row.customized).length)
 
@@ -89,12 +112,14 @@ async function load() {
 }
 
 function resetForm() {
-  form.code = ''
+  form.dir = ''
+  form.fileName = ''
   form.name = ''
   form.content = ''
   form.change_note = ''
   form.interpreter = ''
   form.source = 'manual'
+  pickedFile.value = null
   validation.value = null
   currentRow.value = null
 }
@@ -110,27 +135,41 @@ function openImport() {
   creating.value = true
   form.source = 'import'
   editorVisible.value = true
-  triggerFilePick()
+  // 不再自动弹系统文件框：那个框关掉后用户就只剩"关抽屉重来"一条路，
+  // 改为抽屉内常驻「点击选择文件 / 拖拽到此处」的投放区。
 }
 
 function triggerFilePick() {
-  const input = document.createElement('input')
-  input.type = 'file'
-  input.accept = '.py,.sh,.bash,.txt'
-  input.onchange = async () => {
-    const file = input.files?.[0]
-    if (!file) return
-    if (file.size > 4 * 1024 * 1024) {
-      ElMessage.error('脚本超过 4MB，不支持导入')
-      return
-    }
-    const text = await file.text()
-    form.code = file.name
-    form.name = file.name
-    form.content = text
-    validation.value = null
+  fileInput.value?.click()
+}
+
+async function applyFile(file: File) {
+  if (file.size > 4 * 1024 * 1024) {
+    ElMessage.error('脚本超过 4MB，不支持导入')
+    return
   }
-  input.click()
+  // 不做后缀白名单：插件里大量脚本没有后缀（dpcollect / dpdoctor 之类），
+  // 解释器由 shebang 或手选决定，而不是文件名猜。
+  const text = await file.text()
+  form.fileName = file.name
+  if (!form.name.trim()) form.name = file.name
+  form.content = text
+  pickedFile.value = { name: file.name, size: file.size }
+  validation.value = null
+}
+
+async function onFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (file) await applyFile(file)
+  // 清空 value，否则再次选同一个文件不会触发 change。
+  input.value = ''
+}
+
+async function onDrop(event: DragEvent) {
+  dragging.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (file) await applyFile(file)
 }
 
 async function openEdit(row: LogCollectScriptSummary) {
@@ -141,7 +180,9 @@ async function openEdit(row: LogCollectScriptSummary) {
   resetForm()
   creating.value = false
   currentRow.value = row
-  form.code = row.code
+  const index = row.code.lastIndexOf('/')
+  form.dir = index > 0 ? row.code.slice(0, index) : ''
+  form.fileName = index > 0 ? row.code.slice(index + 1) : row.code
   form.name = row.name
   form.interpreter = row.interpreter
   try {
@@ -160,7 +201,7 @@ async function openEdit(row: LogCollectScriptSummary) {
 
 async function runValidate() {
   validation.value = await validateScript({
-    code: form.code,
+    code: formCode.value,
     content: form.content,
     interpreter: form.interpreter || null,
   })
@@ -168,8 +209,12 @@ async function runValidate() {
 }
 
 async function submit() {
-  if (!form.code.trim()) {
+  if (!form.fileName.trim()) {
     ElMessage.warning('请填写文件名')
+    return
+  }
+  if (!form.content.trim()) {
+    ElMessage.warning('请导入或粘贴脚本内容')
     return
   }
   if (!creating.value && !form.change_note.trim()) {
@@ -179,7 +224,7 @@ async function submit() {
   saving.value = true
   try {
     const payload = {
-      code: form.code.trim(),
+      code: formCode.value,
       content: form.content,
       name: form.name || null,
       interpreter: form.interpreter || null,
@@ -346,18 +391,41 @@ onMounted(load)
 
     <el-drawer v-model="editorVisible" :title="editorTitle" size="72%" destroy-on-close>
       <el-form label-width="90px" class="sp-form">
-        <el-form-item label="文件名">
-          <el-input v-model="form.code" :disabled="!creating" placeholder="例如 pl_disk_check.py" />
+        <el-form-item label="目录">
+          <el-select
+            v-model="form.dir"
+            :disabled="!creating"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="留空=顶层 script 目录；可手输子目录"
+            class="sp-dir"
+          >
+            <el-option v-for="item in dirOptions" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
           <div class="sp-hint">
-            落盘到节点 script 目录的文件名，也是场景清单里「脚本」动作的路径；带 pl_ 前缀可避免与内置脚本混淆。
+            相对插件 script/ 的目录，最多两层。内置脚本就在 vs_script/ 等子目录里，目录 + 文件名拼起来才是节点上的相对路径。
+          </div>
+        </el-form-item>
+        <el-form-item label="文件名">
+          <el-input v-model="form.fileName" :disabled="!creating" placeholder="例如 pl_disk_check.py 或 dpcollect" />
+          <div class="sp-hint">
+            与目录拼成最终相对路径（也是场景清单里「脚本」动作的 path）：{{ formCode || '（未填写）' }}。
+            没有后缀也可以导入；带 pl_ 前缀可避免与内置脚本混淆。
           </div>
         </el-form-item>
         <el-form-item label="展示名">
           <el-input v-model="form.name" maxlength="64" placeholder="可选，便于识别" />
         </el-form-item>
         <el-form-item label="解释器">
-          <el-tag size="small">{{ form.interpreter || '按后缀自动识别' }}</el-tag>
-          <span class="sp-hint inline">.py → python，.sh → bash；与后缀不一致会被拒绝</span>
+          <el-select v-model="form.interpreter" class="sp-interpreter" placeholder="自动识别">
+            <el-option label="自动识别（按 shebang，其次后缀）" value="" />
+            <el-option label="python" value="python" />
+            <el-option label="bash" value="bash" />
+          </el-select>
+          <span v-if="validation?.ok && validation.interpreter_source" class="sp-hint inline">
+            判定依据：{{ validation.interpreter_source }}
+          </span>
         </el-form-item>
         <el-form-item label="变更说明">
           <el-input
@@ -368,11 +436,27 @@ onMounted(load)
         </el-form-item>
       </el-form>
 
+      <div
+        class="sp-drop"
+        :class="{ active: dragging }"
+        @click="triggerFilePick"
+        @dragover.prevent="dragging = true"
+        @dragleave.prevent="dragging = false"
+        @drop.prevent="onDrop"
+      >
+        <template v-if="pickedFile">
+          已选择 <strong>{{ pickedFile.name }}</strong>（{{ formatBytes(pickedFile.size) }}）；点击或拖拽可替换内容
+        </template>
+        <template v-else>点击选择文件，或把脚本拖到这里（不限后缀，最大 4MB）</template>
+      </div>
+      <input ref="fileInput" type="file" class="sp-file-input" @change="onFileChange" />
+
       <el-input v-model="form.content" type="textarea" :rows="24" class="sp-editor" spellcheck="false" />
 
       <div v-if="validation" class="sp-validation" :class="{ ok: validation.ok }">
         <template v-if="validation.ok">
           校验通过：{{ formatBytes(validation.content_bytes) }}，sha256 {{ validation.content_sha256.slice(0, 16) }}…
+          <div v-for="(warn, index) in validation.warnings" :key="`w${index}`" class="sp-warn">{{ warn }}</div>
         </template>
         <template v-else>
           <div v-for="(issue, index) in validation.issues" :key="index">{{ issue }}</div>
@@ -458,6 +542,34 @@ onMounted(load)
 }
 .sp-hint.inline {
   margin: 0 0 0 8px;
+}
+.sp-dir,
+.sp-interpreter {
+  width: 320px;
+}
+.sp-file-input {
+  display: none;
+}
+.sp-drop {
+  border: 1px dashed #c0c4cc;
+  border-radius: 4px;
+  padding: 12px;
+  margin-bottom: 8px;
+  color: #6b7280;
+  font-size: 13px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.sp-drop:hover,
+.sp-drop.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+  color: #409eff;
+}
+.sp-warn {
+  margin-top: 4px;
+  color: #b45309;
 }
 .sp-editor :deep(textarea) {
   font-family: 'JetBrains Mono', Consolas, Menlo, monospace;
