@@ -48,6 +48,12 @@ jobs:
           cache: true
           cache-dependency-path: terminal_bridge/go.sum
 
+      - name: 安装 UPX（U0：lzma 压缩，设计 §6）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx-ucl
+          upx --version | head -1
+
       - name: Go 格式与单元测试
         working-directory: terminal_bridge
         run: |
@@ -60,7 +66,53 @@ jobs:
           go test -timeout 180s ./...
 
       - name: 交叉编译 terminal_bridge.exe (windows/amd64)
+        env:
+          # 未压缩备选留档（设计 §6.3），下方收进 artifact，不进分发目录/仓库
+          UNCOMPRESSED_COPY: ${{ runner.temp }}/terminal_bridge_uncompressed.exe
         run: bash scripts/build_terminal_bridge.sh
+
+      - name: U0 门禁：体积 ≤5MB + 清单 sha256 对齐（fail-closed）
+        run: |
+          DST=frontend/customer/public/downloads/terminal_bridge.exe
+          MANIFEST=frontend/customer/public/downloads/bridge-version.json
+          SIZE=$(stat -c%s "$DST")
+          MAX=5242880  # 5MB（按 MiB）；设计 §九 U0 验收，lzma 实测 4.72MB
+          if [ "$SIZE" -gt "$MAX" ]; then
+            echo "::error::产物 $SIZE B 超 5MB 门禁（upx 未生效？）"
+            exit 1
+          fi
+          # 清单 sha256 必须等于压缩后 exe 的实测摘要（设计 §8#11）
+          EXPECT=$(python3 -c "import json;print(json.load(open('$MANIFEST'))['sha256'])")
+          ACTUAL=$(sha256sum "$DST" | awk '{print $1}')
+          if [ "$EXPECT" != "$ACTUAL" ]; then
+            echo "::error::清单 sha256 失配：清单=$EXPECT 实测=$ACTUAL"
+            exit 1
+          fi
+          echo "U0 门禁通过：$SIZE B ≤ $MAX，sha256=$ACTUAL"
+
+      - name: U0 冒烟：压缩产物 -version 可运行
+        # windows exe 无法在 ubuntu 直接执行；用同参数 linux/amd64 产物验证
+        # 「upx --lzma --best 压缩后仍能启动并打印版本」这条冒烟链路。
+        # 注意：不走 build_terminal_bridge.sh（它固定写分发目录，linux 构建会
+        # 把分发 exe 覆盖成 linux 二进制），直接 go build 到临时目录。
+        run: |
+          cd terminal_bridge
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -buildvcs=false -trimpath \
+            -ldflags="-s -w -buildid= -X main.Version=u0-smoke -X main.CommitID=u0-smoke -X main.BuildTime=u0-smoke" \
+            -o "$RUNNER_TEMP/bridge_smoke" ./cmd/bridge
+          upx --lzma --best "$RUNNER_TEMP/bridge_smoke" >/dev/null
+          OUT="$("$RUNNER_TEMP/bridge_smoke" -version)"
+          echo "$OUT"
+          echo "$OUT" | grep -q "u0-smoke" || { echo "::error::压缩产物 -version 无预期输出"; exit 1; }
+
+      - name: 留档未压缩备选产物（AppLocker/WDAC 兜底，设计 §6.3）
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: terminal_bridge-uncompressed
+          path: ${{ runner.temp }}/terminal_bridge_uncompressed.exe
+          retention-days: 30
+          if-no-files-found: error
 
       - name: 回写 exe 并开启 PR（仅 push 到 main 时，遵守分支保护）
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

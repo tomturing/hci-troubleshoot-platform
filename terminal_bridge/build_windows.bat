@@ -58,7 +58,7 @@ REM Optional: compress with upx
 where upx >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo [Build] upx found, compressing...
-    upx --best terminal_bridge.exe
+    upx --lzma --best terminal_bridge.exe
     for %%A in (terminal_bridge.exe) do echo [OK] Compressed: terminal_bridge.exe (%%~zA bytes)
 ) else (
     echo [INFO] Tip: install upx to shrink the binary to ~1.5MB
