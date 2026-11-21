@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-21 | v1.2 | 阶段 2 A3 第一批落地：五类符号归位（`logcontract`/`cluster`/`aclibin`/`acliout`/`remote`/`uplink`），域间边 6→4；补记剩余两条边的性质与不修理由（证据注册表、输出呈现），并更新 §3.3 阶段完成度与 §13 发现索引 |
 | 2026-11-20 | v1.1 | 采纳 ADR-001：`internal/logpush` → `internal/shared/obslog`、`Blog()` → `Emit()`，并明确"不并入 telemetry"的三条判据与业界范式（§15）；路线图阶段 1（gaps 重放 / seed 互斥 / enforce 节流 / stderr 轮转）与本批同交付 |
 | 2026-11-20 | v1.0 | 首版：归并两轮审查；修复 P0-1（预算超限自死锁）与 P0-2（persistOK 单向闩锁 / 磁盘满静默丢弃），各附生产接线回归测试 |
 
