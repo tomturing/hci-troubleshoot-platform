@@ -54,6 +54,8 @@ spec:
               value: "/var/lib/terminal-bridge/downloads"
             - name: HCI_BRIDGE_LOG_MAX_BYTES
               value: {{ .Values.terminalBridge.logFileMaxBytes | quote }}
+            - name: HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES
+              value: {{ .Values.terminalBridge.logOutboxMaxBytes | quote }}
             - name: HCI_BRIDGE_LOG_LEVEL
               value: {{ .Values.terminalBridge.logLevel | default "INFO" | quote }}
             # 云端桥的自建直传通道：不依赖任何浏览器在线，进程启动即开始上报。
