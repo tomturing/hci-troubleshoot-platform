@@ -392,7 +392,7 @@ func TestAcliPackageCache(t *testing.T) {
 }
 
 func TestAcquireAcliTransfer(t *testing.T) {
-	b := &app.Bridge{}
+	b := app.NewBridge()
 	release, ok := acquireAcliTransfer(b, "case@1.1.1.1")
 	if !ok {
 		t.Fatal("首次抢占应成功")

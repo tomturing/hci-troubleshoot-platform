@@ -166,92 +166,28 @@ func (b *Bridge) DestroySession(key, reason, byConn string) bool {
 	return true
 }
 
-// holdSessionLocked 在会话入表时登记一个持有者（refs=1）。
-//
-// 为什么需要引用计数：会话可能被多条连接共用（终端连接 + 日志收集面板连接），
-// 只有"全部持有者都走了"才算空闲；单条连接关闭不代表没人用。
-//
-// 后缀 Locked 是硬约定：调用方必须已持有 b.mu，本函数自己绝不再加锁。
-// Go 的 sync.Mutex 不可重入——它原先自己 Lock()，而唯一调用方 set() 已在临界区内，
-// 于是任何一次建会话都会自死锁（表现为 go test 拖满超时，而不是快速失败）。
-func (b *Bridge) holdSessionLocked(key string) {
-	if b.sessionRefs == nil {
-		b.sessionRefs = make(map[string]int)
-	}
-	b.sessionRefs[key] = 1
-	if b.sessionIdleAt != nil {
-		delete(b.sessionIdleAt, key)
-	}
-}
-
-// releaseSession 释放一条连接的持有权：归零后进入空闲租约，**不销毁会话**。
+// ReleaseSession 释放一条连接的持有权：归零后进入空闲租约，**不销毁会话**。
 //
 // 这是与历史行为的关键差别：过去 WS 一断就 close+remove，导致刷新页面/网络抖动
 // 会把正在被日志面板使用的会话一起带走（2026-10-27 14:37:49 的故障链）。
+// 租约状态由 shared/session.Hub 持有，这里只负责事件留痕。
 func (b *Bridge) ReleaseSession(key, byConn string) {
-	b.mu.Lock()
-	if b.sessionRefs == nil {
-		b.sessionRefs = make(map[string]int)
-	}
-	if b.sessionIdleAt == nil {
-		b.sessionIdleAt = make(map[string]time.Time)
-	}
-	if refs := b.sessionRefs[key]; refs > 1 {
-		b.sessionRefs[key] = refs - 1
-		b.mu.Unlock()
-		return
-	}
-	b.sessionRefs[key] = 0
-	b.sessionIdleAt[key] = time.Now()
-	b.mu.Unlock()
-
+	b.Hub.Release(key)
 	obslog.Emit("INFO", "session.idle", "会话已无持有者，进入空闲租约", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
 		"key": key, "by_conn": byConn, "idle_ttl_seconds": int(SessionIdleTTL().Seconds()),
 	})
 }
 
 // forgetLease 清掉租约簿记（销毁时必须调用，否则 reaper 会反复命中空键）。
-func (b *Bridge) forgetLease(key string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.sessionRefs, key)
-	delete(b.sessionIdleAt, key)
-}
+func (b *Bridge) forgetLease(key string) { b.Hub.ForgetLease(key) }
 
 // ReapIdleSessions 回收空闲超时的会话，返回回收数量。
 //
 // 只在 refs==0 且空闲超过 TTL 时销毁：远端已 EOF 的会话会先被 onExit 清掉，
-// 这里只处理"连接都走了但会话还活着"的那一类。
+// 这里只处理"连接都走了但会话还活着"的那一类。长任务/业务忙碌的保护逻辑
+// （保护期内不计空闲）在 Hub.ReapCandidates 内。
 func (b *Bridge) ReapIdleSessions(ttl time.Duration) int {
-	if ttl <= 0 {
-		return 0
-	}
-	now := time.Now()
-	b.mu.Lock()
-	victims := make([]string, 0, 4)
-	for key, idleAt := range b.sessionIdleAt {
-		if b.sessionRefs[key] > 0 {
-			continue
-		}
-		// 有长任务在跑或近期仍在被业务使用时不得回收：浏览器早已关闭（refs=0）
-		// 恰恰是大包交付/长时采集的常态，而回收一条正在拉取或正在被轮询的连接
-		// 等价于把作业打断到 needs_reauth / progress session_missing。
-		// 长任务自己结束时会清掉计数，业务窗口到期自动失效，下一轮 reaper 自然回收。
-		if session := b.Sessions[key]; session != nil && (session.HasLongTask() || session.IsBusy()) {
-			// 保护期内**不计空闲**：必须把 idleAt 推到当前时刻。
-			// 否则保护一解除（长任务归零 / 业务窗口到期）就会按"历史空闲时长"
-			// 立刻回收——2026-10-28 现场正是如此：10:18:11 终端断开进入空闲租约，
-			// 10:28:34 拉取完成 endLongTask，10:28:48 就被 idle_ttl 销毁，
-			// 交付卡在 uploading，重试时被判 needs_reauth。
-			b.sessionIdleAt[key] = now
-			continue
-		}
-		if now.Sub(idleAt) >= ttl {
-			victims = append(victims, key)
-		}
-	}
-	b.mu.Unlock()
-
+	victims := b.Hub.ReapCandidates(ttl)
 	for _, key := range victims {
 		b.DestroySession(key, sshx.SessionReasonIdleTTL, "")
 	}
