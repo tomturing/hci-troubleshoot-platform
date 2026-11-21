@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-21 | v1.8 | **状态对账**：S1 改完成、A1/A2/A4 改已修、S4 重述剩余工作、A5 与 P1-3/P1-6 标注复核证据、P2 逐项归位、债务 4 测试数订正为 590/589。所有结论均以实测命令为据，不采信旧标注 |
 | 2026-11-21 | v1.7 | 阶段 3 第 5 项交付静态准备：U0 杀软抽样验证方案（矩阵/判定/回退/留档表）+ Defender 取证脚本；实机结论未出，债务 5 保持 open |
 | 2026-11-21 | v1.6 | 阶段 3 第 2/3 项完成：两个巨文件二拆（函数数零丢失）、outbox 旋钮入契约、seed 语义与失效引用订正；§4 影响、§6.1 表格、§7.2 债务 2/3 同步 |
 | 2026-11-21 | v1.5 | 阶段 3 第 1 项完成：sshx 四组测试补齐、4 个孤儿测试归位（仅留 `remote_convergence_test.go` 并在文件头说明理由）；§6.1 表格同步 |
@@ -61,6 +62,8 @@ owner: terminal_bridge
 ```
 go test ./...              → 540 个测试全部通过（noop 构建）
 go test -tags telemetry    → 539 个测试全部通过（集群构建）
+# 2026-11-21 复核：现为 590（noop）/ 589（telemetry）——A3 与阶段 3 补测后增加，
+# 上面两行是当时（#1584 前后）的基线，保留作历史对照
 go test -race ./internal/shared/obslog → 通过
 GOOS=windows/linux go build → 双平台通过
 python3 scripts/check_bridge_imports.py → 11 条域间依赖，未新增
@@ -127,9 +130,9 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | P-1 止血 | 完成 | `#1548` |
 | U0 UPX | 完成 | `#1581`，16.47MB → 4.72MB 未压缩基线；当前分发 3.13MB |
 | R0 搬迁 | 完成 | `#1575`，测试零丢失 |
-| S1 原语 | **部分** | 节点面 `remote` 已收口；云面 `uplink.Push` 已统一；但 delivery 仍持具体 SSH 类型、logcollect 仍外借 50+ 符号 |
+| S1 原语 | **完成（2026-11-21 复核）** | 节点面 `remote` 收口、云面 `uplink.Push` 统一；实测 `delivery` 生产代码 import sshx=0、`*sshx.SSHSession`=0；`logcollect` 仅被装配层 `cmd/bridge` import，域间依赖边 0 |
 | S2 / S3 reconcile 消费者 | **完成（2026-11-21）** | 建 `reconcile/kinds` 登记册：四条链路必须声明接入程度，未登记由守卫测试判失败；SPC 的"只租意图、写入自管"从隐债变显式声明 |
-| S4 acli 两阶段 | **部分** | 两阶段协议已落地，声明式胶水未迁 kinds |
+| S4 acli 两阶段 | **部分（复核后重述）** | 两阶段协议已落地；`internal/acli` 内无 `InstallSpec` 类声明结构，安装/校验仍是指令式串联。原表述"声明式胶水未迁 kinds"已不准确——kind 改成了登记册，**剩余工作是"把安装动作声明化"，不是搬目录** |
 | U1 telemetry | 完成 | `#1582`，桌面 otel 符号 0 |
 | L1 obslog 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
 | D1 删除 relay | 完成 | `#1553` `#1554` |
@@ -395,7 +398,7 @@ stderr 在桌面形态由 `redirectStderrToFile` 落进 `bridge-stderr.log`，�
 | 1 | `#1586` docs-governance 红 | 27 条阻断级失效引用，全部来自 `docs/plans/2026-11-18-节点同步链路统一收口设计.md` 指向 R0 已删除的旧路径。该 PR 自称"两文档终局对账、逐条核对代码事实"，实际只追加版本行 |
 | 2 | 部署文档失真 | ~~已订正（2026-11-21）~~：事件文档补"单轮预算"订正标注，Helm values 注释同步；部署设计 v1.91 记录 |
 | 3 | 新旋钮未纳契约 | ~~已修（2026-11-21）~~：登记 `helm_only_runtime` + `terminalBridge.logOutboxMaxBytes`（字符串避免科学计数法），`verify_config_contract.py` 通过 |
-| 4 | 测试数口径 | 文档称 544，实测 540（noop）/539（telemetry） |
+| 4 | 测试数口径 | ~~已订正（2026-11-21）~~：实测 **590（noop）/ 589（telemetry）**，口径 `go test ./... -list '^Test' \| grep -c '^Test'`。原"544/540/539"是 A3 与阶段 3 补测之前的数字 |
 | 5 | U0 加壳风险未闭环 | **方案就绪、待实机执行（2026-11-21）**：`docs/verify/U0-杀软抽样验证方案.md`（必测矩阵/判定标准/回退路径）+ `scripts/verify/u0_antivirus_probe.ps1`（Defender 指纹与扫描留档）。企业 EDR/AppLocker 仍须人工，结论出来前本条保持 open |
 | 6 | `kinds/` 未建的解释 | v2.6 将"未建 kinds"表述为"设计意图均满足"，属事后合理化；**2026-11-21 已收口**：建登记册 + 守卫，SPC 的接入缺口写进 `Descriptor.Note` 并由守卫打印 |
 
@@ -485,7 +488,7 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 | 指标 | 数值 | 备注 |
 |---|---|---|
 | 实现代码 | 43,427 行（含测试） | 修复前 43,427，本次净增约 90 行（含测试） |
-| 测试函数 | 540（noop）/ 539（telemetry） | 本次 +3 |
+| 测试函数 | 540（noop）/ 539（telemetry）〔2026-11-21 复核：590 / 589〕 | 本次 +3 |
 | 分发 exe | 3,130,368 B | 16.47MB → 3.13MB，-81% |
 | 桌面 otel 符号 | 0 | 集群 2099 |
 | 桌面 obslog 符号 | 124 | 证据通道保留 |
@@ -559,14 +562,14 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 |---|---|---|---|
 | P0-1 | 代码 | `shared/obslog/outbox.go` 预算超限路径 | 已修（含回归） |
 | P0-2 | 代码 | `shared/obslog/outbox.go` / `uploader.go` persistOK、静默丢 | 已修（含回归） |
-| A1 | 架构 | `internal/app/bridge.go` Shared Kernel | 未修 |
-| A2 | 架构 | obslog 被 23 文件 import | 未修 |
+| A1 | 架构 | `internal/app/bridge.go` Shared Kernel | **已修（#1594）**：域 import app = 0（实测） |
+| A2 | 架构 | obslog 被 23 文件 import | **已修（#1594）**：域 import obslog = 0，改走 `shared/evidence` 门面 |
 | A3 | 架构 | logcollect 伪公共库 | **已修（两批）**：五类符号归位 + 证据端口化 + 输出呈现下沉，域间边 6→0，基线置空 |
-| A4 | 架构 | delivery 持 `*sshx.SSHSession` | 未修 |
-| A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | 未修 |
+| A4 | 架构 | delivery 持 `*sshx.SSHSession` | **已修（#1594）**：`NodeSession` 端口化，生产代码 import sshx = 0、`*sshx.SSHSession` = 0 |
+| A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | **未修（2026-11-21 复核）**：仍 519 行 / 19 个函数，handler 实现在装配层，域不自注册 |
 | P1-1/2/4/5 | 代码 | gaps 重放、seed 互斥、enforce 节流、stderr 轮转 | 已修（阶段 1） |
-| P1-3/6/7 | 代码 | 无 fsync、seed O(n²)、观测字段（7 项已补齐） | P1-3/6 未修；P1-7 已修 |
-| P2-1~6 | 文档/门禁 | 见 §7 | 未修 |
+| P1-3/6/7 | 代码 | 无 fsync、seed O(n²)、观测字段 | P1-7 已修；**P1-3 未修**（`obslog` 全包 `grep Sync()` 为 0）；**P1-6 未修**（`mergeSeedLocked` 仍逐条 `sort.Search` + `copy`）——2026-11-21 复核 |
+| P2-1~6 | 文档/门禁 | 见 §7 | P2-2/3/6 已修；P2-1 复核为"删除事实记录"语境豁免、无阻断项；P2-5 方案就绪待实机；**P2-4 本次订正**（见 §7.2） |
 
 ---
 
