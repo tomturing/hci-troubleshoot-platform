@@ -23,7 +23,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/acliout"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/logcontract"
@@ -685,9 +684,11 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	}
 	// 删除本地副本之前读一次 zip 中央目录：包还在盘上时才有内容级证据，
 	// 删完就只剩体积推断，608 字节空壳包会被误判成功（Q2026111200624）。
-	if cfg, ok := logcollect.EvidenceFor(job.TaskID); ok {
+	// 证据回传走端口：交付域只说"为这个采集任务上报本地包清单"，
+	// 票据/上传模式/TLS 放宽由采集侧实现决定。
+	if reporter := evidence.Transfer(); reporter.Enabled(job.TaskID) {
 		evidenceCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		logcollect.ReportLocalArchive(evidenceCtx, cfg, job.LocalPath)
+		reporter.ReportArchive(evidenceCtx, job.TaskID, job.LocalPath)
 		cancel()
 	}
 	r.discardDeliveredCopy(job)
@@ -1843,11 +1844,11 @@ func wrapTransientTransport(err error) error {
 // streamEvidenceMetrics 每 2 秒采样一次作业进度，速率用 EMA 平滑、ETA 用剩余字节估算。
 // 没有增量不补零：stalled 由平台按 60 秒阈值判定并写进 conditions。
 func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliveryJob) {
-	cfg, ok := logcollect.EvidenceFor(job.TaskID)
-	if !ok {
+	reporter := evidence.Transfer()
+	if !reporter.Enabled(job.TaskID) {
 		return
 	}
-	ticker := time.NewTicker(logcollect.EvidenceMetricInterval)
+	ticker := time.NewTicker(reporter.MetricInterval())
 	defer ticker.Stop()
 	started := time.Now()
 	lastAt := started
@@ -1898,9 +1899,9 @@ func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliver
 			if phase == phaseUploading || uploaded > 0 {
 				stage = "uploading"
 			}
-			metric := logcollect.TransferMetric{
+			metric := evidence.TransferMetric{
 				Seq: seq, Stage: stage, BytesDone: done, ElapsedMS: now.Sub(started).Milliseconds(),
-				Stalled: !stalledSince.IsZero() && now.Sub(stalledSince) >= logcollect.EvidenceStallSeconds*time.Second,
+				Stalled: !stalledSince.IsZero() && now.Sub(stalledSince) >= time.Duration(reporter.StallSeconds())*time.Second,
 				Source:  "bridge",
 			}
 			seq++
@@ -1917,14 +1918,8 @@ func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliver
 					metric.EtaSec = &eta
 				}
 			}
-			postCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			_, err := cfg.PostEvidence(postCtx, cfg.TaskPath("metrics"), metric, "")
-			cancel()
-			if err != nil {
-				evidence.Emit("WARN", "log_collect.metric_failed", "传输速率样本上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-					"task_id": cfg.TaskID, "seq": metric.Seq, "error": err.Error(),
-				})
-			}
+			// 投递超时与失败告警都由实现方负责（它才认识票据与链路字段）。
+			reporter.ReportTransferMetric(ctx, job.TaskID, metric)
 			lastAt, lastBytes = now, done
 		}
 	}

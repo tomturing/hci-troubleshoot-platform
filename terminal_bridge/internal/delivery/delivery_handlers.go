@@ -8,7 +8,6 @@ package delivery
 
 import (
 	"strings"
-	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
@@ -16,6 +15,7 @@ import (
 
 	"golang.org/x/net/websocket"
 	"terminal_bridge/internal/shared/remote"
+	"terminal_bridge/internal/shared/uplink"
 )
 
 // deliveryJobView 是回给前端的快照：字段名与前端约定保持一致。
@@ -77,7 +77,7 @@ func HandleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) 
 		})
 		return
 	}
-	platformURL, err := logcollect.ValidatePlatformURL(msg.PlatformURL)
+	platformURL, err := uplink.ValidateURL(msg.PlatformURL)
 	if err != nil {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit",

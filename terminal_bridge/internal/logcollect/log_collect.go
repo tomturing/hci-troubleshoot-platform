@@ -26,7 +26,6 @@ import (
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/sshx/session"
-	"terminal_bridge/internal/terminal"
 	"time"
 )
 
@@ -1278,7 +1277,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		// 头尾保留 + 票据脱敏：既留住尾部异常，也不能把 Bearer 写进日志和 DB。
 		// 输出上限 64KiB，避免异常刷屏把日志与 WS 报文变成无界存储。
 		safeOutput := stripAnsi(redactUploadTicket(evidence.RedactSensitiveText(output), msg.UploadTicket))
-		createEvidence := terminal.FormatOutputPreview(safeOutput, 48*1024, 16*1024)
+		createEvidence := remote.FormatOutputPreview(safeOutput, 48*1024, 16*1024)
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: createEvidence, ErrorCode: code,

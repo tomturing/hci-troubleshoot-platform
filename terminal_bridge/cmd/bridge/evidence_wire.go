@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 
+	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
@@ -46,4 +47,9 @@ func (obslogSink) DeterministicArtifactID(execID string) string {
 func (obslogSink) LogDir() string { return obslog.DefaultHub.LogDir }
 
 // installEvidenceSink 必须在 obslog 初始化之后、任何业务 goroutine 启动之前调用。
-func installEvidenceSink() { evidence.Set(obslogSink{}) }
+func installEvidenceSink() {
+	evidence.Set(obslogSink{})
+	// 传输证据端口由采集域实现：交付域只表达"为这个 task_id 报进度/报包清单"，
+	// 票据与 TLS 放宽留在采集侧（阶段 2 A3 收尾，消除 delivery -> logcollect）。
+	evidence.SetTransfer(logcollect.NewTransferReporter())
+}
