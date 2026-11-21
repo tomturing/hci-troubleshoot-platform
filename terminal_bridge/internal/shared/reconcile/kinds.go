@@ -117,3 +117,11 @@ func ValidKind(kind string) bool {
 	}
 	return false
 }
+
+// AllKinds 返回已登记的全部链路。
+//
+// 给 kinds 登记册的守卫用：只有能穷举，才能断言"每条链路都声明了接入程度"。
+// 新增链路时这里与上面两个函数必须同步（守卫测试会双向校验）。
+func AllKinds() []string {
+	return []string{KindAcliBinary, KindSpcSlot, KindConfigFile, KindPluginBundle}
+}

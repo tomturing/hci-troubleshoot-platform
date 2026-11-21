@@ -91,6 +91,9 @@ func main() {
 	obslog.DefaultHub.ApplyRuntimeMode(config.Mode)
 	// 证据门面接线：必须在 obslog 初始化之后、业务 goroutine 启动之前。
 	installEvidenceSink()
+	// 节点同步链路登记：必须在任何同步任务受理之前完成，
+	// 否则守卫测试与运行期诊断看到的是一份不完整的链路清单。
+	installKinds()
 	// stderr 重定向必须晚于 applyRuntimeMode：cluster 模式的日志目录由 Helm 注入，
 	// 提前重定向会把 panic 栈写到 desktop 默认目录。
 	app.RedirectStderrToFile()
