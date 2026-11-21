@@ -1,8 +1,8 @@
 {
-  "version": "v2.36.0-103-ga38e1a75",
-  "commit": "a38e1a756c1c",
-  "build_time": "2026-11-20T10:24:30Z",
+  "version": "v2.36.0-105-g2099e592",
+  "commit": "2099e5929c05",
+  "build_time": "2026-11-21T02:50:57Z",
   "goos": "windows",
   "goarch": "amd64",
-  "sha256": "ae987e6b39f01c2bd31ab1c55a4fdf108acc93485badaafb5a9bebba613e585e"
+  "sha256": "28fff1f97ff35ea36aaf1d0d4d4c61020a61165739dcc26faa9b8384c509f626"
 }
