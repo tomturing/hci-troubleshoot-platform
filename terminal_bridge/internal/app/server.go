@@ -3,14 +3,14 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"golang.org/x/net/websocket"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"terminal_bridge/internal/shared/metrics"
 	"terminal_bridge/internal/shared/obslog"
-
-	"golang.org/x/net/websocket"
 )
 
 func (b *Bridge) corsWebSocketHandler(config runtimeConfig) http.Handler {
@@ -155,18 +155,18 @@ bridge_log_pending_entries %d
 # TYPE bridge_log_file_bytes gauge
 bridge_log_file_bytes %d
 `,
-		atomic.LoadUint64(&PromMetrics.LogsCollectedTotal),
-		atomic.LoadUint64(&PromMetrics.LogsCollectErrors),
-		atomic.LoadUint64(&PromMetrics.LogsReplayedTotal),
-		atomic.LoadUint64(&PromMetrics.LogsDroppedTotal),
-		atomic.LoadUint64(&PromMetrics.ExecCommandsTotal),
-		atomic.LoadUint64(&PromMetrics.ExecCommandErrors),
-		atomic.LoadUint64(&PromMetrics.SshConnectionsTotal),
-		atomic.LoadUint64(&PromMetrics.SshConnectionErrors),
-		atomic.LoadUint64(&PromMetrics.VmConsoleOpsTotal),
-		atomic.LoadUint64(&PromMetrics.VmConsoleOpErrors),
-		atomic.LoadUint64(&PromMetrics.SftpDownloadsTotal),
-		atomic.LoadUint64(&PromMetrics.SftpDownloadErrors),
+		atomic.LoadUint64(&metrics.PromMetrics.LogsCollectedTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.LogsCollectErrors),
+		atomic.LoadUint64(&metrics.PromMetrics.LogsReplayedTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.LogsDroppedTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.ExecCommandsTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.ExecCommandErrors),
+		atomic.LoadUint64(&metrics.PromMetrics.SshConnectionsTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.SshConnectionErrors),
+		atomic.LoadUint64(&metrics.PromMetrics.VmConsoleOpsTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.VmConsoleOpErrors),
+		atomic.LoadUint64(&metrics.PromMetrics.SftpDownloadsTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.SftpDownloadErrors),
 		prometheusLabelValue(GetVersion()),
 		prometheusLabelValue(CommitIDFunc()),
 		prometheusLabelValue(config.Mode),
@@ -215,7 +215,7 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(statusCode)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		atomic.AddUint64(&PromMetrics.LogsCollectErrors, 1)
+		atomic.AddUint64(&metrics.PromMetrics.LogsCollectErrors, 1)
 	}
 }
 

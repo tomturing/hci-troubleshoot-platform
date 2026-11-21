@@ -8,10 +8,9 @@ package delivery
 
 import (
 	"strings"
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
 	"time"
 
 	"golang.org/x/net/websocket"
@@ -64,7 +63,7 @@ func toDeliveryJobView(job *deliveryJob) deliveryJobView {
 }
 
 // HandleDeliverySubmit 接收交付请求：校验参数、落盘、入队，立即返回 job_id。
-func HandleDeliverySubmit(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) {
 	traceID := strings.TrimSpace(msg.TraceID)
 	taskID := strings.TrimSpace(msg.ExecID)
 	sourcePath, err := logcollect.NormalizeArchivePath(msg.TransferSourcePath)
@@ -126,7 +125,7 @@ func HandleDeliverySubmit(b *app.Bridge, ws *websocket.Conn, msg models.InMessag
 	}
 	submitted := DeliveryRunnerInstance.submit(job)
 
-	obslog.Emit("INFO", "delivery.submit", "收到交付作业请求", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "delivery.submit", "收到交付作业请求", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"job_id": submitted.JobID, "task_id": taskID, "source_path": sourcePath,
 		"part_count": job.PartCount, "chunk_size": job.ChunkSize, "direct": job.Direct,
 	})
@@ -138,7 +137,7 @@ func HandleDeliverySubmit(b *app.Bridge, ws *websocket.Conn, msg models.InMessag
 }
 
 // HandleDeliveryStatus 返回 job 快照；前端断线重连后靠它继续显示。
-func HandleDeliveryStatus(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleDeliveryStatus(ws *websocket.Conn, msg models.InMessage, cui string) {
 	jobID := strings.TrimSpace(msg.JobID)
 	status := "error"
 	view := deliveryJobView{}
@@ -157,14 +156,14 @@ func HandleDeliveryStatus(b *app.Bridge, ws *websocket.Conn, msg models.InMessag
 }
 
 // HandleDeliveryResume 在用户重连后唤醒 needs_reauth 的作业。
-func HandleDeliveryResume(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleDeliveryResume(ws *websocket.Conn, msg models.InMessage, cui string) {
 	jobID := strings.TrimSpace(msg.JobID)
 	ok := DeliveryRunnerInstance != nil && DeliveryRunnerInstance.resume(jobID)
 	status := "error"
 	if ok {
 		status = "ok"
 	}
-	obslog.Emit("INFO", "delivery.resume", "请求恢复交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "delivery.resume", "请求恢复交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"job_id": jobID, "ok": ok,
 	})
 	models.SendMsg(ws, models.OutMessage{
@@ -174,10 +173,10 @@ func HandleDeliveryResume(b *app.Bridge, ws *websocket.Conn, msg models.InMessag
 }
 
 // HandleDeliveryCancel 取消作业（用户显式取消）。
-func HandleDeliveryCancel(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleDeliveryCancel(ws *websocket.Conn, msg models.InMessage, cui string) {
 	jobID := strings.TrimSpace(msg.JobID)
 	ok := DeliveryRunnerInstance != nil && DeliveryRunnerInstance.cancel(jobID)
-	obslog.Emit("WARN", "delivery.cancel", "取消交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("WARN", "delivery.cancel", "取消交付作业", msg.TraceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"job_id": jobID, "ok": ok,
 	})
 	status := "error"

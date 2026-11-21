@@ -10,23 +10,23 @@ package delivery
 // 长任务期间会话不被空闲租约回收；长任务结束后回收能力恢复（不能变成永久泄漏）。
 
 import (
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"testing"
 	"time"
 )
 
 func TestReaperKeepsSessionWithLongTask(t *testing.T) {
-	bridge := app.NewBridge()
+	bridge := session.NewHub()
 	session := &sshx.SSHSession{Done: make(chan struct{}), CreatedAt: time.Now()}
 	key := "Q2026102801014@192.168.1.20"
 	bridge.Set(key, session)
 	// 浏览器早已关闭是大包交付的常态：refs 归零后进入空闲租约。
-	bridge.ReleaseSession(key, "conn-1")
+	bridge.Release(key)
 
 	session.BeginLongTask()
-	if reaped := bridge.ReapIdleSessions(time.Nanosecond); reaped != 0 {
-		t.Fatalf("长任务进行中的会话不应被空闲租约回收，实际回收 %d 条", reaped)
+	if victims := bridge.ReapCandidates(time.Nanosecond); len(victims) != 0 {
+		t.Fatalf("长任务进行中的会话不应被空闲租约回收，实际回收 %v", victims)
 	}
 	if bridge.Get(key) == nil {
 		t.Fatal("长任务会话被误删，正在进行的拉取会被腰斩")
@@ -34,8 +34,8 @@ func TestReaperKeepsSessionWithLongTask(t *testing.T) {
 
 	// 长任务结束后必须恢复回收，否则孤儿会话永久占用远端 shell。
 	session.EndLongTask()
-	if reaped := bridge.ReapIdleSessions(time.Nanosecond); reaped != 1 {
-		t.Fatalf("长任务结束后应恢复常规回收，实际回收 %d 条", reaped)
+	if victims := bridge.ReapCandidates(time.Nanosecond); len(victims) != 1 {
+		t.Fatalf("长任务结束后应恢复常规回收，实际回收 %v", victims)
 	}
 }
 

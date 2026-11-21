@@ -15,20 +15,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/net/websocket"
 	"regexp"
 	"strconv"
 	"strings"
-	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"terminal_bridge/internal/terminal"
 	"time"
-
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/net/websocket"
-
-	"terminal_bridge/internal/shared/remote"
 )
 
 const (
@@ -1461,13 +1459,13 @@ func archiveStaleLogCollectArchive(ctx context.Context, s *sshx.SSHSession, case
 	)
 	output, _, err := s.RunQuickCommand(ctx, command)
 	if err != nil {
-		obslog.Emit("WARN", "log_collect.archive_failed", "归档旧压缩包失败（不阻断采集）", traceID, caseID, "", cui, map[string]any{
+		evidence.Emit("WARN", "log_collect.archive_failed", "归档旧压缩包失败（不阻断采集）", traceID, caseID, "", cui, map[string]any{
 			"source": path, "error": ErrString(err),
 		})
 		return
 	}
 	trimmedOut := strings.TrimSpace(output)
-	obslog.Emit("INFO", "log_collect.archive_checked", "采集前检查旧压缩包", traceID, caseID, "", cui, map[string]any{
+	evidence.Emit("INFO", "log_collect.archive_checked", "采集前检查旧压缩包", traceID, caseID, "", cui, map[string]any{
 		"source": path, "result": trimmedOut,
 	})
 }
@@ -1553,37 +1551,8 @@ func logCollectModuleMissing(output string) bool {
 	return strings.Contains(cleaned, "收集专项") && strings.Contains(cleaned, "不存在")
 }
 
-// ResolveLogCollectSession 解析日志收集动作要落到哪条 SSH 会话，并回传命中原因。
-//
-// 顺序不可随意调整：精确键最可信；其次是按节点复用（会话的真实归属是「操作者 + 节点」，
-// 不随工单变化）；最后才是「本工单唯一会话」。
-//
-// 最后一级是 2026-10-26 补的：cancel 这类动作曾经漏传 node_ip，前三级的 node_ip 匹配
-// 全部失效，bridge 直接回 session_missing——表现是平台已标记取消、节点上采集任务仍在跑，
-// 后续 create 被插件互斥一直拒绝。多节点时绝不猜，猜错会取消另一台机器上的任务。
-func ResolveLogCollectSession(b *app.Bridge, msg models.InMessage) (session *sshx.SSHSession, key string, match string) {
-	if s, k := b.ResolveSession(msg); s != nil {
-		return s, k, "exact"
-	}
-	if msg.CaseID != "" {
-		if s := b.Get(app.SessionKey(msg.CaseID, "")); s != nil {
-			return s, app.SessionKey(msg.CaseID, ""), "default_key"
-		}
-	}
-	if s, k := b.SessionByNodeIP(msg.NodeIP); s != nil {
-		return s, k, "node_ip_suffix"
-	}
-	if s, k := b.SessionByAddressHost(msg.NodeIP); s != nil {
-		return s, k, "address_host"
-	}
-	if s, k := b.OnlySessionForCase(msg.CaseID); s != nil {
-		return s, k, "only_session_for_case"
-	}
-	return nil, "", ""
-}
-
 // HandleLogCollect 处理 log_collect 消息族。
-func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cui string) {
 	// 链路 ID 先算：会话缺失这类失败同样要能按链路检索与聚合。
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
@@ -1591,7 +1560,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 	}
 	msg.TraceID = traceID
 
-	s, key, match := ResolveLogCollectSession(b, msg)
+	s, key, match := b.ResolveForNode(msg)
 	// 业务活跃打戳：交互 shell 有 TMOUT=600，一次采集常常跑十几分钟且期间零键盘输入，
 	// shell 必然在 600s 被踢。没有这个戳，EOF 会被当成整条连接失效并 destroySession，
 	// 之后每次 progress 都是 session_missing——前端只能干等到 60s 超时，
@@ -1599,7 +1568,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 	s.MarkBusy()
 	// 精确命中是常态，只有回退才留痕：日志要能回答"这条命令为什么落到了这台机器"。
 	if s != nil && match != "exact" {
-		obslog.Emit("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": msg.LogAction, "session_key": key, "match": match,
 		})
 	}
@@ -1609,13 +1578,13 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: "error", ErrorType: "session_missing", ErrorCode: ErrEnvSessionMissing,
 			Message: "SSH 会话不存在（需先 ssh_connect）", TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("ERROR", "log_collect.session_missing", "日志收集动作缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "log_collect.session_missing", "日志收集动作缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": msg.LogAction, "task_id": msg.ExecID,
 			// 定性字段：会话数为 0 = 连接生命周期已结束；会话数 >0 但键对不上 = 路由/键问题。
 			// 历史日志只有 action + task_id，两种情况看起来一模一样，只能靠猜。
-			"requested_key":   app.SessionKey(msg.CaseID, msg.NodeIP),
-			"active_sessions": b.SessionCount(),
-			"session_keys":    b.SessionKeyList(8),
+			"requested_key":   session.SessionKey(msg.CaseID, msg.NodeIP),
+			"active_sessions": b.Count(),
+			"session_keys":    b.Keys(8),
 		})
 		return
 	}
@@ -1628,12 +1597,12 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 	outcome := "error"
 	// 统一收尾日志：任何分支（含提前 return）都会留下耗时与结果，便于远端定位。
 	defer func() {
-		obslog.Emit("INFO", "log_collect.done", "日志收集动作结束", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.done", "日志收集动作结束", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": action, "task_id": msg.ExecID, "outcome": outcome,
 			"duration_ms": time.Since(startedAt).Milliseconds(),
 		})
 	}()
-	obslog.Emit("INFO", "log_collect.start", "日志收集动作开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "log_collect.start", "日志收集动作开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"log_action": action, "task_id": msg.ExecID, "ticket_no": msg.TicketNo,
 		"modules": msg.Modules, "date_from": msg.DateFrom, "date_to": msg.DateTo,
 		"ips": msg.IPs, "extra_paths_count": len(msg.ExtraPaths),
@@ -1659,7 +1628,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: "ok", LogData: probe, TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo,
 		})
-		obslog.Emit("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": probe.Architecture, "acli_installed": probe.AcliInstalled,
 			"acli_version": probe.AcliVersion, "acli_build_time": probe.AcliBuildTime,
 			"acli_binary":    probe.AcliBinary,
@@ -1686,7 +1655,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 				Status: "error", ErrorType: errType, ErrorCode: code,
 				Message: reason, TraceID: traceID, CustomUI: cui,
 			})
-			obslog.Emit("ERROR", "log_collect.config_rejected", "自定义场景配置校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("ERROR", "log_collect.config_rejected", "自定义场景配置校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"error_type": errType, "error_code": code, "reason": reason, "ticket_no": msg.TicketNo,
 			})
 		}
@@ -1772,7 +1741,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			}
 			configPath, configPaths = path, paths
 			preflightMissing = preflightLogCollectPaths(ctx, s, paths)
-			obslog.Emit("INFO", "log_collect.config_written", "自定义场景配置已写入节点", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("INFO", "log_collect.config_written", "自定义场景配置已写入节点", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"config_path": path, "config_sha256": msg.ConfigSHA256,
 				"path_count": len(paths), "preflight_missing": preflightMissing,
 			})
@@ -1785,7 +1754,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 				Status: "error", ErrorType: errType, ErrorCode: ValidationErrorCode(errType),
 				Message: errMsg, TraceID: traceID, CustomUI: cui,
 			})
-			obslog.Emit("ERROR", "log_collect.rejected", "日志收集参数校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("ERROR", "log_collect.rejected", "日志收集参数校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"error_type": errType, "reason": errMsg, "ticket_no": msg.TicketNo,
 			})
 			// 参数被拒 = 不会有任务，也就永远等不到"终态恢复"：写下去的平台清单
@@ -1836,7 +1805,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 				return out, ec, runErr
 			})
 			ackState, ackStates = ack.State, ack.States
-			obslog.Emit("INFO", "log_collect.create_ack", "下发后节点接单确认", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("INFO", "log_collect.create_ack", "下发后节点接单确认", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"ticket_no": msg.TicketNo, "result": ackState, "node_states": ackStates,
 			})
 			switch ackState {
@@ -1851,7 +1820,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			default:
 				// 结果未知：不替节点下失败结论，保持 ok 并留痕，由前端有界等待兜底。
 				outcome = "ok"
-				obslog.Emit("WARN", "log_collect.create_ack_unknown", "下发后未能确认节点接单", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				evidence.Emit("WARN", "log_collect.create_ack_unknown", "下发后未能确认节点接单", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"ticket_no": msg.TicketNo, "node_states": ackStates,
 				})
 			}
@@ -1918,19 +1887,19 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		// 恰好在尾部，被切掉后现场无法定因（2026-11-09 Q2026110901673）。
 		// 头尾保留 + 票据脱敏：既留住尾部异常，也不能把 Bearer 写进日志和 DB。
 		// 输出上限 64KiB，避免异常刷屏把日志与 WS 报文变成无界存储。
-		safeOutput := stripAnsi(redactUploadTicket(obslog.RedactSensitiveText(output), msg.UploadTicket))
+		safeOutput := stripAnsi(redactUploadTicket(evidence.RedactSensitiveText(output), msg.UploadTicket))
 		createEvidence := terminal.FormatOutputPreview(safeOutput, 48*1024, 16*1024)
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: createEvidence, ErrorCode: code,
 			// Message 只做短摘要：完整证据走 Raw，避免把 64KiB 原文塞进异常与提示。
 			Message: FirstNonEmpty(failure, strings.TrimSpace(sshx.TruncateString(safeOutput, 500))),
-			Detail:  obslog.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
+			Detail:  evidence.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo, LogData: createLogData,
 		})
-		obslog.Emit("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": failure,
-			"command":                 obslog.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)),
+			"command":                 evidence.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)),
 			"p1_ticket_used":          msg.UploadTicket != "",
 			"config_used":             configPath != "",
 			"config_path":             configPath,
@@ -2009,7 +1978,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		// 逐台明细是 acli 进度原文里已解析好的事实，只落桥日志即可供管理端回读；
 		// 无需证据票据，也不依赖数据面端点（那类端点只承载需要票据的四类证据）。
 		if progress.NodeState == "completed" && len(progress.Hosts) > 0 && markHostResultsReported(msg.ExecID) {
-			obslog.Emit("INFO", "log_collect.host_results", "日志收集逐台明细", traceID, msg.CaseID, msg.NodeIP, cui,
+			evidence.Emit("INFO", "log_collect.host_results", "日志收集逐台明细", traceID, msg.CaseID, msg.NodeIP, cui,
 				logCollectHostResultExtra(progress.Hosts))
 		}
 		if progress.NodeState == "completed" {
@@ -2074,11 +2043,11 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		if archiveProbeResult.Diag != "" {
 			fields["archive_probe_diag"] = archiveProbeResult.Diag
 		}
-		obslog.Emit("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, fields)
+		evidence.Emit("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, fields)
 		// stat 失败在采集早期是常态（包还没生成），只有进入上传窗口后的失败才值得留证：
 		// 否则每次轮询都多打一条，会把真正的现场信号淹掉。
 		if archiveProbeResult.Diag != "" && progress.Percent >= 80 {
-			obslog.Emit("WARN", "log_collect.archive_size_probe", "压缩包大小探测降级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("WARN", "log_collect.archive_size_probe", "压缩包大小探测降级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"path": probePath, "level": archiveProbeResult.Level,
 				"diag": archiveProbeResult.Diag,
 			})
@@ -2130,7 +2099,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: status, ErrorCode: code, ErrorType: errType,
 			LogData: logData, Message: message, TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.stat", "日志包状态探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.stat", "日志包状态探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"path": path, "size": probed.Size, "exists": probed.Exists,
 			"probe_level": probed.Level, "probe_diag": probed.Diag,
 			"status": status, "error_code": code,
@@ -2141,7 +2110,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		transferCtx, transferCancel := context.WithTimeout(context.Background(), logCollectTransferTimeout)
 		defer transferCancel()
 		if err := handleLogCollectTransfer(b, transferCtx, ws, s, msg, cui, traceID); err != nil {
-			obslog.Emit("ERROR", "log_collect.transfer", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("ERROR", "log_collect.transfer", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"task_id": msg.ExecID, "error": err.Error(),
 			})
 			return
@@ -2164,7 +2133,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Message: FirstNonEmpty(ErrString(err), strings.TrimSpace(output)),
 			TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("WARN", "log_collect.cancel", "日志收集任务取消", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "log_collect.cancel", "日志收集任务取消", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"exit_code": exitCode, "error": ErrString(err),
 			"output_preview": stripAnsi(sshx.TruncateString(output, 512)),
 		})
@@ -2187,7 +2156,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: restoreStatus, ErrorType: restoreErrType, ErrorCode: restoreCode,
 			Message: restoreErrMsg, LogData: logData, TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.spc_restore_requested", "平台请求恢复场景槽位", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.spc_restore_requested", "平台请求恢复场景槽位", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": msg.ExecID, "spc_slot": msg.SpcSlot,
 			"status": restoreStatus, "error_type": restoreErrType, "message": restoreErrMsg,
 		})
@@ -2213,7 +2182,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: restoreStatus, ErrorType: restoreErrType, ErrorCode: restoreCode,
 			Message: restoreErrMsg, LogData: logData, TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.script_restore_requested", "平台请求恢复收集脚本", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.script_restore_requested", "平台请求恢复收集脚本", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": msg.ExecID, "script_codes": msg.ScriptCodes,
 			"status": restoreStatus, "error_type": restoreErrType, "message": restoreErrMsg,
 		})
@@ -2239,7 +2208,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			},
 			TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.capabilities", "日志收集能力探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.capabilities", "日志收集能力探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"multi_slot_spc": true, "spc_max_slots": len(logCollectModules),
 			"log_collect_evidence": true, "acli_plugin_sync": true,
 		})

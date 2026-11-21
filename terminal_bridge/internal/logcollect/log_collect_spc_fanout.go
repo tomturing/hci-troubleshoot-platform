@@ -26,13 +26,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
-	"terminal_bridge/internal/sshx"
-	"time"
-
 	"terminal_bridge/internal/shared/reconcile"
+	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
+	"time"
 )
 
 const (
@@ -670,7 +669,7 @@ func parseSpcFiles(msg models.InMessage) ([]spcSlotFile, *spcRejection) {
 //
 // 任何一台、任一槽位写不进去都回滚并拒绝：宁可这一次不发任务，也不能让节点之间
 // 用不同的清单收集——那种结果事后无法从采集结果里看出来。
-func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, msg models.InMessage, traceID, customUI string) (*spcTaskState, *spcRejection) {
+func prepareSpcScenario(b *session.Hub, ctx context.Context, s *sshx.SSHSession, msg models.InMessage, traceID, customUI string) (*spcTaskState, *spcRejection) {
 	files, rejection := parseSpcFiles(msg)
 	if rejection != nil {
 		return nil, rejection
@@ -737,7 +736,7 @@ func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, 
 		restoreState: "pending",
 		activator:    reconcile.NewActivator(),
 	}
-	obslog.Emit("INFO", "log_collect.spc_fanout_start", "开始把场景写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	evidence.Emit("INFO", "log_collect.spc_fanout_start", "开始把场景写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "slots": slots, "spc_sha256": digest,
 		"spc_digests": digests, "hosts_count": len(targets), "ips_all": all, "spc_bytes": spcBytes,
 	})
@@ -780,7 +779,7 @@ func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, 
 			rejection.Message = sshx.TruncateString(rejection.Message+
 				ContractFormat("spc_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
 		}
-		obslog.Emit("ERROR", "log_collect.spc_fanout_failed", "场景写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+		evidence.Emit("ERROR", "log_collect.spc_fanout_failed", "场景写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 			"task_id": taskID, "slot": slot, "written": written,
 			"error_code": code, "error_type": errType,
 			"failed_hosts":   spcHostAuditTrail(blocking),
@@ -795,7 +794,7 @@ func prepareSpcScenario(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, 
 	// 抗崩溃（§3.2）：终态还原的责任先落盘再交给内存 watcher。
 	// bridge 被杀后 watcher 消失，重启时凭意图 + 自描述备份名收尾。
 	persistSpcRestoreIntent(b, state, traceID, msg.CaseID, msg.NodeIP, customUI)
-	obslog.Emit("INFO", "log_collect.spc_fanout", "场景已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	evidence.Emit("INFO", "log_collect.spc_fanout", "场景已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "slot": slot, "spc_sha256": digest,
 		"written": written, "failed_hosts": spcHostAuditTrail(failed),
 		"hosts": spcHostAuditTrail(results),
@@ -935,7 +934,7 @@ func (st *spcTaskState) writtenTargets() []string {
 // applySpcAll 并发把场景写到全部目标节点（S3：编排委托 reconcile.Fanout）。
 // 并发上限、主机键互斥、written-set 跟踪由骨架维护；逐台动作内部的
 // 探测/备份/写入/回读校验仍是产品语义，留在 applySpcToHost。
-func applySpcAll(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, state *spcTaskState, spec spcApplySpec) ([]spcHostState, reconcile.WrittenSet) {
+func applySpcAll(b *session.Hub, ctx context.Context, s *sshx.SSHSession, state *spcTaskState, spec spcApplySpec) ([]spcHostState, reconcile.WrittenSet) {
 	results, written := spcWriteFanout().WriteAll(ctx, state.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
 		host := applySpcToHost(b, ctx, s, spec, ip, state.LocalIPs[ip], state.activator)
 		return reconcile.HostResult{
@@ -974,7 +973,7 @@ func spcHostFromResult(result reconcile.HostResult) spcHostState {
 //
 // 多槽位下任一槽位失败即把整台标为失败：写不全就绝不能下发，
 // 否则部分模块用平台清单、部分用节点原清单，产物无法解释。
-func applySpcToHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, spec spcApplySpec, ip string, local bool, activator *reconcile.Activator) spcHostState {
+func applySpcToHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession, spec spcApplySpec, ip string, local bool, activator *reconcile.Activator) spcHostState {
 	state := spcHostState{IP: ip, RestoreState: "pending"}
 
 	output, errOut, _, err := RunSpcOnHostStreams(s, ctx, ip, local, buildSpcDirCommand(""))
@@ -1013,7 +1012,7 @@ func applySpcToHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, spec
 }
 
 // applySpcSlotToHost 在已探测到的目录里完成一个槽位的完整写入闭环。
-func applySpcSlotToHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID string, file spcSlotFile, activator *reconcile.Activator) spcHostSlotState {
+func applySpcSlotToHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID string, file spcSlotFile, activator *reconcile.Activator) spcHostSlotState {
 	state := spcHostSlotState{Slot: file.Slot}
 	target, pathErr := spcFilePath(dir, file.Slot)
 	if pathErr != nil {
@@ -1078,7 +1077,7 @@ func spcWrittenTargets(results []spcHostState) []string {
 // rollbackSpcAll 对已写入主机执行回滚，返回 (恢复成功台数, 恢复失败台数)。
 // 回滚范围以骨架维护的 written-set 为准：从未写入的节点没有需要撤销的改动，
 // 把它们纳入回滚只会制造"可能残留平台清单"的假告警（Q2026110302166）。
-func rollbackSpcAll(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason string, targets []string) (int, int) {
+func rollbackSpcAll(b *session.Hub, s *sshx.SSHSession, st *spcTaskState, reason string, targets []string) (int, int) {
 	// B1 门：回滚前提 = 已登记写入集 ∧ 备份名非空（判定部分）；
 	// "备份确实存在"由设备脚本在同一条命令里保证（if [ ! -f ] → skip）。
 	// 门不过就一条命令都不发：fail-closed 报还原失败，绝不凭猜测碰现场。
@@ -1159,7 +1158,7 @@ func spcRestoreHostFromResult(result reconcile.HostResult) spcHostState {
 }
 
 // restoreSpcHosts 并发恢复全部目标节点（S3：编排委托 reconcile.Fanout.Each）。
-func restoreSpcHosts(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan) []spcHostState {
+func restoreSpcHosts(b *session.Hub, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan) []spcHostState {
 	results := spcRestoreFanout().Each(ctx, plan.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
 		return spcRestoreResult(restoreSpcOnHost(b, ctx, s, plan, ip))
 	})
@@ -1170,7 +1169,7 @@ func restoreSpcHosts(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, pla
 	return hosts
 }
 
-func restoreSpcOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan, ip string) spcHostState {
+func restoreSpcOnHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan, ip string) spcHostState {
 	state := spcHostState{IP: ip}
 	local := plan.LocalIPs[ip]
 	dir := plan.Dirs[ip]
@@ -1222,7 +1221,7 @@ func restoreSpcOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, pl
 }
 
 // restoreSpcSlotOnHost 恢复单个槽位：备份不存在返回 skipped，幂等重放不误报。
-func restoreSpcSlotOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID, slot string) spcHostSlotState {
+func restoreSpcSlotOnHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID, slot string) spcHostSlotState {
 	state := spcHostSlotState{Slot: slot}
 	target, pathErr := spcFilePath(dir, slot)
 	if pathErr != nil {
@@ -1277,11 +1276,11 @@ func spcCountRestore(results []spcHostState) (int, int) {
 // 为什么不把恢复完全交给平台：平台侧的轮询只发生在页面打开时，操作员一关页面
 // 就没人收尾；bridge 是常驻进程，是"节点文件状态"最合适的责任方。
 // 平台侧仍保留 restore_spc 作为重试入口，两条路都幂等。
-func watchSpcRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
+func watchSpcRestore(b *session.Hub, s *sshx.SSHSession, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				obslog.Emit("ERROR", "log_collect.spc_restore_panic", "场景恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
+				evidence.Emit("ERROR", "log_collect.spc_restore_panic", "场景恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
 					"task_id": st.TaskID, "panic": fmt.Sprint(recovered),
 				})
 			}
@@ -1302,7 +1301,7 @@ func watchSpcRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, traceI
 			if err != nil || exitCode != 0 {
 				failPolls++
 				if failPolls >= spcRestoreFailPolls {
-					obslog.Emit("WARN", "log_collect.spc_restore_abandon", "进度连续不可用，恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
+					evidence.Emit("WARN", "log_collect.spc_restore_abandon", "进度连续不可用，恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
 						"task_id": st.TaskID, "error": ErrString(err), "exit_code": exitCode,
 					})
 					return
@@ -1331,7 +1330,7 @@ func watchSpcRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, traceI
 }
 
 // restoreSpcTask 执行一次恢复并落日志；beginRestore 保证同任务只跑一次。
-func restoreSpcTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason, traceID, caseID, nodeIP, customUI string) {
+func restoreSpcTask(b *session.Hub, s *sshx.SSHSession, st *spcTaskState, reason, traceID, caseID, nodeIP, customUI string) {
 	if st == nil || !st.beginRestore() {
 		return
 	}
@@ -1353,12 +1352,12 @@ func restoreSpcTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason,
 	// 提前删意图会把"还没还原完"伪装成"已收尾"，崩溃后没人再管残留清单。
 	if failed == 0 {
 		if err := reconcile.DeleteIntent(reconcile.KindSpcSlot, st.TaskID); err != nil {
-			obslog.Emit("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
+			evidence.Emit("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
 				"task_id": st.TaskID, "error": err.Error(),
 			})
 		}
 	}
-	obslog.Emit(level, "log_collect.spc_restore", "场景槽位恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
+	evidence.Emit(level, "log_collect.spc_restore", "场景槽位恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
 		"task_id": st.TaskID, "slot": st.Slot, "trigger": reason,
 		"restored": restored, "failed": failed, "hosts_count": len(results),
 		"hosts": spcHostAuditTrail(results),
@@ -1369,7 +1368,7 @@ func restoreSpcTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason,
 //
 // 现场可能已经不在内存里（bridge 重启过）：仍按「探测目录 + 拼备份名」恢复，
 // 备份不存在时返回 skipped，绝不把"没有备份"说成"已恢复"。
-func handleSpcRestore(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, msg models.InMessage) (map[string]any, string, string) {
+func handleSpcRestore(b *session.Hub, ctx context.Context, s *sshx.SSHSession, msg models.InMessage) (map[string]any, string, string) {
 	taskID := strings.TrimSpace(msg.ExecID)
 	if !spcTaskIDRe.MatchString(taskID) {
 		return nil, "invalid_task_id", "缺少合法的任务 ID，无法定位备份"
@@ -1459,7 +1458,7 @@ func handleSpcRestore(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, ms
 // 意图内容是产品语义（哪些节点/槽位/目录），由消费者给；骨架只管形状与读写。
 // 落盘失败不阻断下发：内存 watcher 与显式 restore_spc 仍是两条活路，
 // 但必须留痕——静默丢意图会把抗崩溃变成运气。
-func persistSpcRestoreIntent(b *app.Bridge, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
+func persistSpcRestoreIntent(b *session.Hub, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
 	slots := st.Slots
 	if len(slots) == 0 {
 		slots = []string{st.Slot}
@@ -1471,13 +1470,13 @@ func persistSpcRestoreIntent(b *app.Bridge, st *spcTaskState, traceID, caseID, n
 		Slots: slots, CreatedAt: time.Now(), Reason: "custom_scenario",
 	}
 	if err := reconcile.SaveIntent(intent); err != nil {
-		obslog.Emit("WARN", "log_collect.spc_intent_save_failed", "还原意图落盘失败，崩溃后需显式 restore_spc 兜底", traceID, caseID, nodeIP, customUI, map[string]any{
+		evidence.Emit("WARN", "log_collect.spc_intent_save_failed", "还原意图落盘失败，崩溃后需显式 restore_spc 兜底", traceID, caseID, nodeIP, customUI, map[string]any{
 			"task_id": st.TaskID, "error": err.Error(),
 		})
 		return
 	}
 	superseded := supersedeSpcRestoreIntents(intent)
-	obslog.Emit("INFO", "log_collect.spc_intent_persisted", "终态还原意图已落盘", traceID, caseID, nodeIP, customUI, map[string]any{
+	evidence.Emit("INFO", "log_collect.spc_intent_persisted", "终态还原意图已落盘", traceID, caseID, nodeIP, customUI, map[string]any{
 		"task_id": st.TaskID, "hosts_count": len(intent.NodeIPs), "slots": slots, "superseded": superseded,
 	})
 }
@@ -1546,10 +1545,10 @@ func findSpcRestoreIntent(taskID string) *reconcile.RestoreIntent {
 // 这里凭意图把原件放回去，还原全部成功才删意图；失败保留，
 // 等下次重连或显式 restore_spc 重试。必须由调用方放进协程：
 // 集合性还原可能几十秒，不能阻塞 ssh_connect 回包。
-func RecoverSpcRestoreIntents(b *app.Bridge, s *sshx.SSHSession, traceID, caseID, nodeIP, customUI string) {
+func RecoverSpcRestoreIntents(b *session.Hub, s *sshx.SSHSession, traceID, caseID, nodeIP, customUI string) {
 	intents, err := reconcile.LoadIntents()
 	if err != nil {
-		obslog.Emit("WARN", "log_collect.spc_intent_load_failed", "还原意图读取失败", traceID, caseID, nodeIP, customUI, map[string]any{
+		evidence.Emit("WARN", "log_collect.spc_intent_load_failed", "还原意图读取失败", traceID, caseID, nodeIP, customUI, map[string]any{
 			"error": err.Error(),
 		})
 		return
@@ -1581,18 +1580,18 @@ func RecoverSpcRestoreIntents(b *app.Bridge, s *sshx.SSHSession, traceID, caseID
 		cancel()
 		restored, failed := spcCountRestore(results)
 		if failed > 0 {
-			obslog.Emit("WARN", "log_collect.spc_intent_recover_failed", "重启后还原未全部成功，意图保留待重试", traceID, caseID, nodeIP, customUI, map[string]any{
+			evidence.Emit("WARN", "log_collect.spc_intent_recover_failed", "重启后还原未全部成功，意图保留待重试", traceID, caseID, nodeIP, customUI, map[string]any{
 				"task_id": intent.TaskKey, "restored": restored, "failed": failed,
 				"hosts": spcHostAuditTrail(results),
 			})
 			continue
 		}
 		if err := reconcile.DeleteIntent(intent.Kind, intent.TaskKey); err != nil {
-			obslog.Emit("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
+			evidence.Emit("WARN", "log_collect.spc_intent_delete_failed", "还原成功但意图清理失败", traceID, caseID, nodeIP, customUI, map[string]any{
 				"task_id": intent.TaskKey, "error": err.Error(),
 			})
 		}
-		obslog.Emit("INFO", "log_collect.spc_intent_recovered", "重启后凭持久意图完成终态还原", traceID, caseID, nodeIP, customUI, map[string]any{
+		evidence.Emit("INFO", "log_collect.spc_intent_recovered", "重启后凭持久意图完成终态还原", traceID, caseID, nodeIP, customUI, map[string]any{
 			"task_id": intent.TaskKey, "restored": restored, "hosts_count": len(results),
 			"hosts": spcHostAuditTrail(results),
 		})

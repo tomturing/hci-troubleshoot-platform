@@ -9,47 +9,23 @@ package app
 
 import (
 	"fmt"
-	"sync"
+	"golang.org/x/net/websocket"
 	"sync/atomic"
+	"terminal_bridge/internal/shared/metrics"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/sshx/session"
 	"terminal_bridge/internal/terminal"
-
-	"golang.org/x/net/websocket"
 )
 
 type Bridge struct {
 	// *session.Hub 提供 Get/Set/Remove/ResolveSession 等会话能力（方法提升）。
 	*session.Hub
-	// sftp 任务表与 acli 缓存是过渡期字段：实体归各自域，这里只保留类型擦除的槽位，
-	// 阶段 2 第二刀把它们分别收进 sftp.TaskRegistry / acli.Store。
-	SftpTasksMu sync.Mutex
-	SftpTasks   map[string]any
-	AcliMu      sync.Mutex
-	AcliBusy    map[string]bool
-	AcliCache   any
 }
 
 func NewBridge() *Bridge {
-	return &Bridge{
-		Hub:       session.NewHub(),
-		SftpTasks: make(map[string]any),
-	}
-}
-
-// NewBridgeWithSessions 是测试夹具：批量登记会话后返回 Bridge。
-//
-// 必须走 Set（而不是直写会话表）：Set 会同时登记 refs=1，与生产"入表即持有、
-// 释放才空闲"的租约语义一致。绕过 Set 就会造出 refs=0 的会话，reaper 立刻可回收，
-// 测试断言的"会话仍在"就成了侥幸。需要空闲态请显式调 ReleaseSession。
-func NewBridgeWithSessions(sessions map[string]*sshx.SSHSession) *Bridge {
-	b := NewBridge()
-	for key, sess := range sessions {
-		b.Set(key, sess)
-	}
-	return b
+	return &Bridge{Hub: session.NewHub()}
 }
 
 // SessionKey / SessionKeyCase 保留为 app 包的兼容入口，实现已归 shared/session。
@@ -61,27 +37,6 @@ func SessionKeyCase(key string) string { return session.SessionKeyCase(key) }
 type OwnedSessionTracker = session.OwnedTracker
 
 func NewOwnedSessionTracker() *OwnedSessionTracker { return session.NewOwnedTracker() }
-
-// 以下薄包装保留旧方法名，避免 40+ 处调用点在本次重构中同时改动；
-// 真正的状态与并发控制都在 session.Hub 内。
-
-func (b *Bridge) SessionCount() int { return b.Count() }
-
-func (b *Bridge) SessionKeyList(limit int) []string { return b.Keys(limit) }
-
-func (b *Bridge) ListSessions() []models.BridgeSessionInfo { return b.List() }
-
-func (b *Bridge) ResolveSession(msg models.InMessage) (*sshx.SSHSession, string) {
-	return b.Resolve(msg)
-}
-
-func (b *Bridge) ResolveAcliSyncSession(msg models.InMessage) (*sshx.SSHSession, string) {
-	return b.ResolveAcliSync(msg)
-}
-
-func (b *Bridge) ResolveInputSession(msg models.InMessage, activeKey string, ownedSessions *OwnedSessionTracker) (*sshx.SSHSession, string) {
-	return b.ResolveInput(msg, activeKey, ownedSessions)
-}
 
 type bridgeStatus struct {
 	ActiveSessions  int `json:"active_sessions"`
@@ -117,7 +72,7 @@ func (b *Bridge) AutoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 
 	session, err := sshx.NewSSHSession(connectMsg)
 	if err != nil {
-		atomic.AddUint64(&PromMetrics.SshConnectionErrors, 1)
+		atomic.AddUint64(&metrics.PromMetrics.SshConnectionErrors, 1)
 		message, detail := sshx.BuildSSHError(err)
 		models.SendMsg(ws, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 		return nil
@@ -125,7 +80,7 @@ func (b *Bridge) AutoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 
 	stdout, err := session.Start()
 	if err != nil {
-		atomic.AddUint64(&PromMetrics.SshConnectionErrors, 1)
+		atomic.AddUint64(&metrics.PromMetrics.SshConnectionErrors, 1)
 		session.Close()
 		message, detail := sshx.BuildSSHError(err)
 		models.SendMsg(ws, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
@@ -135,7 +90,7 @@ func (b *Bridge) AutoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 	key := SessionKey(msg.CaseID, msg.NodeIP)
 	b.Set(key, session)
 	ownedSessions.Set(key, session)
-	atomic.AddUint64(&PromMetrics.SshConnectionsTotal, 1)
+	atomic.AddUint64(&metrics.PromMetrics.SshConnectionsTotal, 1)
 	// 自动连接的节点会话同样要保活：它常被日志采集挑中，长跑期间最容易撞上半开连接。
 	session.StartKeepAlive(sshx.SshKeepAliveInterval())
 	// 自动建连也必须留痕：现场出现过"会话不是用户点出来的、而是 autoConnect 建的"，
@@ -191,7 +146,7 @@ func (b *Bridge) ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 	}
 	key := SessionKey(caseID, nodeIP)
 	b.Set(key, session)
-	atomic.AddUint64(&PromMetrics.SshConnectionsTotal, 1)
+	atomic.AddUint64(&metrics.PromMetrics.SshConnectionsTotal, 1)
 	// 后台重连的会话同样要保活：它最容易在长跑期间撞上半开连接。
 	session.StartKeepAlive(sshx.SshKeepAliveInterval())
 	LogSessionCreated(session, key, connID, "delivery", "delivery_auto_reconnect")

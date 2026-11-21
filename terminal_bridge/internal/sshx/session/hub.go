@@ -64,6 +64,16 @@ func NewHub() *Hub {
 	}
 }
 
+// NewHubWithSessions 是批量登记会话的夹具（走 Set，与生产"入表即持有"一致）。
+// 供各域测试构造"已有会话"的注册表，避免测试自己拼 map 绕过引用计数。
+func NewHubWithSessions(sessions map[string]*sshx.SSHSession) *Hub {
+	h := NewHub()
+	for key, sess := range sessions {
+		h.Set(key, sess)
+	}
+	return h
+}
+
 // SetSessionIdleAt 覆写会话空闲租约起点（测试注入过期租约用；正常路径由 Release 维护）。
 func (h *Hub) SetSessionIdleAt(key string, at time.Time) {
 	h.mu.Lock()
@@ -282,6 +292,39 @@ func (h *Hub) ResolveAcliSync(msg models.InMessage) (*sshx.SSHSession, string) {
 		return s, key
 	}
 	return nil, ""
+}
+
+// ResolveForNode 解析业务动作（日志采集、交付、SFTP、acli）要落到哪条 SSH 会话，
+// 并回传命中原因。
+//
+// 顺序不可随意调整：精确键最可信；其次是按节点复用（会话的真实归属是「操作者 + 节点」，
+// 不随工单变化）；最后才是「本工单唯一会话」。
+//
+// 最后一级是 2026-10-26 补的：cancel 这类动作曾经漏传 node_ip，前三级的 node_ip 匹配
+// 全部失效，bridge 直接回 session_missing——表现是平台已标记取消、节点上采集任务仍在跑，
+// 后续 create 被插件互斥一直拒绝。多节点时绝不猜，猜错会取消另一台机器上的任务。
+//
+// 为什么放在这里而不是 logcollect：四个域（logcollect/delivery/sftp/acli）都要用同一套
+// 回退顺序，放在任一业务域都会让其它域反向依赖它（阶段 2 前 sftp 就借了 logcollect 的这份实现）。
+func (h *Hub) ResolveForNode(msg models.InMessage) (*sshx.SSHSession, string, string) {
+	if s, k := h.Resolve(msg); s != nil {
+		return s, k, "exact"
+	}
+	if msg.CaseID != "" {
+		if s := h.Get(SessionKey(msg.CaseID, "")); s != nil {
+			return s, SessionKey(msg.CaseID, ""), "default_key"
+		}
+	}
+	if s, k := h.SessionByNodeIP(msg.NodeIP); s != nil {
+		return s, k, "node_ip_suffix"
+	}
+	if s, k := h.SessionByAddressHost(msg.NodeIP); s != nil {
+		return s, k, "address_host"
+	}
+	if s, k := h.OnlySessionForCase(msg.CaseID); s != nil {
+		return s, k, "only_session_for_case"
+	}
+	return nil, "", ""
 }
 
 // ResolveInput 解析键盘输入 / AI 命令注入要落到哪条 SSH 会话。

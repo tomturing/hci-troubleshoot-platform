@@ -3,16 +3,15 @@ package logcollect
 import (
 	"context"
 	"encoding/json"
+	"golang.org/x/crypto/ssh"
 	"os"
 	"path/filepath"
 	"strings"
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // TestBuildLogCollectCreateCommand 覆盖参数白名单与命令转义。
@@ -577,7 +576,7 @@ func TestSessionByNodeIP(t *testing.T) {
 	target := &sshx.SSHSession{}
 	prefixTrap := &sshx.SSHSession{}
 	other := &sshx.SSHSession{}
-	bridge := app.NewBridge()
+	bridge := session.NewHub()
 	bridge.Set("terminal-only@192.0.2.10", target)
 	bridge.Set("Q2026101401684@192.0.2.101", prefixTrap) // 前缀相同的另一台主机，不得被误命中
 	bridge.Set("Q2026101401684@192.0.2.110", other)
@@ -693,33 +692,33 @@ func TestClassifyLogCollectNodeState(t *testing.T) {
 
 func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 	single := &sshx.SSHSession{Address: "192.168.33.89:22"}
-	bridge := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single})
+	bridge := session.NewHubWithSessions(map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single})
 
-	got, key, match := ResolveLogCollectSession(bridge, models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
+	got, key, match := bridge.ResolveForNode(models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
 	if got != single || key != "Q2026102601505@192.168.33.89" || match != "only_session_for_case" {
 		t.Fatalf("唯一会话应被兜底命中，实际 got=%v key=%s match=%s", got, key, match)
 	}
 
 	// 多节点时不猜：猜错会取消另一台机器上的采集任务
-	multi := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
+	multi := session.NewHubWithSessions(map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1": {Address: "10.0.0.1:22"},
 		"Q1@10.0.0.2": {Address: "10.0.0.2:22"},
 	})
-	if got, _, _ := ResolveLogCollectSession(multi, models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
+	if got, _, _ := multi.ResolveForNode(models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
 		t.Fatal("多节点且无 node_ip 时不得兜底，必须返回 nil 由调用方报 session_missing")
 	}
 
 	// 带了 node_ip 就走精确键，命中原因要能被日志区分
-	if got, key, match := ResolveLogCollectSession(multi, models.InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
+	if got, key, match := multi.ResolveForNode(models.InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
 		t.Fatalf("精确键应优先命中，实际 key=%s match=%s", key, match)
 	}
 
 	// 同节点其他工单的会话：按节点复用，不应落到 only_session_for_case
-	reuse := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
+	reuse := session.NewHubWithSessions(map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1":            {Address: "10.0.0.1:22"},
 		"terminal-only@10.9.9.9": {Address: "10.9.9.9:22"},
 	})
-	got2, key2, match2 := ResolveLogCollectSession(reuse, models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
+	got2, key2, match2 := reuse.ResolveForNode(models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
 	if got2 == nil || key2 != "terminal-only@10.9.9.9" || match2 != "node_ip_suffix" {
 		t.Fatalf("应按节点复用其他工单会话，实际 key=%s match=%s", key2, match2)
 	}
@@ -731,7 +730,7 @@ func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 func TestSessionByAddressHost(t *testing.T) {
 	legacy := &sshx.SSHSession{Address: "192.0.2.10:22"}
 	otherPort := &sshx.SSHSession{Address: "192.0.2.12:2222"}
-	bridge := app.NewBridge()
+	bridge := session.NewHub()
 	// 键故意不带 @IP，复现现场：终端连好了，但键只有 caseID
 	bridge.Set("terminal-only", legacy)
 	bridge.Set("Q2026101401684@192.0.2.12", otherPort)

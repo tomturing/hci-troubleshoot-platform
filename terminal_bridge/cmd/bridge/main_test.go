@@ -23,6 +23,7 @@ import (
 	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"terminal_bridge/internal/terminal"
 	"testing"
 	"time"
@@ -1129,19 +1130,19 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 // acli_sync 曾因为不带 node_ip 而恒定 session_missing：会话键是 caseID@nodeIP，
 // 而旧逻辑只找键为 caseID 的会话。这里锁定三层兜底与"不猜节点"的边界。
 func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
-	b := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
+	b := session.NewHubWithSessions(map[string]*sshx.SSHSession{
 		"Q2026101401684@192.0.2.21": {Address: "192.0.2.21:22"},
 	})
 
 	// 1) 带 node_ip：精确命中
-	if s, key := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684", NodeIP: "192.0.2.21"}); s == nil {
+	if s, key := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101401684", NodeIP: "192.0.2.21"}); s == nil {
 		t.Fatalf("node_ip 精确匹配失败")
 	} else if key != "Q2026101401684@192.0.2.21" {
 		t.Fatalf("精确匹配键不符: %s", key)
 	}
 
 	// 2) 不带 node_ip：线上故障场景，必须兜底到该工单唯一会话
-	s, key := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"})
+	s, key := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101401684"})
 	if s == nil {
 		t.Fatalf("缺少 node_ip 时未兜底到唯一会话")
 	}
@@ -1151,12 +1152,12 @@ func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
 
 	// 3) 同工单两条会话且不带 node_ip：宁可不装，也不猜节点
 	b.Set("Q2026101401684@192.0.2.22", &sshx.SSHSession{Address: "192.0.2.22:22"})
-	if s, _ := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"}); s != nil {
+	if s, _ := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101401684"}); s != nil {
 		t.Fatalf("多会话时不应猜测节点")
 	}
 
 	// 4) 不串工单
-	if s, _ := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101499999"}); s != nil {
+	if s, _ := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101499999"}); s != nil {
 		t.Fatalf("不应命中其它工单的会话")
 	}
 }

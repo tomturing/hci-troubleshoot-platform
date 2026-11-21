@@ -37,14 +37,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logcollect"
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/terminal"
-	"time"
-
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
+	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
+	"terminal_bridge/internal/terminal"
+	"time"
 )
 
 const (
@@ -480,7 +479,7 @@ type nodePluginState struct {
 // S4b：探测目标改由 acliLandingDescriptor 声明（B8），不再只验 log_collect。
 // HostTimeout 取负禁用主机级超时，单条命令的 30s 预算已在
 // logcollect.RunSpcOnHostStreams 内部强制（与旧实现一致）。
-func verifyClusterPluginLanding(b *app.Bridge, ctx context.Context, s *sshx.SSHSession) []nodePluginState {
+func verifyClusterPluginLanding(b *session.Hub, ctx context.Context, s *sshx.SSHSession) []nodePluginState {
 	hosts := logcollect.SpcNodeList(s, ctx)
 	if len(hosts) == 0 {
 		return nil
@@ -791,32 +790,39 @@ func verifyReusedRemotePackage(pkg *acliPackage, size int64, algo, digest string
 // 返回的 release 必须 defer 调用；ok=false 表示已有同会话传输在进行，
 // 调用方应直接回 LC-INSTALL-009（可重试），而不是排队——排队会让用户
 // 连点变成串行重传，同一 destPath 仍可能被后来的旧字节覆盖。
-func acquireAcliTransfer(b *app.Bridge, key string) (release func(), ok bool) {
-	b.AcliMu.Lock()
-	defer b.AcliMu.Unlock()
-	if b.AcliBusy == nil {
-		b.AcliBusy = make(map[string]bool)
-	}
-	if b.AcliBusy[key] {
+// acliStore 是 acli 域自有状态：安装包传输互斥 + 包缓存。
+//
+// 阶段 2 前这两项寄存在 app.Bridge 上（AcliBusy map / AcliCache any），
+// 既让 acli 反向依赖装配层，又把类型错误推迟到运行期断言 panic。
+var acliStore = struct {
+	mu    sync.Mutex
+	busy  map[string]bool
+	cache *acliPackageCache
+}{busy: make(map[string]bool)}
+
+func acquireAcliTransfer(key string) (release func(), ok bool) {
+	acliStore.mu.Lock()
+	defer acliStore.mu.Unlock()
+	if acliStore.busy[key] {
 		return nil, false
 	}
-	b.AcliBusy[key] = true
+	acliStore.busy[key] = true
 	return func() {
-		b.AcliMu.Lock()
-		delete(b.AcliBusy, key)
-		b.AcliMu.Unlock()
+		acliStore.mu.Lock()
+		delete(acliStore.busy, key)
+		acliStore.mu.Unlock()
 	}, true
 }
 
 // packageCache 惰性初始化缓存（Bridge 可能在测试中零值构造）。
 // 基线账本与 reconcile 状态同目录（PVC/HCI_BRIDGE_LOG_DIR 同源），桥重启不丢。
-func packageCache(b *app.Bridge) *acliPackageCache {
-	b.AcliMu.Lock()
-	defer b.AcliMu.Unlock()
-	if b.AcliCache == nil {
+func packageCache() *acliPackageCache {
+	acliStore.mu.Lock()
+	defer acliStore.mu.Unlock()
+	if acliStore.cache == nil {
 		c := newAcliPackageCache()
 		c.store = reconcile.NewStore(reconcile.DefaultStateDir())
-		b.AcliCache = c
+		acliStore.cache = c
 	}
-	return b.AcliCache.(*acliPackageCache)
+	return acliStore.cache
 }

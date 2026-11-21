@@ -4,23 +4,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"golang.org/x/net/websocket"
 	"log"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
-	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/terminal"
-	"time"
-
-	"golang.org/x/net/websocket"
-
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
+	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
+	"terminal_bridge/internal/terminal"
+	"time"
 )
 
 // ── 消息结构 ─────────────────────────────────────────────────────────────────
@@ -76,7 +74,7 @@ func probeAcliLatest(ctx context.Context, targetArch, customURL string) (filenam
 	return filename, buildTime, version, downloadURL, nil
 }
 
-func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cui string) {
 	// 安装链路必须可观测：远端排障需要看到架构判定、版本比较、下载、上传与安装结果。
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
@@ -94,7 +92,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 		retryStage = "all"
 	}
 
-	s, key := b.ResolveAcliSyncSession(msg)
+	s, key := b.ResolveAcliSync(msg)
 	if s == nil {
 		models.SendMsg(ws, models.OutMessage{
 			Type:    "acli_sync_result",
@@ -103,10 +101,10 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			TraceID: traceID,
 			Message: "SSH 会话不存在（需先 ssh_connect）", ErrorCode: logcollect.ErrEnvSessionMissing,
 		})
-		obslog.Emit("ERROR", "acli_sync.session_missing", "acli 安装缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, nil)
+		evidence.Emit("ERROR", "acli_sync.session_missing", "acli 安装缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, nil)
 		return
 	}
-	obslog.Emit("INFO", "acli_sync.start", "acli 检测与安装开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "acli_sync.start", "acli 检测与安装开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"force": msg.Force, "min_disk_mb": msg.MinDiskMB, "custom_url": msg.AcliURL != "", "key": key,
 		"retry_stage": retryStage,
 	})
@@ -140,7 +138,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			TraceID: traceID,
 			Message: fmt.Sprintf("获取系统架构失败 (code=%d): %v", exitCode, err), ErrorCode: logcollect.ErrEnvArchProbeFailed,
 		})
-		obslog.Emit("ERROR", "acli_sync.arch_probe_failed", "获取系统架构失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "acli_sync.arch_probe_failed", "获取系统架构失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"exit_code": exitCode, "error": logcollect.ErrString(err),
 		})
 		return
@@ -159,7 +157,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			TraceID:      traceID,
 			Message:      fmt.Sprintf("暂不支持的硬件架构: %s", arch), ErrorCode: logcollect.ErrEnvArchUnsupported,
 		})
-		obslog.Emit("ERROR", "acli_sync.arch_unsupported", "不支持的硬件架构", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "acli_sync.arch_unsupported", "不支持的硬件架构", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": arch,
 		})
 		return
@@ -182,7 +180,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 	// 失败只发生在文件名解析层。不留痕就会重演 Q2026101401677 的静默失效——
 	// 判定层把"解析不出"保守跳过，界面却显示"已是最新"，无人察觉。
 	if probeErr == nil && remoteFilename != "" && remoteVersion == "" && remoteBuild == "" {
-		obslog.Emit("WARN", "acli_sync.build_parse_failed", "远端包名不符合已知命名约定，无法判序，保守跳过升级（可 force）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_sync.build_parse_failed", "远端包名不符合已知命名约定，无法判序，保守跳过升级（可 force）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"remote_filename": remoteFilename,
 		})
 	}
@@ -192,22 +190,22 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 	needInstall, decision := acliDecisionOutcome(decisionPlan, currentVer, msg.Force)
 	switch decision {
 	case "not_installed":
-		obslog.Emit("INFO", "acli_sync.not_installed", "HCI 未安装 acli，需要安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.not_installed", "HCI 未安装 acli，需要安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch,
 		})
 	case "force_install":
-		obslog.Emit("INFO", "acli_sync.force_install", "收到 force 标记，强制重新安装 acli", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.force_install", "收到 force 标记，强制重新安装 acli", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch,
 		})
 	case "retry_requested":
 		// 对抗性审查：若这里不显式置位，用户点「重试上传」很可能直接落到
 		// 「acli 已是最新」分支——按钮点了却什么都不发生，与“报错不管”等价。
 		// 用户的显式重试意图本身就是强制信号。
-		obslog.Emit("INFO", "acli_sync.retry_requested", "收到重试请求，强制执行对应阶段", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.retry_requested", "收到重试请求，强制执行对应阶段", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"retry_stage": retryStage, "current_version": currentVer, "current_build": currentBuild,
 		})
 	case "version_outdated":
-		obslog.Emit("INFO", "acli_sync.version_outdated", "acli 远端包更新，需要升级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.version_outdated", "acli 远端包更新，需要升级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"current_version": currentVer, "remote_version": remoteVersion,
 			"current_build": currentBuild, "remote_build": remoteBuild,
 			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
@@ -217,7 +215,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 		// 历史 bug：sameBuildDate 只判"是否相等"，预装的新包会被旧官方包误判"落后"
 		// 触发 --install --force 降级重装（Q2026111700614：1.0.3 被降到 1.0.0，
 		// 连带清掉插件目录与 core 专项）。这里显式跳过并留痕，降级永不自动发生。
-		obslog.Emit("INFO", "acli_sync.downgrade_blocked", "远端包更旧，禁止降级，跳过安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.downgrade_blocked", "远端包更旧，禁止降级，跳过安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"current_version": currentVer, "remote_version": remoteVersion,
 			"current_build": currentBuild, "remote_build": remoteBuild,
 			"current_date": buildDate(currentBuild), "remote_date": buildDate(remoteBuild),
@@ -225,13 +223,13 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 	case "probe_failed":
 		// B6：期望证据缺失（源探测失败/包名解析落空）时不得回"已是最新"。
 		// 旧实现只打一行日志就落进 up_to_date 分支，断网被伪装成最新。
-		obslog.Emit("WARN", "acli_sync.probe_failed", "期望证据缺失，未做升级判定（可强制更新）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_sync.probe_failed", "期望证据缺失，未做升级判定（可强制更新）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"probe_error": logcollect.ErrString(probeErr), "remote_filename": remoteFilename,
 			"current_version": currentVer,
 		})
 	}
 
-	obslog.Emit("INFO", "acli_sync.version_check", "acli 版本判定完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "acli_sync.version_check", "acli 版本判定完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"architecture": targetArch, "current_version": currentVer, "current_build": currentBuild,
 		"current_binary":  currentBinary,
 		"remote_filename": remoteFilename, "remote_build": remoteBuild, "remote_version": remoteVersion,
@@ -239,7 +237,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 	})
 
 	if !needInstall {
-		obslog.Emit("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"version": currentVer, "build": currentBuild, "decision": decision, "degraded": decisionPlan.Degraded,
 		})
 		upToDateMessage := "acli 工具已就绪且为最新版本"
@@ -276,7 +274,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			PluginSync:     pluginReceipt,
 			Degraded:       decisionPlan.Degraded,
 		})
-		obslog.Emit("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.up_to_date", "acli 已就绪无需安装", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": currentVer, "build": currentBuild,
 		})
 		return
@@ -299,7 +297,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 	if !diskProbed {
 		// B7：df 失败/输出不可解析不得静默跳过空间检查：留痕并降级继续安装，
 		// 回执如实标注"空间未验证"。旧实现 availableMB=0 让检查条件短路，无人察觉。
-		obslog.Emit("WARN", "acli_sync.disk_probe_failed", "磁盘空间探测失败，降级继续安装（可用空间未验证）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_sync.disk_probe_failed", "磁盘空间探测失败，降级继续安装（可用空间未验证）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"exit_code": spaceCode, "error": logcollect.ErrString(spaceErr), "output_preview": terminal.FormatOutputPreview(spaceOut, 256, 256),
 		})
 	}
@@ -316,7 +314,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			TraceID:      traceID,
 			Message:      fmt.Sprintf("/sf/data/local 目录可用空间不足（当前: %d MB, 最低需要: %d MB），请清理空间后重试", availableMB, minDiskMB),
 		})
-		obslog.Emit("ERROR", "acli_sync.disk_insufficient", "acli 安装前磁盘空间不足", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "acli_sync.disk_insufficient", "acli 安装前磁盘空间不足", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"available_mb": availableMB, "required_mb": minDiskMB, "key": key,
 		})
 		return
@@ -327,14 +325,14 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 	// 并发的两个上传会各自写 tmp 再 mv 到同一个 destPath，谁最后落盘完全取决于时序——
 	// 这正是“上传到 HCI 的包不对”的可行成因之一。宁可显式拒绝（可重试），
 	// 也不要让两次传输互相覆盖。
-	release, acquired := acquireAcliTransfer(b, key)
+	release, acquired := acquireAcliTransfer(key)
 	if !acquired {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
 			Architecture: targetArch, ErrorCode: logcollect.ErrInstallBusy, Stage: "upload",
 			Message: "上一次 acli 安装包传输仍在进行中，请等其结束后再重试（重复上传会互相覆盖同名文件）",
 		})
-		obslog.Emit("WARN", "acli_sync.busy", "acli 安装包传输进行中，拒绝并发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_sync.busy", "acli 安装包传输进行中，拒绝并发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"key": key,
 		})
 		return
@@ -351,17 +349,17 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 		if found := findRemoteAcliPackage(ctx, s); found != "" {
 			destPath = found
 			pkgName = found[strings.LastIndex(found, "/")+1:]
-			obslog.Emit("WARN", "acli_sync.remote_package_fallback", "官网文件名不可得，改用节点上已有的安装包", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("WARN", "acli_sync.remote_package_fallback", "官网文件名不可得，改用节点上已有的安装包", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"dest_path": destPath, "probe_error": logcollect.ErrString(probeErr),
 			})
 		}
 	}
 
-	obslog.Emit("INFO", "acli_sync.retry_stage", "acli 安装重试起点已确定", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "acli_sync.retry_stage", "acli 安装重试起点已确定", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"retry_stage": retryStage, "dest_path": destPath, "package_filename": pkgName,
 	})
 
-	cache := packageCache(b)
+	cache := packageCache()
 
 	// 8. 「只重跑安装 / 只重传」：先验证节点上那份包与本地基线是否一致。
 	// 不一致就不复用——上一轮正是因为“盘上那份包不对”才失败的，
@@ -373,22 +371,22 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 		size, algo, digest, missing, probeErr := probeRemoteAcliPackage(ctx, s, destPath)
 		switch {
 		case probeErr != nil:
-			obslog.Emit("WARN", "acli_sync.reuse_probe_failed", "探测节点已有安装包失败，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("WARN", "acli_sync.reuse_probe_failed", "探测节点已有安装包失败，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"dest_path": destPath, "error": logcollect.ErrString(probeErr),
 			})
 		case missing:
-			obslog.Emit("INFO", "acli_sync.reuse_missing", "节点上没有可用安装包，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("INFO", "acli_sync.reuse_missing", "节点上没有可用安装包，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"dest_path": destPath,
 			})
 		default:
 			if reuseErr := verifyReusedRemotePackage(cache.get(key), size, algo, digest); reuseErr == nil {
 				remoteReady = true
 				remoteSize, remoteAlgo, remoteDigest = size, algo, digest
-				obslog.Emit("INFO", "acli_sync.reuse_verified", "节点已有安装包与本地基线一致，复用并跳过传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				evidence.Emit("INFO", "acli_sync.reuse_verified", "节点已有安装包与本地基线一致，复用并跳过传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"dest_path": destPath, "remote_size": size, "remote_algo": algo, "remote_digest": digest,
 				})
 			} else {
-				obslog.Emit("WARN", "acli_sync.reuse_rejected", "节点上的安装包不可复用，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				evidence.Emit("WARN", "acli_sync.reuse_rejected", "节点上的安装包不可复用，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"dest_path": destPath, "reason": logcollect.ErrString(reuseErr),
 					"remote_size": size, "remote_algo": algo, "remote_digest": digest,
 				})
@@ -418,7 +416,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 				// 基线包（Data 为空，来自账本恢复）只能做校验基线，不能当上传字节。
 				if cached := cache.get(key); cached != nil && cached.Data != nil && retryStage == "upload" {
 					pkg = cached
-					obslog.Emit("INFO", "acli_sync.package_reused", "复用已校验的安装包缓存，跳过下载", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					evidence.Emit("INFO", "acli_sync.package_reused", "复用已校验的安装包缓存，跳过下载", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 						"size": cached.Size, "sha256": cached.SHA256, "md5": cached.MD5, "filename": cached.Filename,
 					})
 				} else {
@@ -432,13 +430,13 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 					pkg, transferErr = downloadAcliPackage(downloadCtx, downloadURL, remoteFilename, remoteBuild)
 					cancelDownload()
 					if transferErr != nil {
-						obslog.Emit("ERROR", "acli_sync.download_failed", "下载 acli 安装包失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+						evidence.Emit("ERROR", "acli_sync.download_failed", "下载 acli 安装包失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 							"attempt": attempt, "architecture": targetArch, "download_url": downloadURL, "error": logcollect.ErrString(transferErr),
 						})
 					} else {
 						cache.put(key, pkg)
 						// 摘要必须落日志：事后核对“当时到底下到了什么”只能靠这一行。
-						obslog.Emit("INFO", "acli_sync.download_verified", "acli 安装包下载完成并通过长度校验", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+						evidence.Emit("INFO", "acli_sync.download_verified", "acli 安装包下载完成并通过长度校验", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 							"attempt": attempt, "architecture": targetArch, "filename": pkg.Filename,
 							"size": pkg.Size, "declared_length": pkg.DeclaredLen,
 							"sha256": pkg.SHA256, "md5": pkg.MD5, "duration_ms": time.Since(downloadStart).Milliseconds(),
@@ -482,7 +480,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			// 失败：丢弃缓存。下一轮重新下载，排除“下载侧被污染”这一可能。
 			cache.drop(key)
 			pkg = nil
-			obslog.Emit("ERROR", "acli_sync.transfer_failed", "acli 安装包传输/校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("ERROR", "acli_sync.transfer_failed", "acli 安装包传输/校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"attempt": attempt, "dest_path": destPath, "error": logcollect.ErrString(transferErr),
 				"remote_size": writeRes.RemoteSize, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
 				"remote_fail_reason": writeRes.FailReason,
@@ -520,7 +518,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			PackageFilename: pkgName, PackagePath: destPath, Percent: 0,
 			Message: fmt.Sprintf("%s（已尝试 %d/%d 次）：%s", title, attempts, acliMaxAttempts, detail),
 		})
-		obslog.Emit("ERROR", "acli_sync.upload_failed", "acli 安装包上传失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "acli_sync.upload_failed", "acli 安装包上传失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"dest_path": destPath, "attempts": attempts, "retry_stage": retryStage,
 			"error_code": code, "stage": stage, "error": detail,
 		})
@@ -529,11 +527,11 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 
 	if remoteReady {
 		integrity = remoteAlgo
-		obslog.Emit("INFO", "acli_sync.upload_skipped", "复用节点上已校验的安装包，跳过上传", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.upload_skipped", "复用节点上已校验的安装包，跳过上传", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"dest_path": destPath, "remote_size": remoteSize, "remote_algo": remoteAlgo, "remote_digest": remoteDigest,
 		})
 	} else {
-		obslog.Emit("INFO", "acli_sync.upload_verified", "acli 安装包已上传并通过落盘校验", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.upload_verified", "acli 安装包已上传并通过落盘校验", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"dest_path": destPath, "architecture": targetArch, "attempts": attempts, "duration_ms": transferMS,
 			"package_size": pkgSize(pkg), "sha256": pkgSHA(pkg), "md5": pkgMD(pkg),
 			"remote_size": writeRes.RemoteSize, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
@@ -600,7 +598,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			// 无退出码但有错误：通常意味着 SSH 通道在安装过程中断开。
 			detail = "acli 安装命令异常中断（SSH 通道中断或远端 shell 退出）"
 		}
-		obslog.Emit("ERROR", "acli_sync.install_failed", "acli 安装命令执行失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "acli_sync.install_failed", "acli 安装命令执行失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"dest_path": destPath, "command": outcome.Command, "exit_code": outcome.ExitCode,
 			"duration_ms": outcome.DurationMS, "timed_out": installTimedOut,
 			"stdout_bytes": stdoutBytes, "stderr_bytes": stderrBytes,
@@ -621,7 +619,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 	}
 
 	// 安装器会把 acli 分发到集群各节点，输出里含节点与耗时，完整摘要回传远端供核对。
-	obslog.Emit("INFO", "acli_sync.install_done", "acli 集群分发安装完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "acli_sync.install_done", "acli 集群分发安装完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"dest_path": destPath, "command": outcome.Command, "exit_code": outcome.ExitCode,
 		"duration_ms": outcome.DurationMS, "stdout_bytes": stdoutBytes, "stderr_bytes": stderrBytes,
 		"package_size": reportedSize, "sha256": reportedSHA, "md5": reportedMD5,
@@ -649,11 +647,11 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			installedMessage += "\n提示：磁盘空间探测失败，本次安装未验证可用空间。"
 		}
 		if len(pluginStates) > 0 {
-			obslog.Emit("INFO", "acli_sync.node_plugin_verify", "安装后逐节点校验内置插件落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("INFO", "acli_sync.node_plugin_verify", "安装后逐节点校验内置插件落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"nodes": pluginStates, "missing": missingPluginNodes(pluginStates),
 			})
 			if missing := missingPluginNodes(pluginStates); len(missing) > 0 {
-				obslog.Emit("WARN", "acli_sync.node_plugin_missing", "部分节点内置插件未落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				evidence.Emit("WARN", "acli_sync.node_plugin_missing", "部分节点内置插件未落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"missing": missing, "nodes": pluginStates,
 				})
 				installedMessage += fmt.Sprintf("\n警示：节点 %s 的内置插件未落盘（明细见日志），请重试安装。", strings.Join(missing, ", "))
@@ -662,7 +660,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 
 		// 重装会清掉插件目录（含平台写入的 spc 场景清单）：如实观测并提示，
 		// 清单将在下次采集 create 时自动重新下发（目录重建已加固）。
-		obslog.Emit("WARN", "acli_sync.spc_reset", "acli 重装已重置插件目录，平台场景清单将在下次采集自动重新下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_sync.spc_reset", "acli 重装已重置插件目录，平台场景清单将在下次采集自动重新下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"spc_dir": logcollect.SpcDeployDir,
 		})
 		installedMessage += "\n提示：重装已重置插件目录（含场景清单），平台场景清单将在下次采集自动重新下发。"
@@ -693,7 +691,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 			PluginSync: pluginReceipt,
 			Degraded:   !diskProbed,
 		})
-		obslog.Emit("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": newVer, "build": newBuild, "key": key,
 			"package_size": reportedSize, "sha256": reportedSHA, "md5": reportedMD5,
 			"integrity_state": integrity, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
@@ -704,7 +702,7 @@ func HandleAcliSync(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui
 
 	// 安装命令成功但版本探测失败：包是完整的、装也装完了，问题在可执行入口，
 	// 因此给 verify 阶段码并允许「重试安装」（重跑安装会重建 /sf/bin 软链）。
-	obslog.Emit("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"exit_code": verifyCode, "output_preview": terminal.FormatOutputPreview(verifyOut, 512, 512),
 		"dest_path": destPath, "integrity_state": integrity,
 	})
@@ -856,7 +854,7 @@ func acliDiskSpaceDecision(out string, exitCode int, runErr error, minDiskMB int
 // 未做升级判定（B6：不得回"已是最新"）。
 //
 // S4b：判定本体拆到 acliSyncDecision（descriptor + reconcile.Compare 驱动），
-// 这里只做 Plan → 既有事件名的映射，obslog.Emit switch 与旧单测的判定名不变。
+// 这里只做 Plan → 既有事件名的映射，evidence.Emit switch 与旧单测的判定名不变。
 //
 // 判序优先级（第一性原理：用最直接的权威信号，代理信号只做兜底）：
 //  1. 版本号：新包名携带 semver，本地 `acli --version` 同源可比。版本不同直接定序——

@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"golang.org/x/net/websocket"
 	"hash"
 	"io"
 	"net/http"
@@ -25,16 +26,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"time"
-
-	"golang.org/x/net/websocket"
-
-	"terminal_bridge/internal/shared/remote"
 )
 
 const (
@@ -234,7 +232,7 @@ func FileDigest(path, algo string) (string, error) {
 //
 // 平台的 init / complete 由前端调用（需要客户身份），bridge 只拿到数据面 token，
 // 因此这里不接触控制面接口，职责边界清晰。
-func handleLogCollectTransfer(b *app.Bridge,
+func handleLogCollectTransfer(b *session.Hub,
 	ctx context.Context,
 	ws *websocket.Conn,
 	s *sshx.SSHSession,
@@ -264,7 +262,7 @@ func handleLogCollectTransfer(b *app.Bridge,
 	fail := func(code, message string, progress logCollectTransferProgress) error {
 		progress.Stage = "failed"
 		emit("error", progress, message, code)
-		obslog.Emit("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "error_code": code, "error": message,
 			"stage": progress.Stage, "pulled_bytes": progress.PulledBytes,
 			"uploaded_parts": progress.UploadedParts, "part_count": progress.PartCount,
@@ -379,7 +377,7 @@ func handleLogCollectTransfer(b *app.Bridge,
 	progress.Stage = "done"
 	progress.Percent = 100
 	emit("ok", progress, "", "")
-	obslog.Emit("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"task_id": taskID, "size": progress.Size, "sha256": progress.Sha256,
 		"part_count": partCount, "local_path": localPath,
 	})
