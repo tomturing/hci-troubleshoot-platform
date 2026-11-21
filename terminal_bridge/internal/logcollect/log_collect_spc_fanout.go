@@ -611,7 +611,7 @@ func RunSpcOnHostStreams(s *sshx.SSHSession, ctx context.Context, ip string, loc
 func SpcNodeList(s *sshx.SSHSession, ctx context.Context) []logCollectHostOption {
 	probeCtx, cancel := context.WithTimeout(ctx, spcHostCommandTimeout)
 	defer cancel()
-	output, _, err := RunCommandPty(s, probeCtx, logCollectAcliInvoke("--formatter json platform node list"), spcHostCommandTimeout)
+	output, _, err := s.RunCommandPty(probeCtx, logCollectAcliInvoke("--formatter json platform node list"), spcHostCommandTimeout)
 	if err != nil {
 		return nil
 	}

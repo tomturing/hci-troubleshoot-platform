@@ -105,7 +105,7 @@ func main() {
 	app.StartSessionReaper(bridge, app.SessionIdleTTL())
 	// 交付执行器：启动即扫描并恢复未完成作业。执行权在 bridge，
 	// 浏览器是否在线不影响；前端只通过 job_status 轮询进度。
-	delivery.DeliveryRunnerInstance = delivery.NewDeliveryRunner(bridge.Hub, bridge)
+	delivery.DeliveryRunnerInstance = delivery.NewDeliveryRunner(bridge.Hub, deliveryReconnector{b: bridge})
 	delivery.DeliveryRunnerInstance.Start()
 	obslog.Emit("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
 		"version":         getVersion(),

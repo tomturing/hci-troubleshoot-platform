@@ -26,8 +26,8 @@ import (
 	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
-	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/sshx/session"
 	"time"
 )
@@ -83,13 +83,32 @@ const (
 	maxDeliveryDNSAttempts = 3
 )
 
-// Reconnector 是 delivery 唯一需要的装配层能力：交付期间会话掉线后，
-// 用已保存的认证在后台重建连接（实现方是 app.Bridge）。
+// NodeSession 是 delivery 需要的节点能力：remote 执行原语 + 会话生命周期保护。
 //
-// 为什么用端口而不是直接收 *app.Bridge：域反向依赖装配层是阶段 2 要清的债，
-// 而且只依赖这一个方法的接口可以让编排单测注入假实现，不必构造完整 Bridge。
+// 为什么不再直接用 NodeSession：端口化的价值在于编排逻辑可以离线验证
+// （Fake 实现即可），而 shared/remote 早就用 fakeRunner 做到了这一点，
+// delivery 却一直持具体类型、只能靠集成测试。这里把执行与生命周期两组能力
+// 收成一个端口，具体类型只在装配层出现。
+type NodeSession interface {
+	remote.Runner
+	remote.StreamsRunner
+	remote.StreamRunner
+	BeginLongTask()
+	EndLongTask()
+	StartShellHeartbeat(caseID string) func()
+	MarkBusy()
+	// RunCommandPty 在独立通道上分配伪终端执行（acli 命令需要 tty）。
+	RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error)
+}
+
+// Reconnector 是 delivery 需要的装配层能力：
+//   - Wrap：把注册表里的会话适配成节点端口（只有装配层知道具体类型）；
+//   - ReconnectDeliveryNode：会话掉线后用已保存的认证在后台重建。
+//
+// 为什么用端口而不是直接收 *app.Bridge：域反向依赖装配层是阶段 2 要清的债。
 type Reconnector interface {
-	ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSHSession, error)
+	Wrap(key string) NodeSession
+	ReconnectDeliveryNode(caseID, nodeIP, connID string) (NodeSession, error)
 }
 
 // deliveryRunner 是进程级单例。
@@ -613,7 +632,7 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 	session := r.sessionFor(job)
 	if session != nil {
 		// 交付的每个需要节点的步骤都是"业务使用"：与日志采集一样没有显式包裹，
-		// 靠时间窗保护会话不被空闲租约回收（见 sshx.SSHSession.markBusy）。
+		// 靠时间窗保护会话不被空闲租约回收（见 sshx.SSHSession 的 MarkBusy 语义）。
 		session.MarkBusy()
 	}
 	if err := requireSessionForPhase(job.Phase, session); err != nil {
@@ -687,10 +706,11 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 // 仅当本阶段确实需要节点时才尝试重连：上传/收尾只读本地副本与平台，不该为它们
 // 去敲一条 SSH 连接（否则会在不需要时开连接、甚至因节点不可达而误报 needs_reauth）。
 // 两个分支都落空才返回 nil（由调用方转成 needs_reauth）。
-func (r *deliveryRunner) sessionFor(job *deliveryJob) *sshx.SSHSession {
-	sess, _, _ := r.hub.ResolveForNode(models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
+func (r *deliveryRunner) sessionFor(job *deliveryJob) NodeSession {
+	sess, key, _ := r.hub.ResolveForNode(models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
 	if sess != nil {
-		return sess
+		// 具体类型的适配只有装配层知道，这里通过端口取回可执行对象。
+		return r.reconnect.Wrap(key)
 	}
 	if !deliveryPhaseNeedsNode(job.Phase) {
 		return nil
@@ -718,7 +738,7 @@ func deliveryPhaseNeedsNode(phase deliveryPhase) bool {
 }
 
 // requireSessionForPhase 只在真的需要节点时，把"没有会话"判定为需要重新认证。
-func requireSessionForPhase(phase deliveryPhase, session *sshx.SSHSession) error {
+func requireSessionForPhase(phase deliveryPhase, session NodeSession) error {
 	if session == nil && deliveryPhaseNeedsNode(phase) {
 		return &deliveryAuthError{reason: "SSH 会话不存在（需重新连接节点）"}
 	}
@@ -734,14 +754,14 @@ func requireSessionForPhase(phase deliveryPhase, session *sshx.SSHSession) error
 // `done=1/total=1`，只看 Done>=Total 就会在 4 秒内把上一次的完成当成本次完成，
 // 然后去拉一个已被覆盖/不存在的包（2026-10-27 现场 48f890d5）。
 // 归属判据：磁盘上那个包的 mtime 不能早于本次任务开始时间。
-func (r *deliveryRunner) waitCollect(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
+func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, job *deliveryJob) error {
 	deadline := time.Now().Add(deliveryCollectTimeout)
 	interval := 10 * time.Second
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("等待采集完成超时（%s）", deliveryCollectTimeout)
 		}
-		output, _, err := logcollect.RunCommandPty(session, ctx, "acli log_collect progress", 60*time.Second)
+		output, _, err := session.RunCommandPty(ctx, "acli log_collect progress", 60*time.Second)
 		if err == nil {
 			progress := logcollect.ParseLogCollectProgress(output)
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
@@ -817,7 +837,7 @@ const (
 )
 
 // statArchiveSize 取节点上压缩包的字节数；stat 不可用时退回两级探测。
-func statArchiveSize(ctx context.Context, session *sshx.SSHSession, path string) (int64, bool) {
+func statArchiveSize(ctx context.Context, session NodeSession, path string) (int64, bool) {
 	if strings.TrimSpace(path) == "" {
 		return 0, false
 	}
@@ -846,7 +866,7 @@ func statArchiveSize(ctx context.Context, session *sshx.SSHSession, path string)
 //
 // EOCD 校验手段缺失（受限 shell 没有 tail/od/tr/grep）时降级为只看大小稳定，
 // 与 prepareDirect 同一取舍：少一个观测手段不该阻断交付。
-func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *sshx.SSHSession, job *deliveryJob, path string) (int64, error) {
+func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session NodeSession, job *deliveryJob, path string) (int64, error) {
 	deadline := time.Now().Add(deliveryArchiveSettleTimeout)
 	var last int64
 	for {
@@ -893,7 +913,7 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session *sshx.S
 // 大小探测必须与 progress/stat 动作共用 logcollect.ProbeLogCollectArchive：Q2026102900165
 // （2026-10-29）现场证明 aSV 受限 shell 没有 stat（exit 127），只写单条 stat 的实现
 // 会把盘上 29.9 MB 的包报成"源包不可读"，让补交付在最后一步永远走不通。
-func (r *deliveryRunner) prepareDirect(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
+func (r *deliveryRunner) prepareDirect(ctx context.Context, session NodeSession, job *deliveryJob) error {
 	sourcePath := strings.TrimSpace(job.SourcePath)
 	if sourcePath == "" {
 		return fmt.Errorf("缺少源包路径，无法交付")
@@ -968,7 +988,7 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session *sshx.SSHSes
 // 为什么失败不阻断：HCI 可能既没有 sha256sum 也没有 md5sum（精简系统），取不到
 // 摘要不等于包坏了。此时降级为 unverified，并在 UI 上明示"未校验源包"，
 // 让用户自己决定是否接受——比直接让 20 GiB 的采集白跑更合理。
-func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) {
+func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session NodeSession, job *deliveryJob) {
 	if session == nil || strings.TrimSpace(job.SourcePath) == "" {
 		return
 	}
@@ -1015,7 +1035,7 @@ var errArchiveCompleteUnverifiable = errors.New("节点缺少 tail/od/tr/grep，
 // 失败必须分两类：命令不可用（126/127 或 stderr 报 not found）返回
 // errArchiveCompleteUnverifiable，由调用方降级放行；只有命令真跑了且没找到标记，
 // 才说明包还在写入中。混在一起会让没有 tail 的受限 shell 永远交付不上去。
-func verifyArchiveComplete(ctx context.Context, session *sshx.SSHSession, path string) error {
+func verifyArchiveComplete(ctx context.Context, session NodeSession, path string) error {
 	command := fmt.Sprintf(
 		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
 		logcollect.ShellQuote(path),
@@ -1039,7 +1059,7 @@ func verifyArchiveComplete(ctx context.Context, session *sshx.SSHSession, path s
 }
 
 // statArchiveMTime 读取节点上文件的修改时间，用于判断包归属。
-func statArchiveMTime(ctx context.Context, session *sshx.SSHSession, path string) (time.Time, error) {
+func statArchiveMTime(ctx context.Context, session NodeSession, path string) (time.Time, error) {
 	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", logcollect.ShellQuote(path)))
 	if err != nil {
 		return time.Time{}, err
@@ -1099,7 +1119,7 @@ func (r *deliveryRunner) pendingLocalBytes(excludeJobID, dir string) int64 {
 	return total
 }
 
-func (r *deliveryRunner) pull(ctx context.Context, session *sshx.SSHSession, job *deliveryJob) error {
+func (r *deliveryRunner) pull(ctx context.Context, session NodeSession, job *deliveryJob) error {
 	if strings.TrimSpace(job.SourcePath) == "" {
 		return fmt.Errorf("缺少源包路径，无法拉取")
 	}

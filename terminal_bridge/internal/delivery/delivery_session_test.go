@@ -47,7 +47,7 @@ func TestRequireSessionForPhase(t *testing.T) {
 
 	// 有会话时任何阶段都不该被拦。
 	for _, phase := range []deliveryPhase{phaseWaitingCollect, phasePulling, phaseUploading, phaseCompleting} {
-		if err := requireSessionForPhase(phase, &sshx.SSHSession{}); err != nil {
+		if err := requireSessionForPhase(phase, sshx.NewSSHRunner(&sshx.SSHSession{})); err != nil {
 			t.Fatalf("phase=%s 有会话时不应报错：%v", phase, err)
 		}
 	}

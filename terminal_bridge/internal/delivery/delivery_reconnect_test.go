@@ -50,9 +50,10 @@ func TestDeliverySessionForLiveSession(t *testing.T) {
 	b := session.NewHub()
 	sess := &sshx.SSHSession{CaseID: "case-x", CreatedAt: time.Now()}
 	b.Set(session.SessionKey("case-x", "10.0.0.1"), sess)
-	r := &deliveryRunner{hub: b, reconnect: noopReconnector{}}
+	wrapped := sshx.NewSSHRunner(sess)
+	r := &deliveryRunner{hub: b, reconnect: staticReconnector{wrap: wrapped}}
 	job := &deliveryJob{CaseID: "case-x", NodeIP: "10.0.0.1", Phase: phasePulling}
-	if got := r.sessionFor(job); got != sess {
+	if got := r.sessionFor(job); got != NodeSession(wrapped) {
 		t.Fatalf("期望复用已有会话，得到 %v", got)
 	}
 }
@@ -71,8 +72,21 @@ func TestDeliverySessionForNoAuthReturnsNil(t *testing.T) {
 // noopReconnector 是 Reconnector 的空实现：这些用例只验证"不触发重连"的路径。
 type noopReconnector struct{}
 
-func (noopReconnector) ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSHSession, error) {
+func (noopReconnector) Wrap(key string) NodeSession { return nil }
+
+func (noopReconnector) ReconnectDeliveryNode(caseID, nodeIP, connID string) (NodeSession, error) {
 	return nil, errNoAuthForTest
 }
 
 var errNoAuthForTest = io.EOF
+
+// staticReconnector 固定返回一个已适配的节点端口，用于验证"复用已有会话"的路径。
+type staticReconnector struct {
+	wrap NodeSession
+}
+
+func (s staticReconnector) Wrap(key string) NodeSession { return s.wrap }
+
+func (s staticReconnector) ReconnectDeliveryNode(caseID, nodeIP, connID string) (NodeSession, error) {
+	return nil, errNoAuthForTest
+}

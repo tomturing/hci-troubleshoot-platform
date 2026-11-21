@@ -7,11 +7,15 @@
 1. shared/* 禁止 import 任何功能域、sshx、app、cmd（原语不认识上层）；
 2. remote 与 uplink 互不 import（两张脸各自独立）；
 3. reconcile 禁止 import delivery/logcollect（骨架不认识消费者，含于规则1）；
-4. sshx/app 禁止反向依赖四个业务域 acli/logcollect/delivery/sftp。
+4. sshx/app 禁止反向依赖四个业务域 acli/logcollect/delivery/sftp；
+6. 业务域禁止 import app（装配层只向下依赖，域不认识装配壳）；
+7. PORT_ONLY_DOMAINS 中的域禁止 import sshx 具体类型（只允许端口 + shared 原语）。
 
-冻结基线（只减不增）：
+冻结基线（只减不增 + 到期作废）：
 5. 功能域之间的既有互 import 是搬迁前遗留（解环属逻辑收口 S1-S4/uplink 阶段），
    以 BASELINE_DOMAIN_EDGES 冻结现状：新增跨域边直接失败；删除后请同步收紧基线。
+   基线带 BASELINE_SUNSET：到期后即使没有新增也会失败，逼迫后续阶段真的收紧，
+   避免"现状被永久合法化"（审查文档 §10.2 盲区 3）。
 """
 from __future__ import annotations
 
@@ -23,6 +27,12 @@ ROOT = Path(__file__).resolve().parents[1] / "terminal_bridge"
 BASE = "terminal_bridge/internal/"
 DOMAINS = ["acli", "logcollect", "delivery", "sftp", "terminal"]
 BUSINESS = ["acli", "logcollect", "delivery", "sftp"]
+
+# 禁止 import sshx 具体类型的域：它们必须只依赖端口（可用 Fake 离线验证编排）。
+PORT_ONLY_DOMAINS = {"delivery"}
+
+# 基线到期日：到期后基线本身成为失败项，必须收紧而不是继续冻结现状。
+BASELINE_SUNSET = "2026-12-31"
 
 # R0 搬迁完成时的域间依赖现状（含测试）；逻辑收口阶段逐步清零。
 BASELINE_DOMAIN_EDGES = {
@@ -63,6 +73,19 @@ def main() -> int:
             for imp in imps:
                 if imp in [BASE + d for d in BUSINESS]:
                     violations.append(f"[禁令4] {rel} -> {imp}")
+        # 规则6：业务域不得反向依赖装配层（阶段 2 验收）
+        if rel.startswith(tuple(f"internal/{d}/" for d in DOMAINS)):
+            for imp in imps:
+                if imp == BASE + "app":
+                    violations.append(f"[禁令6] {rel} -> {imp}（业务域不得依赖装配层 app）")
+        # 规则7：指定域不得持 sshx 具体类型（只能依赖端口）。
+        # 只约束生产代码：测试用真实类型构造夹具是合理的，逼测试造更假的假货会失真。
+        if not rel.endswith("_test.go"):
+            for d in PORT_ONLY_DOMAINS:
+                if rel.startswith(f"internal/{d}/"):
+                    for imp in imps:
+                        if imp == BASE + "sshx":
+                            violations.append(f"[禁令7] {rel} -> {imp}（{d} 只允许端口，不得持 sshx 具体类型）")
         # 规则5：域间边收集
         for d in DOMAINS:
             if rel.startswith(f"internal/{d}/"):
@@ -77,6 +100,15 @@ def main() -> int:
     removed = BASELINE_DOMAIN_EDGES - current_edges
     if removed:
         print("[info] 以下跨域依赖已消除，请收紧 BASELINE_DOMAIN_EDGES:", sorted(removed))
+
+    # 基线到期检查：到期后基线不再被认可，必须收紧（sunset 机制）
+    if current_edges & BASELINE_DOMAIN_EDGES:
+        from datetime import date
+        if date.today() > date.fromisoformat(BASELINE_SUNSET):
+            violations.append(
+                f"[禁令5-基线过期] BASELINE_DOMAIN_EDGES 已过 sunset {BASELINE_SUNSET}，"
+                "请收紧基线（现状不得被永久合法化）"
+            )
 
     if violations:
         print("import 禁令扫描失败:")

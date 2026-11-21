@@ -178,12 +178,12 @@ func progressStep(total int64) int64 {
 // "每次重新 stat 量源包 / 长任务心跳抗 TMOUT=600 / 磁盘 admission 预检 /
 // 失败回填 PulledBytes" 都是交付编排语义，不属拉取原语，因此原地不动。
 // 收口前"两份拉取实现"的差异由此消除：两个调用方现在共用同一段字节逻辑。
-func PullArchive(s *sshx.SSHSession, ctx context.Context,
+func PullArchive(r remote.StreamRunner, ctx context.Context,
 	remotePath string,
 	localPath string,
 	totalSize int64,
 	onProgress func(written, total int64)) (int64, string, error) {
-	result, err := remote.Pull(ctx, sshx.NewSSHRunner(s), remote.PullSpec{
+	result, err := remote.Pull(ctx, r, remote.PullSpec{
 		RemotePath: remotePath,
 		LocalPath:  localPath,
 		TotalSize:  totalSize,
@@ -312,7 +312,7 @@ func handleLogCollectTransfer(b *session.Hub,
 	}
 	emit("ok", progress, "", "")
 
-	written, sum, err := PullArchive(s, ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
+	written, sum, err := PullArchive(sshx.NewSSHRunner(s), ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
 		progress.PulledBytes = done
 		progress.TotalSize = total
 		if total > 0 {

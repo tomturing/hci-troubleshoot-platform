@@ -295,7 +295,7 @@ func TestManualLogCollectProbe(t *testing.T) {
 		t.Fatal("未探测到 acli 安装")
 	}
 
-	output, exitCode, err := RunCommandPty(session, ctx, "acli log_collect progress", 30*time.Second)
+	output, exitCode, err := session.RunCommandPty(ctx, "acli log_collect progress", 30*time.Second)
 	if err != nil {
 		t.Fatalf("progress 执行失败：%v", err)
 	}

@@ -13,9 +13,7 @@ package logcollect
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
 	"regexp"
 	"strconv"
@@ -354,51 +352,6 @@ func redactUploadTicket(command, uploadTicket string) string {
 	return strings.ReplaceAll(command, uploadTicket, "[REDACTED]")
 }
 
-// RunCommandPty 在独立 Session 上分配伪终端执行命令并返回合并输出。
-// 超时后强制关闭 Session（仅发信号在部分 sshd 上不足以终止容器内进程）。
-func RunCommandPty(s *sshx.SSHSession, ctx context.Context, command string, timeout time.Duration) (string, int, error) {
-	session, err := s.Client.NewSession()
-	if err != nil {
-		return "", -1, err
-	}
-	defer session.Close()
-
-	if err := session.RequestPty("xterm-256color", terminal.PtyTerminalHeight, terminal.PtyTerminalWidth, terminal.PtyTerminalModes()); err != nil {
-		return "", -1, fmt.Errorf("request pty: %w", err)
-	}
-
-	type execOutcome struct {
-		output []byte
-		err    error
-	}
-	outcomeCh := make(chan execOutcome, 1)
-	go func() {
-		output, runErr := session.CombinedOutput(command)
-		outcomeCh <- execOutcome{output: output, err: runErr}
-	}()
-
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	select {
-	case <-execCtx.Done():
-		_ = session.Signal(ssh.SIGKILL)
-		_ = session.Close()
-		return "", -1, execCtx.Err()
-	case outcome := <-outcomeCh:
-		exitCode := 0
-		if outcome.err != nil {
-			var exitErr *ssh.ExitError
-			if errors.As(outcome.err, &exitErr) {
-				exitCode = exitErr.ExitStatus()
-			} else {
-				exitCode = -1
-			}
-		}
-		return terminal.NormalizePtyOutput(string(outcome.output)), exitCode, nil
-	}
-}
-
 // logCollectProbeResult 是前端确认安装与选择上传方式所需的最小事实集合。
 type logCollectProbeResult struct {
 	Architecture  string `json:"architecture"`
@@ -502,10 +455,10 @@ func confirmLogServerReachability(
 func probeLogCollectEnv(s *sshx.SSHSession, ctx context.Context, logServerURL string) logCollectProbeResult {
 	result := logCollectProbeResult{LogServerURL: logServerURL}
 
-	archOut, _, _ := RunCommandPty(s, ctx, "uname -m", 10*time.Second)
+	archOut, _, _ := s.RunCommandPty(ctx, "uname -m", 10*time.Second)
 	result.Architecture = strings.TrimSpace(archOut)
 
-	versionOut, _, _ := RunCommandPty(s, ctx, BuildAcliVersionCommand(), 10*time.Second)
+	versionOut, _, _ := s.RunCommandPty(ctx, BuildAcliVersionCommand(), 10*time.Second)
 	// 版本解析唯一实现在 remote.ParseVersionOutput（acli.ParseAcliVersion 为其薄包装）。
 	vinfo := remote.ParseVersionOutput(versionOut)
 	result.AcliVersion, result.AcliBuildTime = vinfo.Version, vinfo.BuildTime
@@ -516,14 +469,14 @@ func probeLogCollectEnv(s *sshx.SSHSession, ctx context.Context, logServerURL st
 	// 早期 return 不能把它们一起丢掉。
 	probeLogCollectCatalog(s, ctx, &result)
 
-	spaceOut, _, _ := RunCommandPty(s, ctx, "df -P -m /sf/data/local | tail -1 | awk '{print $4}'", 10*time.Second)
+	spaceOut, _, _ := s.RunCommandPty(ctx, "df -P -m /sf/data/local | tail -1 | awk '{print $4}'", 10*time.Second)
 	result.AvailableMB, _ = strconv.ParseInt(strings.TrimSpace(spaceOut), 10, 64)
 
 	curlProbe := fmt.Sprintf(
 		`curl -s -o /dev/null -w '%%{http_code} %%{time_total}' --connect-timeout 5 --max-time 8 --noproxy '*' %s`,
 		ShellQuote(logServerURL))
 	sample := func() logServerProbeSample {
-		probeOut, probeCode, probeErr := RunCommandPty(s, ctx, curlProbe, 15*time.Second)
+		probeOut, probeCode, probeErr := s.RunCommandPty(ctx, curlProbe, 15*time.Second)
 		if probeErr != nil || probeCode != 0 {
 			return logServerProbeSample{
 				TransportFailed: true,
@@ -574,7 +527,7 @@ func probeLogCollectCatalog(s *sshx.SSHSession, ctx context.Context, result *log
 
 	// 实机验证：`acli log_collect create --help` 会以 exit code 1 结束
 	// （插件把 --help 判为未定义参数），但正文已完整打印，因此只认输出内容、不认退出码。
-	helpOut, _, _ := RunCommandPty(s, ctx, logCollectAcliInvoke("log_collect create --help"), 8*time.Second)
+	helpOut, _, _ := s.RunCommandPty(ctx, logCollectAcliInvoke("log_collect create --help"), 8*time.Second)
 	// 同一份 help 文本顺便回答"能不能给上传请求加头"：
 	// P1 直传要过 5888 的鉴权，全靠 `-L|--url-header` 注入票据。
 	// 老版本没有这个参数，结果只能落 P2，必须让前端提前知道而不去撞 401。
@@ -608,13 +561,13 @@ func probeLogCollectCatalog(s *sshx.SSHSession, ctx context.Context, result *log
 		result.CatalogNote = "acli 帮助解析失败，使用平台内置场景目录"
 	}
 
-	nodeOut, _, _ := RunCommandPty(s, ctx, logCollectAcliInvoke("--formatter json platform node list"), 8*time.Second)
+	nodeOut, _, _ := s.RunCommandPty(ctx, logCollectAcliInvoke("--formatter json platform node list"), 8*time.Second)
 	result.Hosts = parseLogCollectNodeList(nodeOut)
 	if len(result.Hosts) == 0 {
 		// 主命令失败不等于"没有节点"：旧版 acli（1.0.0）会因 cgroup 读取失败只输出错误行。
 		// 备选命令 `host list` 在部分构建中存在；不存在时只是多一条失败输出，
 		// 不影响主流程，也不会把"命令缺失"误报成"节点为空"。
-		if altOut, _, altErr := RunCommandPty(s, ctx, logCollectAcliInvoke("--formatter json host list"), 8*time.Second); altErr == nil {
+		if altOut, _, altErr := s.RunCommandPty(ctx, logCollectAcliInvoke("--formatter json host list"), 8*time.Second); altErr == nil {
 			if altHosts := parseLogCollectNodeList(altOut); len(altHosts) > 0 {
 				result.Hosts = altHosts
 				result.CatalogNote = appendProbeNote(result.CatalogNote, "节点清单取自备选命令 host list")
@@ -1196,13 +1149,13 @@ func parseSourceDigestOutput(output string) (algo, digest, note string) {
 }
 
 // ProbeSourceDigest 在节点上取一次源包摘要（尽力而为，不阻断交付）。
-func ProbeSourceDigest(s *sshx.SSHSession, ctx context.Context, path string) (string, string, error) {
-	if s == nil {
+func ProbeSourceDigest(r remote.Runner, ctx context.Context, path string) (string, string, error) {
+	if r == nil {
 		return "", "", fmt.Errorf("no-session")
 	}
 	digestCtx, cancel := context.WithTimeout(ctx, logCollectDigestTimeout)
 	defer cancel()
-	output, _, err := s.RunQuickCommand(digestCtx, buildSourceDigestCommand(path))
+	output, _, err := r.RunQuickCommand(digestCtx, buildSourceDigestCommand(path))
 	if err != nil {
 		return "", "", fmt.Errorf("摘要命令执行失败: %w", err)
 	}
@@ -1342,8 +1295,8 @@ func saidMissingBy(a archiveProbeAttempt) bool {
 // 两级降级的必要性见 decideArchiveProbe：aSV 受限 shell 只给了一份受控命令白名单，
 // stat 不在其中而 ls 在。两级结果与逐级诊断（含 exit 与 stderr）一并回给调用方，
 // 现场再遇到“面板说包没了”时能直接指出是哪一级、错在哪里。
-func ProbeLogCollectArchive(ctx context.Context, s *sshx.SSHSession, rawPath string) archiveProbe {
-	if s == nil {
+func ProbeLogCollectArchive(ctx context.Context, r remote.StreamsRunner, rawPath string) archiveProbe {
+	if r == nil {
 		return archiveProbe{Level: "none", Diag: "no-session"}
 	}
 	if strings.TrimSpace(rawPath) == "" {
@@ -1353,8 +1306,8 @@ func ProbeLogCollectArchive(ctx context.Context, s *sshx.SSHSession, rawPath str
 	if err != nil {
 		return archiveProbe{Level: "none", Diag: "path-rejected: " + err.Error()}
 	}
-	statOut, statErr, statCode, statCmdErr := s.RunQuickCommandStreams(ctx, fmt.Sprintf("stat -c %%s %s", ShellQuote(path)))
-	lsOut, lsErr, lsCode, lsCmdErr := s.RunQuickCommandStreams(ctx, fmt.Sprintf("ls -l %s", ShellQuote(path)))
+	statOut, statErr, statCode, statCmdErr := r.RunQuickCommandStreams(ctx, fmt.Sprintf("stat -c %%s %s", ShellQuote(path)))
+	lsOut, lsErr, lsCode, lsCmdErr := r.RunQuickCommandStreams(ctx, fmt.Sprintf("ls -l %s", ShellQuote(path)))
 	return decideArchiveProbe(
 		archiveProbeAttempt{Stdout: statOut, Stderr: statErr, Code: statCode, Err: statCmdErr},
 		archiveProbeAttempt{Stdout: lsOut, Stderr: lsErr, Code: lsCode, Err: lsCmdErr},
@@ -1777,7 +1730,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 			command += " -c " + ShellQuote(configPath)
 		}
 		archiveStaleLogCollectArchive(ctx, s, msg.CaseID, traceID, cui)
-		output, exitCode, err := RunCommandPty(s, ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
+		output, exitCode, err := s.RunCommandPty(ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
 		status := "ok"
 		code := ""
 		// 失败原因优先取进程错误，其次取 acli 输出里的首个失败行。
@@ -1801,7 +1754,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		} else {
 			// 第一性原理：退出码不是"任务已建立"的证据。必须正向确认一次。
 			ack := confirmLogCollectCreate(ctx, logCollectCreateAckInterval, func(ackCtx context.Context) (string, int, error) {
-				out, ec, runErr := RunCommandPty(s, ackCtx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
+				out, ec, runErr := s.RunCommandPty(ackCtx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
 				return out, ec, runErr
 			})
 			ackState, ackStates = ack.State, ack.States
@@ -1938,7 +1891,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		}
 
 	case "progress":
-		output, exitCode, err := RunCommandPty(s, ctx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
+		output, exitCode, err := s.RunCommandPty(ctx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
 		progress := ParseLogCollectProgress(output)
 		progress.NodeState = classifyLogCollectNodeState(progress)
 		// 这里刻意**不用** stat 结果判断"完成归属"：P1 直传成功后插件会自删压缩包，
@@ -1966,7 +1919,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		// 判定任务已完成，回填一个未经验证的推导路径会让它在"任务被清理但包还在"时误判完成。
 		// 大小是纯展示字段，不参与状态机，因此只补 size。
 		// 诊断信息跟着进度事件一起落库：量不到时必须留下"为什么量不到"。
-		archiveProbeResult := ProbeLogCollectArchive(ctx, s, probePath)
+		archiveProbeResult := ProbeLogCollectArchive(ctx, sshx.NewSSHRunner(s), probePath)
 		progress.ArchiveSize = archiveProbeResult.Size
 		// 存在性必须跟着进度一起回给前端：判断"能不能补交付"只认这个结论，
 		// 不认报告里的 archive_path（那个字段在包被删后仍然存在）。
@@ -2070,7 +2023,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 			})
 			return
 		}
-		probed := ProbeLogCollectArchive(ctx, s, path)
+		probed := ProbeLogCollectArchive(ctx, sshx.NewSSHRunner(s), path)
 		logData := map[string]any{
 			"path": path, "size": probed.Size,
 			"exists": probed.Exists, "probe_level": probed.Level,
@@ -2118,7 +2071,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		outcome = "ok"
 
 	case "cancel":
-		output, exitCode, err := RunCommandPty(s, ctx, logCollectAcliInvoke("log_collect cancel"), logCollectCancelTimeout)
+		output, exitCode, err := s.RunCommandPty(ctx, logCollectAcliInvoke("log_collect cancel"), logCollectCancelTimeout)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
