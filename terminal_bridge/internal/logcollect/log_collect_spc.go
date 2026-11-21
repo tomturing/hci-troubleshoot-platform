@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"terminal_bridge/internal/shared/cluster"
 	"terminal_bridge/internal/shared/remote"
 )
 
@@ -26,7 +27,7 @@ const (
 	// SpcDeployDir 是日志收集唯一使用的场景清单目录：acli 插件自部署，平台负责写入/恢复。
 	// 2026-11-17 现场确认节点上另有 aDeploy 下的同名 spc 目录，属正常现象，日志收集不关心。
 	// 固定路径由平台自己部署，探测（find）只增加误判面，不产生任何新信息，故直接使用。
-	SpcDeployDir = "/sf/data/local/acli/plugins/log_collect/tools/lmt_collect_info/support_bundle_cluster/spc"
+	SpcDeployDir = cluster.LogCollectSpcDir
 )
 
 var (
@@ -42,7 +43,7 @@ var (
 // 被清的固定目录重建出来，否则 spc_dir_missing 会挡住自定义/默认场景下发。
 // 该路径是平台自有的固定目录，mkdir -p 安全且不引入误判面。
 func buildSpcDirProbe() string {
-	q := ShellQuote(SpcDeployDir)
+	q := remote.ShellQuote(SpcDeployDir)
 	return fmt.Sprintf("[ -d %s ] || mkdir -p %s; [ -d %s ] && printf '%%s\\n' %s", q, q, q, q)
 }
 
@@ -181,11 +182,11 @@ func buildSpcWriteCommand(path, raw string) string {
 }
 
 func buildSpcBackupCommand(path, backup string) string {
-	return fmt.Sprintf("cp -p %s %s", ShellQuote(path), ShellQuote(backup))
+	return fmt.Sprintf("cp -p %s %s", remote.ShellQuote(path), remote.ShellQuote(backup))
 }
 
 func buildSpcRestoreCommand(backup, target string) string {
-	return fmt.Sprintf("cp -p %s %s", ShellQuote(backup), ShellQuote(target))
+	return fmt.Sprintf("cp -p %s %s", remote.ShellQuote(backup), remote.ShellQuote(target))
 }
 
 // buildSpcBackupListCommand 按修改时间倒序列出平台留下的备份。

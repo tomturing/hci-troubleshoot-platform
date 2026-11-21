@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx/session"
@@ -377,8 +376,8 @@ func TestProbeCommandRealShellRoundTrip(t *testing.T) {
 	}
 	// 只把硬编码的节点路径换成夹具目录，脚本其余部分逐字不动。
 	command := buildAcliPluginProbeCommand(desired)
-	command = strings.Replace(command, "BASE="+logcollect.ShellQuote(acliPluginBaseDir), "BASE="+logcollect.ShellQuote(base), 1)
-	command = strings.Replace(command, "REG="+logcollect.ShellQuote(acliPluginRegisterPath), "REG="+logcollect.ShellQuote(regPath), 1)
+	command = strings.Replace(command, "BASE="+remote.ShellQuote(acliPluginBaseDir), "BASE="+remote.ShellQuote(base), 1)
+	command = strings.Replace(command, "REG="+remote.ShellQuote(acliPluginRegisterPath), "REG="+remote.ShellQuote(regPath), 1)
 
 	runProbe := func() acliPluginHostState {
 		t.Helper()

@@ -30,6 +30,7 @@ import (
 	"sync"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -512,7 +513,7 @@ func inspectNodeArchive(ctx context.Context, s *sshx.SSHSession, cfg EvidenceCon
 	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	quoted := ShellQuote(path)
+	quoted := remote.ShellQuote(path)
 	manifest := artifactManifest{Source: "node_zip", ArchivePath: path, ArchiveSize: size, Entries: []manifestEntry{}}
 	var lastErr error
 	var lastWindow int64
@@ -665,10 +666,10 @@ func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg Evidenc
 	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	listOut, _, code, err := s.RunQuickCommandStreams(ctx, "ls -1 "+ShellQuote(processLogDir))
+	listOut, _, code, err := s.RunQuickCommandStreams(ctx, "ls -1 "+remote.ShellQuote(processLogDir))
 	if err != nil || code != 0 {
 		evidence.Emit("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-			"task_id": cfg.TaskID, "error": ErrString(err), "exit_code": code,
+			"task_id": cfg.TaskID, "error": errString(err), "exit_code": code,
 		})
 		return
 	}
@@ -683,14 +684,14 @@ func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg Evidenc
 			break
 		}
 		path := processLogDir + name
-		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(maxProcessLogFileBytes)+" "+ShellQuote(path))
+		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(maxProcessLogFileBytes)+" "+remote.ShellQuote(path))
 		payload := processLogPayload{
 			Host: cfg.NodeIP, Path: path, CollectedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 		switch {
 		case contentErr != nil || contentCode != 0:
 			payload.Status = "error"
-			payload.Error = FirstNonEmpty(ErrString(contentErr), "节点侧读取失败")
+			payload.Error = firstNonEmpty(errString(contentErr), "节点侧读取失败")
 		case strings.TrimSpace(content) == "":
 			payload.Status = "empty"
 		default:

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/sshx/session"
 	"testing"
@@ -144,7 +145,7 @@ func TestSpcHostFromResultBusyAndOverlay(t *testing.T) {
 	if busy.ErrorCode != spcErrBusy || busy.Written || busy.ErrorDetail == "" {
 		t.Fatalf("busy 必须映射 host_busy 且不可标已写入：%+v", busy)
 	}
-	if ValidationErrorCode(busy.ErrorCode) != ErrSpcHostBusy {
+	if logcontract.ValidationErrorCode(busy.ErrorCode) != logcontract.ErrSpcHostBusy {
 		t.Fatalf("host_busy 必须映射 LC-SPC-011：%s", busy.ErrorCode)
 	}
 	overlay := spcHostFromResult(reconcile.HostResult{

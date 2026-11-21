@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
 
 	"terminal_bridge/internal/shared/reconcile"
@@ -189,7 +190,7 @@ func preflightLogCollectPaths(ctx context.Context, s *sshx.SSHSession, paths []s
 	}
 	quoted := make([]string, 0, len(paths))
 	for _, path := range paths {
-		quoted = append(quoted, ShellQuote(path))
+		quoted = append(quoted, remote.ShellQuote(path))
 	}
 	command := "for p in " + strings.Join(quoted, " ") + `; do [ -e "$p" ] || echo "$p"; done`
 	output, code, err := s.RunQuickCommand(ctx, command)

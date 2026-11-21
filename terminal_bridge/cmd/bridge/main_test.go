@@ -18,7 +18,7 @@ import (
 	"sync"
 	"terminal_bridge/internal/acli"
 	"terminal_bridge/internal/app"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/aclibin"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
@@ -1055,7 +1055,7 @@ func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 	if ver != "1.0.1" || build != "2026-09-15 21:00:04" {
 		t.Fatalf("ver=%q build=%q, want 1.0.1 / 2026-09-15 21:00:04", ver, build)
 	}
-	if bin := logcollect.ParseAcliBinary(output); bin != "/sf/bin/acli" {
+	if bin := aclibin.ParseBinary(output); bin != "/sf/bin/acli" {
 		t.Fatalf("binary = %q, want /sf/bin/acli", bin)
 	}
 
@@ -1064,7 +1064,7 @@ func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 	if v, b := acli.ParseAcliVersion(absent); v != "" || b != "" {
 		t.Fatalf("未安装时不应解析出版本：%q %q", v, b)
 	}
-	if bin := logcollect.ParseAcliBinary(absent); bin != "" {
+	if bin := aclibin.ParseBinary(absent); bin != "" {
 		t.Fatalf("未安装时不应解析出路径：%q", bin)
 	}
 }
@@ -1072,7 +1072,7 @@ func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 // 版本探测必须是"绝对路径优先、PATH 兜底"：只追加 PATH 会被 sshd 默认 PATH 里的旧 acli 抢命中，
 // 导致面板显示旧版本、与运维手敲的结果不一致。
 func TestBuildAcliVersionCommandPrefersAbsolutePath(t *testing.T) {
-	cmd := logcollect.BuildAcliVersionCommand()
+	cmd := aclibin.VersionCommand()
 	for _, fragment := range []string{
 		`for p in /sf/bin/acli /sf/sbin/acli`,
 		`[ -x "$p" ]`,

@@ -127,6 +127,9 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | U1 telemetry | 完成 | `#1582`，桌面 otel 符号 0 |
 | L1 obslog 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
 | D1 删除 relay | 完成 | `#1553` `#1554` |
+| 阶段 2 A1/A2 | 完成 | `app.Bridge` 拆分、obslog 门面化 |
+| 阶段 2 A3 | **部分（2026-11-21）** | 错误码/集群扇出/acli 事实层/探测摘要/进度解析已物归原主，域间边 6→4；证据注册表与输出呈现留待收尾 |
+| 阶段 2 A4/A5 | 完成 | delivery 端口化、门禁加固（禁令 6/7 + sunset） |
 
 ---
 
@@ -189,6 +192,27 @@ telemetry 走了门面，obslog 却让 7 个包直接依赖——**同一范式�
 **修复范式**：把借出去的符号物归原主——会话解析 → `sshx`/`terminal`；摘要/探测/拉取 →
 `remote`/`uplink`；错误码表 → 独立契约包（它是跨域契约，不是 logcollect 私有）；
 SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
+
+**进展（2026-11-21，阶段 2 A3 第一批）**：已按上述范式完成五类符号归位，域间边从 6 条降到 4 条。
+
+| 原归属 | 符号 | 新归属 | 依据 |
+|---|---|---|---|
+| `logcollect` | `Err*` 常量 + 元数据 + 展示文案 | `shared/logcontract` | 跨域契约，与平台 JSON 同源 |
+| `logcollect` | `ErrString` `FirstNonEmpty` `TruncateForDiag` | 各域私有副本 | §3.5 判据：nil 安全属正确性，不进工具包 |
+| `logcollect` | `ShellQuote` | 删除包装，调用方直连 `remote.ShellQuote` | 安全原语唯一实现 |
+| `logcollect` | acli PATH/解析/版本/`__ACLI_BIN__` | `shared/aclibin` | 两域共用的事实层 |
+| `logcollect` | `Spc*` 集群扇出 + 节点清单 + 本机地址 | `shared/cluster`（端口 `remote.PtyRunner`/`QuickRunner`） | 名字错位：这是集群拓扑，不是"场景清单" |
+| `logcollect` | `ProbeSourceDigest` `ProbeLogCollectArchive` `NormalizeArchivePath` `ArchiveProbeToolMissingRe` | `shared/remote/archive.go` | 节点面探测原语 |
+| `logcollect` | `ValidatePlatformURL` `FileDigest` | `shared/uplink/file.go` | 云面/本地文件面 |
+| `logcollect` | `ParseLogCollectProgress` + 节点态归一化 | `shared/acliout` | "怎么读 acli 说的话" |
+
+`logcollect` 保留同名薄包装（类型别名/委托），使采集编排与既有测试零改动；
+`acli`、`sftp` 已完全不再 import `logcollect`。
+
+**剩余（未修）**：`delivery -> logcollect` 的证据凭据注册表与节点侧包清单上报；
+`* -> terminal` 的命令输出呈现（GB18030 解码 + 头尾保留截断）。
+两者都不是"伪公共库"，而是需要单独立项的真业务依赖，原因写在 `scripts/check_bridge_imports.py`
+基线注释里，避免被误当成遗漏。
 
 ### A4 端口建了没走：delivery 全程持 `*sshx.SSHSession`
 
@@ -495,6 +519,10 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
    消除 52 个函数首参与 11 处反向 import。
 2. **obslog 接口化**：定义最小 `Publisher` 端口，装配层注入；基线从 11 条降到 ≤3 条。
 3. **logcollect 瘦身**：符号物归原主 + 错误码独立契约包 + SPC 迁 reconcile 消费者。
+   - 已完成（2026-11-21）：错误码 → `shared/logcontract`；集群扇出 → `shared/cluster`；
+     acli 事实层 → `shared/aclibin`/`shared/acliout`；探测摘要 → `shared/remote`；
+     文件/URL 校验 → `shared/uplink`；通用小工具按 §3.5 改为域内私有副本。
+   - 未完成：证据凭据注册表（`delivery -> logcollect`）与命令输出呈现（`* -> terminal`）。
 4. **delivery 接 Runner**：`*sshx.SSHSession` 换成端口 + FakeRunner 编排单测。
 5. **门禁加固**：新增"域→app""域→sshx 具体类型"两条规则；基线加 sunset。
 
@@ -519,7 +547,7 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 | P0-2 | 代码 | `shared/obslog/outbox.go` / `uploader.go` persistOK、静默丢 | 已修（含回归） |
 | A1 | 架构 | `internal/app/bridge.go` Shared Kernel | 未修 |
 | A2 | 架构 | obslog 被 23 文件 import | 未修 |
-| A3 | 架构 | logcollect 伪公共库 | 未修 |
+| A3 | 架构 | logcollect 伪公共库 | **已修（第一批）**：五类符号归位，域间边 6→4；证据/输出呈现留待收尾 |
 | A4 | 架构 | delivery 持 `*sshx.SSHSession` | 未修 |
 | A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | 未修 |
 | P1-1/2/4/5 | 代码 | gaps 重放、seed 互斥、enforce 节流、stderr 轮转 | 已修（阶段 1） |

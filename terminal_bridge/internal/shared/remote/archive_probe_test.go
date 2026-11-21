@@ -1,4 +1,4 @@
-package logcollect
+package remote
 
 import (
 	"context"
@@ -127,7 +127,7 @@ func TestDecideArchiveProbe(t *testing.T) {
 // TestProbeLogCollectArchiveNoSession 锁死“探测不了”的出口：返回三态 nil 而不是 false。
 func TestProbeLogCollectArchiveNoSession(t *testing.T) {
 	for _, rawPath := range []string{"/sf/x.zip", ""} {
-		got := ProbeLogCollectArchive(context.Background(), nil, rawPath)
+		got := ProbeArchive(context.Background(), nil, rawPath)
 		if got.Exists != nil {
 			t.Fatalf("无会话时不得给出存在性结论: %v", *got.Exists)
 		}
@@ -174,3 +174,32 @@ type probeTestExit int
 func (e probeTestExit) Error() string { return "exit" }
 
 func errExit(code int) error { return probeTestExit(code) }
+
+// TestParseLsFieldSize 覆盖 stat 失败后的兜底解析。
+//
+// 背景：staging 实测显示 stat 在所有采集窗口里都没成功过，
+// 所以兜底路径必须是「宁可返回 false，也不能返回错误的数字」——
+// 一旦把别的字段（权限、时间、目录里的另一个文件）当成大小，用户看到的就是假数据。
+func TestParseLsFieldSize(t *testing.T) {
+	cases := []struct {
+		name   string
+		output string
+		want   int64
+		ok     bool
+	}{
+		{"普通文件", "-rw-r--r-- 1 root root 314572800 Oct 27 10:36 /sf/data/local/acli/tmp/data/log_collect/Q1.zip", 314572800, true},
+		{"文件名含空格", "-rw-r--r-- 1 root root 314572800 Oct 27 10:36 /sf/data/local/acli/tmp/data/log_collect/Q 1.zip", 314572800, true},
+		{"目录统计行", "total 0", 0, false},
+		{"空输出", "", 0, false},
+		{"零字节", "-rw-r--r-- 1 root root 0 Oct 27 10:36 /x.zip", 0, false},
+		{"非数字字段", "-rw-r--r-- 1 root root abc Oct 27 10:36 /x.zip", 0, false},
+		{"通配符展开成多行", "-rw-r--r-- 1 root root 100 Oct 27 10:36 /a.zip\n-rw-r--r-- 1 root root 200 Oct 27 10:36 /b.zip", 0, false},
+		{"字段不足", "-rw-r--r--", 0, false},
+	}
+	for _, c := range cases {
+		got, ok := parseLsFieldSize(c.output)
+		if ok != c.ok || got != c.want {
+			t.Fatalf("%s: 期望 (%d,%v)，实际 (%d,%v)", c.name, c.want, c.ok, got, ok)
+		}
+	}
+}

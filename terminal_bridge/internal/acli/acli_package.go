@@ -37,7 +37,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/cluster"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
@@ -113,10 +114,10 @@ func newAcliSyncError(code, stage string, retryable bool, detail string, err err
 func acliSyncErrorCode(err error, fallback string) (code string, detail string, retryable bool) {
 	var syncErr *acliSyncError
 	if errors.As(err, &syncErr) {
-		code = logcollect.FirstNonEmpty(syncErr.Code, fallback)
+		code = firstNonEmpty(syncErr.Code, fallback)
 		return code, syncErr.Error(), syncErr.Retryable
 	}
-	return fallback, logcollect.ErrString(err), true
+	return fallback, errString(err), true
 }
 
 // acliPackage 是"已读完且已算出摘要"的安装包，是上传前唯一的事实来源。
@@ -144,18 +145,18 @@ type acliPackage struct {
 func downloadAcliPackage(ctx context.Context, rawURL, filename, remoteBuild string) (*acliPackage, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil, newAcliSyncError(logcollect.ErrInstallReqFailed, "download", true, "创建安装包下载请求失败", err)
+		return nil, newAcliSyncError(logcontract.ErrInstallReqFailed, "download", true, "创建安装包下载请求失败", err)
 	}
 
 	client := &http.Client{Timeout: acliDownloadTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, newAcliSyncError(logcollect.ErrInstallDownload, "download", true, "从官方源下载 acli 安装包失败", err)
+		return nil, newAcliSyncError(logcontract.ErrInstallDownload, "download", true, "从官方源下载 acli 安装包失败", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		return nil, newAcliSyncError(logcollect.ErrInstallBadStatus, "download", true,
+		return nil, newAcliSyncError(logcontract.ErrInstallBadStatus, "download", true,
 			fmt.Sprintf("下载源返回 HTTP %d", resp.StatusCode), nil)
 	}
 
@@ -167,18 +168,18 @@ func downloadAcliPackage(ctx context.Context, rawURL, filename, remoteBuild stri
 	// 多读 1 字节用于识别"超过上限"，避免把 256MB 以上的响应整个吞进内存。
 	written, err := io.Copy(io.MultiWriter(&buf, sha, md5Hasher), io.LimitReader(resp.Body, acliMaxPackageBytes+1))
 	if err != nil {
-		return nil, newAcliSyncError(logcollect.ErrInstallDownload, "download", true, "读取安装包响应体失败", err)
+		return nil, newAcliSyncError(logcontract.ErrInstallDownload, "download", true, "读取安装包响应体失败", err)
 	}
 	if written > acliMaxPackageBytes {
-		return nil, newAcliSyncError(logcollect.ErrInstallDownload, "download", false,
+		return nil, newAcliSyncError(logcontract.ErrInstallDownload, "download", false,
 			fmt.Sprintf("安装包超过 %d MiB 上限，已中止", acliMaxPackageBytes>>20), nil)
 	}
 	if written == 0 {
-		return nil, newAcliSyncError(logcollect.ErrInstallDownload, "download", true, "下载到的安装包为 0 字节（源站可能返回了错误页）", nil)
+		return nil, newAcliSyncError(logcontract.ErrInstallDownload, "download", true, "下载到的安装包为 0 字节（源站可能返回了错误页）", nil)
 	}
 	// 声明长度与实际字节必须一致：这是唯一一个由服务端产生、又与内容绑定的锚点。
 	if declared >= 0 && written != declared {
-		return nil, newAcliSyncError(logcollect.ErrInstallTruncated, "download", true,
+		return nil, newAcliSyncError(logcontract.ErrInstallTruncated, "download", true,
 			fmt.Sprintf("安装包下载不完整：服务端声明 %d 字节，实际收到 %d 字节", declared, written), nil)
 	}
 
@@ -280,34 +281,34 @@ func acliWriteErrorToSync(err error, pkg *acliPackage, r acliWriteResult) error 
 	}
 	switch writeErr.Reason {
 	case "size_mismatch":
-		return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+		return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 			"上传字节数不符：本地 %d 字节，远端 %d 字节（已丢弃远端残包）", pkg.Size, r.RemoteSize), nil)
 	case "digest_mismatch":
-		return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+		return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 			"上传内容校验不符：本地 %s=%s，远端 %s=%s（已丢弃远端残包）",
-			logcollect.FirstNonEmpty(pkg.SHA256, "-"), pkg.SHA256, r.Algo, r.Digest), nil)
+			firstNonEmpty(pkg.SHA256, "-"), pkg.SHA256, r.Algo, r.Digest), nil)
 	case "cat_failed":
-		return newAcliSyncError(logcollect.ErrInstallUpload, "upload", true, "远端写入失败（cat 未正常结束，常见于 SSH 通道中断）", nil)
+		return newAcliSyncError(logcontract.ErrInstallUpload, "upload", true, "远端写入失败（cat 未正常结束，常见于 SSH 通道中断）", nil)
 	case "move_failed":
-		return newAcliSyncError(logcollect.ErrInstallUpload, "upload", true,
+		return newAcliSyncError(logcontract.ErrInstallUpload, "upload", true,
 			"远端文件替换失败（mv/chmod 未成功，可能与残留文件权限有关）", nil)
 	case "size_after_move":
-		return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+		return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 			"落盘大小不符：本地 %d 字节，远端 %d 字节", pkg.Size, r.RemoteSize), nil)
 	case "sha256_after_move":
-		return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+		return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 			"落盘 SHA-256 不符：本地 %s，远端 %s", pkg.SHA256, r.Digest), nil)
 	case "md5_after_move":
-		return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+		return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 			"落盘 MD5 不符：本地 %s，远端 %s", pkg.MD5, r.Digest), nil)
 	case "timeout":
-		return newAcliSyncError(logcollect.ErrInstallUpload, "upload", true,
+		return newAcliSyncError(logcontract.ErrInstallUpload, "upload", true,
 			fmt.Sprintf("上传超时（预算 %s）", acliUploadTimeout), writeErr.Err)
 	case "channel_broken":
-		return newAcliSyncError(logcollect.ErrInstallUpload, "upload", true,
+		return newAcliSyncError(logcontract.ErrInstallUpload, "upload", true,
 			"上传命令异常结束（SSH 通道中断或远端 shell 退出）", writeErr.Err)
 	default:
-		return newAcliSyncError(logcollect.ErrInstallUpload, "upload", true,
+		return newAcliSyncError(logcontract.ErrInstallUpload, "upload", true,
 			"远端未回传校验结论（命令被中断或 shell 提前退出）", nil)
 	}
 }
@@ -334,7 +335,7 @@ func uploadAcliPackage(
 	onProgress func(sent, total int64),
 ) (acliWriteResult, error) {
 	if s == nil {
-		return acliWriteResult{}, newAcliSyncError(logcollect.ErrInstallUpload, "upload", true, "创建上传通道失败", errors.New("SSH 会话不存在"))
+		return acliWriteResult{}, newAcliSyncError(logcontract.ErrInstallUpload, "upload", true, "创建上传通道失败", errors.New("SSH 会话不存在"))
 	}
 	spec := remote.WriteSpec{
 		Path:         destPath,
@@ -478,22 +479,22 @@ type nodePluginState struct {
 // S4a：并发编排委托 reconcile.Fanout.Each（与 spc 同一套骨架）；
 // S4b：探测目标改由 acliLandingDescriptor 声明（B8），不再只验 log_collect。
 // HostTimeout 取负禁用主机级超时，单条命令的 30s 预算已在
-// logcollect.RunSpcOnHostStreams 内部强制（与旧实现一致）。
+// cluster.RunOnHostStreams 内部强制（与旧实现一致）。
 func verifyClusterPluginLanding(b *session.Hub, ctx context.Context, s *sshx.SSHSession) []nodePluginState {
-	hosts := logcollect.SpcNodeList(s, ctx)
+	hosts := cluster.NodeList(s, ctx)
 	if len(hosts) == 0 {
 		return nil
 	}
-	localIPs := logcollect.SpcLocalAddresses(s, ctx)
+	localIPs := cluster.LocalAddresses(s, ctx)
 	targets := make([]string, 0, len(hosts))
 	for _, host := range hosts {
 		targets = append(targets, host.IP)
 	}
 	descriptor := acliLandingDescriptor()
 	probeCmd := buildPluginLandingProbeCommand(descriptor)
-	fanout := reconcile.Fanout{Concurrency: logcollect.SpcFanoutConcurrency, HostTimeout: -1, BatchMode: true}
+	fanout := reconcile.Fanout{Concurrency: cluster.FanoutConcurrency, HostTimeout: -1, BatchMode: true}
 	results := fanout.Each(ctx, targets, func(ctx context.Context, ip string) reconcile.HostResult {
-		stdout, stderr, _, err := logcollect.RunSpcOnHostStreams(s, ctx, ip, localIPs[ip], probeCmd)
+		stdout, stderr, _, err := cluster.RunOnHostStreams(s, ctx, ip, localIPs[ip], probeCmd)
 		present := parsePluginLandingProbe(stdout)
 		state := nodePluginState{IP: ip, Present: true}
 		for _, f := range descriptor.Files {
@@ -761,22 +762,22 @@ func findRemoteAcliPackage(ctx context.Context, s *sshx.SSHSession) string {
 // 远端只有 size_only 时，要求本地 pkg 存在（否则没有基线）——没有基线就不复用。
 func verifyReusedRemotePackage(pkg *acliPackage, size int64, algo, digest string) error {
 	if pkg == nil {
-		return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", false,
+		return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", false,
 			"节点上已有同名安装包，但本地没有可比对的校验基线，为避免装到旧包/残包，需要重新上传", nil)
 	}
 	if size != pkg.Size {
-		return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+		return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 			"节点上的安装包大小与本地基线不符：本地 %d 字节，节点 %d 字节", pkg.Size, size), nil)
 	}
 	switch algo {
 	case "sha256":
 		if !strings.EqualFold(digest, pkg.SHA256) {
-			return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+			return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 				"节点上的安装包 SHA-256 与本地基线不符：本地 %s，节点 %s", pkg.SHA256, digest), nil)
 		}
 	case "md5":
 		if !strings.EqualFold(digest, pkg.MD5) {
-			return newAcliSyncError(logcollect.ErrInstallChecksum, "verify", true, fmt.Sprintf(
+			return newAcliSyncError(logcontract.ErrInstallChecksum, "verify", true, fmt.Sprintf(
 				"节点上的安装包 MD5 与本地基线不符：本地 %s，节点 %s", pkg.MD5, digest), nil)
 		}
 	}

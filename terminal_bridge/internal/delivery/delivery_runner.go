@@ -24,7 +24,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/acliout"
 	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
@@ -763,9 +765,9 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, j
 		}
 		output, _, err := session.RunCommandPty(ctx, "acli log_collect progress", 60*time.Second)
 		if err == nil {
-			progress := logcollect.ParseLogCollectProgress(output)
+			progress := acliout.ParseProgress(output)
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
-				sourcePath := logcollect.FirstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
+				sourcePath := firstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
 				if sourcePath == "" {
 					// progress 到 100% 却没有包路径：不能就这么进入拉取。
 					// 空路径会让后面每一步都失败（digest_unavailable、stat 失败、
@@ -841,12 +843,12 @@ func statArchiveSize(ctx context.Context, session NodeSession, path string) (int
 	if strings.TrimSpace(path) == "" {
 		return 0, false
 	}
-	if out, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", logcollect.ShellQuote(path))); err == nil {
+	if out, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", remote.ShellQuote(path))); err == nil {
 		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
 			return size, true
 		}
 	}
-	probed := logcollect.ProbeLogCollectArchive(ctx, session, path)
+	probed := remote.ProbeArchive(ctx, session, path)
 	if probed.Exists != nil && *probed.Exists && probed.Size > 0 {
 		return probed.Size, true
 	}
@@ -872,7 +874,7 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session NodeSes
 	for {
 		if time.Now().After(deadline) {
 			return 0, newFatal(
-				logcollect.ErrTransferSourceStillWriting,
+				logcontract.ErrTransferSourceStillWriting,
 				"节点压缩包在 %s 内仍未写完（最后一次大小为 %d 字节）：采集进程可能异常或节点磁盘已满；"+
 					"请先确认节点采集状态，再决定是等待还是重新采集，不要在当前包上继续交付",
 				deliveryArchiveSettleTimeout, last,
@@ -910,7 +912,7 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session NodeSes
 // 460MB~20GB 的传输。EOCD（PK\x05\x06）在 zip 写完时必然出现在尾部，
 // zip64 同样保留该标记（只是字段填 0xFFFF/0xFFFFFFFF），因此判据对所有尺寸都成立。
 //
-// 大小探测必须与 progress/stat 动作共用 logcollect.ProbeLogCollectArchive：Q2026102900165
+// 大小探测必须与 progress/stat 动作共用 remote.ProbeArchive：Q2026102900165
 // （2026-10-29）现场证明 aSV 受限 shell 没有 stat（exit 127），只写单条 stat 的实现
 // 会把盘上 29.9 MB 的包报成"源包不可读"，让补交付在最后一步永远走不通。
 func (r *deliveryRunner) prepareDirect(ctx context.Context, session NodeSession, job *deliveryJob) error {
@@ -919,24 +921,24 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session NodeSession,
 		return fmt.Errorf("缺少源包路径，无法交付")
 	}
 
-	probed := logcollect.ProbeLogCollectArchive(ctx, session, sourcePath)
+	probed := remote.ProbeArchive(ctx, session, sourcePath)
 	if probed.Exists == nil {
 		// 探测不出来 ≠ 包没了：返回普通错误交给重试，不得写成 fatal。
 		return fmt.Errorf(
 			"无法确认源包状态（%s）：%s；若节点 shell 缺少 stat，需确认 ls -l 可用",
-			sourcePath, logcollect.FirstNonEmpty(probed.Diag, "探测命令不可用"),
+			sourcePath, firstNonEmpty(probed.Diag, "探测命令不可用"),
 		)
 	}
 	if !*probed.Exists {
 		return &deliveryFatalError{reason: fmt.Sprintf(
 			"节点上已确认没有源包（%s）：%s；重试无意义，请重新采集后再交付",
-			sourcePath, logcollect.FirstNonEmpty(probed.Diag, "命令已执行且明确报文件不存在"),
+			sourcePath, firstNonEmpty(probed.Diag, "命令已执行且明确报文件不存在"),
 		)}
 	}
 	if probed.Size <= 0 {
 		return fmt.Errorf(
 			"源包大小无法确认（探测级 %s，诊断 %s，路径 %s）；零字节包无法分片上传",
-			probed.Level, logcollect.FirstNonEmpty(probed.Diag, "无"), sourcePath,
+			probed.Level, firstNonEmpty(probed.Diag, "无"), sourcePath,
 		)
 	}
 	size := probed.Size
@@ -946,7 +948,7 @@ func (r *deliveryRunner) prepareDirect(ctx context.Context, session NodeSession,
 			// 包没写完就必须终态失败：补交付里重试同样会读到半截包，
 			// 而且每轮都会重新校验一遍几十 GB 的文件尾。给 010 让前端
 			// 明确告诉用户"等压缩结束再点"，而不是反复清盘/重点。
-			return newFatal(logcollect.ErrTransferSourceStillWriting,
+			return newFatal(logcontract.ErrTransferSourceStillWriting,
 				"源包尚未写完：%v；请等待节点采集/压缩真正结束后再点「上传到平台」，不要连续重试",
 				err.Error(),
 			)
@@ -999,7 +1001,7 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session NodeSes
 		return
 	}
 
-	algo, digest, err := logcollect.ProbeSourceDigest(session, ctx, job.SourcePath)
+	algo, digest, err := remote.ProbeSourceDigest(ctx, session, job.SourcePath)
 	r.mu.Lock()
 	if err != nil {
 		job.Integrity = integrityUnverified
@@ -1038,7 +1040,7 @@ var errArchiveCompleteUnverifiable = errors.New("节点缺少 tail/od/tr/grep，
 func verifyArchiveComplete(ctx context.Context, session NodeSession, path string) error {
 	command := fmt.Sprintf(
 		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
-		logcollect.ShellQuote(path),
+		remote.ShellQuote(path),
 	)
 	stdout, stderr, exitCode, err := session.RunQuickCommandStreams(ctx, command)
 	combined := stdout + "\n" + stderr
@@ -1046,10 +1048,10 @@ func verifyArchiveComplete(ctx context.Context, session NodeSession, path string
 	// 因此不能用 err != nil 判“命令不可用”——grep 未命中（exit 1）同样是 err != nil，
 	// 那是“包不完整”的正面证据，不能当成“没法校验”放行。
 	if exitCode < 0 {
-		return fmt.Errorf("%w（通道异常 %s）", errArchiveCompleteUnverifiable, logcollect.ErrString(err))
+		return fmt.Errorf("%w（通道异常 %s）", errArchiveCompleteUnverifiable, errString(err))
 	}
-	if exitCode == 126 || exitCode == 127 || logcollect.ArchiveProbeToolMissingRe.MatchString(combined) {
-		return fmt.Errorf("%w（exit=%d %s）", errArchiveCompleteUnverifiable, exitCode, logcollect.TruncateForDiag(combined, 120))
+	if exitCode == 126 || exitCode == 127 || remote.ArchiveProbeToolMissingRe.MatchString(combined) {
+		return fmt.Errorf("%w（exit=%d %s）", errArchiveCompleteUnverifiable, exitCode, truncateForDiag(combined, 120))
 	}
 	// grep -c 命中返回 0；未命中返回 1（此时 exitCode != 0）
 	if strings.TrimSpace(stdout) == "0" || exitCode != 0 {
@@ -1060,7 +1062,7 @@ func verifyArchiveComplete(ctx context.Context, session NodeSession, path string
 
 // statArchiveMTime 读取节点上文件的修改时间，用于判断包归属。
 func statArchiveMTime(ctx context.Context, session NodeSession, path string) (time.Time, error) {
-	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", logcollect.ShellQuote(path)))
+	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", remote.ShellQuote(path)))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -1129,7 +1131,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session NodeSession, job *del
 	// 每次都重新量源包大小，而不是只在"未知"时量：
 	// 前端 stat 与本阶段可能相隔很久（用户点了补交付又放了半小时），陈旧的大小
 	// 会让末片长度算错，也会把"源包已被同名覆盖"误判成"网络中断"，然后无限重拉。
-	if output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", logcollect.ShellQuote(job.SourcePath))); err == nil {
+	if output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", remote.ShellQuote(job.SourcePath))); err == nil {
 		if size, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64); parseErr == nil && size > 0 {
 			r.mu.Lock()
 			job.SourceSize = size
@@ -1184,15 +1186,25 @@ func (r *deliveryRunner) pull(ctx context.Context, session NodeSession, job *del
 		}
 	}
 
-	written, localSum, err := logcollect.PullArchive(session, ctx, job.SourcePath, job.LocalPath, job.SourceSize, func(done, total int64) {
-		r.mu.Lock()
-		job.PulledBytes = done
-		if job.SourceSize <= 0 && total > 0 {
-			job.SourceSize = total
-		}
-		r.mu.Unlock()
-		_ = r.saveJob(job)
+	// 拉取原语直接走 remote.Pull：阶段 2 A3 之前经 logcollect 的薄包装转一手，
+	// 交付域为一个三元组拆包而反向依赖采集域。BlockSize 用 remote 默认值，
+	// 与采集侧 logCollectPullBlock 同源。
+	pullResult, err := remote.Pull(ctx, session, remote.PullSpec{
+		RemotePath: job.SourcePath,
+		LocalPath:  job.LocalPath,
+		TotalSize:  job.SourceSize,
+		BlockSize:  remote.DefaultPullBlock,
+		OnProgress: func(done, total int64) {
+			r.mu.Lock()
+			job.PulledBytes = done
+			if job.SourceSize <= 0 && total > 0 {
+				job.SourceSize = total
+			}
+			r.mu.Unlock()
+			_ = r.saveJob(job)
+		},
 	})
+	written, localSum := pullResult.Written, pullResult.SHA256
 	if err != nil {
 		// 失败时也必须回填真实已写字节：进度上报按块步进（见 progressStep），
 		// 88 MB 的包在 64 MiB 步进下从头到尾一次都不上报，库里 pulled_bytes 恒为 0，
@@ -1220,23 +1232,23 @@ func (r *deliveryRunner) pull(ctx context.Context, session NodeSession, job *del
 
 		wrapped := fmt.Errorf("拉取中断（已拉 %d 字节）: %w", written, err)
 		// 拉取失败后立刻复量源包：与拉取前不同就说明它还在写（或被重建）。
-		// 这条判据必须优先于 logcollect.ErrPullSizeMismatch 的"被覆盖/截断"归因——
+		// 这条判据必须优先于 remote.ErrPullSizeMismatch 的"被覆盖/截断"归因——
 		// 2026-11-04 Q2026110400883 现场，bridge 把"包还在长"报成
 		// "源包可能已被清理"，于是按普通错误重试了 4 轮，每轮都在追一个移动的目标。
 		if current, ok := statArchiveSize(ctx, session, job.SourcePath); ok && job.SourceSize > 0 && current != job.SourceSize {
 			// 残包不能留：否则下次续传会把旧内容当"已拉部分"接着追加。
 			r.discardLocalCopy(job, "source_still_writing")
 			return newFatal(
-				logcollect.ErrTransferSourceStillWriting,
+				logcontract.ErrTransferSourceStillWriting,
 				"源包在拉取期间仍在写入（拉取前 %d 字节，当前 %d 字节），本次交付作废："+
 					"平台上传会话已按拉取前的大小建立，继续传只会每片都失败。"+
 					"请等待采集/压缩真正结束、包大小不再变化后，重新点击「上传到平台」",
 				job.SourceSize, current,
 			)
 		}
-		if errors.Is(err, logcollect.ErrPullSizeMismatch) {
+		if errors.Is(err, remote.ErrPullSizeMismatch) {
 			// 字节数对不上且大小已不再变化：源包被整体覆盖或截断，重试没有意义。
-			return newFatal(logcollect.ErrTransferSourceStillWriting, "%s；源包可能已被覆盖或截断，重试无意义", wrapped.Error())
+			return newFatal(logcontract.ErrTransferSourceStillWriting, "%s；源包可能已被覆盖或截断，重试无意义", wrapped.Error())
 		}
 		return wrapped
 	}
@@ -1253,7 +1265,7 @@ func (r *deliveryRunner) pull(ctx context.Context, session NodeSession, job *del
 	// ── 段① 完整性结论（比对逻辑抽成纯函数便于单测钉住）─────────────────
 	localMD5 := ""
 	if sourceSHA == "" && sourceMD5 != "" {
-		localMD5, err = logcollect.FileDigest(localPath, "md5")
+		localMD5, err = uplink.FileDigest(localPath, "md5")
 		if err != nil {
 			return fmt.Errorf("计算本地副本 MD5 失败: %w", err)
 		}

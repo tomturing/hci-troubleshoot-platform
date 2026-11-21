@@ -10,8 +10,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/aclibin"
+	"terminal_bridge/internal/shared/cluster"
 	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
@@ -78,7 +80,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	// 安装链路必须可观测：远端排障需要看到架构判定、版本比较、下载、上传与安装结果。
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
-		traceID = "acli-sync-" + logcollect.FirstNonEmpty(strings.TrimSpace(msg.CaseID), "unknown")
+		traceID = "acli-sync-" + firstNonEmpty(strings.TrimSpace(msg.CaseID), "unknown")
 	}
 	msg.TraceID = traceID
 
@@ -99,7 +101,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			CaseID:  msg.CaseID,
 			Status:  "error",
 			TraceID: traceID,
-			Message: "SSH 会话不存在（需先 ssh_connect）", ErrorCode: logcollect.ErrEnvSessionMissing,
+			Message: "SSH 会话不存在（需先 ssh_connect）", ErrorCode: logcontract.ErrEnvSessionMissing,
 		})
 		evidence.Emit("ERROR", "acli_sync.session_missing", "acli 安装缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, nil)
 		return
@@ -136,10 +138,10 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			CaseID:  msg.CaseID,
 			Status:  "error",
 			TraceID: traceID,
-			Message: fmt.Sprintf("获取系统架构失败 (code=%d): %v", exitCode, err), ErrorCode: logcollect.ErrEnvArchProbeFailed,
+			Message: fmt.Sprintf("获取系统架构失败 (code=%d): %v", exitCode, err), ErrorCode: logcontract.ErrEnvArchProbeFailed,
 		})
 		evidence.Emit("ERROR", "acli_sync.arch_probe_failed", "获取系统架构失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": exitCode, "error": logcollect.ErrString(err),
+			"exit_code": exitCode, "error": errString(err),
 		})
 		return
 	}
@@ -155,7 +157,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			Status:       "error",
 			Architecture: arch,
 			TraceID:      traceID,
-			Message:      fmt.Sprintf("暂不支持的硬件架构: %s", arch), ErrorCode: logcollect.ErrEnvArchUnsupported,
+			Message:      fmt.Sprintf("暂不支持的硬件架构: %s", arch), ErrorCode: logcontract.ErrEnvArchUnsupported,
 		})
 		evidence.Emit("ERROR", "acli_sync.arch_unsupported", "不支持的硬件架构", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": arch,
@@ -166,10 +168,10 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	// 2. 检测当前 acli 安装情况
 	// 与日志收集面板的 probe 共用同一命令：版本判定与界面展示必须同源，
 	// 否则会出现「面板显示 1.0.1 却每次登录都判定落后并重装」的错位。
-	versionCmd := logcollect.BuildAcliVersionCommand()
+	versionCmd := aclibin.VersionCommand()
 	verOut := remote.Run(ctx, sshx.NewSSHRunner(s), versionCmd).Stdout
 	currentVer, currentBuild := ParseAcliVersion(verOut)
-	currentBinary := logcollect.ParseAcliBinary(verOut)
+	currentBinary := aclibin.ParseBinary(verOut)
 
 	// 3. 探测最新官方包元数据
 	remoteFilename, remoteBuild, remoteVersion, downloadURL, probeErr := probeAcliLatest(ctx, targetArch, msg.AcliURL)
@@ -224,7 +226,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		// B6：期望证据缺失（源探测失败/包名解析落空）时不得回"已是最新"。
 		// 旧实现只打一行日志就落进 up_to_date 分支，断网被伪装成最新。
 		evidence.Emit("WARN", "acli_sync.probe_failed", "期望证据缺失，未做升级判定（可强制更新）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"probe_error": logcollect.ErrString(probeErr), "remote_filename": remoteFilename,
+			"probe_error": errString(probeErr), "remote_filename": remoteFilename,
 			"current_version": currentVer,
 		})
 	}
@@ -233,7 +235,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		"architecture": targetArch, "current_version": currentVer, "current_build": currentBuild,
 		"current_binary":  currentBinary,
 		"remote_filename": remoteFilename, "remote_build": remoteBuild, "remote_version": remoteVersion,
-		"need_install": needInstall, "force": msg.Force, "probe_error": logcollect.ErrString(probeErr),
+		"need_install": needInstall, "force": msg.Force, "probe_error": errString(probeErr),
 	})
 
 	if !needInstall {
@@ -298,7 +300,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		// B7：df 失败/输出不可解析不得静默跳过空间检查：留痕并降级继续安装，
 		// 回执如实标注"空间未验证"。旧实现 availableMB=0 让检查条件短路，无人察觉。
 		evidence.Emit("WARN", "acli_sync.disk_probe_failed", "磁盘空间探测失败，降级继续安装（可用空间未验证）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": spaceCode, "error": logcollect.ErrString(spaceErr), "output_preview": terminal.FormatOutputPreview(spaceOut, 256, 256),
+			"exit_code": spaceCode, "error": errString(spaceErr), "output_preview": terminal.FormatOutputPreview(spaceOut, 256, 256),
 		})
 	}
 
@@ -307,7 +309,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		models.SendMsg(ws, models.OutMessage{
 			Type:   "acli_sync_result",
 			CaseID: msg.CaseID,
-			Status: "disk_space_insufficient", ErrorCode: logcollect.ErrEnvDiskLow,
+			Status: "disk_space_insufficient", ErrorCode: logcontract.ErrEnvDiskLow,
 			Architecture: targetArch,
 			AvailableMB:  availableMB,
 			RequiredMB:   int64(minDiskMB),
@@ -329,7 +331,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	if !acquired {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
-			Architecture: targetArch, ErrorCode: logcollect.ErrInstallBusy, Stage: "upload",
+			Architecture: targetArch, ErrorCode: logcontract.ErrInstallBusy, Stage: "upload",
 			Message: "上一次 acli 安装包传输仍在进行中，请等其结束后再重试（重复上传会互相覆盖同名文件）",
 		})
 		evidence.Emit("WARN", "acli_sync.busy", "acli 安装包传输进行中，拒绝并发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
@@ -350,7 +352,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			destPath = found
 			pkgName = found[strings.LastIndex(found, "/")+1:]
 			evidence.Emit("WARN", "acli_sync.remote_package_fallback", "官网文件名不可得，改用节点上已有的安装包", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"dest_path": destPath, "probe_error": logcollect.ErrString(probeErr),
+				"dest_path": destPath, "probe_error": errString(probeErr),
 			})
 		}
 	}
@@ -372,7 +374,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		switch {
 		case probeErr != nil:
 			evidence.Emit("WARN", "acli_sync.reuse_probe_failed", "探测节点已有安装包失败，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"dest_path": destPath, "error": logcollect.ErrString(probeErr),
+				"dest_path": destPath, "error": errString(probeErr),
 			})
 		case missing:
 			evidence.Emit("INFO", "acli_sync.reuse_missing", "节点上没有可用安装包，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
@@ -387,7 +389,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 				})
 			} else {
 				evidence.Emit("WARN", "acli_sync.reuse_rejected", "节点上的安装包不可复用，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"dest_path": destPath, "reason": logcollect.ErrString(reuseErr),
+					"dest_path": destPath, "reason": errString(reuseErr),
 					"remote_size": size, "remote_algo": algo, "remote_digest": digest,
 				})
 			}
@@ -431,7 +433,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 					cancelDownload()
 					if transferErr != nil {
 						evidence.Emit("ERROR", "acli_sync.download_failed", "下载 acli 安装包失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-							"attempt": attempt, "architecture": targetArch, "download_url": downloadURL, "error": logcollect.ErrString(transferErr),
+							"attempt": attempt, "architecture": targetArch, "download_url": downloadURL, "error": errString(transferErr),
 						})
 					} else {
 						cache.put(key, pkg)
@@ -481,7 +483,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			cache.drop(key)
 			pkg = nil
 			evidence.Emit("ERROR", "acli_sync.transfer_failed", "acli 安装包传输/校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"attempt": attempt, "dest_path": destPath, "error": logcollect.ErrString(transferErr),
+				"attempt": attempt, "dest_path": destPath, "error": errString(transferErr),
 				"remote_size": writeRes.RemoteSize, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
 				"remote_fail_reason": writeRes.FailReason,
 			})
@@ -490,7 +492,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 				models.SendMsg(ws, models.OutMessage{
 					Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "retrying",
 					Architecture: targetArch, TraceID: traceID, Attempts: attempt,
-					Message: fmt.Sprintf("安装包传输失败（%s），%s 后自动重试...", logcollect.ErrString(transferErr), backoff),
+					Message: fmt.Sprintf("安装包传输失败（%s），%s 后自动重试...", errString(transferErr), backoff),
 				})
 				select {
 				case <-time.After(backoff):
@@ -502,7 +504,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	}
 
 	if transferErr != nil {
-		code, detail, retryable := acliSyncErrorCode(transferErr, logcollect.ErrInstallUpload)
+		code, detail, retryable := acliSyncErrorCode(transferErr, logcontract.ErrInstallUpload)
 		stage := "upload"
 		var syncErr *acliSyncError
 		if errors.As(transferErr, &syncErr) && syncErr.Stage != "" {
@@ -589,10 +591,10 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	})
 
 	if !installOK {
-		code := logcollect.ErrInstallExec
+		code := logcontract.ErrInstallExec
 		detail := fmt.Sprintf("acli 安装命令退出码 %d", outcome.ExitCode)
 		if installTimedOut {
-			code = logcollect.ErrInstallExec
+			code = logcontract.ErrInstallExec
 			detail = fmt.Sprintf("acli 安装命令超时（预算 %s）", acliInstallTimeout)
 		} else if outcome.Err != nil && outcome.ExitCode == 0 {
 			// 无退出码但有错误：通常意味着 SSH 通道在安装过程中断开。
@@ -602,7 +604,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			"dest_path": destPath, "command": outcome.Command, "exit_code": outcome.ExitCode,
 			"duration_ms": outcome.DurationMS, "timed_out": installTimedOut,
 			"stdout_bytes": stdoutBytes, "stderr_bytes": stderrBytes,
-			"error": logcollect.ErrString(outcome.Err), "output_preview": preview,
+			"error": errString(outcome.Err), "output_preview": preview,
 			"package_size": reportedSize, "sha256": reportedSHA, "md5": reportedMD5,
 			"integrity_state": integrity, "attempts": attempts,
 		})
@@ -661,7 +663,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		// 重装会清掉插件目录（含平台写入的 spc 场景清单）：如实观测并提示，
 		// 清单将在下次采集 create 时自动重新下发（目录重建已加固）。
 		evidence.Emit("WARN", "acli_sync.spc_reset", "acli 重装已重置插件目录，平台场景清单将在下次采集自动重新下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"spc_dir": logcollect.SpcDeployDir,
+			"spc_dir": cluster.LogCollectSpcDir,
 		})
 		installedMessage += "\n提示：重装已重置插件目录（含场景清单），平台场景清单将在下次采集自动重新下发。"
 
@@ -708,7 +710,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	})
 	models.SendMsg(ws, models.OutMessage{
 		Type: "acli_sync_result", CaseID: msg.CaseID, Status: "error", TraceID: traceID,
-		Architecture: targetArch, ErrorCode: logcollect.ErrInstallVerify, Stage: "verify", RetryStage: "install",
+		Architecture: targetArch, ErrorCode: logcontract.ErrInstallVerify, Stage: "verify", RetryStage: "install",
 		Attempts: attempts, PackageSize: reportedSize, PackageSHA256: reportedSHA, PackageMD5: reportedMD5,
 		PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
 		InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,

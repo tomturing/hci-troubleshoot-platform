@@ -25,7 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/remote"
 )
 
@@ -246,10 +246,10 @@ func deliveryErrorCode(err error) string {
 		return ""
 	}
 	if isDeliveryDiskFull(err) {
-		return logcollect.ErrTransferLocalDiskFull
+		return logcontract.ErrTransferLocalDiskFull
 	}
 	if isDeliveryAdmission(err) {
-		return logcollect.ErrTransferAdmissionExceeded
+		return logcontract.ErrTransferAdmissionExceeded
 	}
 	// fatal 失败可以自带规范码（如源包仍在写入 010）：
 	// 这类失败以前只有中文文案，平台记录里永远没有可统计的码。

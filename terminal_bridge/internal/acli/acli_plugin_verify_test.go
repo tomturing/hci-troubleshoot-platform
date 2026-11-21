@@ -10,21 +10,21 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"terminal_bridge/internal/logcollect"
 	"testing"
 
 	"terminal_bridge/internal/shared/reconcile"
+	"terminal_bridge/internal/shared/remote"
 )
 
 func TestBuildPluginLandingProbeCommand(t *testing.T) {
 	command := buildPluginLandingProbeCommand(acliLandingDescriptor())
 	// 可执行入口必须判 -x：空目录残骸不算落盘。
-	if !strings.Contains(command, "[ -x "+logcollect.ShellQuote(logCollectPluginBinary)+" ]") {
+	if !strings.Contains(command, "[ -x "+remote.ShellQuote(logCollectPluginBinary)+" ]") {
 		t.Fatalf("必须校验插件可执行（-x），空目录残骸不算落盘：%s", command)
 	}
 	// 每个内置插件目录都必须被探测（B8：不再只验 log_collect 单路径）。
 	for _, name := range acliBuiltinPlugins {
-		dir := logcollect.ShellQuote(acliPluginBaseDir + "/" + name)
+		dir := remote.ShellQuote(acliPluginBaseDir + "/" + name)
 		if !strings.Contains(command, "[ -d "+dir+" ]") {
 			t.Fatalf("内置插件 %s 的目录不在验证范围（B8）：%s", name, command)
 		}

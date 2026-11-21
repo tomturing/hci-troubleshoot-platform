@@ -10,10 +10,12 @@ import (
 	"strings"
 	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
 	"time"
 
 	"golang.org/x/net/websocket"
+	"terminal_bridge/internal/shared/remote"
 )
 
 // deliveryJobView 是回给前端的快照：字段名与前端约定保持一致。
@@ -66,11 +68,11 @@ func toDeliveryJobView(job *deliveryJob) deliveryJobView {
 func HandleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) {
 	traceID := strings.TrimSpace(msg.TraceID)
 	taskID := strings.TrimSpace(msg.ExecID)
-	sourcePath, err := logcollect.NormalizeArchivePath(msg.TransferSourcePath)
+	sourcePath, err := remote.NormalizeArchivePath(msg.TransferSourcePath)
 	if err != nil {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit",
-			Status: "error", ErrorType: "invalid_path", ErrorCode: logcollect.ErrTransferArchiveMissing,
+			Status: "error", ErrorType: "invalid_path", ErrorCode: logcontract.ErrTransferArchiveMissing,
 			Message: err.Error(), TraceID: traceID, CustomUI: cui,
 		})
 		return
@@ -79,7 +81,7 @@ func HandleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) 
 	if err != nil {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit",
-			Status: "error", ErrorType: "invalid_platform_url", ErrorCode: logcollect.ErrTransferChunkFailed,
+			Status: "error", ErrorType: "invalid_platform_url", ErrorCode: logcontract.ErrTransferChunkFailed,
 			Message: err.Error(), TraceID: traceID, CustomUI: cui,
 		})
 		return
@@ -87,7 +89,7 @@ func HandleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) 
 	if taskID == "" || strings.TrimSpace(msg.TransferToken) == "" {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit",
-			Status: "error", ErrorType: "missing_params", ErrorCode: logcollect.ErrTransferChunkFailed,
+			Status: "error", ErrorType: "missing_params", ErrorCode: logcontract.ErrTransferChunkFailed,
 			Message: "task_id 与 upload_token 必填", TraceID: traceID, CustomUI: cui,
 		})
 		return
@@ -95,7 +97,7 @@ func HandleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) 
 	if DeliveryRunnerInstance == nil {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit",
-			Status: "error", ErrorType: "runner_unavailable", ErrorCode: logcollect.ErrTransferChunkFailed,
+			Status: "error", ErrorType: "runner_unavailable", ErrorCode: logcontract.ErrTransferChunkFailed,
 			Message: "交付执行器未启动", TraceID: traceID, CustomUI: cui,
 		})
 		return

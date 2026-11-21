@@ -34,12 +34,22 @@ PORT_ONLY_DOMAINS = {"delivery"}
 # 基线到期日：到期后基线本身成为失败项，必须收紧而不是继续冻结现状。
 BASELINE_SUNSET = "2026-12-31"
 
-# R0 搬迁完成时的域间依赖现状（含测试）；逻辑收口阶段逐步清零。
+# 域间依赖现状（含测试）；逻辑收口阶段逐步清零。
+#
+# 2026-11-21（阶段 2 A3）消除两条伪公共库边：
+#   - acli -> logcollect：错误码 → shared/logcontract；集群扇出 → shared/cluster；
+#     acli 二进制发现 → shared/aclibin；通用小工具 → 域内私有副本。
+#   - sftp -> logcollect：ShellQuote → remote；FirstNonEmpty → 域内私有副本。
+#
+# 剩余两条属于真实的业务依赖，不是"谁先实现"造成的借用：
+#   - delivery -> logcollect：交付作业读取采集产物（证据凭据注册表 + 节点侧包清单）。
+#     证据子系统与 obslog 门面/TLS 放宽策略强耦合，搬迁须单独立项验证。
+#   - * -> terminal：命令输出呈现（GB18030 解码 + 头尾保留截断）；
+#     目前 terminal 是唯一实现，下沉 shared 需先补跨域行为测试。
 BASELINE_DOMAIN_EDGES = {
-    ("acli", "logcollect"), ("acli", "terminal"),
+    ("acli", "terminal"),
     ("logcollect", "terminal"),
     ("delivery", "logcollect"), ("delivery", "terminal"),
-    ("sftp", "logcollect"),
 }
 
 IMP_RE = re.compile(r'"(terminal_bridge/[^"]+)"')

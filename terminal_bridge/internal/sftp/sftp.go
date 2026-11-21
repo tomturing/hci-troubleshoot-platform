@@ -37,10 +37,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/metrics"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
 	remoteutil "terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/sshx/session"
@@ -394,7 +394,7 @@ func sftpMaxBytes() int64 {
 func HandleSftpOp(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cui, connID string) {
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
-		traceID = "sftp-" + logcollect.FirstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
+		traceID = "sftp-" + firstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
 	}
 	msg.TraceID = traceID
 
@@ -956,7 +956,7 @@ func hashFilePrefix(filePath string, length int64, digest io.Writer) error {
 
 // remoteFileSize 用 shell 探测远端路径：区分"目录 / 缺失 / 普通文件 + 字节数"。
 func remoteFileSize(s *sshx.SSHSession, ctx context.Context, remotePath string) (int64, bool, error) {
-	quoted := logcollect.ShellQuote(remotePath)
+	quoted := remote.ShellQuote(remotePath)
 	command := fmt.Sprintf(
 		"if [ -d %s ]; then echo __HCI_DIR__; elif [ -f %s ]; then stat -c %%s %s; else echo __HCI_MISSING__; fi",
 		quoted, quoted, quoted,
@@ -1018,7 +1018,7 @@ func openExecFileStream(s *sshx.SSHSession, ctx context.Context, remotePath stri
 		_ = session.Close()
 		return nil, err
 	}
-	command := fmt.Sprintf("tail -c +%d %s", offset+1, logcollect.ShellQuote(remotePath))
+	command := fmt.Sprintf("tail -c +%d %s", offset+1, remote.ShellQuote(remotePath))
 	if err := session.Start(command); err != nil {
 		_ = session.Close()
 		return nil, err

@@ -19,7 +19,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/remote"
 	"time"
 )
@@ -153,7 +152,7 @@ func buildAcliPluginProbeCommand(desired acliPluginDesired) string {
 func parseAcliPluginProbeOutput(ip, stdout string, exitCode int, err error) acliPluginHostState {
 	state := acliPluginHostState{IP: ip, DigestComparable: true}
 	if err != nil || exitCode != 0 {
-		state.ProbeErr = fmt.Sprintf("exit=%d err=%s", exitCode, logcollect.ErrString(err))
+		state.ProbeErr = fmt.Sprintf("exit=%d err=%s", exitCode, errString(err))
 		state.DigestComparable = false
 		return state
 	}

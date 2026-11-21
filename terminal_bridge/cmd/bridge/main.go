@@ -20,7 +20,7 @@ import (
 	"syscall"
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/delivery"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/metrics"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
@@ -43,7 +43,7 @@ func getVersion() string { return app.GetVersion() }
 
 func main() {
 	// R0 装配缝：models/obslog 的注入钩子在此接线（所有权仍归 app/cmd）。
-	models.ErrorFieldsFunc = logcollect.LogCollectErrorFields
+	models.ErrorFieldsFunc = logcontract.LogCollectErrorFields
 	models.SendErrorHook = func(msg models.OutMessage, err error) {
 		obslog.Emit("ERROR", "ws.send_failed", "WebSocket 发送失败", msg.TraceID, msg.CaseID, "", msg.CustomUI, map[string]any{
 			"out_type": msg.Type, "exec_id": msg.ExecID, "error": err.Error(),

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strings"
 	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/sshx"
@@ -109,7 +110,7 @@ func prepareScriptScenario(b *session.Hub,
 		restored, restoreFailed := rollbackScriptAll(b, s, state, spcWrittenTargets(results))
 		if restoreFailed > 0 {
 			rejection.Message = sshx.TruncateString(rejection.Message+
-				ContractFormat("script_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
+				logcontract.ContractFormat("script_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
 		}
 		evidence.Emit("ERROR", "log_collect.script_fanout_failed", "脚本写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 			"task_id": taskID, "codes": codes, "written": written,
@@ -140,26 +141,26 @@ func scriptRejectionCode(failed []spcHostState) (string, string) {
 		for code := range seen {
 			switch code {
 			case spcErrUnreachable:
-				return code, ErrSpcSSHUnreachable
+				return code, logcontract.ErrSpcSSHUnreachable
 			case "script_dir_missing":
-				return code, ErrScriptDirMissing
+				return code, logcontract.ErrScriptDirMissing
 			case "script_backup_failed":
-				return code, ErrScriptBackupFailed
+				return code, logcontract.ErrScriptBackupFailed
 			case "script_write_failed":
-				return code, ErrScriptWriteFailed
+				return code, logcontract.ErrScriptWriteFailed
 			case spcErrBusy:
-				return code, ErrSpcHostBusy
+				return code, logcontract.ErrSpcHostBusy
 			}
 		}
 	}
-	return "script_aggregate", ErrScriptAggregate
+	return "script_aggregate", logcontract.ErrScriptAggregate
 }
 
 func scriptRejectionMessage(written, total int, failed []spcHostState) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "收集脚本写入未通过：目标 %d 台，成功 %d 台", total, written)
 	for _, host := range failed {
-		fmt.Fprintf(&builder, "；%s %s", host.IP, FirstNonEmpty(host.ErrorDetail, host.ErrorCode))
+		fmt.Fprintf(&builder, "；%s %s", host.IP, firstNonEmpty(host.ErrorDetail, host.ErrorCode))
 	}
 	return sshx.TruncateString(builder.String(), 560)
 }
@@ -215,7 +216,7 @@ func applyScriptToHost(b *session.Hub,
 		}
 		if fileState.ErrorCode != "" {
 			state.ErrorCode = fileState.ErrorCode
-			state.ErrorDetail = fmt.Sprintf("脚本 %s：%s", file.Code, FirstNonEmpty(fileState.ErrorDetail, fileState.ErrorCode))
+			state.ErrorDetail = fmt.Sprintf("脚本 %s：%s", file.Code, firstNonEmpty(fileState.ErrorDetail, fileState.ErrorCode))
 			return state
 		}
 	}
@@ -379,7 +380,7 @@ func restoreScriptOnHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession
 		default:
 			failed++
 			if firstErr == "" {
-				firstErr = FirstNonEmpty(fileState.RestoreError, ErrScriptRestoreFailed)
+				firstErr = firstNonEmpty(fileState.RestoreError, logcontract.ErrScriptRestoreFailed)
 				state.ErrorDetail = fileState.ErrorDetail
 			}
 		}
@@ -467,7 +468,7 @@ func watchScriptRestore(b *session.Hub, s *sshx.SSHSession, st *spcTaskState, tr
 				failPolls++
 				if failPolls >= spcRestoreFailPolls {
 					evidence.Emit("WARN", "log_collect.script_restore_abandon", "进度连续不可用，脚本恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
-						"task_id": st.TaskID, "error": ErrString(err), "exit_code": exitCode,
+						"task_id": st.TaskID, "error": errString(err), "exit_code": exitCode,
 					})
 					return
 				}

@@ -9,7 +9,7 @@ package acli
 import (
 	"errors"
 	"strings"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/logcontract"
 	"testing"
 	"time"
 )
@@ -199,42 +199,42 @@ func TestVerifyAcliRemoteWrite(t *testing.T) {
 		{
 			name:     "sha256 不符",
 			result:   acliWriteResult{Moved: true, RemoteSize: pkg.Size, Algo: "sha256", Digest: strings.Repeat("ff", 32)},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "md5 不符",
 			result:   acliWriteResult{Moved: true, RemoteSize: pkg.Size, Algo: "md5", Digest: strings.Repeat("ff", 16)},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "落盘大小不符",
 			result:   acliWriteResult{Moved: true, RemoteSize: pkg.Size - 1, Algo: "sha256", Digest: pkg.SHA256},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "远端显式 size_mismatch",
 			result:   acliWriteResult{FailReason: "size_mismatch"},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "远端显式 digest_mismatch",
 			result:   acliWriteResult{FailReason: "digest_mismatch"},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "cat 失败归到上传阶段",
 			result:   acliWriteResult{FailReason: "cat_failed"},
-			wantCode: logcollect.ErrInstallUpload, wantErr: true,
+			wantCode: logcontract.ErrInstallUpload, wantErr: true,
 		},
 		{
 			name:     "mv 失败归到上传阶段",
 			result:   acliWriteResult{FailReason: "move_failed"},
-			wantCode: logcollect.ErrInstallUpload, wantErr: true,
+			wantCode: logcontract.ErrInstallUpload, wantErr: true,
 		},
 		{
 			name:     "没有任何结论也视为失败",
 			result:   acliWriteResult{},
-			wantCode: logcollect.ErrInstallUpload, wantErr: true,
+			wantCode: logcontract.ErrInstallUpload, wantErr: true,
 		},
 	}
 	for _, tc := range cases {
@@ -337,11 +337,11 @@ func TestBuildAcliInstallCommand(t *testing.T) {
 
 func TestAcliSyncErrorCode(t *testing.T) {
 	cause := errors.New("boom")
-	wrapped := newAcliSyncError(logcollect.ErrInstallChecksum, "verify", false, "落盘校验不符", cause)
+	wrapped := newAcliSyncError(logcontract.ErrInstallChecksum, "verify", false, "落盘校验不符", cause)
 
-	code, detail, retryable := acliSyncErrorCode(wrapped, logcollect.ErrInstallUpload)
-	if code != logcollect.ErrInstallChecksum {
-		t.Fatalf("code=%s, want %s", code, logcollect.ErrInstallChecksum)
+	code, detail, retryable := acliSyncErrorCode(wrapped, logcontract.ErrInstallUpload)
+	if code != logcontract.ErrInstallChecksum {
+		t.Fatalf("code=%s, want %s", code, logcontract.ErrInstallChecksum)
 	}
 	if !strings.Contains(detail, "落盘校验不符") || !strings.Contains(detail, "boom") {
 		t.Fatalf("detail 必须同时包含说明与根因: %s", detail)
@@ -351,8 +351,8 @@ func TestAcliSyncErrorCode(t *testing.T) {
 	}
 
 	// 裸错误走 fallback，且必须默认可重试——否则前端连兜底按钮都没有。
-	code, detail, retryable = acliSyncErrorCode(cause, logcollect.ErrInstallUpload)
-	if code != logcollect.ErrInstallUpload || !retryable || detail != "boom" {
+	code, detail, retryable = acliSyncErrorCode(cause, logcontract.ErrInstallUpload)
+	if code != logcontract.ErrInstallUpload || !retryable || detail != "boom" {
 		t.Fatalf("fallback 行为不符: code=%s retryable=%v detail=%s", code, retryable, detail)
 	}
 }

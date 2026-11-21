@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"terminal_bridge/internal/shared/logcontract"
 	"testing"
 )
 
@@ -295,13 +296,13 @@ func TestSpcClassifyHosts(t *testing.T) {
 func TestSpcRejectionCode(t *testing.T) {
 	single := []spcHostState{{IP: "10.0.0.1", ErrorCode: "host_auth_failed"}, {IP: "10.0.0.2", ErrorCode: "host_auth_failed"}}
 	errType, code := spcRejectionCode(single)
-	if errType != "host_auth_failed" || code != ErrSpcSSHAuthFailed {
+	if errType != "host_auth_failed" || code != logcontract.ErrSpcSSHAuthFailed {
 		t.Fatalf("单一原因得到 %s/%s", errType, code)
 	}
 
 	mixed := []spcHostState{{IP: "10.0.0.1", ErrorCode: "host_auth_failed"}, {IP: "10.0.0.2", ErrorCode: "spc_dir_missing"}}
 	errType, code = spcRejectionCode(mixed)
-	if errType != "spc_write_failed" || code != ErrSpcAggregate {
+	if errType != "spc_write_failed" || code != logcontract.ErrSpcAggregate {
 		t.Fatalf("混合原因应给聚合码，得到 %s/%s", errType, code)
 	}
 }
@@ -317,8 +318,8 @@ func TestSpcRejectionMessage(t *testing.T) {
 	// 逐台标题来自契约生成码表，测试不再手写中文；只校验「IP — 标题」结构仍然存在。
 	for _, must := range []string{
 		"目标 3 台", "成功 1 台",
-		"172.28.24.2 — " + contractTitle(ErrSpcSSHAuthFailed),
-		"172.28.24.3 — " + contractTitle(ErrSpcDirMissing),
+		"172.28.24.2 — " + logcontract.Title(logcontract.ErrSpcSSHAuthFailed),
+		"172.28.24.3 — " + logcontract.Title(logcontract.ErrSpcDirMissing),
 	} {
 		if !strings.Contains(got, must) {
 			t.Fatalf("文案缺少 %q：%s", must, got)

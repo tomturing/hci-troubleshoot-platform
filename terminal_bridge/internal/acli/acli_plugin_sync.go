@@ -20,7 +20,7 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/cluster"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/remote"
@@ -174,8 +174,8 @@ func syncAcliPluginsFromPlatform(b *session.Hub,
 	}
 
 	// 目标节点集合：与 spc 扇出同源（`acli platform node list` + 本机地址表）。
-	hosts := logcollect.SpcNodeList(s, ctx)
-	localIPs := logcollect.SpcLocalAddresses(s, ctx)
+	hosts := cluster.NodeList(s, ctx)
+	localIPs := cluster.LocalAddresses(s, ctx)
 	targets := make([]acliPluginTarget, 0, len(hosts))
 	for _, host := range hosts {
 		ip := strings.TrimSpace(host.IP)
@@ -254,7 +254,7 @@ func reconcileAcliPlugin(b *session.Hub,
 		Action:   acliPluginActionSkip,
 	}
 	outcomes := make([]models.AcliPluginHostOutcome, len(targets))
-	sem := make(chan struct{}, logcollect.SpcFanoutConcurrency)
+	sem := make(chan struct{}, cluster.FanoutConcurrency)
 	var wg sync.WaitGroup
 	for index, target := range targets {
 		wg.Add(1)
@@ -344,16 +344,16 @@ func reconcileAcliPluginOnHost(b *session.Hub,
 	case err != nil && exitCode == -1:
 		outcome.Action = acliPluginActionFailed
 		outcome.Reason = "host_channel_error"
-		outcome.Error = logcollect.ErrString(err)
+		outcome.Error = errString(err)
 	case exitCode != 0:
 		outcome.Action = acliPluginActionFailed
 		outcome.Reason = "host_exec_failed"
-		outcome.Error = logcollect.FirstNonEmpty(deploy.Error, fmt.Sprintf("exit=%d stderr=%s", exitCode, sshx.TruncateString(stderr, 512)))
+		outcome.Error = firstNonEmpty(deploy.Error, fmt.Sprintf("exit=%d stderr=%s", exitCode, sshx.TruncateString(stderr, 512)))
 	default:
 		// 脚本正常收尾但自检不是 success：可能是 rolled_back，也可能压根没打出结果块。
 		outcome.Action = acliPluginActionFailed
 		outcome.Reason = "device_selfcheck_not_passed"
-		outcome.Error = logcollect.FirstNonEmpty(deploy.Error, "status="+deploy.Status)
+		outcome.Error = firstNonEmpty(deploy.Error, "status="+deploy.Status)
 	}
 	if outcome.Action == acliPluginActionFailed {
 		evidence.Emit("WARN", "acli_plugin_sync.host_failed", "插件在节点上收敛失败", traceID, caseID, target.IP, cui, map[string]any{
@@ -374,7 +374,7 @@ func runAcliPluginOnHost(s *sshx.SSHSession, ctx context.Context,
 	timeout time.Duration) (string, string, int, error) {
 	full := command
 	if !target.Local {
-		full = logcollect.BuildSpcSSHCommand(target.IP, command)
+		full = cluster.BuildSSHCommand(target.IP, command)
 	}
 	hostCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -412,19 +412,19 @@ func writeAcliPluginScript(b *session.Hub,
 	cancelMkdir()
 	if err != nil || exitCode != 0 {
 		return newAcliPluginError("script_dir_prepare_failed",
-			fmt.Sprintf("exit=%d err=%s", exitCode, logcollect.ErrString(err)))
+			fmt.Sprintf("exit=%d err=%s", exitCode, errString(err)))
 	}
 
 	inner := buildAcliRemoteWriteCommand(tmpPath, scriptPath, pkg, "0755")
 	command := inner
 	if !target.Local {
-		command = logcollect.BuildSpcSSHCommand(target.IP, inner)
+		command = cluster.BuildSSHCommand(target.IP, inner)
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, acliUploadTimeout)
 	defer cancel()
 	stdout, stderr, exitCode, err := runSSHCommandWithStdin(s, writeCtx, command, data)
 	if err != nil && exitCode == -1 {
-		return newAcliPluginError("script_write_channel_error", logcollect.ErrString(err))
+		return newAcliPluginError("script_write_channel_error", errString(err))
 	}
 	result := parseAcliWriteOutput(stdout)
 	if _, verifyErr := verifyAcliRemoteWrite(pkg, result); verifyErr != nil {
