@@ -12,9 +12,9 @@ import (
 // 历史实现只查 caseID，查不到就静默丢弃 —— 表现为「打字回车毫无反应」。
 func TestResolveInputSessionNodeScopedKey(t *testing.T) {
 	scoped := &sshx.SSHSession{}
-	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{
+	bridge := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
 		"Q2026101401683@192.0.2.21": scoped,
-	}}
+	})
 	owned := app.NewOwnedSessionTracker()
 
 	got, key := bridge.ResolveInputSession(models.InMessage{CaseID: "Q2026101401683"}, "", owned)
@@ -28,7 +28,7 @@ func TestResolveInputSessionNodeScopedKey(t *testing.T) {
 	}
 
 	// 无会话时必须返回 nil，由调用方留痕并提示，而不是静默
-	empty := &app.Bridge{Sessions: map[string]*sshx.SSHSession{}}
+	empty := app.NewBridge()
 	if got, _ := empty.ResolveInputSession(models.InMessage{CaseID: "Q2026101401683"}, "", app.NewOwnedSessionTracker()); got != nil {
 		t.Fatal("无会话时不得凭空命中")
 	}
@@ -38,10 +38,10 @@ func TestResolveInputSessionNodeScopedKey(t *testing.T) {
 func TestResolveInputSessionPrefersActiveKey(t *testing.T) {
 	first := &sshx.SSHSession{}
 	second := &sshx.SSHSession{}
-	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{
+	bridge := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1": first,
 		"Q1@10.0.0.2": second,
-	}}
+	})
 	owned := app.NewOwnedSessionTracker()
 	owned.Set("Q1@10.0.0.1", first)
 	owned.Set("Q1@10.0.0.2", second)

@@ -90,7 +90,7 @@ func TestRollbackSpcAllGateRefusesWithoutRegistration(t *testing.T) {
 		activator:    activator,
 		restoreState: "pending",
 	}
-	b := &app.Bridge{}
+	b := app.NewBridge()
 	restored, failed := rollbackSpcAll(b, nil, st, "写入未通过，已回滚", []string{"172.28.24.1"})
 	if restored != 0 || failed != 1 {
 		t.Fatalf("门不过必须零恢复、全失败：%d %d", restored, failed)
@@ -127,7 +127,7 @@ func TestRollbackSpcAllEmptyWrittenSetSendsNothing(t *testing.T) {
 		restoreState: "pending",
 		// written 零值 = 空写入集
 	}
-	b := &app.Bridge{}
+	b := app.NewBridge()
 	restored, failed := rollbackSpcAll(b, nil, st, "写入未通过，已回滚", []string{"172.28.24.1"})
 	if restored != 0 || failed != 0 {
 		t.Fatalf("空写入集必须零命令零失败：%d %d", restored, failed)
@@ -165,7 +165,7 @@ func TestSpcHostFromResultBusyAndOverlay(t *testing.T) {
 // 只有这里触达它，因此 t.Setenv 一次即可；各阶段共用同一临时目录。
 func TestSpcRestoreIntentLifecycle(t *testing.T) {
 	t.Setenv("HCI_BRIDGE_LOG_DIR", t.TempDir())
-	b := &app.Bridge{}
+	b := app.NewBridge()
 
 	// ── 落盘与读回：只登记真正写成功的节点 ──────────────────────────
 	st := &spcTaskState{

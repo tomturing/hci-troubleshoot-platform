@@ -242,6 +242,16 @@ func handleLogCollectTransfer(b *app.Bridge,
 	cui string,
 	traceID string,
 ) error {
+	// 长任务标记：本函数跑在独立 goroutine（ws_routes.go 的 go HandleLogCollect），
+	// 与发起它的浏览器连接完全解耦。页面一关 refs 立刻归零，只剩 15 分钟业务活跃窗
+	// （DefaultSessionBusyGrace）兜底，而拉取预算高达 2 小时——窗一过期，reaper 就会
+	// 把仍在传的会话当成空闲回收，PullArchive 的 SSH 通道被 close，整包前功尽弃。
+	// 成对包裹期间 ReapCandidates 直接跳过本会话，结束即自动恢复租约判定。
+	if s != nil {
+		s.BeginLongTask()
+		defer s.EndLongTask()
+	}
+
 	taskID := strings.TrimSpace(msg.ExecID)
 	emit := func(status string, progress logCollectTransferProgress, message, errorCode string) {
 		models.SendMsg(ws, models.OutMessage{

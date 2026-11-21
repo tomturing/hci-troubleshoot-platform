@@ -577,10 +577,10 @@ func TestSessionByNodeIP(t *testing.T) {
 	target := &sshx.SSHSession{}
 	prefixTrap := &sshx.SSHSession{}
 	other := &sshx.SSHSession{}
-	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{}}
-	bridge.Sessions["terminal-only@192.0.2.10"] = target
-	bridge.Sessions["Q2026101401684@192.0.2.101"] = prefixTrap // 前缀相同的另一台主机，不得被误命中
-	bridge.Sessions["Q2026101401684@192.0.2.110"] = other
+	bridge := app.NewBridge()
+	bridge.Set("terminal-only@192.0.2.10", target)
+	bridge.Set("Q2026101401684@192.0.2.101", prefixTrap) // 前缀相同的另一台主机，不得被误命中
+	bridge.Set("Q2026101401684@192.0.2.110", other)
 
 	got, key := bridge.SessionByNodeIP("192.0.2.10")
 	if got != target {
@@ -693,7 +693,7 @@ func TestClassifyLogCollectNodeState(t *testing.T) {
 
 func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 	single := &sshx.SSHSession{Address: "192.168.33.89:22"}
-	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single}}
+	bridge := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single})
 
 	got, key, match := ResolveLogCollectSession(bridge, models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
 	if got != single || key != "Q2026102601505@192.168.33.89" || match != "only_session_for_case" {
@@ -701,10 +701,10 @@ func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 	}
 
 	// 多节点时不猜：猜错会取消另一台机器上的采集任务
-	multi := &app.Bridge{Sessions: map[string]*sshx.SSHSession{
+	multi := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1": {Address: "10.0.0.1:22"},
 		"Q1@10.0.0.2": {Address: "10.0.0.2:22"},
-	}}
+	})
 	if got, _, _ := ResolveLogCollectSession(multi, models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
 		t.Fatal("多节点且无 node_ip 时不得兜底，必须返回 nil 由调用方报 session_missing")
 	}
@@ -715,10 +715,10 @@ func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 	}
 
 	// 同节点其他工单的会话：按节点复用，不应落到 only_session_for_case
-	reuse := &app.Bridge{Sessions: map[string]*sshx.SSHSession{
+	reuse := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1":            {Address: "10.0.0.1:22"},
 		"terminal-only@10.9.9.9": {Address: "10.9.9.9:22"},
-	}}
+	})
 	got2, key2, match2 := ResolveLogCollectSession(reuse, models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
 	if got2 == nil || key2 != "terminal-only@10.9.9.9" || match2 != "node_ip_suffix" {
 		t.Fatalf("应按节点复用其他工单会话，实际 key=%s match=%s", key2, match2)
@@ -731,10 +731,10 @@ func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 func TestSessionByAddressHost(t *testing.T) {
 	legacy := &sshx.SSHSession{Address: "192.0.2.10:22"}
 	otherPort := &sshx.SSHSession{Address: "192.0.2.12:2222"}
-	bridge := &app.Bridge{Sessions: map[string]*sshx.SSHSession{}}
+	bridge := app.NewBridge()
 	// 键故意不带 @IP，复现现场：终端连好了，但键只有 caseID
-	bridge.Sessions["terminal-only"] = legacy
-	bridge.Sessions["Q2026101401684@192.0.2.12"] = otherPort
+	bridge.Set("terminal-only", legacy)
+	bridge.Set("Q2026101401684@192.0.2.12", otherPort)
 
 	got, key := bridge.SessionByAddressHost("192.0.2.10")
 	if got != legacy || key != "terminal-only" {
@@ -747,7 +747,7 @@ func TestSessionByAddressHost(t *testing.T) {
 		t.Fatal("未连接过的主机必须返回 nil")
 	}
 	// 无 address 的空会话不得被误命中
-	bridge.Sessions["broken"] = &sshx.SSHSession{}
+	bridge.Set("broken", &sshx.SSHSession{})
 	if got, _ := bridge.SessionByAddressHost(""); got != nil {
 		t.Fatal("空节点不得命中")
 	}
