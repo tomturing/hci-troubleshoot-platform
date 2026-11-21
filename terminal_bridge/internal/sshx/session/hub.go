@@ -3,8 +3,14 @@
 //
 // 为什么独立成包：会话是多条链路（终端输入、EXEC、日志采集、交付、acli、SFTP）
 // 共享的核心资源，此前它和 sftp 任务表、acli 缓存一起挤在 app.Bridge 里，
-// 导致 11 个业务域为了读会话而反向 import 装配层。把"会话"抽成下方基础设施后，
-// 域的依赖方向回到：业务域 → shared/session → sshx，装配层只在 cmd/bridge 注入。
+// 导致 11 个业务域为了读会话而反向 import 装配层。把"会话"抽出来后，
+// 域的依赖方向回到：业务域 → sshx/session → sshx，装配层只在 cmd/bridge 注入。
+//
+// 为什么挂在 sshx 而不是 shared：本包持有并调用 *sshx.SSHSession 的具体方法
+// （HasLongTask / IsBusy / Close / Address），与 sshx 是同一层的基础设施。
+// 而 shared/ 在本仓库被约定为"不认识上层的原语层"（scripts/check_bridge_imports.py
+// 禁令1 明确禁止 shared 依赖 sshx），放进去会打破分层，故下沉为 sshx 的子包。
+// 业务域无需直接 import 本包——它们通过 app.Bridge 暴露的方法访问会话。
 //
 // 锁纪律：Hub.mu 保护全部四张表（sessions / refs / idleAt / lastAuth），
 // 它们必须原子协同——入表即 refs=1、release 归零才记 idle、reap 同时读两表。

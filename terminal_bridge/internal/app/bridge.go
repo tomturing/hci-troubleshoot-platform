@@ -1,11 +1,11 @@
 package app
 
-// Bridge 是装配壳：会话状态已下沉到 shared/session.Hub（见该包文档），
+// Bridge 是装配壳：会话状态已下沉到 sshx/session.Hub（见该包文档），
 // 这里只保留仍需 app 编排的部分——自动建连、事件留痕、SFTP/acli 的过渡状态位。
 //
 // 为什么不再自持会话表：会话是终端、日志采集、交付、acli、SFTP 共同依赖的
 // 核心资源，放在装配层会迫使 11 个业务域反向 import app。下沉后依赖方向变为
-// 业务域 → shared/session → sshx，装配层只在 cmd/bridge 做注入。
+// 业务域 → sshx/session → sshx，装配层只在 cmd/bridge 做注入。
 
 import (
 	"fmt"
@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
-	"terminal_bridge/internal/shared/session"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"terminal_bridge/internal/terminal"
 
 	"golang.org/x/net/websocket"
