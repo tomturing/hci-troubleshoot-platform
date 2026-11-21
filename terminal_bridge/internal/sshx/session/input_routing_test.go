@@ -1,4 +1,4 @@
-package main
+package session_test
 
 import (
 	"terminal_bridge/internal/shared/models"

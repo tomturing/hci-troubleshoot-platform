@@ -1,4 +1,4 @@
-package main
+package app
 
 // 业务活跃保护（lastBusyAt）的行为契约。
 //
@@ -14,7 +14,6 @@ package main
 //  3. 重连覆盖不再腰斩进行中的长任务（摘表但保留连接，作业结束自愈关闭）。
 
 import (
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/sshx"
 	"testing"
 	"time"
@@ -55,7 +54,7 @@ func TestBusyWindowExpires(t *testing.T) {
 
 // 采集中会话不得被空闲租约回收：浏览器关闭（refs=0）是长时采集的常态。
 func TestReaperKeepsBusySession(t *testing.T) {
-	bridge := app.NewBridge()
+	bridge := NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
 	bridge.Set(key, session)
@@ -78,7 +77,7 @@ func TestReaperKeepsBusySession(t *testing.T) {
 
 // 重连覆盖不得腰斩进行中的长任务：只摘表，连接留给作业。
 func TestDetachSessionKeepsConnectionForLongTask(t *testing.T) {
-	bridge := app.NewBridge()
+	bridge := NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
 	bridge.Set(key, session)
@@ -108,7 +107,7 @@ func TestDetachSessionKeepsConnectionForLongTask(t *testing.T) {
 
 // 没有长任务时重连覆盖仍是常规销毁：摘表 + 关闭，不留连接。
 func TestDestroyOrDetachDestroysIdleSession(t *testing.T) {
-	bridge := app.NewBridge()
+	bridge := NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
 	bridge.Set(key, session)
@@ -125,7 +124,7 @@ func TestDestroyOrDetachDestroysIdleSession(t *testing.T) {
 // 立刻回收。2026-10-28 现场：终端 10:18:11 断开进入空闲租约，拉取 10:28:34 完成，
 // 10:28:48 会话就被 idle_ttl 销毁，交付卡在 uploading 并被判 needs_reauth。
 func TestReaperRestartsIdleClockWhileProtected(t *testing.T) {
-	bridge := app.NewBridge()
+	bridge := NewBridge()
 	key := "Q2026102801381@172.30.99.131"
 	session := newTestSession()
 	bridge.Set(key, session)
