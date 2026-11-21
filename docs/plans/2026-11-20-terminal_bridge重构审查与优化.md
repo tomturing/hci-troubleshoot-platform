@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-21 | v1.4 | 阶段 2 S2/S3 收口：建 `reconcile/kinds` 登记册（四条链路声明接入程度，未登记即守卫失败），SPC 的 intent-only 缺口显式登记；§6.1 目标树差异、§7.2 债务 6、阶段 3 第 4 项同步更新 |
 | 2026-11-21 | v1.3 | 阶段 2 A3 收尾：命令输出呈现下沉 `shared/remote`、传输证据改 `shared/evidence.TransferReporter` 端口，域间依赖边 4→0；`BASELINE_DOMAIN_EDGES` 置空，§3.3 与 §13 同步更新 |
 | 2026-11-21 | v1.2 | 阶段 2 A3 第一批落地：五类符号归位（`logcontract`/`cluster`/`aclibin`/`acliout`/`remote`/`uplink`），域间边 6→4；补记剩余两条边的性质与不修理由（证据注册表、输出呈现），并更新 §3.3 阶段完成度与 §13 发现索引 |
 | 2026-11-20 | v1.1 | 采纳 ADR-001：`internal/logpush` → `internal/shared/obslog`、`Blog()` → `Emit()`，并明确"不并入 telemetry"的三条判据与业界范式（§15）；路线图阶段 1（gaps 重放 / seed 互斥 / enforce 节流 / stderr 轮转）与本批同交付 |
@@ -124,7 +125,7 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | U0 UPX | 完成 | `#1581`，16.47MB → 4.72MB 未压缩基线；当前分发 3.13MB |
 | R0 搬迁 | 完成 | `#1575`，测试零丢失 |
 | S1 原语 | **部分** | 节点面 `remote` 已收口；云面 `uplink.Push` 已统一；但 delivery 仍持具体 SSH 类型、logcollect 仍外借 50+ 符号 |
-| S2 / S3 reconcile 消费者 | **未完成** | 骨架 + 77 例测试已建，`kinds/` 目录不存在，消费者逻辑内联在 logcollect/acli |
+| S2 / S3 reconcile 消费者 | **完成（2026-11-21）** | 建 `reconcile/kinds` 登记册：四条链路必须声明接入程度，未登记由守卫测试判失败；SPC 的"只租意图、写入自管"从隐债变显式声明 |
 | S4 acli 两阶段 | **部分** | 两阶段协议已落地，声明式胶水未迁 kinds |
 | U1 telemetry | 完成 | `#1582`，桌面 otel 符号 0 |
 | L1 obslog 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
@@ -275,7 +276,7 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 
 | 设计目标 | 实际 | 评估 |
 |---|---|---|
-| `shared/reconcile/kinds/{acli,spc,config}/` | **不存在**；`kinds.go` 只是 Kind 枚举，消费者内联 | 设计意图（骨架不认识消费者）靠 import 禁令部分成立，但"新增链路只加 DesiredState"未验证过 |
+| `shared/reconcile/kinds/{acli,spc,config}/` | 已建为**登记册**（`kinds/registry.go`）：不搬 DesiredState 构建，只登记"链路—实现域—接入程度" | "新增链路只加 DesiredState"改为可验证：`AllKinds()` 的每个值必须在装配层登记，缺失即 CI 红；构建逻辑仍留在各域，避免把产品语义搬进 shared |
 | `app/config.go` | `app/cfg.go` | 命名漂移，无害 |
 | `delivery/store.go` | `delivery/delivery_local_store.go` | 搬迁未改名，与设计不一致 |
 | 目标树未列 `shared/runtime` | 存在（30 行 env 助手） | 新增包未回写设计；"utils 不建"的判据被绕开 |
@@ -390,7 +391,7 @@ stderr 在桌面形态由 `redirectStderrToFile` 落进 `bridge-stderr.log`，�
 | 3 | 新旋钮未纳契约 | `HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES` 仅在代码与 README，未登记 `deploy/config/config-contract.yaml` 与 Helm（同批 seed 旋钮已登记） |
 | 4 | 测试数口径 | 文档称 544，实测 540（noop）/539（telemetry） |
 | 5 | U0 加壳风险未闭环 | 文档承诺"发布前抽样验证主流杀软"，无验证记录；企业 EDR/AppLocker 是真实拦截面 |
-| 6 | `kinds/` 未建的解释 | v2.6 将"未建 kinds"表述为"设计意图均满足"，属事后合理化；应显式记为债务 |
+| 6 | `kinds/` 未建的解释 | v2.6 将"未建 kinds"表述为"设计意图均满足"，属事后合理化；**2026-11-21 已收口**：建登记册 + 守卫，SPC 的接入缺口写进 `Descriptor.Note` 并由守卫打印 |
 
 ---
 
@@ -541,7 +542,7 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 1. `sshx` 补四组测试（租约 / keepalive / 端口恢复 / SFTP channel），回收根目录孤儿测试包
 2. 巨文件二拆（`log_collect.go` 2255、`delivery_runner.go` 1888）
 3. 修 `#1586` 的 27 条失效引用（其合并前提）+ 订正部署文档
-4. `kinds/` 要么建、要么在设计文档里明确废弃并说明替代守卫
+4. ~~`kinds/` 要么建、要么明确废弃~~ → **已建（2026-11-21）**：`reconcile/kinds` 登记册 + 守卫测试，替代"目录形状"的实质约束
 5. U0 杀软抽样验证并留档
 
 ---
