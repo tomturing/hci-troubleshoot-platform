@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/remote"
+	"terminal_bridge/internal/shared/uplink"
 	"testing"
 	"time"
 )
@@ -41,7 +41,7 @@ type fakeUploadPlatform struct {
 func newFakeUploadPlatform(t *testing.T, taskID, token string) *fakeUploadPlatform {
 	t.Helper()
 	fake := &fakeUploadPlatform{taskID: taskID, token: token, parts: make(map[int][]byte)}
-	prefix := logcollect.LogCollectDirectUploadPrefix + "/" + taskID
+	prefix := uplink.DirectUploadPrefix + "/" + taskID
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(prefix+"/parts/", func(w http.ResponseWriter, r *http.Request) {

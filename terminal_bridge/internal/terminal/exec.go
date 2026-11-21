@@ -12,16 +12,14 @@ import (
 	"sync"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
-	"golang.org/x/text/encoding/simplifiedchinese"
-	"golang.org/x/text/transform"
 )
 
 func ExecCommandIsolated(s *sshx.SSHSession, ws *websocket.Conn, req models.ExecRequestContext, requestedTimeout time.Duration, outputFilters []models.OutputFilter) {
@@ -617,37 +615,16 @@ func On_output_start(s *sshx.SSHSession, ws *websocket.Conn,
 	}()
 }
 
+// NormalizeOutputText 保留为域内导出包装：实现已归 shared/remote（命令输出呈现原语）。
 func NormalizeOutputText(raw string) string {
-	if raw == "" || utf8.ValidString(raw) {
-		return raw
-	}
-	decoded, _, err := transform.String(simplifiedchinese.GB18030.NewDecoder(), raw)
-	if err != nil || decoded == "" {
-		return strings.ToValidUTF8(raw, "\uFFFD")
-	}
-	return decoded
+	return remote.NormalizeOutputText(raw)
 }
 
-// truncateKeepTail 头尾都保留：安装/校验的结论（成功与否、节点数、失败原因）都在输出尾部，
-// 只截头部恰好丢掉最需要的信息。
-func truncateKeepTail(s string, headBytes, tailBytes int) string {
-	if headBytes < 0 || tailBytes < 0 || len(s) <= headBytes+tailBytes {
-		return s
-	}
-	head := s[:headBytes]
-	for len(head) > 0 && !utf8.ValidString(head) {
-		head = head[:len(head)-1]
-	}
-	tail := s[len(s)-tailBytes:]
-	for len(tail) > 0 && !utf8.ValidString(tail) {
-		tail = tail[1:]
-	}
-	return head + fmt.Sprintf("\n…[省略 %d 字节]…\n", len(s)-len(head)-len(tail)) + tail
-}
-
-// FormatOutputPreview 预览统一出口：先修编码，再按头尾保留截断。
+// FormatOutputPreview 保留为域内导出包装：实现已归 shared/remote。
+// 为什么保留：VM 控制台与终端回显走同一套预览口径，域内调用点不改；
+// 但新代码请直接用 remote.FormatOutputPreview，避免再引入 `* -> terminal` 边。
 func FormatOutputPreview(raw string, headBytes, tailBytes int) string {
-	return truncateKeepTail(NormalizeOutputText(raw), headBytes, tailBytes)
+	return remote.FormatOutputPreview(raw, headBytes, tailBytes)
 }
 
 // sshx.TruncateString 截断字符串到指定长度

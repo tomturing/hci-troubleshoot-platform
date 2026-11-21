@@ -43,7 +43,6 @@ import (
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/sshx/session"
-	"terminal_bridge/internal/terminal"
 	"time"
 )
 
@@ -406,7 +405,7 @@ func acliOutputForLog(outcome acliInstallOutcome) (preview string, bytesStdout, 
 	if strings.TrimSpace(outcome.Stderr) != "" {
 		combined += "\n[stderr]\n" + outcome.Stderr
 	}
-	return terminal.FormatOutputPreview(combined, 2048, 2048), bytesStdout, bytesStderr
+	return remote.FormatOutputPreview(combined, 2048, 2048), bytesStdout, bytesStderr
 }
 
 // ── 安装后逐节点插件落盘校验 ─────────────────────────────────────────────────

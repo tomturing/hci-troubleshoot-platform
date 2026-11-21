@@ -2,37 +2,53 @@ package delivery
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"sync"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/evidence"
 	"testing"
 	"time"
 )
 
-func TestStreamEvidenceMetricsEmitsSampleWithoutFakingProgress(t *testing.T) {
-	var mu sync.Mutex
-	var bodies []logcollect.TransferMetric
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var metric logcollect.TransferMetric
-		_ = json.NewDecoder(r.Body).Decode(&metric)
-		mu.Lock()
-		bodies = append(bodies, metric)
-		mu.Unlock()
-		_, _ = w.Write([]byte(`{"ok":true}`))
-	}))
-	defer server.Close()
+// captureTransfer 是端口测试替身：只收集样本，不碰 HTTP。
+//
+// 阶段 2 之前这个用例直接往 logcollect.EvidenceConfigs 里塞凭据、起 httptest
+// 收 POST——那测的是采集域的投递实现，不是交付域的采样算法。
+// 现在分两层：这里验采样（EMA/归零/停摆），投递链路由 logcollect 侧用例验。
+type captureTransfer struct {
+	mu      sync.Mutex
+	metrics []evidence.TransferMetric
+	enabled bool
+}
 
-	taskID := "task-metrics-test"
-	logcollect.EvidenceConfigs.Store(taskID, logcollect.EvidenceConfig{
-		TaskID: taskID, PlatformURL: server.URL, Ticket: "t.3", TraceID: "tr-3",
-	})
-	t.Cleanup(func() { logcollect.EvidenceConfigs.Delete(taskID) })
+func (c *captureTransfer) Enabled(string) bool { return c.enabled }
+
+func (c *captureTransfer) ReportArchive(context.Context, string, string) {}
+
+func (c *captureTransfer) ReportTransferMetric(_ context.Context, _ string, metric evidence.TransferMetric) {
+	c.mu.Lock()
+	c.metrics = append(c.metrics, metric)
+	c.mu.Unlock()
+}
+
+func (c *captureTransfer) MetricInterval() time.Duration { return 2 * time.Second }
+
+func (c *captureTransfer) StallSeconds() int { return 60 }
+
+func (c *captureTransfer) samples() []evidence.TransferMetric {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]evidence.TransferMetric, len(c.metrics))
+	copy(out, c.metrics)
+	return out
+}
+
+func TestStreamEvidenceMetricsEmitsSampleWithoutFakingProgress(t *testing.T) {
+	capture := &captureTransfer{enabled: true}
+	evidence.SetTransfer(capture)
+	t.Cleanup(evidence.ResetTransfer)
 
 	runner := &deliveryRunner{jobs: map[string]*deliveryJob{}}
 	job := &deliveryJob{
-		TaskID: taskID, Phase: phasePulling, SourceSize: 1000,
+		TaskID: "task-metrics-test", Phase: phasePulling, SourceSize: 1000,
 		PulledBytes: 100, ChunkSize: 100,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4600*time.Millisecond)
@@ -44,8 +60,7 @@ func TestStreamEvidenceMetricsEmitsSampleWithoutFakingProgress(t *testing.T) {
 	}()
 	<-done
 
-	mu.Lock()
-	defer mu.Unlock()
+	bodies := capture.samples()
 	if len(bodies) == 0 {
 		t.Fatal("2 秒节拍至少要上报一个样本")
 	}
@@ -67,5 +82,29 @@ func TestStreamEvidenceMetricsEmitsSampleWithoutFakingProgress(t *testing.T) {
 	}
 	if bodies[1].EtaSec != nil {
 		t.Fatalf("速率归零时不得继续倒数 ETA: %+v", bodies[1].EtaSec)
+	}
+}
+
+// TestStreamEvidenceMetricsSkipsWhenDisabled 未开启证据回传时不得空转采样。
+func TestStreamEvidenceMetricsSkipsWhenDisabled(t *testing.T) {
+	capture := &captureTransfer{enabled: false}
+	evidence.SetTransfer(capture)
+	t.Cleanup(evidence.ResetTransfer)
+
+	runner := &deliveryRunner{jobs: map[string]*deliveryJob{}}
+	job := &deliveryJob{TaskID: "no-evidence", Phase: phasePulling, SourceSize: 10}
+
+	done := make(chan struct{})
+	go func() {
+		runner.streamEvidenceMetrics(context.Background(), job)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("未开启证据回传时必须立刻返回，不能挂着采样")
+	}
+	if got := capture.samples(); len(got) != 0 {
+		t.Fatalf("未开启时不应产生样本，实际 %d 条", len(got))
 	}
 }

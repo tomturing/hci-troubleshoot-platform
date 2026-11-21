@@ -34,23 +34,18 @@ PORT_ONLY_DOMAINS = {"delivery"}
 # 基线到期日：到期后基线本身成为失败项，必须收紧而不是继续冻结现状。
 BASELINE_SUNSET = "2026-12-31"
 
-# 域间依赖现状（含测试）；逻辑收口阶段逐步清零。
+# 域间依赖现状（含测试）：**已清零**。
 #
-# 2026-11-21（阶段 2 A3）消除两条伪公共库边：
-#   - acli -> logcollect：错误码 → shared/logcontract；集群扇出 → shared/cluster；
-#     acli 二进制发现 → shared/aclibin；通用小工具 → 域内私有副本。
-#   - sftp -> logcollect：ShellQuote → remote；FirstNonEmpty → 域内私有副本。
+# 2026-11-21 两批收口：
+#   - A3 第一批：错误码 → shared/logcontract；集群扇出 → shared/cluster；
+#     acli 事实层 → shared/aclibin / shared/acliout；探测摘要 → shared/remote；
+#     文件/URL 校验 → shared/uplink；通用小工具按 §3.5 改域内私有副本。
+#   - A3 第二批：命令输出呈现（GB18030 + 头尾保留截断）→ shared/remote；
+#     传输证据回传 → shared/evidence.TransferReporter 端口，采集域实现、
+#     装配层注入，交付域只表达意图（不再 import 采集域）。
 #
-# 剩余两条属于真实的业务依赖，不是"谁先实现"造成的借用：
-#   - delivery -> logcollect：交付作业读取采集产物（证据凭据注册表 + 节点侧包清单）。
-#     证据子系统与 obslog 门面/TLS 放宽策略强耦合，搬迁须单独立项验证。
-#   - * -> terminal：命令输出呈现（GB18030 解码 + 头尾保留截断）；
-#     目前 terminal 是唯一实现，下沉 shared 需先补跨域行为测试。
-BASELINE_DOMAIN_EDGES = {
-    ("acli", "terminal"),
-    ("logcollect", "terminal"),
-    ("delivery", "logcollect"), ("delivery", "terminal"),
-}
+# 现在是空集：任何一条新跨域边都应直接失败，不再有"遗留可冻结"的借口。
+BASELINE_DOMAIN_EDGES = set()
 
 IMP_RE = re.compile(r'"(terminal_bridge/[^"]+)"')
 

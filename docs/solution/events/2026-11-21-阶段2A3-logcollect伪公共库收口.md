@@ -10,9 +10,9 @@ owner: team
 
 ## 文档信息
 
-- **版本**: 1.0
+- **版本**: 1.1
 - **创建日期**: 2026-11-21
-- **状态**: 第一批已实施；两项剩余依赖已登记在门禁注释里
+- **状态**: 已全部实施，域间依赖边 6→0，门禁基线置空
 - **关联代码**: `terminal_bridge/internal/logcollect`、`internal/shared/logcontract`、`internal/shared/cluster`、`internal/shared/aclibin`、`internal/shared/acliout`、`internal/shared/remote/archive.go`、`internal/shared/uplink/file.go`、`scripts/check_bridge_imports.py`、`scripts/gen_log_collect_display.py`
 
 ---
@@ -21,6 +21,7 @@ owner: team
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-11-21 | v1.1 | 第二批收尾：命令输出呈现下沉 `shared/remote`、传输证据改端口，域间边 4→0；原「未修」章节改写为处置记录 | 本文件 |
 | 2026-11-21 | v1.0 | 首版：记录 A3 的归位口径、验收证据与剩余依赖的判定理由 | 本文件 |
 
 ---
@@ -89,17 +90,58 @@ owner: team
 
 ---
 
-## 五、未修与理由（不做静默遗漏）
+## 五、第二批：剩余两条边（2026-11-21 收尾）
 
-| 剩余边 | 性质 | 为什么本轮不动 |
+### 5.1 `* -> terminal`（acli 4 处 + logcollect 1 处）
+
+审查文档原判断是"先补跨域行为测试再下沉"。补测时发现前置条件已具备：`acli_sync_output_test.go`
+里的 GBK 解码与尾保留断言本来就是跨域行为测试。于是直接下沉：
+
+- `NormalizeOutputText` / `FormatOutputPreview` / `truncateKeepTail` → `shared/remote/output.go`；
+- `terminal` 保留同名导出包装（VM 控制台与终端回显口径不变）；
+- `delivery_reconnect_test.go` 里的 `On_output_start` nil-ws 用例迁到 `terminal` 包
+  —— 它守护的是终端输出泵不 panic，与交付业务无关，留在原地会让边永久存在。
+
+### 5.2 `delivery -> logcollect`（证据回传）
+
+交付域对 `EvidenceConfig` 的用法全程是"不透明句柄透传"：`EvidenceFor(taskID)` 取出后直接交给
+`ReportLocalArchive` / `PostEvidence`，一次都没读过字段。所以正确做法不是搬结构，而是收成端口：
+
+```go
+// shared/evidence
+type TransferReporter interface {
+    Enabled(taskID string) bool
+    ReportArchive(ctx context.Context, taskID, path string)
+    ReportTransferMetric(ctx context.Context, taskID string, metric TransferMetric)
+    MetricInterval() time.Duration
+    StallSeconds() int
+}
+```
+
+- 实现：`logcollect.NewTransferReporter()`（票据头、`tasks/{id}/metrics` 路径、TLS 放宽、失败告警全在域内）；
+- 注入：装配层 `cmd/bridge/evidence_wire.go`（与 obslog Sink 同一处，A2 已确立"装配层是唯一适配器"）；
+- `TransferMetric` DTO 归 `shared/evidence`（上报契约两端共用）；
+- 未注入时 `nopTransfer` 兜底：`Enabled=false`，交付域不空转采样。
+
+对抗性审查抓到的一个坑：`atomic.Value` 直接存接口会存下"装箱后的具体类型"，测试里注入 `*captureTransfer`
+再 `ResetTransfer` 换成 `nopTransfer{}` 会 panic（`inconsistently typed value`）。改为统一存 `*transferHolder` 包装，
+并给测试提供 `ResetTransfer()` 保证用例隔离。
+
+### 5.3 测试重新分工
+
+| 层 | 验证内容 | 位置 |
 |---|---|---|
-| `delivery -> logcollect` | 证据凭据注册表（`EvidenceConfig`/`EvidenceFor`/`ReportLocalArchive`）+ 节点侧包清单上报 | 证据子系统与 obslog 门面（A2 刚落地）和自签证书放宽策略强耦合，近两周刚连续修复 S7 回传事故（404/500/422）。搬迁须在具备真实节点与平台的环境下单独验收，不能与纯符号搬迁混做 |
-| `* -> terminal` | `FormatOutputPreview`（GB18030 解码 + 头尾保留截断） | terminal 是命令输出处理的行为宿主；下沉 shared 前必须先补跨域行为测试，否则会把"呈现策略"变成无主代码 |
+| 交付域 | 采样算法：EMA 平滑、零增量速率归零、ETA 不倒数、未开启时不采样 | `delivery_evidence_metrics_test.go`（端口替身） |
+| 采集域 | 投递链路：票据头、任务路径、内容、无凭据不投递、节奏常量 | `log_collect_evidence_transfer_test.go`（httptest） |
 
-两条边均已写入 `scripts/check_bridge_imports.py` 的基线注释，并受 `BASELINE_SUNSET=2026-12-31` 约束，
-不会被当成"现状合法"永久冻结。
+原用例两头混在一起，靠 `import logcollect` 才能跑——正是那条要消除的边。
 
----
+### 5.4 最终指标
+
+| 项 | 第一批后 | 收尾后 |
+|---|---|---|
+| 域间依赖边 | 4 | **0**（`BASELINE_DOMAIN_EDGES = set()`） |
+| 门禁语义 | 冻结 4 条 + sunset | 空集，任何新边直接失败 |
 
 ## 六、回滚
 

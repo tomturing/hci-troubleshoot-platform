@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-21 | v1.3 | 阶段 2 A3 收尾：命令输出呈现下沉 `shared/remote`、传输证据改 `shared/evidence.TransferReporter` 端口，域间依赖边 4→0；`BASELINE_DOMAIN_EDGES` 置空，§3.3 与 §13 同步更新 |
 | 2026-11-21 | v1.2 | 阶段 2 A3 第一批落地：五类符号归位（`logcontract`/`cluster`/`aclibin`/`acliout`/`remote`/`uplink`），域间边 6→4；补记剩余两条边的性质与不修理由（证据注册表、输出呈现），并更新 §3.3 阶段完成度与 §13 发现索引 |
 | 2026-11-20 | v1.1 | 采纳 ADR-001：`internal/logpush` → `internal/shared/obslog`、`Blog()` → `Emit()`，并明确"不并入 telemetry"的三条判据与业界范式（§15）；路线图阶段 1（gaps 重放 / seed 互斥 / enforce 节流 / stderr 轮转）与本批同交付 |
 | 2026-11-20 | v1.0 | 首版：归并两轮审查；修复 P0-1（预算超限自死锁）与 P0-2（persistOK 单向闩锁 / 磁盘满静默丢弃），各附生产接线回归测试 |
@@ -129,7 +130,7 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | L1 obslog 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
 | D1 删除 relay | 完成 | `#1553` `#1554` |
 | 阶段 2 A1/A2 | 完成 | `app.Bridge` 拆分、obslog 门面化 |
-| 阶段 2 A3 | **部分（2026-11-21）** | 错误码/集群扇出/acli 事实层/探测摘要/进度解析已物归原主，域间边 6→4；证据注册表与输出呈现留待收尾 |
+| 阶段 2 A3 | **完成（2026-11-21）** | 五类符号物归原主 + 证据端口化 + 输出呈现下沉，域间依赖边 6→0，基线置空 |
 | 阶段 2 A4/A5 | 完成 | delivery 端口化、门禁加固（禁令 6/7 + sunset） |
 
 ---
@@ -210,10 +211,15 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 `logcollect` 保留同名薄包装（类型别名/委托），使采集编排与既有测试零改动；
 `acli`、`sftp` 已完全不再 import `logcollect`。
 
-**剩余（未修）**：`delivery -> logcollect` 的证据凭据注册表与节点侧包清单上报；
-`* -> terminal` 的命令输出呈现（GB18030 解码 + 头尾保留截断）。
-两者都不是"伪公共库"，而是需要单独立项的真业务依赖，原因写在 `scripts/check_bridge_imports.py`
-基线注释里，避免被误当成遗漏。
+**第二批（2026-11-21，A3 收尾）**：剩余两条边也消除，域间依赖边 **4 → 0**。
+
+| 剩余边 | 处置 | 为什么不是简单搬文件 |
+|---|---|---|
+| `* -> terminal` | `NormalizeOutputText` / `FormatOutputPreview` 迁 `shared/remote/output.go`；terminal 保留同名包装 | 这是"命令输出的字节呈现"，与终端会话/PTY/VM 控制台无关；原先住在 terminal 才产生三条边。`delivery` 的 `On_output_start` 用例改为在 terminal 包内验证（它守护的是终端输出泵） |
+| `delivery -> logcollect` | 新增 `shared/evidence.TransferReporter` 端口（4 方法 + 指标 DTO）；`logcollect.NewTransferReporter()` 实现，装配层 `evidence_wire.go` 注入 | 交付域一次都没读过 `EvidenceConfig` 字段，只当不透明句柄透传；把整结构交给它等于把票据/TOS/TLS 放宽策略变成跨域契约 |
+
+配套：`evidence.TransferMetric`（上报契约 DTO）归 shared；采集侧投递测试（票据头、任务路径）随实现迁回 logcollect；交付域只测采样算法（EMA 归零、停摆、ETA）。
+`BASELINE_DOMAIN_EDGES` 已置空——任何新跨域边直接失败，不再有"遗留可冻结"的借口。
 
 ### A4 端口建了没走：delivery 全程持 `*sshx.SSHSession`
 
@@ -548,7 +554,7 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 | P0-2 | 代码 | `shared/obslog/outbox.go` / `uploader.go` persistOK、静默丢 | 已修（含回归） |
 | A1 | 架构 | `internal/app/bridge.go` Shared Kernel | 未修 |
 | A2 | 架构 | obslog 被 23 文件 import | 未修 |
-| A3 | 架构 | logcollect 伪公共库 | **已修（第一批）**：五类符号归位，域间边 6→4；证据/输出呈现留待收尾 |
+| A3 | 架构 | logcollect 伪公共库 | **已修（两批）**：五类符号归位 + 证据端口化 + 输出呈现下沉，域间边 6→0，基线置空 |
 | A4 | 架构 | delivery 持 `*sshx.SSHSession` | 未修 |
 | A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | 未修 |
 | P1-1/2/4/5 | 代码 | gaps 重放、seed 互斥、enforce 节流、stderr 轮转 | 已修（阶段 1） |

@@ -19,7 +19,6 @@ import (
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/sshx/session"
-	"terminal_bridge/internal/terminal"
 	"time"
 )
 
@@ -300,7 +299,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		// B7：df 失败/输出不可解析不得静默跳过空间检查：留痕并降级继续安装，
 		// 回执如实标注"空间未验证"。旧实现 availableMB=0 让检查条件短路，无人察觉。
 		evidence.Emit("WARN", "acli_sync.disk_probe_failed", "磁盘空间探测失败，降级继续安装（可用空间未验证）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": spaceCode, "error": errString(spaceErr), "output_preview": terminal.FormatOutputPreview(spaceOut, 256, 256),
+			"exit_code": spaceCode, "error": errString(spaceErr), "output_preview": remote.FormatOutputPreview(spaceOut, 256, 256),
 		})
 	}
 
@@ -705,7 +704,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	// 安装命令成功但版本探测失败：包是完整的、装也装完了，问题在可执行入口，
 	// 因此给 verify 阶段码并允许「重试安装」（重跑安装会重建 /sf/bin 软链）。
 	evidence.Emit("ERROR", "acli_sync.verify_failed", "acli 安装后版本验证失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-		"exit_code": verifyCode, "output_preview": terminal.FormatOutputPreview(verifyOut, 512, 512),
+		"exit_code": verifyCode, "output_preview": remote.FormatOutputPreview(verifyOut, 512, 512),
 		"dest_path": destPath, "integrity_state": integrity,
 	})
 	models.SendMsg(ws, models.OutMessage{
@@ -715,7 +714,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
 		InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
 		Message: fmt.Sprintf("acli 安装完成但 acli --version 验证失败（exit=%d）：%s。可点击「重试安装」重新执行安装。",
-			verifyCode, terminal.FormatOutputPreview(verifyOut, 512, 512)),
+			verifyCode, remote.FormatOutputPreview(verifyOut, 512, 512)),
 	})
 }
 

@@ -388,18 +388,8 @@ func bandwidthAdvice(upBps, downBps int64, reachable bool) string {
 
 // ── 传输速率时间序列 ──────────────────────────────────────────────────────
 
-type TransferMetric struct {
-	Seq        int64    `json:"seq"`
-	Stage      string   `json:"stage"`
-	BytesDone  int64    `json:"bytes_done"`
-	BytesTotal *int64   `json:"bytes_total,omitempty"`
-	Percent    *float64 `json:"percent,omitempty"`
-	ElapsedMS  int64    `json:"elapsed_ms"`
-	RateBps    *int64   `json:"rate_bps,omitempty"`
-	EtaSec     *int64   `json:"eta_sec,omitempty"`
-	Stalled    bool     `json:"stalled"`
-	Source     string   `json:"source"`
-}
+// TransferMetric 的结构定义已归 shared/evidence（上报契约两端共用），
+// 域内别名见 log_collect_evidence_transfer.go。
 
 // ── 包内容探测 ────────────────────────────────────────────────────────────
 
