@@ -409,6 +409,7 @@ helm_only_runtime:
   - HCI_BRIDGE_KNOWN_HOSTS_FILE
   - HCI_BRIDGE_LOG_DIR
   - HCI_BRIDGE_LOG_MAX_BYTES
+  - HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES
   - HCI_BRIDGE_LOG_LEVEL
   - HCI_BRIDGE_LOG_TO_DESKTOP
   # 云端桥日志直传：部署期注入端点与集群内部令牌，使日志上传不依赖浏览器。

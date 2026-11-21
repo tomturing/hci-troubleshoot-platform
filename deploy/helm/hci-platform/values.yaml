@@ -543,6 +543,9 @@ terminalBridge:
   logStorageSizeLimit: "256Mi"
   # bridge.log 达到 64 MiB 后滚动为 bridge.log.1，避免 Pod 临时盘被持续写满。
   logFileMaxBytes: "67108864"
+  # 直传 outbox 的磁盘预算（字节）。超限按 drop-oldest 丢最旧条目，默认 8 MiB。
+  # 用字符串而非数字：Helm 渲染数字会变科学计数法（8.388608e+06），进程读不到。
+  logOutboxMaxBytes: "8388608"
   # 日志级别阈值：DEBUG/INFO/WARN/ERROR。桌面排障需要细节时可临时调为 DEBUG。
   logLevel: "INFO"
   # 日志直传（不依赖浏览器）：云端桥没有浏览器给它下发 bridge_log_token，
@@ -552,7 +555,8 @@ terminalBridge:
     enabled: true
     # 留空时自动拼 http://api-gateway:<apiGateway.port>/api/bridge-logs/direct
     endpoint: ""
-    # 进程崩溃/Pod 重建后，从最近 N 个日志文件回灌水位之后的条目。
+    # 崩溃补传的**单轮预算**（不是扫描范围上限）：扫全量文件（含轮转件与当前文件），
+    # 预算用尽记进度、下轮继续，直到水位之后的历史全部进管道（L1 语义）。
     seedMaxFiles: 2
     seedMaxEntries: 5000
   execTimeoutSeconds: 120

@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-21 | v1.6 | 阶段 3 第 2/3 项完成：两个巨文件二拆（函数数零丢失）、outbox 旋钮入契约、seed 语义与失效引用订正；§4 影响、§6.1 表格、§7.2 债务 2/3 同步 |
 | 2026-11-21 | v1.5 | 阶段 3 第 1 项完成：sshx 四组测试补齐、4 个孤儿测试归位（仅留 `remote_convergence_test.go` 并在文件头说明理由）；§6.1 表格同步 |
 | 2026-11-21 | v1.4 | 阶段 2 S2/S3 收口：建 `reconcile/kinds` 登记册（四条链路声明接入程度，未登记即守卫失败），SPC 的 intent-only 缺口显式登记；§6.1 目标树差异、§7.2 债务 6、阶段 3 第 4 项同步更新 |
 | 2026-11-21 | v1.3 | 阶段 2 A3 收尾：命令输出呈现下沉 `shared/remote`、传输证据改 `shared/evidence.TransferReporter` 端口，域间依赖边 4→0；`BASELINE_DOMAIN_EDGES` 置空，§3.3 与 §13 同步更新 |
@@ -236,6 +237,9 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 **影响**：delivery（1888 行、81 例测试）无法离线验证编排逻辑，只能靠集成测试；
 这也是它必须反向依赖 logcollect 的原因（借它的 sshx 包装）。
 
+> **现状（2026-11-21）**：已按 A4 端口化（`NodeSession`），并由阶段 3 二拆为
+> `delivery_runner.go`(968) + `delivery_transfer.go`(991)；81 例测试随文件移动，断言未改。
+
 ### A5 微内核退化成"搬家"：路由仍在装配层
 
 **证据**：`cmd/bridge/ws_routes.go` 524 行，`init()` 里注册 18 条路由，**handler 实现
@@ -287,8 +291,8 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 
 | 文件 | 行数 | 问题 |
 |---|---|---|
-| `logcollect/log_collect.go` | 2255 | handler / 编排 / 进度解析混装 |
-| `delivery/delivery_runner.go` | 1888 | prepare / pull / push / finalize 四相位混装 |
+| `logcollect/log_collect.go` | ~~2255~~ → 702（2026-11-21 二拆） | 编排留在 `log_collect.go`，命令构建/探测/解析归 `log_collect_probe.go`(939) |
+| `delivery/delivery_runner.go` | ~~1888~~ → 968（2026-11-21 二拆） | 队列/阶段推进/错误分类留在 `delivery_runner.go`，节点阶段+拉取上传+证据归 `delivery_transfer.go`(991) |
 | `logcollect/log_collect_spc_fanout.go` | 1600 | 扇出 + 场景语义 + 证据 |
 | `sshx/session.go` | 1298 | 连接 + 租约 + keepalive + 重连，**零测试** |
 | `sftp/sftp.go` | 1030 | 设计要求三拆（handler/download/sanitize），未拆 |
@@ -388,8 +392,8 @@ stderr 在桌面形态由 `redirectStderrToFile` 落进 `bridge-stderr.log`，�
 | # | 问题 | 说明 |
 |---|---|---|
 | 1 | `#1586` docs-governance 红 | 27 条阻断级失效引用，全部来自 `docs/plans/2026-11-18-节点同步链路统一收口设计.md` 指向 R0 已删除的旧路径。该 PR 自称"两文档终局对账、逐条核对代码事实"，实际只追加版本行 |
-| 2 | 部署文档失真 | `docs/deploy/部署设计.md` 仍写"默认只扫 2 个文件、最多 5000 条"，已被 L1 推翻 |
-| 3 | 新旋钮未纳契约 | `HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES` 仅在代码与 README，未登记 `deploy/config/config-contract.yaml` 与 Helm（同批 seed 旋钮已登记） |
+| 2 | 部署文档失真 | ~~已订正（2026-11-21）~~：事件文档补"单轮预算"订正标注，Helm values 注释同步；部署设计 v1.91 记录 |
+| 3 | 新旋钮未纳契约 | ~~已修（2026-11-21）~~：登记 `helm_only_runtime` + `terminalBridge.logOutboxMaxBytes`（字符串避免科学计数法），`verify_config_contract.py` 通过 |
 | 4 | 测试数口径 | 文档称 544，实测 540（noop）/539（telemetry） |
 | 5 | U0 加壳风险未闭环 | 文档承诺"发布前抽样验证主流杀软"，无验证记录；企业 EDR/AppLocker 是真实拦截面 |
 | 6 | `kinds/` 未建的解释 | v2.6 将"未建 kinds"表述为"设计意图均满足"，属事后合理化；**2026-11-21 已收口**：建登记册 + 守卫，SPC 的接入缺口写进 `Descriptor.Note` 并由守卫打印 |
@@ -485,7 +489,7 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 | 桌面 otel 符号 | 0 | 集群 2099 |
 | 桌面 obslog 符号 | 124 | 证据通道保留 |
 | 域间依赖边 | 11 | 未新增 |
-| 最大实现文件 | 2255 行（`log_collect.go`） | 未变 |
+| 最大实现文件 | 2255 行（`log_collect.go`） | **已降至 991 行**（`delivery_transfer.go`）；`log_collect.go` 702 / `log_collect_probe.go` 939 |
 | 零测试包 | `sshx`（1657 行）、`models`、`runtime` | 未变 |
 
 ---
@@ -541,8 +545,8 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 ### 阶段 3：结构收敛
 
 1. ~~`sshx` 补四组测试，回收根目录孤儿测试包~~ → **已完成（2026-11-21）**：租约（`hub_lease_test.go`：Release 幂等刷新、保护期推起点、无簿记不回收、TTL≤0 关闭）、keepalive（默认/覆盖/关闭、无 client 报错、测试会话短路、PTY 归一化与终端模式）、端口恢复（`session_busy_test.go` 迁入 `internal/app`）、SFTP channel（缓存复用、丢弃关闭并清空、幂等、并发安全、错误原样冒泡）
-2. 巨文件二拆（`log_collect.go` 2255、`delivery_runner.go` 1888）
-3. 修 `#1586` 的 27 条失效引用（其合并前提）+ 订正部署文档
+2. ~~巨文件二拆~~ → **已完成（2026-11-21）**：`log_collect.go` 2255→702+939、`delivery_runner.go` 1888→968+991；函数数 28/28、59/59 零丢失，切分依据是"编排 vs 与节点/平台搬字节"，不是按行数等分
+3. ~~修 `#1586` 的 27 条失效引用 + 订正部署文档~~ → **已完成（2026-11-21）**：27 条现均为"删除事实记录"语境豁免（`check_docs_rot --dir docs/plans` 无阻断项）；订正两处失真——`HCI_BRIDGE_LOG_OUTBOX_MAX_BYTES` 登记 `helm_only_runtime` 并注入 Helm，事件文档里"只扫 2 个文件、最多 5000 条"改为单轮预算语义
 4. ~~`kinds/` 要么建、要么明确废弃~~ → **已建（2026-11-21）**：`reconcile/kinds` 登记册 + 守卫测试，替代"目录形状"的实质约束
 5. U0 杀软抽样验证并留档
 
