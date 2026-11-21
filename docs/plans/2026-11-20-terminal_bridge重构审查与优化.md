@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-21 | v1.5 | 阶段 3 第 1 项完成：sshx 四组测试补齐、4 个孤儿测试归位（仅留 `remote_convergence_test.go` 并在文件头说明理由）；§6.1 表格同步 |
 | 2026-11-21 | v1.4 | 阶段 2 S2/S3 收口：建 `reconcile/kinds` 登记册（四条链路声明接入程度，未登记即守卫失败），SPC 的 intent-only 缺口显式登记；§6.1 目标树差异、§7.2 债务 6、阶段 3 第 4 项同步更新 |
 | 2026-11-21 | v1.3 | 阶段 2 A3 收尾：命令输出呈现下沉 `shared/remote`、传输证据改 `shared/evidence.TransferReporter` 端口，域间依赖边 4→0；`BASELINE_DOMAIN_EDGES` 置空，§3.3 与 §13 同步更新 |
 | 2026-11-21 | v1.2 | 阶段 2 A3 第一批落地：五类符号归位（`logcontract`/`cluster`/`aclibin`/`acliout`/`remote`/`uplink`），域间边 6→4；补记剩余两条边的性质与不修理由（证据注册表、输出呈现），并更新 §3.3 阶段完成度与 §13 发现索引 |
@@ -280,7 +281,7 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 | `app/config.go` | `app/cfg.go` | 命名漂移，无害 |
 | `delivery/store.go` | `delivery/delivery_local_store.go` | 搬迁未改名，与设计不一致 |
 | 目标树未列 `shared/runtime` | 存在（30 行 env 助手） | 新增包未回写设计；"utils 不建"的判据被绕开 |
-| 根目录无 Go 文件 | **5 个 `package main` 孤儿测试**（`remote_convergence_test.go` 等，无对应实现） | 跨域守卫归属不清；`sshx` 的行为测试滞留此处，掩盖了"sshx 零测试" |
+| 根目录无 Go 文件 | 1 个例外：`remote_convergence_test.go`（全仓 import 图守卫，需要仓库视野） | 其余 4 个孤儿已于 2026-11-21 归位：`probe_and_classify`/`wrap_container` → `internal/sshx`、`ssh_input_routing` → `internal/sshx/session`、`session_busy` → `internal/app`；`sshx` 从零测试补齐四组 |
 
 ### 6.2 巨型文件 TOP（实现）
 
@@ -539,7 +540,7 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 
 ### 阶段 3：结构收敛
 
-1. `sshx` 补四组测试（租约 / keepalive / 端口恢复 / SFTP channel），回收根目录孤儿测试包
+1. ~~`sshx` 补四组测试，回收根目录孤儿测试包~~ → **已完成（2026-11-21）**：租约（`hub_lease_test.go`：Release 幂等刷新、保护期推起点、无簿记不回收、TTL≤0 关闭）、keepalive（默认/覆盖/关闭、无 client 报错、测试会话短路、PTY 归一化与终端模式）、端口恢复（`session_busy_test.go` 迁入 `internal/app`）、SFTP channel（缓存复用、丢弃关闭并清空、幂等、并发安全、错误原样冒泡）
 2. 巨文件二拆（`log_collect.go` 2255、`delivery_runner.go` 1888）
 3. 修 `#1586` 的 27 条失效引用（其合并前提）+ 订正部署文档
 4. ~~`kinds/` 要么建、要么明确废弃~~ → **已建（2026-11-21）**：`reconcile/kinds` 登记册 + 守卫测试，替代"目录形状"的实质约束

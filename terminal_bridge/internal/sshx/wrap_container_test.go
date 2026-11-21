@@ -1,4 +1,4 @@
-package main
+package sshx_test
 
 import (
 	"strings"

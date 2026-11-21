@@ -2,6 +2,16 @@ package main
 
 // remote_convergence_test.go —— S1 收口的两类守卫。
 //
+// 为什么这是**唯一**允许留在仓库根的测试（阶段 3 已回收其余 4 个 package main 孤儿）：
+// 它扫的是全仓 import 图与跨包字节 golden，任何单个业务包都没有"整个仓库"的视野；
+// 放进 internal/xxx 要么扫不全，要么引入包级循环。它不 import 任何业务域，
+// 只依赖 shared/remote 与标准库，因此不构成跨域依赖。
+//
+// 其余孤儿测试的归属（2026-11-21）：
+//   - probe_and_classify / wrap_container → internal/sshx（被测符号就在那）
+//   - ssh_input_routing → internal/sshx/session（Hub 的输入路由）
+//   - session_busy → internal/app（Bridge 的租约编排与重连摘表）
+//
 // 一、golden 逐字对比（设计 §八#13 验收分轨）：
 //
 //	acli 写路径的命令字节被**逐字锁定**。收口是"抽取+委托"，不是重写，
