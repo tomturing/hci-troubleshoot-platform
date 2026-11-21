@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/remote"
 	"testing"
 )
@@ -144,8 +144,8 @@ func TestDeliveryDiskFullErrorCarriesFacts(t *testing.T) {
 	if !isLocalDiskFull(errors.Unwrap(failure)) {
 		t.Fatal("Unwrap 后应能识别原始 ENOSPC")
 	}
-	if got := deliveryErrorCode(failure); got != logcollect.ErrTransferLocalDiskFull {
-		t.Fatalf("磁盘满必须映射成 %s，实际 %q", logcollect.ErrTransferLocalDiskFull, got)
+	if got := deliveryErrorCode(failure); got != logcontract.ErrTransferLocalDiskFull {
+		t.Fatalf("磁盘满必须映射成 %s，实际 %q", logcontract.ErrTransferLocalDiskFull, got)
 	}
 	if got := deliveryErrorCode(errors.New("connection reset")); got != "" {
 		t.Fatalf("非磁盘错误不应编造错误码，实际 %q", got)
@@ -227,8 +227,8 @@ func TestDeliveryAdmissionErrorMapsToCode(t *testing.T) {
 	if !isDeliveryAdmission(failure) {
 		t.Fatal("isDeliveryAdmission 应识别自身类型")
 	}
-	if got := deliveryErrorCode(failure); got != logcollect.ErrTransferAdmissionExceeded {
-		t.Fatalf("并发准入必须映射成 %s，实际 %q", logcollect.ErrTransferAdmissionExceeded, got)
+	if got := deliveryErrorCode(failure); got != logcontract.ErrTransferAdmissionExceeded {
+		t.Fatalf("并发准入必须映射成 %s，实际 %q", logcontract.ErrTransferAdmissionExceeded, got)
 	}
 	message := failure.Error()
 	for _, fragment := range []string{"并发", "等待其它任务", "无需重新采集", "50.0 MiB"} {

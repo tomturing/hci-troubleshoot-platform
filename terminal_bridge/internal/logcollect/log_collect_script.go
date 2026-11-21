@@ -83,7 +83,7 @@ func scriptBackupPath(path, taskID string) (string, error) {
 // buildScriptDirProbe 输出固定目录的存在性检查：缺失即创建。
 // acli 插件重装会清空整个插件目录（含 script），写前必须能把它重建出来。
 func buildScriptDirProbe() string {
-	q := ShellQuote(scriptDeployDir)
+	q := remote.ShellQuote(scriptDeployDir)
 	return fmt.Sprintf("[ -d %s ] || mkdir -p %s; [ -d %s ] && printf '%%s\\n' %s", q, q, q, q)
 }
 
@@ -113,22 +113,22 @@ func buildScriptPrepareCommand(target, backup, marker string) string {
 	if index := strings.LastIndex(target, "/"); index > 0 {
 		dir = target[:index]
 	}
-	ensureDir := fmt.Sprintf("mkdir -p %s", ShellQuote(dir))
-	cleanTmp := fmt.Sprintf("rm -f %s", ShellQuote(target+".tmp"))
-	glob := fmt.Sprintf("%s.platform.*.bak", ShellQuote(target))
-	prev := fmt.Sprintf("__prev=$(ls -1t %s 2>/dev/null | grep -v -F %s | head -n 1)", glob, ShellQuote(backup))
-	selfHeal := fmt.Sprintf("if [ -n \"$__prev\" ]; then cp -p \"$__prev\" %s 2>/dev/null; fi", ShellQuote(target))
+	ensureDir := fmt.Sprintf("mkdir -p %s", remote.ShellQuote(dir))
+	cleanTmp := fmt.Sprintf("rm -f %s", remote.ShellQuote(target+".tmp"))
+	glob := fmt.Sprintf("%s.platform.*.bak", remote.ShellQuote(target))
+	prev := fmt.Sprintf("__prev=$(ls -1t %s 2>/dev/null | grep -v -F %s | head -n 1)", glob, remote.ShellQuote(backup))
+	selfHeal := fmt.Sprintf("if [ -n \"$__prev\" ]; then cp -p \"$__prev\" %s 2>/dev/null; fi", remote.ShellQuote(target))
 	// 上次任务新建但没还原的文件：标记里存着目标路径，凭它删除（不误删用户手工文件）。
 	healCreated := fmt.Sprintf(
 		"for __f in %s.platform.*.created; do [ -f \"$__f\" ] || continue; __p=$(cat \"$__f\" 2>/dev/null); [ -n \"$__p\" ] && rm -f \"$__p\"; rm -f \"$__f\"; done",
-		ShellQuote(target))
+		remote.ShellQuote(target))
 	backupCmd := fmt.Sprintf("if [ -f %s ]; then "+
 		"if [ ! -f %s ]; then cp -p %s %s 2>/dev/null || { printf 'SCRIPT_PREPARE_FAIL reason=backup_failed\\n'; exit 0; }; "+
 		"cmp -s %s %s || { printf 'SCRIPT_PREPARE_FAIL reason=backup_mismatch\\n'; exit 0; }; fi; "+
 		"__orig=$(sha256sum %s 2>/dev/null | awk '{print $1}'); printf 'SCRIPT_PREPARE_OK orig=%%s\\n' \"$__orig\"; "+
 		"else printf '%%s' %s > %s; printf 'SCRIPT_PREPARE_OK orig= created=1\\n'; fi",
-		ShellQuote(target), ShellQuote(backup), ShellQuote(target), ShellQuote(backup),
-		ShellQuote(target), ShellQuote(backup), ShellQuote(backup), ShellQuote(target), ShellQuote(marker))
+		remote.ShellQuote(target), remote.ShellQuote(backup), remote.ShellQuote(target), remote.ShellQuote(backup),
+		remote.ShellQuote(target), remote.ShellQuote(backup), remote.ShellQuote(backup), remote.ShellQuote(target), remote.ShellQuote(marker))
 	return fmt.Sprintf("%s; %s; %s; %s; %s; %s", ensureDir, cleanTmp, prev, selfHeal, healCreated, backupCmd)
 }
 
@@ -139,8 +139,8 @@ func buildScriptRestoreCommand(target, backup, marker string) string {
 		"if [ -f %s ]; then %s && cmp -s %s %s && printf 'SCRIPT_RESTORE_OK\\n' || printf 'SCRIPT_RESTORE_FAIL reason=verify_mismatch\\n'; "+
 			"elif [ -f %s ]; then rm -f %s %s && printf 'SCRIPT_RESTORE_OK reason=removed_created\\n'; "+
 			"else printf 'SCRIPT_RESTORE_SKIP reason=no_backup\\n'; fi",
-		ShellQuote(backup), buildSpcRestoreCommand(backup, target), ShellQuote(backup), ShellQuote(target),
-		ShellQuote(marker), ShellQuote(target), ShellQuote(marker))
+		remote.ShellQuote(backup), buildSpcRestoreCommand(backup, target), remote.ShellQuote(backup), remote.ShellQuote(target),
+		remote.ShellQuote(marker), remote.ShellQuote(target), remote.ShellQuote(marker))
 }
 
 // buildScriptWriteCommands 生成写入命令序列（分块追加 + 校验 + 原子替换）。

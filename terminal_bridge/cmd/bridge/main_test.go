@@ -18,11 +18,12 @@ import (
 	"sync"
 	"terminal_bridge/internal/acli"
 	"terminal_bridge/internal/app"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/aclibin"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"terminal_bridge/internal/terminal"
 	"testing"
 	"time"
@@ -1054,7 +1055,7 @@ func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 	if ver != "1.0.1" || build != "2026-09-15 21:00:04" {
 		t.Fatalf("ver=%q build=%q, want 1.0.1 / 2026-09-15 21:00:04", ver, build)
 	}
-	if bin := logcollect.ParseAcliBinary(output); bin != "/sf/bin/acli" {
+	if bin := aclibin.ParseBinary(output); bin != "/sf/bin/acli" {
 		t.Fatalf("binary = %q, want /sf/bin/acli", bin)
 	}
 
@@ -1063,7 +1064,7 @@ func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 	if v, b := acli.ParseAcliVersion(absent); v != "" || b != "" {
 		t.Fatalf("未安装时不应解析出版本：%q %q", v, b)
 	}
-	if bin := logcollect.ParseAcliBinary(absent); bin != "" {
+	if bin := aclibin.ParseBinary(absent); bin != "" {
 		t.Fatalf("未安装时不应解析出路径：%q", bin)
 	}
 }
@@ -1071,7 +1072,7 @@ func TestParseAcliVersionWithBinaryLine(t *testing.T) {
 // 版本探测必须是"绝对路径优先、PATH 兜底"：只追加 PATH 会被 sshd 默认 PATH 里的旧 acli 抢命中，
 // 导致面板显示旧版本、与运维手敲的结果不一致。
 func TestBuildAcliVersionCommandPrefersAbsolutePath(t *testing.T) {
-	cmd := logcollect.BuildAcliVersionCommand()
+	cmd := aclibin.VersionCommand()
 	for _, fragment := range []string{
 		`for p in /sf/bin/acli /sf/sbin/acli`,
 		`[ -x "$p" ]`,
@@ -1129,19 +1130,19 @@ func TestAcliSyncMessageSerialization(t *testing.T) {
 // acli_sync 曾因为不带 node_ip 而恒定 session_missing：会话键是 caseID@nodeIP，
 // 而旧逻辑只找键为 caseID 的会话。这里锁定三层兜底与"不猜节点"的边界。
 func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
-	b := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
+	b := session.NewHubWithSessions(map[string]*sshx.SSHSession{
 		"Q2026101401684@192.0.2.21": {Address: "192.0.2.21:22"},
 	})
 
 	// 1) 带 node_ip：精确命中
-	if s, key := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684", NodeIP: "192.0.2.21"}); s == nil {
+	if s, key := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101401684", NodeIP: "192.0.2.21"}); s == nil {
 		t.Fatalf("node_ip 精确匹配失败")
 	} else if key != "Q2026101401684@192.0.2.21" {
 		t.Fatalf("精确匹配键不符: %s", key)
 	}
 
 	// 2) 不带 node_ip：线上故障场景，必须兜底到该工单唯一会话
-	s, key := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"})
+	s, key := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101401684"})
 	if s == nil {
 		t.Fatalf("缺少 node_ip 时未兜底到唯一会话")
 	}
@@ -1151,12 +1152,12 @@ func TestResolveAcliSyncSessionFallsBackToOnlySession(t *testing.T) {
 
 	// 3) 同工单两条会话且不带 node_ip：宁可不装，也不猜节点
 	b.Set("Q2026101401684@192.0.2.22", &sshx.SSHSession{Address: "192.0.2.22:22"})
-	if s, _ := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101401684"}); s != nil {
+	if s, _ := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101401684"}); s != nil {
 		t.Fatalf("多会话时不应猜测节点")
 	}
 
 	// 4) 不串工单
-	if s, _ := b.ResolveAcliSyncSession(models.InMessage{CaseID: "Q2026101499999"}); s != nil {
+	if s, _ := b.ResolveAcliSync(models.InMessage{CaseID: "Q2026101499999"}); s != nil {
 		t.Fatalf("不应命中其它工单的会话")
 	}
 }

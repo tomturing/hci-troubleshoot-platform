@@ -14,18 +14,18 @@ import (
 	"fmt"
 	"log"
 	"sync/atomic"
-	"time"
-
 	"terminal_bridge/internal/acli"
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/delivery"
 	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/sftp"
+	"terminal_bridge/internal/shared/metrics"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/terminal"
+	"time"
 )
 
 func init() {
@@ -79,7 +79,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 		connectSpan.RecordError(err)
 		connectSpan.SetStatus(telemetry.StatusError, "ssh_connect_failed")
 		connectSpan.End()
-		atomic.AddUint64(&app.PromMetrics.SshConnectionErrors, 1)
+		atomic.AddUint64(&metrics.PromMetrics.SshConnectionErrors, 1)
 		message, detail := sshx.BuildSSHError(err)
 		models.SendMsg(ctx.WS, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 		return
@@ -89,7 +89,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 		connectSpan.RecordError(err)
 		connectSpan.SetStatus(telemetry.StatusError, "ssh_start_failed")
 		connectSpan.End()
-		atomic.AddUint64(&app.PromMetrics.SshConnectionErrors, 1)
+		atomic.AddUint64(&metrics.PromMetrics.SshConnectionErrors, 1)
 		session.Close()
 		message, detail := sshx.BuildSSHError(err)
 		models.SendMsg(ctx.WS, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
@@ -97,7 +97,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	}
 	ctx.B.Set(key, session)
 	connectSpan.End()
-	atomic.AddUint64(&app.PromMetrics.SshConnectionsTotal, 1)
+	atomic.AddUint64(&metrics.PromMetrics.SshConnectionsTotal, 1)
 	ctx.Owned.Set(key, session)
 	// 启动应用层保活：终端空闲、日志采集长跑期间都要能尽早发现半开连接。
 	session.StartKeepAlive(sshx.SshKeepAliveInterval())
@@ -118,7 +118,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	// 抗崩溃（收口设计 §3.2）：bridge 重启后 spc 终态还原的 watcher 没了，
 	// 凭持久意图账本把原件放回去。放进协程：集合性还原可能几十秒，
 	// 不能阻塞连接回包；无意图时几乎零开销。
-	go logcollect.RecoverSpcRestoreIntents(ctx.B, session, msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI)
+	go logcollect.RecoverSpcRestoreIntents(ctx.B.Hub, session, msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI)
 
 	caseID := msg.CaseID
 	terminal.On_output_start(session, ctx.WS, stdout, caseID, func(reason string) {
@@ -133,7 +133,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 }
 
 func handleSSHInput(ctx *app.WSContext, msg models.InMessage) {
-	s, key := ctx.B.ResolveInputSession(msg, ctx.ActiveKey, ctx.Owned)
+	s, key := ctx.B.Hub.ResolveInput(msg, ctx.ActiveKey, ctx.Owned)
 	if s == nil {
 		// 以前这里查不到会话就静默返回，表现为"字打进去了、什么都不到、日志也干净"。
 		// 现在必须留痕：先入库，再（节流）提示前端，避免再次无声无息。
@@ -161,7 +161,7 @@ func handleSSHInput(ctx *app.WSContext, msg models.InMessage) {
 }
 
 func handleSSHInjectCommand(ctx *app.WSContext, msg models.InMessage) {
-	s, key := ctx.B.ResolveInputSession(msg, ctx.ActiveKey, ctx.Owned)
+	s, key := ctx.B.Hub.ResolveInput(msg, ctx.ActiveKey, ctx.Owned)
 	if s == nil {
 		if ctx.LastInputRejectAt.IsZero() || time.Since(ctx.LastInputRejectAt) >= app.InputRejectNoticeInterval {
 			ctx.LastInputRejectAt = time.Now()
@@ -211,7 +211,7 @@ func handleSSHDisconnect(ctx *app.WSContext, msg models.InMessage) {
 
 func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 	// 根据 nodeIP 路由到正确的 SSH 会话
-	s, key := ctx.B.ResolveSession(msg)
+	s, key := ctx.B.Hub.Resolve(msg)
 	if s == nil && msg.NodeIP != "" {
 		// 自动连接新节点
 		s = ctx.B.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
@@ -277,7 +277,7 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 	log.Printf("[Bridge] EXEC_CMD: sha256=%s redacted=%q", obslog.CommandSHA256(wrappedCmd), obslog.RedactCommand(wrappedCmd))
 
 	resultChan := s.ExecCommand(wrappedCmd, msg.ExecID, 60*time.Second)
-	atomic.AddUint64(&app.PromMetrics.ExecCommandsTotal, 1)
+	atomic.AddUint64(&metrics.PromMetrics.ExecCommandsTotal, 1)
 	go func() {
 		result := <-resultChan
 		output := result.Output
@@ -286,7 +286,7 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 			output = "execution timeout"
 		}
 		if result.Timeout || exitCode != 0 {
-			atomic.AddUint64(&app.PromMetrics.ExecCommandErrors, 1)
+			atomic.AddUint64(&metrics.PromMetrics.ExecCommandErrors, 1)
 		}
 		outLen := len(output)
 		exitInfo := fmt.Sprintf("exit=%d", exitCode)
@@ -334,7 +334,7 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 	// 会话路由与 log_collect/acli_sync 对齐：custom-ui 登录建会话时用的
 	// case_id 可能是工单号或 terminal-only，管理端下发只需要按 node_ip
 	// 复用同一 bridge 进程里已存在的 SSH 会话，不再新建连接。
-	s, key, _ := logcollect.ResolveLogCollectSession(ctx.B, msg)
+	s, key, _ := ctx.B.Hub.ResolveForNode(msg)
 	if s == nil && msg.NodeIP != "" {
 		s = ctx.B.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
 		key = app.SessionKey(msg.CaseID, msg.NodeIP)
@@ -404,7 +404,7 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 		"trace_id":         msg.TraceID,
 	})
 
-	atomic.AddUint64(&app.PromMetrics.ExecCommandsTotal, 1)
+	atomic.AddUint64(&metrics.PromMetrics.ExecCommandsTotal, 1)
 	receiveCtx, receiveSpan := telemetry.Start(
 		obslog.ContextFromMessage(msg), "terminal_bridge.websocket.receive",
 		telemetry.String("exec.id", msg.ExecID), telemetry.String("message.type", msg.Type),
@@ -441,14 +441,14 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 		return
 	}
 
-	s, key := ctx.B.ResolveSession(msg)
+	s, key := ctx.B.Hub.Resolve(msg)
 	if s == nil && msg.NodeIP != "" {
 		// 复用既有自动连接：使用最近一次 ssh_connect 的认证信息连接目标节点。
 		s = ctx.B.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
 		key = app.SessionKey(msg.CaseID, msg.NodeIP)
 	}
 	if s == nil {
-		atomic.AddUint64(&app.PromMetrics.VmConsoleOpErrors, 1)
+		atomic.AddUint64(&metrics.PromMetrics.VmConsoleOpErrors, 1)
 		obslog.Emit("ERROR", "vm_console.session_missing", "SSH 会话不存在，无法执行控制台固定操作", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 			"exec_id": msg.ExecID, "operation": msg.Operation, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
 		})
@@ -464,12 +464,12 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 		"host_node_id": vmReq.HostNodeID, "vm_id": vmReq.VMID, "key": key,
 		"timeout_seconds": vmReq.TimeoutSeconds,
 	})
-	atomic.AddUint64(&app.PromMetrics.VmConsoleOpsTotal, 1)
+	atomic.AddUint64(&metrics.PromMetrics.VmConsoleOpsTotal, 1)
 	go terminal.RunVMConsoleOp(s, func(result models.OutMessage) { models.SendMsg(ctx.WS, result) }, vmReq)
 }
 
 func handleAcliSyncRoute(ctx *app.WSContext, msg models.InMessage) {
-	go acli.HandleAcliSync(ctx.B, ctx.WS, msg, ctx.CUI)
+	go acli.HandleAcliSync(ctx.B.Hub, ctx.WS, msg, ctx.CUI)
 }
 
 func handleListSessions(ctx *app.WSContext, msg models.InMessage) {
@@ -477,7 +477,7 @@ func handleListSessions(ctx *app.WSContext, msg models.InMessage) {
 	obslog.Emit("INFO", "session.list", "管理端查询已登录 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{})
 	models.SendMsg(ctx.WS, models.OutMessage{
 		Type: "list_sessions_result", CaseID: msg.CaseID,
-		Sessions: ctx.B.ListSessions(), TraceID: msg.TraceID, CustomUI: ctx.CUI,
+		Sessions: ctx.B.Hub.List(), TraceID: msg.TraceID, CustomUI: ctx.CUI,
 	})
 }
 
@@ -494,26 +494,26 @@ func handleBridgeLogTokenRoute(ctx *app.WSContext, msg models.InMessage) {
 
 func handleDeliverySubmitRoute(ctx *app.WSContext, msg models.InMessage) {
 	// 交付作业化：立刻返回 job_id，执行权交给 bridge，前端只轮询进度。
-	go delivery.HandleDeliverySubmit(ctx.B, ctx.WS, msg, ctx.CUI)
+	go delivery.HandleDeliverySubmit(ctx.WS, msg, ctx.CUI)
 }
 
 func handleDeliveryStatusRoute(ctx *app.WSContext, msg models.InMessage) {
-	go delivery.HandleDeliveryStatus(ctx.B, ctx.WS, msg, ctx.CUI)
+	go delivery.HandleDeliveryStatus(ctx.WS, msg, ctx.CUI)
 }
 
 func handleDeliveryResumeRoute(ctx *app.WSContext, msg models.InMessage) {
-	go delivery.HandleDeliveryResume(ctx.B, ctx.WS, msg, ctx.CUI)
+	go delivery.HandleDeliveryResume(ctx.WS, msg, ctx.CUI)
 }
 
 func handleDeliveryCancelRoute(ctx *app.WSContext, msg models.InMessage) {
-	go delivery.HandleDeliveryCancel(ctx.B, ctx.WS, msg, ctx.CUI)
+	go delivery.HandleDeliveryCancel(ctx.WS, msg, ctx.CUI)
 }
 
 func handleLogCollectRoute(ctx *app.WSContext, msg models.InMessage) {
-	go logcollect.HandleLogCollect(ctx.B, ctx.WS, msg, ctx.CUI)
+	go logcollect.HandleLogCollect(ctx.B.Hub, ctx.WS, msg, ctx.CUI)
 }
 
 func handleSftpOpRoute(ctx *app.WSContext, msg models.InMessage) {
 	// 下载在独立 goroutine 里跑：一个 5 GiB 的流不能把交互式 shell 的消息循环堵住。
-	go sftp.HandleSftpOp(ctx.B, ctx.WS, msg, ctx.CUI, ctx.ConnID)
+	go sftp.HandleSftpOp(ctx.B.Hub, ctx.WS, msg, ctx.CUI, ctx.ConnID)
 }

@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/sshx"
 	"testing"
@@ -406,41 +405,50 @@ func TestSftpMaxBytesFromEnv(t *testing.T) {
 	}
 }
 
+// resetSftpTasks 清空域内任务表：任务表已从 Bridge 下沉为包级状态，
+// 用例之间必须显式隔离，否则前一个用例的残留会让后一个用例撞上并发上限。
+func resetSftpTasks(t *testing.T) {
+	t.Helper()
+	sftpTasksMu.Lock()
+	sftpTasks = make(map[string]*sftpTask)
+	sftpTasksMu.Unlock()
+}
+
 func TestRegisterSftpTaskEnforcesLimits(t *testing.T) {
-	bridge := app.NewBridge()
-	_, cancel1, errType := registerSftpTask(bridge, sftpTaskKey("Q1", "t1"), "conn-1", "Q1")
+	resetSftpTasks(t)
+	_, cancel1, errType := registerSftpTask(sftpTaskKey("Q1", "t1"), "conn-1", "Q1")
 	if errType != "" {
 		t.Fatalf("首个任务应注册成功: %s", errType)
 	}
 	defer cancel1()
 
-	if _, _, errType := registerSftpTask(bridge, sftpTaskKey("Q1", "t1"), "conn-1", "Q1"); errType != sftpErrDuplicateTask {
+	if _, _, errType := registerSftpTask(sftpTaskKey("Q1", "t1"), "conn-1", "Q1"); errType != sftpErrDuplicateTask {
 		t.Fatalf("同任务重复提交应被拒绝，got=%q", errType)
 	}
 
-	_, cancel2, errType := registerSftpTask(bridge, sftpTaskKey("Q1", "t2"), "conn-1", "Q1")
+	_, cancel2, errType := registerSftpTask(sftpTaskKey("Q1", "t2"), "conn-1", "Q1")
 	if errType != "" {
 		t.Fatalf("第二个任务应注册成功: %s", errType)
 	}
 	defer cancel2()
 
-	if _, _, errType := registerSftpTask(bridge, sftpTaskKey("Q2", "t3"), "conn-2", "Q2"); errType != sftpErrBusy {
+	if _, _, errType := registerSftpTask(sftpTaskKey("Q2", "t3"), "conn-2", "Q2"); errType != sftpErrBusy {
 		t.Fatalf("超过并发上限应被拒绝，got=%q", errType)
 	}
 
-	if running := runningSftpTasks(bridge); running != 2 {
+	if running := runningSftpTasks(); running != 2 {
 		t.Fatalf("运行中任务数应为 2，got=%d", running)
 	}
 }
 
 func TestCancelSftpTasksForConn(t *testing.T) {
-	bridge := app.NewBridge()
-	ctx1, cancel1, _ := registerSftpTask(bridge, sftpTaskKey("Q1", "t1"), "conn-1", "Q1")
+	resetSftpTasks(t)
+	ctx1, cancel1, _ := registerSftpTask(sftpTaskKey("Q1", "t1"), "conn-1", "Q1")
 	defer cancel1()
-	ctx2, cancel2, _ := registerSftpTask(bridge, sftpTaskKey("Q1", "t2"), "conn-2", "Q1")
+	ctx2, cancel2, _ := registerSftpTask(sftpTaskKey("Q1", "t2"), "conn-2", "Q1")
 	defer cancel2()
 
-	if cancelled := CancelSftpTasksForConn(bridge, "conn-1"); cancelled != 1 {
+	if cancelled := CancelSftpTasksForConn("conn-1"); cancelled != 1 {
 		t.Fatalf("应只取消本连接的任务，got=%d", cancelled)
 	}
 	select {
@@ -456,19 +464,18 @@ func TestCancelSftpTasksForConn(t *testing.T) {
 }
 
 func TestCancelUnknownSftpTaskIsNotError(t *testing.T) {
-	bridge := app.NewBridge()
-	if cancelSftpTask(bridge, sftpTaskKey("Q1", "missing")) {
+	resetSftpTasks(t)
+	if cancelSftpTask(sftpTaskKey("Q1", "missing")) {
 		t.Fatal("取消不存在的任务应返回 false，由调用方回包告知已结束")
 	}
 }
 
 // TestDropSftpRemoteClientIfIdle 验证“死通道回收”不会误伤并发的另一个下载。
 func TestDropSftpRemoteClientIfIdle(t *testing.T) {
-	bridge := app.NewBridge()
 	session := &sshx.SSHSession{Sftp: &fakeSftpRemote{}}
 
 	// 无并发任务：直接丢弃，让下次请求重新协商
-	if !dropSftpRemoteClientIfIdle(bridge, session, false) {
+	if !dropSftpRemoteClientIfIdle(session, false) {
 		t.Fatal("无并发任务时应丢弃缓存通道")
 	}
 	if session.Sftp != nil {
@@ -477,8 +484,10 @@ func TestDropSftpRemoteClientIfIdle(t *testing.T) {
 
 	// 有旁人任务：列表失败不得关闭通道（否则会提前杀断另一个下载）
 	session.Sftp = &fakeSftpRemote{}
-	bridge.SftpTasks[sftpTaskKey("Q1", "other")] = &sftpTask{cancel: func() {}}
-	if dropSftpRemoteClientIfIdle(bridge, session, false) {
+	sftpTasksMu.Lock()
+	sftpTasks[sftpTaskKey("Q1", "other")] = &sftpTask{cancel: func() {}}
+	sftpTasksMu.Unlock()
+	if dropSftpRemoteClientIfIdle(session, false) {
 		t.Fatal("有并发任务时不应丢弃通道")
 	}
 	if session.Sftp == nil {
@@ -486,14 +495,16 @@ func TestDropSftpRemoteClientIfIdle(t *testing.T) {
 	}
 
 	// allowSelf：任务表里只有自己（下载场景），允许丢弃
-	if !dropSftpRemoteClientIfIdle(bridge, session, true) {
+	if !dropSftpRemoteClientIfIdle(session, true) {
 		t.Fatal("只剩自己一个任务时应允许丢弃")
 	}
 
 	// allowSelf 但还有旁人：仍然不能丢
 	session.Sftp = &fakeSftpRemote{}
-	bridge.SftpTasks[sftpTaskKey("Q1", "self")] = &sftpTask{cancel: func() {}}
-	if dropSftpRemoteClientIfIdle(bridge, session, true) {
+	sftpTasksMu.Lock()
+	sftpTasks[sftpTaskKey("Q1", "self")] = &sftpTask{cancel: func() {}}
+	sftpTasksMu.Unlock()
+	if dropSftpRemoteClientIfIdle(session, true) {
 		t.Fatal("还有并发任务时不得丢弃通道")
 	}
 	if session.Sftp == nil {

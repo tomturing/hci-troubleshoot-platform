@@ -5,11 +5,14 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/ssh"
+
+	"terminal_bridge/internal/sshx"
 )
 
+// 参数单一来源在 sshx（PTY 是 SSH 协议层细节），这里保留别名避免调用点改动。
 const (
-	PtyTerminalHeight = 40
-	PtyTerminalWidth  = 160
+	PtyTerminalHeight = sshx.PtyTerminalHeight
+	PtyTerminalWidth  = sshx.PtyTerminalWidth
 )
 
 // shouldUsePty 判定是否为本条命令分配伪终端。
@@ -28,13 +31,7 @@ func shouldUsePty(command string, explicit bool) bool {
 // PtyTerminalModes 关闭回显与输出换行转换：
 //   - ECHO=0：避免输入被回显进 stdout；
 //   - OPOST=0 / ONLCR=0：禁止把 \n 改写成 \r\n，从源头减少 CRLF。
-func PtyTerminalModes() ssh.TerminalModes {
-	return ssh.TerminalModes{
-		ssh.ECHO:  0,
-		ssh.OPOST: 0,
-		ssh.ONLCR: 0,
-	}
-}
+func PtyTerminalModes() ssh.TerminalModes { return sshx.PtyTerminalModes() }
 
 // crlfNormalizingReader 把 PTY 输出的 CRLF 归一化为 LF。
 //

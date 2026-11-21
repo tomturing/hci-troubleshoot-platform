@@ -15,13 +15,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"terminal_bridge/internal/app"
-	"time"
-
+	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
+	"time"
 )
 
 // scriptApplySpec 是写入所需的全部输入。
@@ -32,7 +32,7 @@ type scriptApplySpec struct {
 
 // prepareScriptScenario 完成「解析目标主机 + 逐台写入 + 全量校验」，成功才返回现场。
 // 任何一台写不进去都回滚并拒绝：节点之间跑不同版本的脚本，产物无法解释。
-func prepareScriptScenario(b *app.Bridge,
+func prepareScriptScenario(b *session.Hub,
 	ctx context.Context, s *sshx.SSHSession, msg models.InMessage, traceID, customUI string,
 ) (*spcTaskState, *spcRejection) {
 	files, rejection := parseScriptFiles(msg)
@@ -76,7 +76,7 @@ func prepareScriptScenario(b *app.Bridge,
 		restoreState: "pending",
 		activator:    reconcile.NewActivator(),
 	}
-	obslog.Emit("INFO", "log_collect.script_fanout_start", "开始把收集脚本写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	evidence.Emit("INFO", "log_collect.script_fanout_start", "开始把收集脚本写入目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "codes": codes, "digests": digests,
 		"hosts_count": len(targets), "ips_all": all, "script_bytes": totalBytes,
 	})
@@ -110,9 +110,9 @@ func prepareScriptScenario(b *app.Bridge,
 		restored, restoreFailed := rollbackScriptAll(b, s, state, spcWrittenTargets(results))
 		if restoreFailed > 0 {
 			rejection.Message = sshx.TruncateString(rejection.Message+
-				ContractFormat("script_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
+				logcontract.ContractFormat("script_restore_risk", map[string]string{"count": fmt.Sprint(restoreFailed)}), 560)
 		}
-		obslog.Emit("ERROR", "log_collect.script_fanout_failed", "脚本写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+		evidence.Emit("ERROR", "log_collect.script_fanout_failed", "脚本写入未通过，已回滚并拒绝下发", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 			"task_id": taskID, "codes": codes, "written": written,
 			"error_code": code, "error_type": errType,
 			"failed_hosts":   spcHostAuditTrail(blocking),
@@ -124,7 +124,7 @@ func prepareScriptScenario(b *app.Bridge,
 	}
 
 	spcTaskStore.put(state)
-	obslog.Emit("INFO", "log_collect.script_fanout", "收集脚本已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
+	evidence.Emit("INFO", "log_collect.script_fanout", "收集脚本已写入全部目标节点", traceID, msg.CaseID, msg.NodeIP, customUI, map[string]any{
 		"task_id": taskID, "codes": codes, "written": written,
 		"failed_hosts": spcHostAuditTrail(failed), "hosts": spcHostAuditTrail(results),
 	})
@@ -141,33 +141,33 @@ func scriptRejectionCode(failed []spcHostState) (string, string) {
 		for code := range seen {
 			switch code {
 			case spcErrUnreachable:
-				return code, ErrSpcSSHUnreachable
+				return code, logcontract.ErrSpcSSHUnreachable
 			case "script_dir_missing":
-				return code, ErrScriptDirMissing
+				return code, logcontract.ErrScriptDirMissing
 			case "script_backup_failed":
-				return code, ErrScriptBackupFailed
+				return code, logcontract.ErrScriptBackupFailed
 			case "script_write_failed":
-				return code, ErrScriptWriteFailed
+				return code, logcontract.ErrScriptWriteFailed
 			case spcErrBusy:
-				return code, ErrSpcHostBusy
+				return code, logcontract.ErrSpcHostBusy
 			}
 		}
 	}
-	return "script_aggregate", ErrScriptAggregate
+	return "script_aggregate", logcontract.ErrScriptAggregate
 }
 
 func scriptRejectionMessage(written, total int, failed []spcHostState) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "收集脚本写入未通过：目标 %d 台，成功 %d 台", total, written)
 	for _, host := range failed {
-		fmt.Fprintf(&builder, "；%s %s", host.IP, FirstNonEmpty(host.ErrorDetail, host.ErrorCode))
+		fmt.Fprintf(&builder, "；%s %s", host.IP, firstNonEmpty(host.ErrorDetail, host.ErrorCode))
 	}
 	return sshx.TruncateString(builder.String(), 560)
 }
 
 // applyScriptAll 并发把脚本写到全部目标节点（并发上限与主机锁沿用 spcWriteFanout，
 // 保证同一台主机上「场景写入」与「脚本写入」不会交错）。
-func applyScriptAll(b *app.Bridge,
+func applyScriptAll(b *session.Hub,
 	ctx context.Context, s *sshx.SSHSession, state *spcTaskState, spec scriptApplySpec,
 ) ([]spcHostState, reconcile.WrittenSet) {
 	results, written := spcWriteFanout().WriteAll(ctx, state.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
@@ -185,7 +185,7 @@ func applyScriptAll(b *app.Bridge,
 }
 
 // applyScriptToHost 在单台主机上完成目录探测 → 逐脚本备份 → 写入 → 落盘校验。
-func applyScriptToHost(b *app.Bridge,
+func applyScriptToHost(b *session.Hub,
 	ctx context.Context, s *sshx.SSHSession, spec scriptApplySpec, ip string, local bool, activator *reconcile.Activator,
 ) spcHostState {
 	state := spcHostState{IP: ip, RestoreState: "pending"}
@@ -216,7 +216,7 @@ func applyScriptToHost(b *app.Bridge,
 		}
 		if fileState.ErrorCode != "" {
 			state.ErrorCode = fileState.ErrorCode
-			state.ErrorDetail = fmt.Sprintf("脚本 %s：%s", file.Code, FirstNonEmpty(fileState.ErrorDetail, fileState.ErrorCode))
+			state.ErrorDetail = fmt.Sprintf("脚本 %s：%s", file.Code, firstNonEmpty(fileState.ErrorDetail, fileState.ErrorCode))
 			return state
 		}
 	}
@@ -225,7 +225,7 @@ func applyScriptToHost(b *app.Bridge,
 }
 
 // applyScriptFileToHost 在已探测到的目录里完成一份脚本的完整写入闭环。
-func applyScriptFileToHost(b *app.Bridge,
+func applyScriptFileToHost(b *session.Hub,
 	ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID string,
 	file scriptFile, activator *reconcile.Activator,
 ) spcHostSlotState {
@@ -324,7 +324,7 @@ func scriptFailureReason(output string) string {
 }
 
 // rollbackScriptAll 回滚本次已写入的节点（拒绝路径专用，幂等）。
-func rollbackScriptAll(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, targets []string) (int, int) {
+func rollbackScriptAll(b *session.Hub, s *sshx.SSHSession, st *spcTaskState, targets []string) (int, int) {
 	if st == nil || len(targets) == 0 {
 		return 0, 0
 	}
@@ -338,7 +338,7 @@ func rollbackScriptAll(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, targ
 }
 
 // restoreScriptHosts 并发恢复全部目标节点（不占主机锁：还原是幂等 cp/rm）。
-func restoreScriptHosts(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan) []spcHostState {
+func restoreScriptHosts(b *session.Hub, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan) []spcHostState {
 	results := spcRestoreFanout().Each(ctx, plan.Targets, func(ctx context.Context, ip string) reconcile.HostResult {
 		return spcRestoreResult(restoreScriptOnHost(b, ctx, s, plan, ip))
 	})
@@ -349,7 +349,7 @@ func restoreScriptHosts(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, 
 	return hosts
 }
 
-func restoreScriptOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan, ip string) spcHostState {
+func restoreScriptOnHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession, plan spcRestorePlan, ip string) spcHostState {
 	state := spcHostState{IP: ip}
 	local := plan.LocalIPs[ip]
 	dir := plan.Dirs[ip]
@@ -380,7 +380,7 @@ func restoreScriptOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession,
 		default:
 			failed++
 			if firstErr == "" {
-				firstErr = FirstNonEmpty(fileState.RestoreError, ErrScriptRestoreFailed)
+				firstErr = firstNonEmpty(fileState.RestoreError, logcontract.ErrScriptRestoreFailed)
 				state.ErrorDetail = fileState.ErrorDetail
 			}
 		}
@@ -398,7 +398,7 @@ func restoreScriptOnHost(b *app.Bridge, ctx context.Context, s *sshx.SSHSession,
 }
 
 // restoreScriptFileOnHost 恢复一份脚本：备份不存在返回 skipped，幂等重放不误报。
-func restoreScriptFileOnHost(b *app.Bridge,
+func restoreScriptFileOnHost(b *session.Hub,
 	ctx context.Context, s *sshx.SSHSession, ip string, local bool, dir, taskID, code string,
 ) spcHostSlotState {
 	state := spcHostSlotState{Slot: code}
@@ -443,11 +443,11 @@ func restoreScriptFileOnHost(b *app.Bridge,
 //
 // 与 spc 一样不把恢复完全交给平台：平台轮询只在页面打开时发生，
 // bridge 是常驻进程，才是节点文件状态的最终责任方。
-func watchScriptRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
+func watchScriptRestore(b *session.Hub, s *sshx.SSHSession, st *spcTaskState, traceID, caseID, nodeIP, customUI string) {
 	go func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				obslog.Emit("ERROR", "log_collect.script_restore_panic", "脚本恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
+				evidence.Emit("ERROR", "log_collect.script_restore_panic", "脚本恢复协程异常退出", traceID, caseID, nodeIP, customUI, map[string]any{
 					"task_id": st.TaskID, "panic": fmt.Sprint(recovered),
 				})
 			}
@@ -467,8 +467,8 @@ func watchScriptRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, tra
 			if err != nil || exitCode != 0 {
 				failPolls++
 				if failPolls >= spcRestoreFailPolls {
-					obslog.Emit("WARN", "log_collect.script_restore_abandon", "进度连续不可用，脚本恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
-						"task_id": st.TaskID, "error": ErrString(err), "exit_code": exitCode,
+					evidence.Emit("WARN", "log_collect.script_restore_abandon", "进度连续不可用，脚本恢复交给平台兜底", traceID, caseID, nodeIP, customUI, map[string]any{
+						"task_id": st.TaskID, "error": errString(err), "exit_code": exitCode,
 					})
 					return
 				}
@@ -496,7 +496,7 @@ func watchScriptRestore(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, tra
 }
 
 // restoreScriptTask 执行一次脚本还原并落日志；beginRestore 保证同任务只跑一次。
-func restoreScriptTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reason, traceID, caseID, nodeIP, customUI string) {
+func restoreScriptTask(b *session.Hub, s *sshx.SSHSession, st *spcTaskState, reason, traceID, caseID, nodeIP, customUI string) {
 	if st == nil || !st.beginRestore() {
 		return
 	}
@@ -516,7 +516,7 @@ func restoreScriptTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reas
 		level = "WARN"
 	}
 	st.finishRestore(status, reason, results)
-	obslog.Emit(level, "log_collect.script_restore", "收集脚本恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
+	evidence.Emit(level, "log_collect.script_restore", "收集脚本恢复结果", traceID, caseID, nodeIP, customUI, map[string]any{
 		"task_id": st.TaskID, "codes": st.Slots, "trigger": reason,
 		"restored": restored, "failed": failed, "hosts_count": len(results),
 		"hosts": spcHostAuditTrail(results),
@@ -525,7 +525,7 @@ func restoreScriptTask(b *app.Bridge, s *sshx.SSHSession, st *spcTaskState, reas
 
 // handleScriptRestore 处理平台显式发起的 restore_script（bridge 重启后的兜底）。
 // 内存态可能已经没了：仍按「固定目录 + 拼备份名」恢复；备份/标记都不存在时返回 skipped。
-func handleScriptRestore(b *app.Bridge, ctx context.Context, s *sshx.SSHSession, msg models.InMessage) (map[string]any, string, string) {
+func handleScriptRestore(b *session.Hub, ctx context.Context, s *sshx.SSHSession, msg models.InMessage) (map[string]any, string, string) {
 	taskID := strings.TrimSpace(msg.ExecID)
 	if !spcTaskIDRe.MatchString(taskID) {
 		return nil, "invalid_task_id", "缺少合法的任务 ID，无法定位脚本备份"

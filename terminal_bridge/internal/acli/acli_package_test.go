@@ -9,8 +9,7 @@ package acli
 import (
 	"errors"
 	"strings"
-	"terminal_bridge/internal/app"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/logcontract"
 	"testing"
 	"time"
 )
@@ -200,42 +199,42 @@ func TestVerifyAcliRemoteWrite(t *testing.T) {
 		{
 			name:     "sha256 不符",
 			result:   acliWriteResult{Moved: true, RemoteSize: pkg.Size, Algo: "sha256", Digest: strings.Repeat("ff", 32)},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "md5 不符",
 			result:   acliWriteResult{Moved: true, RemoteSize: pkg.Size, Algo: "md5", Digest: strings.Repeat("ff", 16)},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "落盘大小不符",
 			result:   acliWriteResult{Moved: true, RemoteSize: pkg.Size - 1, Algo: "sha256", Digest: pkg.SHA256},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "远端显式 size_mismatch",
 			result:   acliWriteResult{FailReason: "size_mismatch"},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "远端显式 digest_mismatch",
 			result:   acliWriteResult{FailReason: "digest_mismatch"},
-			wantCode: logcollect.ErrInstallChecksum, wantErr: true,
+			wantCode: logcontract.ErrInstallChecksum, wantErr: true,
 		},
 		{
 			name:     "cat 失败归到上传阶段",
 			result:   acliWriteResult{FailReason: "cat_failed"},
-			wantCode: logcollect.ErrInstallUpload, wantErr: true,
+			wantCode: logcontract.ErrInstallUpload, wantErr: true,
 		},
 		{
 			name:     "mv 失败归到上传阶段",
 			result:   acliWriteResult{FailReason: "move_failed"},
-			wantCode: logcollect.ErrInstallUpload, wantErr: true,
+			wantCode: logcontract.ErrInstallUpload, wantErr: true,
 		},
 		{
 			name:     "没有任何结论也视为失败",
 			result:   acliWriteResult{},
-			wantCode: logcollect.ErrInstallUpload, wantErr: true,
+			wantCode: logcontract.ErrInstallUpload, wantErr: true,
 		},
 	}
 	for _, tc := range cases {
@@ -338,11 +337,11 @@ func TestBuildAcliInstallCommand(t *testing.T) {
 
 func TestAcliSyncErrorCode(t *testing.T) {
 	cause := errors.New("boom")
-	wrapped := newAcliSyncError(logcollect.ErrInstallChecksum, "verify", false, "落盘校验不符", cause)
+	wrapped := newAcliSyncError(logcontract.ErrInstallChecksum, "verify", false, "落盘校验不符", cause)
 
-	code, detail, retryable := acliSyncErrorCode(wrapped, logcollect.ErrInstallUpload)
-	if code != logcollect.ErrInstallChecksum {
-		t.Fatalf("code=%s, want %s", code, logcollect.ErrInstallChecksum)
+	code, detail, retryable := acliSyncErrorCode(wrapped, logcontract.ErrInstallUpload)
+	if code != logcontract.ErrInstallChecksum {
+		t.Fatalf("code=%s, want %s", code, logcontract.ErrInstallChecksum)
 	}
 	if !strings.Contains(detail, "落盘校验不符") || !strings.Contains(detail, "boom") {
 		t.Fatalf("detail 必须同时包含说明与根因: %s", detail)
@@ -352,8 +351,8 @@ func TestAcliSyncErrorCode(t *testing.T) {
 	}
 
 	// 裸错误走 fallback，且必须默认可重试——否则前端连兜底按钮都没有。
-	code, detail, retryable = acliSyncErrorCode(cause, logcollect.ErrInstallUpload)
-	if code != logcollect.ErrInstallUpload || !retryable || detail != "boom" {
+	code, detail, retryable = acliSyncErrorCode(cause, logcontract.ErrInstallUpload)
+	if code != logcontract.ErrInstallUpload || !retryable || detail != "boom" {
 		t.Fatalf("fallback 行为不符: code=%s retryable=%v detail=%s", code, retryable, detail)
 	}
 }
@@ -392,26 +391,25 @@ func TestAcliPackageCache(t *testing.T) {
 }
 
 func TestAcquireAcliTransfer(t *testing.T) {
-	b := app.NewBridge()
-	release, ok := acquireAcliTransfer(b, "case@1.1.1.1")
+	release, ok := acquireAcliTransfer("case@1.1.1.1")
 	if !ok {
 		t.Fatal("首次抢占应成功")
 	}
 
 	// 同一会话重复抢占必须被拒：并发写同一 destPath 会互相覆盖。
-	if _, second := acquireAcliTransfer(b, "case@1.1.1.1"); second {
+	if _, second := acquireAcliTransfer("case@1.1.1.1"); second {
 		t.Fatal("并发抢占应被拒绝")
 	}
 
 	// 不同会话互不影响。
-	releaseOther, okOther := acquireAcliTransfer(b, "case@2.2.2.2")
+	releaseOther, okOther := acquireAcliTransfer("case@2.2.2.2")
 	if !okOther {
 		t.Fatal("不同会话应可并行")
 	}
 	releaseOther()
 
 	release()
-	_, again := acquireAcliTransfer(b, "case@1.1.1.1")
+	_, again := acquireAcliTransfer("case@1.1.1.1")
 	if !again {
 		t.Fatal("释放后应可再次抢占")
 	}

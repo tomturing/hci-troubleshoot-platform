@@ -50,7 +50,7 @@ func TestBuildPullCommandQuotesPath(t *testing.T) {
 	evil := "/sf/data/a b;rm -rf /tmp/x`id`$(whoami).zip"
 	command := buildPullCommand(evil, 0)
 
-	// 只回放路径参数部分：buildPullCommand = "cat " + ShellQuote(path)（offset=0）
+	// 只回放路径参数部分：buildPullCommand = "cat " + remote.ShellQuote(path)（offset=0）
 	quoted := strings.TrimPrefix(command, "cat ")
 	if quoted == command {
 		t.Fatalf("命令结构不符预期：%s", command)

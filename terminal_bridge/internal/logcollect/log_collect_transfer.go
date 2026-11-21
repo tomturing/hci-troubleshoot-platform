@@ -12,29 +12,25 @@ package logcollect
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"golang.org/x/net/websocket"
 	"hash"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"time"
-
-	"golang.org/x/net/websocket"
-
-	"terminal_bridge/internal/shared/remote"
 )
 
 const (
@@ -47,9 +43,6 @@ const (
 	logCollectMaxChunkSize = 64 * 1024 * 1024
 	logCollectMinChunkSize = 1 * 1024 * 1024
 )
-
-// 插件产物固定落在该目录；HCI ≥6.12 的 progress 会把前缀改写为 /support，需还原。
-var logCollectArchivePathPattern = regexp.MustCompile(`^/sf/data/local/acli/tmp/data/log_collect/[A-Za-z0-9_.-]+\.zip$`)
 
 // ErrPullSizeMismatch 表示"拉到的字节数与源包不符"。
 //
@@ -75,42 +68,15 @@ type logCollectTransferProgress struct {
 	Sha256        string `json:"sha256,omitempty"`
 }
 
-// NormalizeArchivePath 校验并归一化 HCI 上的压缩包路径。
-//
-// 只接受插件约定的目录，且不允许任何 shell 元字符——该路径最终会进入 shell 命令
-// （`tail -c +N <path>`），虽然经过 ShellQuote，仍先做白名单收敛。
+// NormalizeArchivePath 保留为域内薄包装：实现已归 remote.NormalizeArchivePath
+// （交付域在拉包前也要做同一份白名单校验）。
 func NormalizeArchivePath(raw string) (string, error) {
-	path := strings.TrimSpace(raw)
-	if path == "" {
-		return "", fmt.Errorf("source_path 不能为空")
-	}
-	// HCI ≥6.12：progress 展示的 /support/... 实际对应 /sf/data/local/acli/...
-	if strings.HasPrefix(path, "/support/") {
-		path = "/sf/data/local/acli/" + strings.TrimPrefix(path, "/support/")
-	}
-	if !logCollectArchivePathPattern.MatchString(path) {
-		return "", fmt.Errorf("source_path 必须是 %s 下的 .zip 文件", "/sf/data/local/acli/tmp/data/log_collect/")
-	}
-	return path, nil
+	return remote.NormalizeArchivePath(raw)
 }
 
-// ValidatePlatformURL 只接受 http/https 且必须带 host，避免 file:// 等协议被用于读本地。
+// ValidatePlatformURL 保留为域内薄包装：实现已归 uplink.ValidateURL（交付域同样需要）。
 func ValidatePlatformURL(raw string) (string, error) {
-	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
-	if trimmed == "" {
-		return "", fmt.Errorf("platform_url 不能为空")
-	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return "", fmt.Errorf("platform_url 解析失败: %w", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("platform_url 仅支持 http/https")
-	}
-	if parsed.Host == "" {
-		return "", fmt.Errorf("platform_url 缺少主机名")
-	}
-	return trimmed, nil
+	return uplink.ValidateURL(raw)
 }
 
 func validUploadedParts(raw []int, partCount int) map[int]bool {
@@ -180,12 +146,12 @@ func progressStep(total int64) int64 {
 // "每次重新 stat 量源包 / 长任务心跳抗 TMOUT=600 / 磁盘 admission 预检 /
 // 失败回填 PulledBytes" 都是交付编排语义，不属拉取原语，因此原地不动。
 // 收口前"两份拉取实现"的差异由此消除：两个调用方现在共用同一段字节逻辑。
-func PullArchive(s *sshx.SSHSession, ctx context.Context,
+func PullArchive(r remote.StreamRunner, ctx context.Context,
 	remotePath string,
 	localPath string,
 	totalSize int64,
 	onProgress func(written, total int64)) (int64, string, error) {
-	result, err := remote.Pull(ctx, sshx.NewSSHRunner(s), remote.PullSpec{
+	result, err := remote.Pull(ctx, r, remote.PullSpec{
 		RemotePath: remotePath,
 		LocalPath:  localPath,
 		TotalSize:  totalSize,
@@ -210,31 +176,16 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-// FileDigest 计算整文件摘要。algo 只认 md5 与 sha256；未知值按 sha256 处理，
-// 避免调用方传错算法时静默退回一个更弱的校验。
+// FileDigest 保留为域内薄包装：实现已归 uplink.FileDigest（交付域校验本地副本用）。
 func FileDigest(path, algo string) (string, error) {
-	var hasher hash.Hash
-	if algo == "md5" {
-		hasher = md5.New()
-	} else {
-		hasher = sha256.New()
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	if _, err := io.Copy(hasher, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	return uplink.FileDigest(path, algo)
 }
 
 // handleLogCollectTransfer 执行「HCI 拉取 → 平台分块上传」。
 //
 // 平台的 init / complete 由前端调用（需要客户身份），bridge 只拿到数据面 token，
 // 因此这里不接触控制面接口，职责边界清晰。
-func handleLogCollectTransfer(b *app.Bridge,
+func handleLogCollectTransfer(b *session.Hub,
 	ctx context.Context,
 	ws *websocket.Conn,
 	s *sshx.SSHSession,
@@ -264,7 +215,7 @@ func handleLogCollectTransfer(b *app.Bridge,
 	fail := func(code, message string, progress logCollectTransferProgress) error {
 		progress.Stage = "failed"
 		emit("error", progress, message, code)
-		obslog.Emit("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "log_collect.transfer_failed", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": taskID, "error_code": code, "error": message,
 			"stage": progress.Stage, "pulled_bytes": progress.PulledBytes,
 			"uploaded_parts": progress.UploadedParts, "part_count": progress.PartCount,
@@ -274,33 +225,33 @@ func handleLogCollectTransfer(b *app.Bridge,
 
 	sourcePath, err := NormalizeArchivePath(msg.TransferSourcePath)
 	if err != nil {
-		return fail(ErrTransferArchiveMissing, err.Error(), logCollectTransferProgress{})
+		return fail(logcontract.ErrTransferArchiveMissing, err.Error(), logCollectTransferProgress{})
 	}
 	platformURL, err := ValidatePlatformURL(msg.PlatformURL)
 	if err != nil {
-		return fail(ErrTransferChunkFailed, err.Error(), logCollectTransferProgress{})
+		return fail(logcontract.ErrTransferChunkFailed, err.Error(), logCollectTransferProgress{})
 	}
 	token := strings.TrimSpace(msg.TransferToken)
 	if token == "" {
-		return fail(ErrTransferChunkFailed, "upload_token 不能为空", logCollectTransferProgress{})
+		return fail(logcontract.ErrTransferChunkFailed, "upload_token 不能为空", logCollectTransferProgress{})
 	}
 	if taskID == "" {
-		return fail(ErrTransferChunkFailed, "exec_id（平台 task_id）不能为空", logCollectTransferProgress{})
+		return fail(logcontract.ErrTransferChunkFailed, "exec_id（平台 task_id）不能为空", logCollectTransferProgress{})
 	}
 
 	chunkSize := msg.TransferChunkSize
 	if chunkSize < logCollectMinChunkSize || chunkSize > logCollectMaxChunkSize {
-		return fail(ErrTransferChunkFailed, "chunk_size 超出允许范围", logCollectTransferProgress{})
+		return fail(logcontract.ErrTransferChunkFailed, "chunk_size 超出允许范围", logCollectTransferProgress{})
 	}
 	if msg.TransferTotalSize > 0 && msg.TransferTotalSize > 25*1024*1024*1024 {
-		return fail(ErrTransferTooLarge, "日志包超过平台上限（25 GiB）", logCollectTransferProgress{})
+		return fail(logcontract.ErrTransferTooLarge, "日志包超过平台上限（25 GiB）", logCollectTransferProgress{})
 	}
 	partCount := msg.TransferPartCount
 	if partCount <= 0 && msg.TransferTotalSize > 0 {
 		partCount = int((msg.TransferTotalSize + chunkSize - 1) / chunkSize)
 	}
 	if partCount <= 0 {
-		return fail(ErrTransferChunkFailed, "part_count 无法确定", logCollectTransferProgress{})
+		return fail(logcontract.ErrTransferChunkFailed, "part_count 无法确定", logCollectTransferProgress{})
 	}
 
 	localPath := strings.TrimSpace(msg.TransferLocalPath)
@@ -314,7 +265,7 @@ func handleLogCollectTransfer(b *app.Bridge,
 	}
 	emit("ok", progress, "", "")
 
-	written, sum, err := PullArchive(s, ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
+	written, sum, err := PullArchive(sshx.NewSSHRunner(s), ctx, sourcePath, localPath, msg.TransferTotalSize, func(done, total int64) {
 		progress.PulledBytes = done
 		progress.TotalSize = total
 		if total > 0 {
@@ -327,17 +278,17 @@ func handleLogCollectTransfer(b *app.Bridge,
 		// 字节数不符是完整性错误（LC-TRANSFER-002），不是传输失败：
 		// 错误码决定前端文案与是否自动重试，混用会让"包被截断"看起来像"网络抖动"。
 		if errors.Is(err, ErrPullSizeMismatch) {
-			return fail(ErrTransferChecksum, err.Error(), progress)
+			return fail(logcontract.ErrTransferChecksum, err.Error(), progress)
 		}
-		return fail(ErrTransferChunkFailed, err.Error(), progress)
+		return fail(logcontract.ErrTransferChunkFailed, err.Error(), progress)
 	}
 
 	info, err := os.Stat(localPath)
 	if err != nil {
-		return fail(ErrTransferArchiveMissing, "本地副本不存在: "+err.Error(), progress)
+		return fail(logcontract.ErrTransferArchiveMissing, "本地副本不存在: "+err.Error(), progress)
 	}
 	if msg.TransferTotalSize > 0 && info.Size() != msg.TransferTotalSize {
-		return fail(ErrTransferChecksum, fmt.Sprintf("拉取后大小不一致：期望 %d，实际 %d", msg.TransferTotalSize, info.Size()), progress)
+		return fail(logcontract.ErrTransferChecksum, fmt.Sprintf("拉取后大小不一致：期望 %d，实际 %d", msg.TransferTotalSize, info.Size()), progress)
 	}
 	progress.Size = info.Size()
 	// 摘要已在拉取过程中流式计算，这里不再重读整包。
@@ -373,13 +324,13 @@ func handleLogCollectTransfer(b *app.Bridge,
 		err = ctx.Err()
 	}
 	if err != nil {
-		return fail(ErrTransferChunkFailed, err.Error(), progress)
+		return fail(logcontract.ErrTransferChunkFailed, err.Error(), progress)
 	}
 
 	progress.Stage = "done"
 	progress.Percent = 100
 	emit("ok", progress, "", "")
-	obslog.Emit("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "log_collect.transfer_done", "日志包交付完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"task_id": taskID, "size": progress.Size, "sha256": progress.Sha256,
 		"part_count": partCount, "local_path": localPath,
 	})

@@ -20,9 +20,9 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
+	"terminal_bridge/internal/sshx/session"
 	"time"
 )
 
@@ -205,7 +205,7 @@ func validatePluginPlatformURL(raw string) (string, error) {
 //
 // 鉴权不放松：票据仍走 X-Plugin-Ticket，且放宽范围仅限本函数的两次调用，
 // 不写任何全局状态（与 delivery / obslog 通道同口径）。
-func fetchAcliPluginManifest(b *app.Bridge,
+func fetchAcliPluginManifest(b *session.Hub,
 	ctx context.Context,
 	platformURL, ticket, caseID string,
 	insecure bool,

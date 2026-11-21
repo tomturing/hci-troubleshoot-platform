@@ -32,7 +32,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"terminal_bridge/internal/shared/obslog"
+	"terminal_bridge/internal/shared/evidence"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"time"
 )
@@ -183,7 +183,7 @@ func (r *deliveryRunner) discardDeliveredCopy(job *deliveryJob) {
 		return
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		obslog.Emit("WARN", "delivery.local_clean_failed", "交付成功后删除本地副本失败", "", job.CaseID, job.NodeIP, "", map[string]any{
+		evidence.Emit("WARN", "delivery.local_clean_failed", "交付成功后删除本地副本失败", "", job.CaseID, job.NodeIP, "", map[string]any{
 			"job_id": job.JobID, "local_path": path, "reason": "delivered", "error": err.Error(),
 		})
 		return
@@ -192,7 +192,7 @@ func (r *deliveryRunner) discardDeliveredCopy(job *deliveryJob) {
 	job.LocalDeletedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	r.mu.Unlock()
 	_ = r.saveJob(job)
-	obslog.Emit("INFO", "delivery.local_cleaned", "交付成功，已删除本地中转副本", "", job.CaseID, job.NodeIP, "", map[string]any{
+	evidence.Emit("INFO", "delivery.local_cleaned", "交付成功，已删除本地中转副本", "", job.CaseID, job.NodeIP, "", map[string]any{
 		"job_id": job.JobID, "local_path": path, "reason": "delivered",
 	})
 }
@@ -251,7 +251,7 @@ func (r *deliveryRunner) reconcileLocalCopies(now time.Time) localCopyCleanupRep
 		}
 		if !policy.DryRun {
 			if err := os.Remove(item.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				obslog.Emit("WARN", "delivery.local_clean_failed", "清理本地副本失败", "", "", "", "", map[string]any{
+				evidence.Emit("WARN", "delivery.local_clean_failed", "清理本地副本失败", "", "", "", "", map[string]any{
 					"local_path": item.path, "reason": reason, "error": err.Error(),
 				})
 				return
@@ -350,7 +350,7 @@ func (r *deliveryRunner) runLocalCopyCleanup() {
 	if report.Removed == 0 && !report.DryRun {
 		return
 	}
-	obslog.Emit("INFO", "delivery.local_cleaned", "本地中转副本对账完成", "", "", "", "", map[string]any{
+	evidence.Emit("INFO", "delivery.local_cleaned", "本地中转副本对账完成", "", "", "", "", map[string]any{
 		"removed": report.Removed, "bytes": report.Bytes,
 		"reasons": report.Reasons, "dry_run": report.DryRun,
 	})

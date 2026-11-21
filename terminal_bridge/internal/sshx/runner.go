@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -29,8 +30,26 @@ type sshRunner struct {
 	session *SSHSession
 }
 
+// Runner 是适配器对外暴露的完整能力（执行 + 分轨 + 流式）。
+//
+// 为什么要显式定义组合接口：remote 把三种能力拆成了三个窄接口（窄接口是对的），
+// 但适配器同时实现全部；若构造函数只声明其中一个，调用方就得做类型断言才能拿到
+// 另一种能力，反而制造噪音。
+type Runner interface {
+	remote.Runner
+	remote.StreamsRunner
+	remote.StreamRunner
+	// 会话生命周期：长任务保护与保活（交付域与执行原语同属一个端口）。
+	BeginLongTask()
+	EndLongTask()
+	StartShellHeartbeat(caseID string) func()
+	MarkBusy()
+	// RunCommandPty 在独立通道上分配伪终端执行（acli 命令需要 tty）。
+	RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error)
+}
+
 // NewSSHRunner 构造适配器；session 为 nil 时返回 nil，由 remote 侧判空报错。
-func NewSSHRunner(s *SSHSession) remote.Runner {
+func NewSSHRunner(s *SSHSession) Runner {
 	if s == nil {
 		return nil
 	}
@@ -123,6 +142,22 @@ func (p *pullStream) Finish() {
 //
 // 调用方负责 Close（remote.Pull 用 defer 保证）；Wait 必须在读完后调用，
 // 否则拿不到远端退出码，"源包被清理"会表现成一次静默的短读。
+// 生命周期方法：交付域需要"长任务期间免于空闲回收 + 保活"的语义，
+// 与执行原语同属一个端口，避免调用方同时持有两种对象。
+func (r sshRunner) BeginLongTask() { r.session.BeginLongTask() }
+
+func (r sshRunner) EndLongTask() { r.session.EndLongTask() }
+
+func (r sshRunner) StartShellHeartbeat(caseID string) func() {
+	return r.session.StartShellHeartbeat(caseID)
+}
+
+func (r sshRunner) MarkBusy() { r.session.MarkBusy() }
+
+func (r sshRunner) RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error) {
+	return r.session.RunCommandPty(ctx, command, timeout)
+}
+
 func (r sshRunner) ReadStream(ctx context.Context, command string) (io.ReadCloser, remote.WaitFunc, error) {
 	session, err := r.session.Client.NewSession()
 	if err != nil {

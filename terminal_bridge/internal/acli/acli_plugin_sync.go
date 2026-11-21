@@ -16,18 +16,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/ssh"
 	"path"
 	"strings"
 	"sync"
-	"terminal_bridge/internal/app"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/cluster"
+	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // models.AcliPluginHostOutcome 是一台节点对一个插件的最终事实。
@@ -77,14 +76,14 @@ type acliPluginStagePlan struct {
 }
 
 // prepareAcliPluginStage 在阶段一开工前用票据换取期望态。返回 nil 表示未启用。
-func prepareAcliPluginStage(b *app.Bridge, msg models.InMessage, cui, traceID string) *acliPluginStagePlan {
+func prepareAcliPluginStage(b *session.Hub, msg models.InMessage, cui, traceID string) *acliPluginStagePlan {
 	if !acliPluginStageRequested(msg) {
 		// 契约兼容：没有 platform_url / plugin_ticket 就是没启用阶段二，
 		// 这不是失败，后续也不会发回执（旧前端不会因为多一个 null 字段出错）。
 		return nil
 	}
 	caseID := strings.TrimSpace(msg.CaseID)
-	obslog.Emit("INFO", "acli_plugin_sync.start", "acli 插件第二阶段开工（先拉期望态）", traceID, caseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "acli_plugin_sync.start", "acli 插件第二阶段开工（先拉期望态）", traceID, caseID, msg.NodeIP, cui, map[string]any{
 		"platform_url": strings.TrimSpace(msg.PlatformURL),
 	})
 	plan := &acliPluginStagePlan{started: time.Now()}
@@ -104,7 +103,7 @@ func prepareAcliPluginStage(b *app.Bridge, msg models.InMessage, cui, traceID st
 		// 拉失败不在此上报：阶段一照旧跑完，回执里带原因码——否则一次平台抖动
 		// 会把“工具没装”这个更严重的结论掩盖掉。
 		plan.fetchErr = err
-		obslog.Emit("WARN", "acli_plugin_sync.manifest_failed", "拉取插件期望态失败", traceID, caseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_plugin_sync.manifest_failed", "拉取插件期望态失败", traceID, caseID, msg.NodeIP, cui, map[string]any{
 			"reason": acliPluginErrorCode(err), "detail": err.Error(),
 		})
 		return plan
@@ -112,14 +111,14 @@ func prepareAcliPluginStage(b *app.Bridge, msg models.InMessage, cui, traceID st
 	// 放宽过必须留痕：这是"平台证书不受信"的唯一证据，事后排查不能只剩一条成功日志。
 	// 只写桥日志、不上屏——对用户而言插件最终收敛了就是成功，多一条告警只是噪音。
 	if tlsRelaxed {
-		obslog.Emit("WARN", "acli_plugin_sync.tls_relaxed", "平台证书不受信，插件期望态通道已放宽证书校验", traceID, caseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_plugin_sync.tls_relaxed", "平台证书不受信，插件期望态通道已放宽证书校验", traceID, caseID, msg.NodeIP, cui, map[string]any{
 			"platform_url": strings.TrimSpace(msg.PlatformURL),
 			"reason":       "self-signed-certificate",
 		})
 	}
 	plan.manifest = manifest
 	plan.plugins = manifest.Plugins
-	obslog.Emit("INFO", "acli_plugin_sync.manifest_fetched", "已拉取插件期望态", traceID, caseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "acli_plugin_sync.manifest_fetched", "已拉取插件期望态", traceID, caseID, msg.NodeIP, cui, map[string]any{
 		"desired_count":    len(manifest.Plugins),
 		"desired_plugins":  sortedPluginNames(manifest.Plugins),
 		"manifest_version": manifest.ManifestVersion,
@@ -132,7 +131,7 @@ func prepareAcliPluginStage(b *app.Bridge, msg models.InMessage, cui, traceID st
 // 上下文必须与阶段一的 720s 总预算**脱钩**：S4a 明确不动阶段一的外壳与预算，
 // 插件同步不能反过来把阶段一的预算账改歪。会话被关掉时不必特意中断：
 // SSH 通道一断，逐节点操作会立刻以 unreachable 收口，不会进入无限等待。
-func runAcliPluginStage(b *app.Bridge,
+func runAcliPluginStage(b *session.Hub,
 	s *sshx.SSHSession,
 	msg models.InMessage,
 	plan *acliPluginStagePlan,
@@ -147,7 +146,7 @@ func runAcliPluginStage(b *app.Bridge,
 }
 
 // syncAcliPluginsFromPlatform 执行第二阶段（期望态已由 prepare 取定）。
-func syncAcliPluginsFromPlatform(b *app.Bridge,
+func syncAcliPluginsFromPlatform(b *session.Hub,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	msg models.InMessage,
@@ -170,13 +169,13 @@ func syncAcliPluginsFromPlatform(b *app.Bridge,
 		receipt.OK = true
 		receipt.Warnings = append(receipt.Warnings, "manifest_empty")
 		receipt.ElapsedMS = time.Since(started).Milliseconds()
-		obslog.Emit("INFO", "acli_plugin_sync.no_desired_plugins", "平台未定义任何插件期望态，阶段二无事可做", traceID, caseID, msg.NodeIP, cui, nil)
+		evidence.Emit("INFO", "acli_plugin_sync.no_desired_plugins", "平台未定义任何插件期望态，阶段二无事可做", traceID, caseID, msg.NodeIP, cui, nil)
 		return receipt
 	}
 
 	// 目标节点集合：与 spc 扇出同源（`acli platform node list` + 本机地址表）。
-	hosts := logcollect.SpcNodeList(s, ctx)
-	localIPs := logcollect.SpcLocalAddresses(s, ctx)
+	hosts := cluster.NodeList(s, ctx)
+	localIPs := cluster.LocalAddresses(s, ctx)
 	targets := make([]acliPluginTarget, 0, len(hosts))
 	for _, host := range hosts {
 		ip := strings.TrimSpace(host.IP)
@@ -190,7 +189,7 @@ func syncAcliPluginsFromPlatform(b *app.Bridge,
 		// 覆盖范围不完整（B6/B8 同族教训：静默降级比失败更难排查）。
 		targets = []acliPluginTarget{{IP: sshx.SessionHostAddress(s, msg.NodeIP), Local: true}}
 		receipt.Warnings = append(receipt.Warnings, "node_list_unavailable_only_local_converged")
-		obslog.Emit("WARN", "acli_plugin_sync.node_list_unavailable", "集群节点清单不可得，仅收敛发起节点", traceID, caseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_plugin_sync.node_list_unavailable", "集群节点清单不可得，仅收敛发起节点", traceID, caseID, msg.NodeIP, cui, map[string]any{
 			"fallback_ip": targets[0].IP,
 		})
 	}
@@ -226,7 +225,7 @@ func syncAcliPluginsFromPlatform(b *app.Bridge,
 	if !receipt.OK {
 		level = "WARN"
 	}
-	obslog.Emit(level, "acli_plugin_sync.done", "acli 插件第二阶段结束", traceID, caseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit(level, "acli_plugin_sync.done", "acli 插件第二阶段结束", traceID, caseID, msg.NodeIP, cui, map[string]any{
 		"ok": receipt.OK, "installed": receipt.Installed, "overwritten": receipt.Overwritten,
 		"skipped": receipt.Skipped, "failed": receipt.Failed,
 		"nodes": receipt.Nodes, "elapsed_ms": receipt.ElapsedMS, "warnings": receipt.Warnings,
@@ -241,7 +240,7 @@ type acliPluginTarget struct {
 }
 
 // reconcileAcliPlugin 对单个插件做逐节点差量判定与执行。
-func reconcileAcliPlugin(b *app.Bridge,
+func reconcileAcliPlugin(b *session.Hub,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	desired acliPluginDesired,
@@ -255,7 +254,7 @@ func reconcileAcliPlugin(b *app.Bridge,
 		Action:   acliPluginActionSkip,
 	}
 	outcomes := make([]models.AcliPluginHostOutcome, len(targets))
-	sem := make(chan struct{}, logcollect.SpcFanoutConcurrency)
+	sem := make(chan struct{}, cluster.FanoutConcurrency)
 	var wg sync.WaitGroup
 	for index, target := range targets {
 		wg.Add(1)
@@ -278,7 +277,7 @@ func reconcileAcliPlugin(b *app.Bridge,
 type acliPluginHostStatus = acliPluginTarget
 
 // reconcileAcliPluginOnHost 在单台节点上完成"探测→判定→（必要时）部署→自检"。
-func reconcileAcliPluginOnHost(b *app.Bridge,
+func reconcileAcliPluginOnHost(b *session.Hub,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	desired acliPluginDesired,
@@ -300,7 +299,7 @@ func reconcileAcliPluginOnHost(b *app.Bridge,
 	}
 	if action == acliPluginActionOverwrite && strings.HasPrefix(reason, "probe") {
 		// 探测本身不可信：仍然收敛（事实优先），但把降级原因带到回执里。
-		obslog.Emit("WARN", "acli_plugin_sync.probe_degraded", "插件事实探测降级，按覆盖安装收敛", traceID, caseID, target.IP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_plugin_sync.probe_degraded", "插件事实探测降级，按覆盖安装收敛", traceID, caseID, target.IP, cui, map[string]any{
 			"plugin": desired.Name, "reason": reason, "stderr": sshx.TruncateString(stderr, 512),
 		})
 	}
@@ -321,7 +320,7 @@ func reconcileAcliPluginOnHost(b *app.Bridge,
 		outcome.Reason = acliPluginErrorCode(writeErr)
 		outcome.Error = writeErr.Error()
 		outcome.ElapsedMS = time.Since(started).Milliseconds()
-		obslog.Emit("ERROR", "acli_plugin_sync.script_write_failed", "部署脚本写入节点失败", traceID, caseID, target.IP, cui, map[string]any{
+		evidence.Emit("ERROR", "acli_plugin_sync.script_write_failed", "部署脚本写入节点失败", traceID, caseID, target.IP, cui, map[string]any{
 			"plugin": desired.Name, "path": scriptPath, "reason": outcome.Reason, "detail": outcome.Error,
 		})
 		return outcome
@@ -339,25 +338,25 @@ func reconcileAcliPluginOnHost(b *app.Bridge,
 	switch {
 	case deploy.OK:
 		// 设备侧自检通过：动作保持判定结论（新增 / 有修改），回执据此计数。
-		obslog.Emit("INFO", "acli_plugin_sync.host_success", "插件在节点上收敛成功", traceID, caseID, target.IP, cui, map[string]any{
+		evidence.Emit("INFO", "acli_plugin_sync.host_success", "插件在节点上收敛成功", traceID, caseID, target.IP, cui, map[string]any{
 			"plugin": desired.Name, "action": action, "version": deploy.Version,
 		})
 	case err != nil && exitCode == -1:
 		outcome.Action = acliPluginActionFailed
 		outcome.Reason = "host_channel_error"
-		outcome.Error = logcollect.ErrString(err)
+		outcome.Error = errString(err)
 	case exitCode != 0:
 		outcome.Action = acliPluginActionFailed
 		outcome.Reason = "host_exec_failed"
-		outcome.Error = logcollect.FirstNonEmpty(deploy.Error, fmt.Sprintf("exit=%d stderr=%s", exitCode, sshx.TruncateString(stderr, 512)))
+		outcome.Error = firstNonEmpty(deploy.Error, fmt.Sprintf("exit=%d stderr=%s", exitCode, sshx.TruncateString(stderr, 512)))
 	default:
 		// 脚本正常收尾但自检不是 success：可能是 rolled_back，也可能压根没打出结果块。
 		outcome.Action = acliPluginActionFailed
 		outcome.Reason = "device_selfcheck_not_passed"
-		outcome.Error = logcollect.FirstNonEmpty(deploy.Error, "status="+deploy.Status)
+		outcome.Error = firstNonEmpty(deploy.Error, "status="+deploy.Status)
 	}
 	if outcome.Action == acliPluginActionFailed {
-		obslog.Emit("WARN", "acli_plugin_sync.host_failed", "插件在节点上收敛失败", traceID, caseID, target.IP, cui, map[string]any{
+		evidence.Emit("WARN", "acli_plugin_sync.host_failed", "插件在节点上收敛失败", traceID, caseID, target.IP, cui, map[string]any{
 			"plugin": desired.Name, "reason": outcome.Reason, "error": outcome.Error,
 			"device_status": outcome.Status, "exit_code": exitCode,
 		})
@@ -375,7 +374,7 @@ func runAcliPluginOnHost(s *sshx.SSHSession, ctx context.Context,
 	timeout time.Duration) (string, string, int, error) {
 	full := command
 	if !target.Local {
-		full = logcollect.BuildSpcSSHCommand(target.IP, command)
+		full = cluster.BuildSSHCommand(target.IP, command)
 	}
 	hostCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -388,7 +387,7 @@ func runAcliPluginOnHost(s *sshx.SSHSession, ctx context.Context,
 // 为什么不用 printf 分片塞 argv：netdoctor 一类插件的脚本近 1MB，Linux 单参数
 // 上限约 128KB，旧实现只能按 48KB 分片下发（每条命令一次 WS/SSH 往返）。
 // stdin 通道一次成型，且落盘后仍有摘要复核，不牺牲完整性。
-func writeAcliPluginScript(b *app.Bridge,
+func writeAcliPluginScript(b *session.Hub,
 	ctx context.Context,
 	s *sshx.SSHSession,
 	target acliPluginTarget,
@@ -413,19 +412,19 @@ func writeAcliPluginScript(b *app.Bridge,
 	cancelMkdir()
 	if err != nil || exitCode != 0 {
 		return newAcliPluginError("script_dir_prepare_failed",
-			fmt.Sprintf("exit=%d err=%s", exitCode, logcollect.ErrString(err)))
+			fmt.Sprintf("exit=%d err=%s", exitCode, errString(err)))
 	}
 
 	inner := buildAcliRemoteWriteCommand(tmpPath, scriptPath, pkg, "0755")
 	command := inner
 	if !target.Local {
-		command = logcollect.BuildSpcSSHCommand(target.IP, inner)
+		command = cluster.BuildSSHCommand(target.IP, inner)
 	}
 	writeCtx, cancel := context.WithTimeout(ctx, acliUploadTimeout)
 	defer cancel()
 	stdout, stderr, exitCode, err := runSSHCommandWithStdin(s, writeCtx, command, data)
 	if err != nil && exitCode == -1 {
-		return newAcliPluginError("script_write_channel_error", logcollect.ErrString(err))
+		return newAcliPluginError("script_write_channel_error", errString(err))
 	}
 	result := parseAcliWriteOutput(stdout)
 	if _, verifyErr := verifyAcliRemoteWrite(pkg, result); verifyErr != nil {

@@ -6,6 +6,7 @@ package logcollect
 import (
 	"strings"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
 	"testing"
 )
 
@@ -31,11 +32,11 @@ func TestBuildSpcDirProbeRecreatesMissingDir(t *testing.T) {
 	if mkdir < 0 {
 		t.Fatalf("缺失即创建：探测脚本必须含 mkdir -p：%s", command)
 	}
-	if !strings.Contains(command, "[ -d "+ShellQuote(SpcDeployDir)+" ] || mkdir -p "+ShellQuote(SpcDeployDir)) {
+	if !strings.Contains(command, "[ -d "+remote.ShellQuote(SpcDeployDir)+" ] || mkdir -p "+remote.ShellQuote(SpcDeployDir)) {
 		t.Fatalf("mkdir 必须只在目录缺失时触发且指向固定路径：%s", command)
 	}
 	// 创建之后仍要回读存在性并回显路径，pickSpcDir 的解析语义不变。
-	if !strings.Contains(command, "[ -d "+ShellQuote(SpcDeployDir)+" ] && printf") {
+	if !strings.Contains(command, "[ -d "+remote.ShellQuote(SpcDeployDir)+" ] && printf") {
 		t.Fatalf("创建后必须回读存在性并回显路径：%s", command)
 	}
 }

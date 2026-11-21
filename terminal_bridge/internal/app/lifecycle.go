@@ -144,8 +144,8 @@ func (b *Bridge) DestroySession(key, reason, byConn string) bool {
 			"key":             key,
 			"reason":          reason,
 			"by_conn":         byConn,
-			"active_sessions": b.SessionCount(),
-			"session_keys":    b.SessionKeyList(8),
+			"active_sessions": b.Count(),
+			"session_keys":    b.Keys(8),
 		})
 		return false
 	}
@@ -160,8 +160,8 @@ func (b *Bridge) DestroySession(key, reason, byConn string) bool {
 		"by_conn":         byConn,
 		"owner_conn":      ownerConn,
 		"age_seconds":     ageSeconds,
-		"active_sessions": b.SessionCount(),
-		"session_keys":    b.SessionKeyList(8),
+		"active_sessions": b.Count(),
+		"session_keys":    b.Keys(8),
 	})
 	return true
 }
@@ -214,8 +214,8 @@ func (b *Bridge) detachSession(key, reason, byConn string) bool {
 			"reason":          reason,
 			"by_conn":         byConn,
 			"mode":            "detach",
-			"active_sessions": b.SessionCount(),
-			"session_keys":    b.SessionKeyList(8),
+			"active_sessions": b.Count(),
+			"session_keys":    b.Keys(8),
 		})
 		return false
 	}
@@ -230,8 +230,8 @@ func (b *Bridge) detachSession(key, reason, byConn string) bool {
 		"owner_conn":      ownerConn,
 		"age_seconds":     ageSeconds,
 		"long_tasks":      session.LongTasks.Load(),
-		"active_sessions": b.SessionCount(),
-		"session_keys":    b.SessionKeyList(8),
+		"active_sessions": b.Count(),
+		"session_keys":    b.Keys(8),
 	})
 	return true
 }
@@ -265,7 +265,7 @@ func StartSessionReaper(bridge *Bridge, ttl time.Duration) {
 		for range ticker.C {
 			if reaped := bridge.ReapIdleSessions(ttl); reaped > 0 {
 				obslog.Emit("INFO", "session.reaped", "空闲租约到期，已回收会话", "", "", "", "", map[string]any{
-					"reaped": reaped, "active_sessions": bridge.SessionCount(),
+					"reaped": reaped, "active_sessions": bridge.Count(),
 				})
 			}
 		}
@@ -341,7 +341,7 @@ func sessionCountSnapshot() int {
 	if BridgeSingleton == nil {
 		return 0
 	}
-	return BridgeSingleton.SessionCount()
+	return BridgeSingleton.Count()
 }
 
 // BridgeSingleton 指向进程内唯一的 Bridge，供无接收者的辅助函数读取。

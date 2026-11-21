@@ -12,6 +12,7 @@ import (
 	"context"
 	"io"
 	"sync"
+	"time"
 )
 
 // Runner 是 remote/ 认识的最小执行接口缝（零逻辑，只有端口定义）。
@@ -41,7 +42,6 @@ type StreamsRunner interface {
 type WaitFunc func() error
 
 // StreamRunner 是可选扩展：以流的方式读取远端命令的 stdout。
-//
 // 为什么 Runner 的两个方法表达不了拉取：20 GiB 的压缩包若先收进 string
 // 再落盘，等于把整包放进桥进程内存；而边读边写边摘要要求"读到一段就处理
 // 一段"。因此拉取原语需要 io.ReadCloser 而不是 string。
@@ -51,6 +51,32 @@ type WaitFunc func() error
 type StreamRunner interface {
 	Runner
 	ReadStream(ctx context.Context, command string) (io.ReadCloser, WaitFunc, error)
+}
+
+// QuickRunner 是「只要一次性执行结果」的最小端口。
+//
+// 为什么不是 Runner：Runner 还要求 WriteStdin（`cat > tmp` 的字节通道），
+// 而 sshx.SSHSession 的这个能力在 sshRunner 适配器上，不在会话类型上。
+// 集群扇出、节点清单探测、插件落盘校验都只需要命令与退出码，
+// 用最小端口就能让 *sshx.SSHSession 零包装地适配进来。
+type QuickRunner interface {
+	RunQuickCommand(ctx context.Context, command string) (stdout string, exitCode int, err error)
+}
+
+// QuickStreamsRunner 是分轨（stdout/stderr 分开）的一次性执行端口。
+type QuickStreamsRunner interface {
+	QuickRunner
+	RunQuickCommandStreams(ctx context.Context, command string) (stdout, stderr string, exitCode int, err error)
+}
+
+// PtyRunner 是可选扩展：在 PTY 里执行命令。
+//
+// 为什么需要 PTY：`acli --formatter json ...` 这类命令在非交互会话里可能被截断或
+// 拒绝输出（受限 shell），PTY 能拿到完整输出；`--version` 与 node list 都靠它。
+// 端口与 sshx.SSHSession.RunCommandPty 同签名，适配零成本；把它定义在 remote
+// 是为了让 shared/cluster 不必 import sshx 具体类型（shared 层硬约束）。
+type PtyRunner interface {
+	RunCommandPty(ctx context.Context, command string, timeout time.Duration) (stdout string, exitCode int, err error)
 }
 
 // ProgressFunc 报告已写入字节数（sent/total）。nil 表示不上报。

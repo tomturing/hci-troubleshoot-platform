@@ -12,23 +12,22 @@ package logcollect
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
+	"golang.org/x/net/websocket"
 	"regexp"
 	"strconv"
 	"strings"
-	"terminal_bridge/internal/app"
+	"terminal_bridge/internal/shared/aclibin"
+	"terminal_bridge/internal/shared/acliout"
+	"terminal_bridge/internal/shared/cluster"
+	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"terminal_bridge/internal/terminal"
 	"time"
-
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/net/websocket"
-
-	"terminal_bridge/internal/shared/remote"
 )
 
 const (
@@ -62,12 +61,11 @@ type logCollectModuleOption struct {
 }
 
 // logCollectHostOption 是 acli 上报的节点清单项。
-// 第一性原理：目标主机必须来自被采集集群的事实，而不是让用户凭记忆手填 IP。
-type logCollectHostOption struct {
-	IP     string `json:"ip"`
-	Name   string `json:"name,omitempty"`
-	Master bool   `json:"master,omitempty"`
-}
+//
+// 阶段 2 A3：结构本体已归 shared/models.NodeOption —— 它同时是 WS 出站契约与
+// 集群拓扑解析结果，由 acli 与 logcollect 共用。此处保留别名，使采集编排内部
+// 与既有测试无需改动。
+type logCollectHostOption = models.NodeOption
 
 // logCollectModuleLabels 是平台内置场景目录，文案取自 acli 1.0.1 帮助原文。
 // 对抗性审查：help 解析可能因插件升级改版而失败，内置目录保证下拉永远有可选项，
@@ -91,66 +89,13 @@ var logCollectModuleCatalogOrder = []string{
 	"slowdisk", "performance", "core", "system", "other",
 }
 
-// logCollectAcliPathEnv 是 acli 的固定调用前缀：容器 PATH 不含 /sf/bin，
-// 且插件位于 /sf/data/local/acli，缺一不可。
-const logCollectAcliPathEnv = `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin";`
-
-// logCollectAcliCandidates 是 acli 二进制的解析顺序（HCI 官方入口在前）。
-// 第一性原理：PATH 只能"追加"，而 sshd 非交互会话的默认 PATH
-// （/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin）排在我们的追加项之前。
-// 一旦节点上存在两份 acli（旧版落在 /usr/local/bin 等目录），`acli --version` 命中的是旧版，
-// 于是面板显示的版本与运维在登录 shell 里手敲的结果不一致，且无法自证。
-// 因此所有 acli 调用都按绝对路径解析，并把真正命中的路径一起回传。
-var logCollectAcliCandidates = []string{"/sf/bin/acli", "/sf/sbin/acli"}
-
-// logCollectAcliResolve 返回一段 POSIX sh：把命中的 acli 绝对路径写入 $__acli。
-//
-// 这是全通道唯一的解析实现（probe / help / node list / create / progress / cancel 共用），
-// 顺序固定为：绝对路径候选（/sf/bin → /sf/sbin）→ `command -v acli` 兜底 → 空。
-// 2026-10-27 现场缺陷：探测走绝对路径命中 /sf/bin/acli，而 create/progress/cancel 裸写
-// `acli ...`，sshd 非交互会话 PATH 不含 /sf/bin|/sf/sbin 时报 `bash: acli: command not found`
-// ——用户看到"探测通过、一采集就失败"。同源解析就是为了让这种错位不可能再出现。
-func logCollectAcliResolve() string {
-	candidates := strings.Join(logCollectAcliCandidates, " ")
-	return `__acli_resolve_absent=1; __acli=""; for p in ` + candidates + `; do if [ -x "$p" ]; then __acli="$p"; __acli_resolve_absent=0; break; fi; done; if [ -z "$__acli" ]; then __acli=$(command -v acli 2>/dev/null); if [ -n "$__acli" ]; then __acli_resolve_absent=0; fi; fi;`
-}
-
 // logCollectAcliInvoke 把「acli 之后的参数串」包成可直接下发的自解析命令。
 //
-// 契约：args 不含 acli 本体（例如 `log_collect progress`）；返回串以 PATH 环境开头、
-// 以 `"$__acli" <args>` 结尾，解析失败时输出 __ACLI_ABSENT__ 并以 127 退出，
-// 使调用方拿到与"命令不存在"一致的失败语义（而不是误判成插件业务失败）。
+// 阶段 2 A3：PATH 前缀、绝对路径解析与输出协议已下沉到 shared/aclibin——
+// 它是 logcollect 与 acli 两个域共用的"节点上跑哪份 acli"事实层，
+// 放在任一侧都会让另一侧反向依赖（或各写一份，重现"显示与执行不一致"的老缺陷）。
 func logCollectAcliInvoke(args string) string {
-	return logCollectAcliPathEnv + " " + logCollectAcliResolve() +
-		` if [ "$__acli_resolve_absent" = "1" ]; then echo __ACLI_ABSENT__ >&2; exit 127; fi; "$__acli" ` + args
-}
-
-// BuildAcliVersionCommand 生成既解析二进制路径、又输出原始版本的两段式命令。
-//
-// 输出契约（acli.ParseAcliVersion / ParseAcliBinary 依赖）：
-//
-//	__ACLI_BIN__=/sf/bin/acli
-//	1.0.1
-//	build 2026-09-15 21:00:04
-//
-// 候选都不存在时才回落 `command -v acli`，最后输出 __ACLI_ABSENT__，
-// 保证"未安装"的判定口径与旧实现一致（不会被误判成已安装）。
-// 解析逻辑与 logCollectAcliInvoke 共用 logCollectAcliResolve：显示值与实际执行
-// 必须是同一份二进制，否则会出现"面板显示 1.0.1、采集却命中旧版"的错位。
-func BuildAcliVersionCommand() string {
-	return logCollectAcliPathEnv + " " + logCollectAcliResolve() +
-		` if [ "$__acli_resolve_absent" = "1" ]; then echo __ACLI_ABSENT__; else printf '__ACLI_BIN__=%s\n' "$__acli"; "$__acli" --version 2>&1; fi`
-}
-
-// ParseAcliBinary 从探测输出中取出实际命中的 acli 路径；取不到返回空串。
-func ParseAcliBinary(output string) string {
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "__ACLI_BIN__=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "__ACLI_BIN__="))
-		}
-	}
-	return ""
+	return aclibin.Invoke(args)
 }
 
 func builtinLogCollectModules() []logCollectModuleOption {
@@ -170,7 +115,6 @@ var (
 	// 进度行按「标签 + 百分比 + 分数」的形态匹配，中英文共用一条：
 	// 中文「总进度：63% - 2/3（已收集完成/收集总数）」、英文
 	// 「Overall progress: 100% - 5/5(Collected/Total collected)」。
-	logCollectProgressRe = regexp.MustCompile(`^(?:总进度|Overall progress)\s*[:：]\s*(\d+)%\s*-\s*(\d+)\s*/\s*(\d+)`)
 	// 终端颜色/样式转义的清洗已收口到 remote.StripANSI（唯一实现）。
 	// acli 失败时会输出 `\x1b[31mFATA\x1b[0m...`，不清洗会让状态行前缀带转义、
 	// 解析失配，前端也会把乱码直接展示给用户。
@@ -181,22 +125,12 @@ var (
 	// 中间列不写死文案：中文「收集完成」与英文「Collection successful」都是两个词的
 	// 组合，任何按词枚举的写法都会在下一次文案变化时失效，交给
 	// classifyLogCollectHostStatusWord 归一化后再判定这一行是否是节点明细。
-	logCollectHostLineRe = regexp.MustCompile(`^(\d{1,3}(?:\.\d{1,3}){3})\s+(.+?)\s+(\d+%|-)\s*$`)
 	// 实机 help 把枚举值按两列排版（同一行出现两个「名称（标签）」），
 	// 因此必须全量扫描而不是逐行只取首个匹配。括号兼容全角与半角，
 	// 并允许标签前有空格：中文是 `host_offline（主机离线）`，
 	// 英文是 `host_offline (Host offline)`。只吃空格/制表符，不跨行。
 	logCollectModuleOptionRe = regexp.MustCompile(`([a-z][a-z_]+)[ \t]*[（(][ \t]*([^）)]{1,40})[）)]`)
 )
-
-// ShellQuote 用单引号包裹并按 POSIX 规则转义内部单引号。
-// 插件的 -s/-p/-u 最终会被拼进 shell 命令，禁止直接使用用户输入。
-//
-// S1 收口：唯一实现在 remote.ShellQuote。全仓曾有两份转义（本函数与
-// main.go 的 terminal.VmConsoleShellQuote），意味着两个注入面各自演化；现在只剩一份。
-func ShellQuote(value string) string {
-	return remote.ShellQuote(value)
-}
 
 // buildLogCollectCreateCommand 校验参数并返回 acli 之后的参数串（不含 acli 本体）。
 // 调用方必须经 logCollectAcliInvoke 包成自解析命令，禁止裸拼 `acli`：
@@ -304,16 +238,16 @@ func buildLogCollectCreateCommand(req models.InMessage) (command string, errType
 
 	parts := []string{
 		"log_collect", "create",
-		"-s", ShellQuote(ticket),
-		"-m", ShellQuote(strings.Join(normalized, ",")),
-		"-d", ShellQuote(dateFrom + "," + dateTo),
-		"-i", ShellQuote(ips),
+		"-s", remote.ShellQuote(ticket),
+		"-m", remote.ShellQuote(strings.Join(normalized, ",")),
+		"-d", remote.ShellQuote(dateFrom + "," + dateTo),
+		"-i", remote.ShellQuote(ips),
 	}
 	if len(paths) > 0 {
-		parts = append(parts, "-p", ShellQuote(strings.Join(paths, ",")))
+		parts = append(parts, "-p", remote.ShellQuote(strings.Join(paths, ",")))
 	}
 	if remoteURL != "" {
-		parts = append(parts, "-u", ShellQuote(remoteURL))
+		parts = append(parts, "-u", remote.ShellQuote(remoteURL))
 		if uploadTicket != "" {
 			// 用 -L（URL 特定请求头）而不是 -H（全局请求头）：
 			// -H 会把凭据带给 acli 访问的每一个地址，暴露面必须按 URL 限定到
@@ -328,7 +262,7 @@ func buildLogCollectCreateCommand(req models.InMessage) (command string, errType
 			// 这里换成全局头做隔离验证：若 -H 能发出去，说明是 -L 的 index 语义
 			// （引用"已配置的目标地址"而非命令行 -u）导致；若 -H 也发不出去，
 			// 说明该版本的自定义头参数对上传链路是死参数，P1 带凭据不可行。
-			parts = append(parts, "-H", ShellQuote(logCollectUploadHeader(uploadTicket)))
+			parts = append(parts, "-H", remote.ShellQuote(logCollectUploadHeader(uploadTicket)))
 		}
 	}
 	return strings.Join(parts, " "), "", ""
@@ -354,51 +288,6 @@ func redactUploadTicket(command, uploadTicket string) string {
 		return command
 	}
 	return strings.ReplaceAll(command, uploadTicket, "[REDACTED]")
-}
-
-// RunCommandPty 在独立 Session 上分配伪终端执行命令并返回合并输出。
-// 超时后强制关闭 Session（仅发信号在部分 sshd 上不足以终止容器内进程）。
-func RunCommandPty(s *sshx.SSHSession, ctx context.Context, command string, timeout time.Duration) (string, int, error) {
-	session, err := s.Client.NewSession()
-	if err != nil {
-		return "", -1, err
-	}
-	defer session.Close()
-
-	if err := session.RequestPty("xterm-256color", terminal.PtyTerminalHeight, terminal.PtyTerminalWidth, terminal.PtyTerminalModes()); err != nil {
-		return "", -1, fmt.Errorf("request pty: %w", err)
-	}
-
-	type execOutcome struct {
-		output []byte
-		err    error
-	}
-	outcomeCh := make(chan execOutcome, 1)
-	go func() {
-		output, runErr := session.CombinedOutput(command)
-		outcomeCh <- execOutcome{output: output, err: runErr}
-	}()
-
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	select {
-	case <-execCtx.Done():
-		_ = session.Signal(ssh.SIGKILL)
-		_ = session.Close()
-		return "", -1, execCtx.Err()
-	case outcome := <-outcomeCh:
-		exitCode := 0
-		if outcome.err != nil {
-			var exitErr *ssh.ExitError
-			if errors.As(outcome.err, &exitErr) {
-				exitCode = exitErr.ExitStatus()
-			} else {
-				exitCode = -1
-			}
-		}
-		return terminal.NormalizePtyOutput(string(outcome.output)), exitCode, nil
-	}
 }
 
 // logCollectProbeResult 是前端确认安装与选择上传方式所需的最小事实集合。
@@ -496,7 +385,7 @@ func confirmLogServerReachability(
 		}
 	}
 	return last, fmt.Sprintf("curl 探测失败（连续 %d 次）：%s",
-		attempts, sshx.TruncateString(FirstNonEmpty(last.Detail, first.Detail), 200))
+		attempts, sshx.TruncateString(firstNonEmpty(last.Detail, first.Detail), 200))
 }
 
 // probeLogCollectEnv 采集架构、acli 版本、磁盘余量与日志服务器连通性。
@@ -504,32 +393,32 @@ func confirmLogServerReachability(
 func probeLogCollectEnv(s *sshx.SSHSession, ctx context.Context, logServerURL string) logCollectProbeResult {
 	result := logCollectProbeResult{LogServerURL: logServerURL}
 
-	archOut, _, _ := RunCommandPty(s, ctx, "uname -m", 10*time.Second)
+	archOut, _, _ := s.RunCommandPty(ctx, "uname -m", 10*time.Second)
 	result.Architecture = strings.TrimSpace(archOut)
 
-	versionOut, _, _ := RunCommandPty(s, ctx, BuildAcliVersionCommand(), 10*time.Second)
+	versionOut, _, _ := s.RunCommandPty(ctx, aclibin.VersionCommand(), 10*time.Second)
 	// 版本解析唯一实现在 remote.ParseVersionOutput（acli.ParseAcliVersion 为其薄包装）。
 	vinfo := remote.ParseVersionOutput(versionOut)
 	result.AcliVersion, result.AcliBuildTime = vinfo.Version, vinfo.BuildTime
-	result.AcliBinary = ParseAcliBinary(versionOut)
+	result.AcliBinary = aclibin.ParseBinary(versionOut)
 	result.AcliInstalled = result.AcliVersion != ""
 
 	// 场景目录与节点清单必须在 curl 之前采集：日志服务器不可达（P3 路径）是常态，
 	// 早期 return 不能把它们一起丢掉。
 	probeLogCollectCatalog(s, ctx, &result)
 
-	spaceOut, _, _ := RunCommandPty(s, ctx, "df -P -m /sf/data/local | tail -1 | awk '{print $4}'", 10*time.Second)
+	spaceOut, _, _ := s.RunCommandPty(ctx, "df -P -m /sf/data/local | tail -1 | awk '{print $4}'", 10*time.Second)
 	result.AvailableMB, _ = strconv.ParseInt(strings.TrimSpace(spaceOut), 10, 64)
 
 	curlProbe := fmt.Sprintf(
 		`curl -s -o /dev/null -w '%%{http_code} %%{time_total}' --connect-timeout 5 --max-time 8 --noproxy '*' %s`,
-		ShellQuote(logServerURL))
+		remote.ShellQuote(logServerURL))
 	sample := func() logServerProbeSample {
-		probeOut, probeCode, probeErr := RunCommandPty(s, ctx, curlProbe, 15*time.Second)
+		probeOut, probeCode, probeErr := s.RunCommandPty(ctx, curlProbe, 15*time.Second)
 		if probeErr != nil || probeCode != 0 {
 			return logServerProbeSample{
 				TransportFailed: true,
-				Detail:          FirstNonEmpty(ErrString(probeErr), strings.TrimSpace(probeOut)),
+				Detail:          firstNonEmpty(errString(probeErr), strings.TrimSpace(probeOut)),
 			}
 		}
 		one := logServerProbeSample{}
@@ -576,7 +465,7 @@ func probeLogCollectCatalog(s *sshx.SSHSession, ctx context.Context, result *log
 
 	// 实机验证：`acli log_collect create --help` 会以 exit code 1 结束
 	// （插件把 --help 判为未定义参数），但正文已完整打印，因此只认输出内容、不认退出码。
-	helpOut, _, _ := RunCommandPty(s, ctx, logCollectAcliInvoke("log_collect create --help"), 8*time.Second)
+	helpOut, _, _ := s.RunCommandPty(ctx, logCollectAcliInvoke("log_collect create --help"), 8*time.Second)
 	// 同一份 help 文本顺便回答"能不能给上传请求加头"：
 	// P1 直传要过 5888 的鉴权，全靠 `-L|--url-header` 注入票据。
 	// 老版本没有这个参数，结果只能落 P2，必须让前端提前知道而不去撞 401。
@@ -610,13 +499,13 @@ func probeLogCollectCatalog(s *sshx.SSHSession, ctx context.Context, result *log
 		result.CatalogNote = "acli 帮助解析失败，使用平台内置场景目录"
 	}
 
-	nodeOut, _, _ := RunCommandPty(s, ctx, logCollectAcliInvoke("--formatter json platform node list"), 8*time.Second)
+	nodeOut, _, _ := s.RunCommandPty(ctx, logCollectAcliInvoke("--formatter json platform node list"), 8*time.Second)
 	result.Hosts = parseLogCollectNodeList(nodeOut)
 	if len(result.Hosts) == 0 {
 		// 主命令失败不等于"没有节点"：旧版 acli（1.0.0）会因 cgroup 读取失败只输出错误行。
 		// 备选命令 `host list` 在部分构建中存在；不存在时只是多一条失败输出，
 		// 不影响主流程，也不会把"命令缺失"误报成"节点为空"。
-		if altOut, _, altErr := RunCommandPty(s, ctx, logCollectAcliInvoke("--formatter json host list"), 8*time.Second); altErr == nil {
+		if altOut, _, altErr := s.RunCommandPty(ctx, logCollectAcliInvoke("--formatter json host list"), 8*time.Second); altErr == nil {
 			if altHosts := parseLogCollectNodeList(altOut); len(altHosts) > 0 {
 				result.Hosts = altHosts
 				result.CatalogNote = appendProbeNote(result.CatalogNote, "节点清单取自备选命令 host list")
@@ -742,241 +631,45 @@ func parseLogCollectModuleCatalog(raw string) []logCollectModuleOption {
 	return options
 }
 
-// logCollectNodeListPayload 是 `platform node list` 的 JSON 结构。
-type logCollectNodeListPayload struct {
-	Data []struct {
-		IP     string `json:"ip"`
-		Name   string `json:"name"`
-		Master int    `json:"master"`
-	} `json:"data"`
-}
-
-// findLogCollectNodeListPayload 从脏输出中找出节点清单 JSON 对象。
-//
-// 对抗性审查：不能再用"首个 `{` 到末个 `}`"截取。acli 会在 stdout 里先打一行
-// `{"@timestamp":...,"level":"error",...}` 形式的运行日志（2026-10-28 现场：
-// open /sys/fs/cgroup/cpu/cpuset.cpus 失败），首个 `{` 命中日志行、末个 `}` 命中
-// 节点 JSON，拼起来必然 Unmarshal 失败——即使节点 JSON 本身完好，清单也会是空的。
-//
-// 改为从每个 `{` 起点解码一个 JSON 值：json.Decoder 解析完对象即停，尾部日志
-// 不参与解析，只接受含 data 数组的对象。
-func findLogCollectNodeListPayload(raw string) *logCollectNodeListPayload {
-	for offset := 0; offset < len(raw); {
-		idx := strings.IndexByte(raw[offset:], '{')
-		if idx < 0 {
-			return nil
-		}
-		start := offset + idx
-		var payload logCollectNodeListPayload
-		if err := json.NewDecoder(strings.NewReader(raw[start:])).Decode(&payload); err == nil && payload.Data != nil {
-			return &payload
-		}
-		offset = start + 1
-	}
-	return nil
-}
-
 // parseLogCollectNodeList 解析 `acli --formatter json platform node list` 的输出。
-// PTY 可能混入提示符、告警或日志行；失败返回 nil（前端降级为手填）。
+//
+// 阶段 2 A3：脏输出容错解析已下沉到 shared/cluster（acli 插件同步要同一份清单），
+// 这里只保留委托，避免两处口径不一致。
 func parseLogCollectNodeList(raw string) []logCollectHostOption {
-	payload := findLogCollectNodeListPayload(raw)
-	if payload == nil {
-		return nil
-	}
-
-	seen := make(map[string]bool, len(payload.Data))
-	hosts := make([]logCollectHostOption, 0, len(payload.Data))
-	for _, node := range payload.Data {
-		ip := strings.TrimSpace(node.IP)
-		if !logCollectIPv4Re.MatchString(ip) || seen[ip] {
-			continue
-		}
-		seen[ip] = true
-		hosts = append(hosts, logCollectHostOption{
-			IP:     ip,
-			Name:   strings.TrimSpace(node.Name),
-			Master: node.Master == 1,
-		})
-	}
-	return hosts
+	return cluster.ParseNodeList(raw)
 }
 
-// logCollectProgress 是 acli log_collect progress 的结构化视图。
-// ParseOK=false 时前端应原样展示 Raw，且不得据此把任务判为失败。
-type logCollectProgress struct {
-	Status      string           `json:"status"`
-	Percent     int              `json:"percent"`
-	Done        int              `json:"done"`
-	Total       int              `json:"total"`
-	ArchivePath string           `json:"archive_path"`
-	TotalTime   string           `json:"total_time,omitempty"`
-	Hosts       []logCollectHost `json:"hosts,omitempty"`
-	UploadURL   string           `json:"upload_url,omitempty"`
-	UploadState string           `json:"upload_state,omitempty"`
-	// UploadError 是上传失败时命中的首个原因行。
-	//
-	// 为什么需要它：2026-11-03 Q2026110300278 的 upload_state 只有"失败"两个字，
-	// 平台与桥侧都无法区分 401 / 超时 / 网络，只能去 5888 翻服务端日志。
-	UploadError string `json:"upload_error,omitempty"`
-	// UploadRawTail 是上传阶段的输出尾部（仅在出现上传状态时填充）。
-	// 结构化的失败文案不保证存在，原文尾部是排障的最后一条线索。
-	UploadRawTail string `json:"upload_raw_tail,omitempty"`
-	ParseOK       bool   `json:"parse_ok"`
-	Raw           string `json:"raw"`
-	// NodeState 是归一化后的节点态（none/running/completed/abnormal/unknown）。
-	// 节点是任务状态的唯一真相源，但插件只给中文文案，平台无法直接拿它做状态机判断；
-	// 归一化放在 bridge 侧，避免每个前端各自实现一套字符串匹配。
-	NodeState string `json:"node_state"`
-	// ArchiveSize 是本次探测到的压缩包字节数；0 表示没量到（未生成 / 已被插件删除）。
-	ArchiveSize int64 `json:"archive_size,omitempty"`
-	// ArchiveExists 是 stat 的**存在性**结论，必须与 ArchivePath 分开看：
-	// 路径只说明"曾经生成过"，P1 直传成功后插件会立刻删包，报告里却仍带路径
-	// （Q2026102701193，2026-10-27）。用指针是为了区分"明确不存在(false)"与"没探测(缺省)"——
-	// 前端只在明确 true 时才允许"上传到平台"，缺省时一律不提供入口。
-	ArchiveExists *bool `json:"archive_exists,omitempty"`
-}
+// 节点态/主机态枚举与结构化视图的别名：类型与取值归 shared/acliout，
+// 采集编排与状态机继续用域内名字，避免大规模改名噪音。
+type logCollectProgress = acliout.Progress
+type logCollectHost = acliout.Host
 
 const (
-	logCollectNodeNone      = "none"
-	logCollectNodeRunning   = "running"
-	logCollectNodeCompleted = "completed"
-	logCollectNodeAbnormal  = "abnormal"
-	logCollectNodeUnknown   = "unknown"
+	logCollectNodeNone      = acliout.NodeNone
+	logCollectNodeRunning   = acliout.NodeRunning
+	logCollectNodeCompleted = acliout.NodeCompleted
+	logCollectNodeAbnormal  = acliout.NodeAbnormal
+	logCollectNodeUnknown   = acliout.NodeUnknown
 
-	logCollectHostRunning   = "running"
-	logCollectHostCompleted = "completed"
-	logCollectHostFailed    = "failed"
+	logCollectHostRunning   = acliout.HostRunning
+	logCollectHostCompleted = acliout.HostCompleted
+	logCollectHostFailed    = acliout.HostFailed
 )
 
-// classifyLogCollectNodeState 把插件的状态行归一为可做状态机判断的枚举。
-//
-// 对抗性审查：识别不了的一律 unknown——宁可不动平台状态，也不要按猜测去 cancel 节点任务。
-// 「异常结束」必须单列：它既不含"完成"也不含"失败"，早期前端因此既不判完成也不判失败，
-// 只能空转到 1 小时超时。
-//
-// 中英文必须同时覆盖：同一个 acli 版本在不同机器上输出语言不同（2026-11-06
-// Q2026110486009 输出英文，旧实现只认中文，node_state 恒为 unknown）。
+// classifyLogCollectNodeState 保留为域内薄包装：归一化实现已归 shared/acliout，
+// 交付域解析 progress 时同样需要同一套判据（否则两处会对同一份输出给出不同状态）。
 func classifyLogCollectNodeState(progress logCollectProgress) string {
-	status := strings.TrimSpace(progress.Status)
-	lower := strings.ToLower(status)
-	switch {
-	case strings.Contains(status, "异常结束"), strings.Contains(status, "失败"), strings.Contains(status, "错误"),
-		strings.Contains(lower, "fail"), strings.Contains(lower, "error"),
-		strings.Contains(lower, "abnormal"):
-		return logCollectNodeAbnormal
-	case strings.Contains(status, "完成"),
-		strings.Contains(lower, "complete"), strings.Contains(lower, "success"),
-		strings.Contains(lower, "finish"), strings.Contains(lower, "done"):
-		return logCollectNodeCompleted
-	// 实机无任务文案是「收集任务不存在！」/ `Collect task does not exist!`
-	// （见 TestParseLogCollectProgress 样本）。
-	//
-	// 必须排在 running 之前：英文无任务文案 `Collect task does not exist!` 里
-	// 含 "collect"，先判 running 会把它归成"进行中"，平台就会一直等下去。
-	case strings.Contains(status, "不存在"), strings.Contains(status, "无任务"),
-		strings.Contains(status, "暂无"), strings.Contains(status, "没有正在"),
-		strings.Contains(lower, "not exist"), strings.Contains(lower, "no task"),
-		strings.Contains(lower, "none"):
-		return logCollectNodeNone
-	case strings.Contains(status, "进行中"), strings.Contains(status, "收集中"),
-		strings.Contains(status, "上传中"), strings.Contains(status, "打包"), strings.Contains(status, "准备"),
-		strings.Contains(lower, "progress"), strings.Contains(lower, "running"),
-		strings.Contains(lower, "collect"), strings.Contains(lower, "upload"),
-		strings.Contains(lower, "pack"):
-		return logCollectNodeRunning
-	}
-	// 状态行缺失时用可观测信号兜底：有进度或有节点明细，说明任务存在且仍在推进。
-	if progress.Percent > 0 || len(progress.Hosts) > 0 || progress.Done > 0 {
-		return logCollectNodeRunning
-	}
-	return logCollectNodeUnknown
+	return acliout.ClassifyNodeState(progress)
 }
 
-// classifyLogCollectHostStatusWord 归一化节点明细中间列的状态词。
-// 返回空串表示这一行不是节点明细——行首是 IP 的行也可能来自日志或命令回显，
-// 不能见到 IP 就当成节点。
+// classifyLogCollectHostStatusWord 保留为域内薄包装（实现归 shared/acliout）。
 func classifyLogCollectHostStatusWord(word string) string {
-	w := strings.ToLower(strings.TrimSpace(word))
-	switch {
-	case strings.Contains(word, "失败"), strings.Contains(word, "异常"),
-		strings.Contains(w, "fail"), strings.Contains(w, "error"),
-		strings.Contains(w, "abnormal"):
-		return logCollectHostFailed
-	case strings.Contains(word, "完成"),
-		strings.Contains(w, "success"), strings.Contains(w, "complete"),
-		strings.Contains(w, "finish"), strings.Contains(w, "done"):
-		return logCollectHostCompleted
-	case strings.Contains(word, "收集"), strings.Contains(word, "进行"),
-		strings.Contains(w, "collect"), strings.Contains(w, "progress"),
-		strings.Contains(w, "running"), strings.Contains(w, "pack"),
-		strings.Contains(w, "upload"), strings.Contains(w, "wait"):
-		return logCollectHostRunning
-	}
-	return ""
+	return acliout.ClassifyHostStatusWord(word)
 }
 
-// logCollectLabel 表示 progress 输出里「标签：值」这一行的标签，可含多种语言写法。
-//
-// 第一性原理：这段输出是给人读的文本，标签文案随运行环境语言变化，但
-// 「标签 + 冒号 + 值」的结构不变。解析只能锚定结构，不能锚定某一种语言的字面量：
-// 2026-11-06 Q2026110486009 的节点输出英文，旧实现按中文前缀逐条匹配，全部落空，
-// 于是 parse_ok=false、平台读不到"已完成"也读不到"上传失败"，
-// 任务卡在 collecting、不降级 P2，10.03 GiB 的包留在节点上。
-type logCollectLabel struct{ aliases []string }
-
-var (
-	logCollectStatusLabel     = logCollectLabel{aliases: []string{"状态", "Status"}}
-	logCollectUploadAddrLabel = logCollectLabel{aliases: []string{"发送地址", "Send address"}}
-	logCollectArchiveLabel    = logCollectLabel{aliases: []string{"压缩包路径", "Path to the compressed file"}}
-	logCollectTotalTimeLabel  = logCollectLabel{aliases: []string{"总耗时", "Total time"}}
-)
-
-// value 判断行是否以该标签开头，并返回冒号后的值。
-//
-// 分隔符只取标签后的**第一个**冒号：上传地址的值自带端口冒号
-// （http://acli.sangfor.com.cn:5888），取最后一个会把地址切成 "5888"。
-// 标签与冒号之间允许夹一段括号说明（英文的压缩包路径行就是这样）。
-func (l logCollectLabel) value(line string) (string, bool) {
-	for _, alias := range l.aliases {
-		if len(line) < len(alias) || !strings.EqualFold(line[:len(alias)], alias) {
-			continue
-		}
-		rest := line[len(alias):]
-		// 英文标签后常带一个空格再接括号说明
-		// （`Path to the compressed file (Please ...): /x.zip`），先剥掉再判分隔符。
-		if trimmed := strings.TrimLeft(rest, " \t"); trimmed != "" {
-			rest = trimmed
-		}
-		// 标签后必须紧跟冒号或括号说明，否则 "Statuses: ..." 会误命中 "Status"。
-		if !(strings.HasPrefix(rest, "：") || strings.HasPrefix(rest, ":") ||
-			strings.HasPrefix(rest, "（") || strings.HasPrefix(rest, "(")) {
-			continue
-		}
-		idx := strings.IndexAny(rest, "：:")
-		if idx < 0 {
-			return "", true
-		}
-		value := strings.TrimPrefix(strings.TrimPrefix(rest[idx:], "："), ":")
-		return strings.TrimSpace(value), true
-	}
-	return "", false
-}
-
-// isLogCollectFailureLine 判断上传块里的一行是否是失败原因。
-// 不能只认中文「失败/错误/异常」：英文输出里是 "Failed"、"401 Unauthorized"。
+// isLogCollectFailureLine 保留为域内薄包装（实现归 shared/acliout）。
 func isLogCollectFailureLine(line string) bool {
-	if strings.Contains(line, "失败") || strings.Contains(line, "错误") || strings.Contains(line, "异常") {
-		return true
-	}
-	lower := strings.ToLower(line)
-	return strings.Contains(lower, "fail") || strings.Contains(lower, "error") ||
-		strings.Contains(lower, "unauthorized") || strings.Contains(lower, "timeout")
-}
-
-type logCollectHost struct {
-	IP      string `json:"ip"`
-	Status  string `json:"status"`
-	Percent string `json:"percent,omitempty"`
+	return acliout.IsFailureLine(line)
 }
 
 // ── create 下发后的节点接单确认 ──────────────────────────────────────────────
@@ -1062,339 +755,34 @@ func confirmLogCollectCreate(
 	return result
 }
 
-// ParseLogCollectProgress 解析插件的 progress 文本输出。
-//
-// 对抗性审查：插件版本变化可能改文案，因此解析失败必须降级为 Raw 透传，
-// 而不是返回零值进度导致前端误判"任务丢失"。
-//
-// 同样的理由适用于语言：文案随运行环境变化（同一 acli 版本在不同机器上分别输出
-// 中文与英文），所以这里只依赖「标签 + 冒号 + 值」、百分数、IP 这些结构特征，
-// 不再逐条比对中文前缀。
+// ParseLogCollectProgress 保留为域内薄包装：解析实现已归 shared/acliout
+// （交付域同样要从 progress 输出取归档路径，不能各自实现一套）。
 func ParseLogCollectProgress(raw string) logCollectProgress {
-	result := logCollectProgress{Raw: raw}
-	if strings.TrimSpace(raw) == "" {
-		return result
-	}
-
-	// 任务状态与上传状态共用「状态/Status」标签，用「发送地址/Send address」出现位置区分上下文。
-	sawUploadBlock := false
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if value, ok := logCollectUploadAddrLabel.value(line); ok {
-			sawUploadBlock = true
-			result.UploadURL = value
-			continue
-		}
-		if value, ok := logCollectStatusLabel.value(line); ok {
-			if sawUploadBlock {
-				result.UploadState = value
-			} else {
-				result.Status = value
-			}
-			continue
-		}
-		if value, ok := logCollectArchiveLabel.value(line); ok {
-			result.ArchivePath = value
-			continue
-		}
-		if value, ok := logCollectTotalTimeLabel.value(line); ok {
-			result.TotalTime = value
-			continue
-		}
-		if match := logCollectProgressRe.FindStringSubmatch(line); match != nil {
-			result.Percent, _ = strconv.Atoi(match[1])
-			result.Done, _ = strconv.Atoi(match[2])
-			result.Total, _ = strconv.Atoi(match[3])
-			continue
-		}
-		// 只在上传块里抓第一行原因：任务块里的"失败"属于采集阶段，
-		// 混进来会把"上传 401"显示成"采集失败"。
-		if result.UploadError == "" && sawUploadBlock && isLogCollectFailureLine(line) {
-			result.UploadError = sshx.TruncateString(line, 160)
-			continue
-		}
-		// 行首 IP 不必然是节点明细，必须再由中间列归一化确认。
-		if match := logCollectHostLineRe.FindStringSubmatch(line); match != nil &&
-			classifyLogCollectHostStatusWord(match[2]) != "" {
-			result.Hosts = append(result.Hosts, logCollectHost{
-				IP: match[1], Status: match[2], Percent: match[3],
-			})
-		}
-	}
-	result.ParseOK = result.Status != "" || result.Percent > 0 || result.ArchivePath != ""
-	if result.UploadState != "" {
-		// 上传阶段一旦有状态就留原文尾部：结构化失败文案不保证存在，
-		// 而"为什么失败"是这一阶段唯一真正需要回答的问题。
-		result.UploadRawTail = sshx.TruncateString(strings.TrimSpace(stripAnsi(raw)), 512)
-	}
-	return result
+	return acliout.ParseProgress(raw)
 }
 
-// ── 源包摘要（端到端完整性基线）──────────────────────────────────────────────
-
-// 20 GiB 的 sha256 在 HCI 上约 1~3 分钟；留足余量但不能无限等：
-// 交互式 shell 的 TMOUT 是 600s，超过它的单命令会被远端直接踢掉。
-const logCollectDigestTimeout = 8 * time.Minute
-
-// logCollectDigestAlgoRe 只接受两种摘要形态：sha256(64) / md5(32)。
-var logCollectDigestAlgoRe = regexp.MustCompile(`^(sha256|md5|acli) ([0-9a-f]{32}|[0-9a-f]{64})$`)
-
-// buildSourceDigestCommand 构造"取源包摘要"的单命令。
+// ── 源包摘要与归档探测（薄包装）─────────────────────────────────────────────
 //
-// 第一性原理：能证明"节点上的包 = 平台副本 = 5888 归档件"的锚点只能在源端产生；
-// 分片哈希只证明单跳不损坏，证明不了上游是谁。
-//
-// 为什么优先 sha256sum：链路其余环节（分片、平台合并）全是 SHA-256，同算法才能
-// 直接比对；md5 只是老节点的降级手段。为什么最后才退 acli system md5sum：它的
-// 参数形态随插件版本变化，1.0.0 上未必存在，而前两者是标准 coreutils/busybox。
-//
-// 失败语义：任何一步都算不出来就输出空行，由调用方把完整性降级为 unverified——
-// 绝不能因为"取不到摘要"就让一次 20 GiB 的采集白跑。
-func buildSourceDigestCommand(path string) string {
-	quoted := ShellQuote(path)
-	return logCollectAcliPathEnv + " " + logCollectAcliResolve() +
-		` if command -v sha256sum >/dev/null 2>&1; then echo "sha256 $(sha256sum ` + quoted + ` 2>/dev/null | awk '{print $1}')"; ` +
-		`elif command -v md5sum >/dev/null 2>&1; then echo "md5 $(md5sum ` + quoted + ` 2>/dev/null | awk '{print $1}')"; ` +
-		`elif [ "$__acli_resolve_absent" = "0" ]; then echo "acli $("$__acli" system md5sum ` + quoted + ` 2>/dev/null | tr -d ' \r' | grep -oE '[0-9a-f]{32}' | head -n1)"; ` +
-		`else echo ""; fi`
-}
+// 阶段 2 A3：实现已归 shared/remote（ProbeSourceDigest / ProbeArchive /
+// NormalizeArchivePath）。交付域拉包前要确认包还在、拉完后要核对摘要，
+// 若继续从采集域借用，交付域就得为两个探测函数反向依赖采集编排。
+// 这里保留同名薄包装，使采集链路与既有测试无需改动。
 
-// parseSourceDigestOutput 解析摘要命令输出。
-//
-// 从后往前找第一条合法结果：acli 解析段可能打印版本/告警噪声，最后一条有效行
-// 才是真正的结果。算法与长度必须自洽，防止把 32 位 md5 当成 sha256 用。
-func parseSourceDigestOutput(output string) (algo, digest, note string) {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(stripAnsi(lines[i]))
-		match := logCollectDigestAlgoRe.FindStringSubmatch(line)
-		if match == nil {
-			continue
-		}
-		algo, digest = match[1], match[2]
-		if algo == "sha256" && len(digest) != 64 {
-			continue
-		}
-		if (algo == "md5" || algo == "acli") && len(digest) != 32 {
-			continue
-		}
-		if algo == "acli" {
-			// acli system md5sum 只有 md5 口径，算法名必须归一到 md5。
-			algo = "md5"
-		}
-		return algo, digest, ""
-	}
-	trimmed := strings.TrimSpace(output)
-	if len(trimmed) > 200 {
-		trimmed = trimmed[:200]
-	}
-	if trimmed == "" {
-		trimmed = "节点上没有可用的摘要命令（sha256sum / md5sum / acli system md5sum 均不可用）"
-	}
-	return "", "", trimmed
-}
+// archiveProbe 是远端正探测结果的三态载体（类型别名，字段语义见 remote.ArchiveProbe）。
+type archiveProbe = remote.ArchiveProbe
 
 // ProbeSourceDigest 在节点上取一次源包摘要（尽力而为，不阻断交付）。
-func ProbeSourceDigest(s *sshx.SSHSession, ctx context.Context, path string) (string, string, error) {
-	if s == nil {
-		return "", "", fmt.Errorf("no-session")
-	}
-	digestCtx, cancel := context.WithTimeout(ctx, logCollectDigestTimeout)
-	defer cancel()
-	output, _, err := s.RunQuickCommand(digestCtx, buildSourceDigestCommand(path))
-	if err != nil {
-		return "", "", fmt.Errorf("摘要命令执行失败: %w", err)
-	}
-	algo, digest, note := parseSourceDigestOutput(output)
-	if algo == "" {
-		return "", "", fmt.Errorf("%s", note)
-	}
-	return algo, digest, nil
-}
-
-// archiveProbe 是「节点上这个压缩包此刻是什么状态」的唯一结论载体（三态）。
-//
-// 为什么必须是三态而不是 bool：Q2026102900165（2026-10-29）现场证明，
-// aSV 受限 shell 里根本没有 stat（exit 127，包却真在盘上、29.9 MB），
-// 而 ls -l 可用。旧实现把「命令跑不起来」与「文件真没了」压成同一个 exists=false，
-// 平台于是对着盘上的包断言「压缩包已被插件删除」。界面只能表达已知与未知，
-// 不能把未知伪装成已知，所以这里必须把「无法确定」单独留一个出口。
-type archiveProbe struct {
-	// Size 为 0 表示没量到（不代表 0 字节）；交付 init 需要它是正数。
-	Size int64
-	// Exists：true=确认在盘上；false=确认不在；nil=无法确定（命令不可用/通道异常）。
-	Exists *bool
-	// Level 记录结论由哪一级命令给出：stat / ls / missing / none。
-	Level string
-	// Diag 非空即表示有过失败尝试（走了兜底或全失败），必须随事件落库。
-	Diag string
-}
-
-// archiveProbeAttempt 是一次单命令探测的原始结果（stdout/stderr 必须分开）。
-type archiveProbeAttempt struct {
-	Stdout string
-	Stderr string
-	Code   int
-	Err    error
-}
-
-var (
-	// 工具不可用：命令不存在、被受限 shell 拒绝、或不吃这个参数。
-	ArchiveProbeToolMissingRe = regexp.MustCompile(`(?i)(command not found|: not found|unknown command|not supported|invalid option|illegal option|permission denied)`)
-	// 文件不存在：只有拿到这类明确证据才允许下「包已不在」的结论。
-	archiveProbeFileMissingRe = regexp.MustCompile(`(?i)(no such file|cannot access|cannot stat|does not exist|not exist)`)
-)
-
-func (a archiveProbeAttempt) succeeded() bool {
-	return a.Err == nil && a.Code == 0
-}
-
-// saidMissing 判断 stderr/stdout 是否明确说「没有这个文件」。
-func (a archiveProbeAttempt) saidMissing() bool {
-	return archiveProbeFileMissingRe.MatchString(a.Stdout + "\n" + a.Stderr)
-}
-
-// unavailable 判断失败是否属于「这个命令在这台节点上跑不了」。
-//
-// 126/127 是 shell 对「找到但不能执行 / 找不到」的固定约定，必须优先于文本匹配：
-// busybox 的 "stat: not found" 与 "No such file" 是两件完全不同的事。
-func (a archiveProbeAttempt) unavailable() bool {
-	if a.Code == 126 || a.Code == 127 {
-		return true
-	}
-	return ArchiveProbeToolMissingRe.MatchString(a.Stdout + "\n" + a.Stderr)
-}
-
-func (a archiveProbeAttempt) diag(name string) string {
-	detail := a.Stderr
-	if detail == "" {
-		detail = a.Stdout
-	}
-	detail = TruncateForDiag(detail, 120)
-	if detail == "" {
-		return fmt.Sprintf("%s:exit=%d", name, a.Code)
-	}
-	return fmt.Sprintf("%s:exit=%d %s", name, a.Code, detail)
-}
-
-// decideArchiveProbe 把两级命令结果收敛成三态结论（纯函数，便于穷举测试）。
-//
-// 判据顺序经过对抗性审查：
-//  1. 任一级读取成功 => 文件确定存在（成功读盘本身就否证了“不存在”）；
-//  2. 读不到时，只有拿到“没有这个文件”的明确证据才判 false；
-//  3. 其余（命令不存在、权限、通道异常）一律 nil——宁可说“无法确认”，
-//     也不能把“我探测不了”就成了“包被删了”。
-func decideArchiveProbe(statA, lsA archiveProbeAttempt) archiveProbe {
-	var diags []string
-	if !statA.succeeded() {
-		diags = append(diags, statA.diag("stat"))
-	}
-	if !lsA.succeeded() {
-		diags = append(diags, lsA.diag("ls"))
-	}
-	probe := archiveProbe{Diag: strings.Join(diags, " | ")}
-	exists := true
-
-	if statA.succeeded() {
-		if size, ok := parseSizeText(statA.Stdout); ok && size > 0 {
-			probe.Size, probe.Level, probe.Exists = size, "stat", &exists
-			return probe
-		}
-	}
-	if lsA.succeeded() {
-		probe.Level = "ls"
-		if size, ok := parseLsFieldSize(lsA.Stdout); ok {
-			probe.Size = size
-		}
-		probe.Exists = &exists
-		return probe
-	}
-	if statA.succeeded() {
-		// stat 成功但大小解析不出：存在性是确定的，只是大小未知。
-		probe.Level, probe.Exists = "stat", &exists
-		return probe
-	}
-	// 只有「命令确实跑了、并且明确说没有这个文件」的那一级才有资格判不存在。
-	// 若把 exit 127 那级的 stderr 也算进来，受限 shell 的 "not found" 就又会
-	// 被误当成"文件没了"——这正是本缺陷的原始形态。
-	if saidMissingBy(statA) || saidMissingBy(lsA) {
-		absent := false
-		probe.Level, probe.Exists = "missing", &absent
-		return probe
-	}
-	// 其余（命令不可用、权限、通道异常、上下文取消）一律未知：
-	// 平台宁可显示「无法确认」，也不能替用户断言包已被删除。
-	probe.Level = "none"
-	return probe
-}
-
-// saidMissingBy 判断某一级是否给出了「文件不存在」的可靠证据。
-func saidMissingBy(a archiveProbeAttempt) bool {
-	return !a.succeeded() && !a.unavailable() && a.saidMissing()
+func ProbeSourceDigest(r remote.Runner, ctx context.Context, path string) (string, string, error) {
+	return remote.ProbeSourceDigest(ctx, r, path)
 }
 
 // ProbeLogCollectArchive 量一次压缩包状态（大小 + 三态存在性）。
-//
-// 时机敏感：P1 直传成功后插件会立刻删除压缩包，只有上传窗口内的轮询能拿到值。
-// 量不到不报错、不阻断进度查询，返回 0 由前端显示「未记录」。
-//
-// 两级降级的必要性见 decideArchiveProbe：aSV 受限 shell 只给了一份受控命令白名单，
-// stat 不在其中而 ls 在。两级结果与逐级诊断（含 exit 与 stderr）一并回给调用方，
-// 现场再遇到“面板说包没了”时能直接指出是哪一级、错在哪里。
-func ProbeLogCollectArchive(ctx context.Context, s *sshx.SSHSession, rawPath string) archiveProbe {
-	if s == nil {
-		return archiveProbe{Level: "none", Diag: "no-session"}
-	}
-	if strings.TrimSpace(rawPath) == "" {
-		return archiveProbe{Level: "none", Diag: "empty-path"}
-	}
-	path, err := NormalizeArchivePath(rawPath)
-	if err != nil {
-		return archiveProbe{Level: "none", Diag: "path-rejected: " + err.Error()}
-	}
-	statOut, statErr, statCode, statCmdErr := s.RunQuickCommandStreams(ctx, fmt.Sprintf("stat -c %%s %s", ShellQuote(path)))
-	lsOut, lsErr, lsCode, lsCmdErr := s.RunQuickCommandStreams(ctx, fmt.Sprintf("ls -l %s", ShellQuote(path)))
-	return decideArchiveProbe(
-		archiveProbeAttempt{Stdout: statOut, Stderr: statErr, Code: statCode, Err: statCmdErr},
-		archiveProbeAttempt{Stdout: lsOut, Stderr: lsErr, Code: lsCode, Err: lsCmdErr},
-	)
+func ProbeLogCollectArchive(ctx context.Context, r remote.StreamsRunner, rawPath string) archiveProbe {
+	return remote.ProbeArchive(ctx, r, rawPath)
 }
 
-// parseSizeText 解析 stat -c %s 的纯数字输出。
-func parseSizeText(output string) (int64, bool) {
-	size, err := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
-	if err != nil || size < 0 {
-		return 0, false
-	}
-	return size, true
-}
-
-// parseLsFieldSize 从 `ls -l` 的单行输出里取字节数（第 5 列）。
-//
-// 只解析单行、只认正整数：多行说明路径被当成通配符展开过，此时宁可放弃也不猜，
-// 免得把目录里另一个文件的大小当成压缩包大小记下来。
-func parseLsFieldSize(output string) (int64, bool) {
-	trimmed := strings.TrimSpace(output)
-	// 行数不为 1 说明路径被通配符展开、或命令在报错行里也打了内容，此时不猜
-	if trimmed == "" || strings.Count(trimmed, "\n") > 0 {
-		return 0, false
-	}
-	fields := strings.Fields(trimmed)
-	if len(fields) < 5 {
-		return 0, false
-	}
-	size, err := strconv.ParseInt(fields[4], 10, 64)
-	if err != nil || size <= 0 {
-		return 0, false
-	}
-	return size, true
-}
-
-// TruncateForDiag 截短命令输出，避免把整段终端噪音塞进日志。
-func TruncateForDiag(text string, limit int) string {
+// truncateForDiag 截短命令输出，避免把整段终端噪音塞进日志。
+func truncateForDiag(text string, limit int) string {
 	trimmed := strings.TrimSpace(text)
 	if len(trimmed) <= limit {
 		return trimmed
@@ -1424,7 +812,7 @@ func fallbackLogCollectArchivePath(caseID string) string {
 		return ""
 	}
 	path := "/sf/data/local/acli/tmp/data/log_collect/" + trimmed + ".zip"
-	if !logCollectArchivePathPattern.MatchString(path) {
+	if !remote.ArchivePathPattern.MatchString(path) {
 		return ""
 	}
 	return path
@@ -1452,22 +840,22 @@ func archiveStaleLogCollectArchive(ctx context.Context, s *sshx.SSHSession, case
 	trimmed := strings.TrimSpace(caseID)
 	target := logCollectArchiveDir + "/archive/" + trimmed + "-" + stamp + ".zip"
 	// 目标路径同样进 shell，重跑一次白名单校验（不能只信来源）。
-	if !logCollectArchivePathPattern.MatchString(target) {
+	if !remote.ArchivePathPattern.MatchString(target) {
 		return
 	}
 	command := fmt.Sprintf(
 		`S=%s; if [ -f "$S" ]; then mkdir -p %s && mv "$S" %s && echo "__ARCHIVED__ %s" || echo "__ARCHIVE_FAILED__"; else echo "__NO_ARCHIVE__"; fi`,
-		ShellQuote(path), ShellQuote(logCollectArchiveDir+"/archive"), ShellQuote(target), target,
+		remote.ShellQuote(path), remote.ShellQuote(logCollectArchiveDir+"/archive"), remote.ShellQuote(target), target,
 	)
 	output, _, err := s.RunQuickCommand(ctx, command)
 	if err != nil {
-		obslog.Emit("WARN", "log_collect.archive_failed", "归档旧压缩包失败（不阻断采集）", traceID, caseID, "", cui, map[string]any{
-			"source": path, "error": ErrString(err),
+		evidence.Emit("WARN", "log_collect.archive_failed", "归档旧压缩包失败（不阻断采集）", traceID, caseID, "", cui, map[string]any{
+			"source": path, "error": errString(err),
 		})
 		return
 	}
 	trimmedOut := strings.TrimSpace(output)
-	obslog.Emit("INFO", "log_collect.archive_checked", "采集前检查旧压缩包", traceID, caseID, "", cui, map[string]any{
+	evidence.Emit("INFO", "log_collect.archive_checked", "采集前检查旧压缩包", traceID, caseID, "", cui, map[string]any{
 		"source": path, "result": trimmedOut,
 	})
 }
@@ -1481,7 +869,7 @@ func stripAnsi(text string) string {
 // logCollectFailureLine 从 acli 输出里提取一条可读的失败原因。
 //
 // 背景：RunCommandPty 把 ssh.ExitError 归一化成 exitCode 后返回 nil，单看
-// ErrString(err) 永远是空串（2026-10-27 实测 19 条失败 create 全部 error=""），
+// errString(err) 永远是空串（2026-10-27 实测 19 条失败 create 全部 error=""），
 // 导致桥侧日志、平台任务与前端提示都拿不到原因。
 //
 // 取法（2026-11-12 修正）：FATA 只是 acli 的包装行，不是原因本身。
@@ -1553,45 +941,16 @@ func logCollectModuleMissing(output string) bool {
 	return strings.Contains(cleaned, "收集专项") && strings.Contains(cleaned, "不存在")
 }
 
-// ResolveLogCollectSession 解析日志收集动作要落到哪条 SSH 会话，并回传命中原因。
-//
-// 顺序不可随意调整：精确键最可信；其次是按节点复用（会话的真实归属是「操作者 + 节点」，
-// 不随工单变化）；最后才是「本工单唯一会话」。
-//
-// 最后一级是 2026-10-26 补的：cancel 这类动作曾经漏传 node_ip，前三级的 node_ip 匹配
-// 全部失效，bridge 直接回 session_missing——表现是平台已标记取消、节点上采集任务仍在跑，
-// 后续 create 被插件互斥一直拒绝。多节点时绝不猜，猜错会取消另一台机器上的任务。
-func ResolveLogCollectSession(b *app.Bridge, msg models.InMessage) (session *sshx.SSHSession, key string, match string) {
-	if s, k := b.ResolveSession(msg); s != nil {
-		return s, k, "exact"
-	}
-	if msg.CaseID != "" {
-		if s := b.Get(app.SessionKey(msg.CaseID, "")); s != nil {
-			return s, app.SessionKey(msg.CaseID, ""), "default_key"
-		}
-	}
-	if s, k := b.SessionByNodeIP(msg.NodeIP); s != nil {
-		return s, k, "node_ip_suffix"
-	}
-	if s, k := b.SessionByAddressHost(msg.NodeIP); s != nil {
-		return s, k, "address_host"
-	}
-	if s, k := b.OnlySessionForCase(msg.CaseID); s != nil {
-		return s, k, "only_session_for_case"
-	}
-	return nil, "", ""
-}
-
 // HandleLogCollect 处理 log_collect 消息族。
-func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cui string) {
 	// 链路 ID 先算：会话缺失这类失败同样要能按链路检索与聚合。
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
-		traceID = "lc-" + FirstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
+		traceID = "lc-" + firstNonEmpty(strings.TrimSpace(msg.ExecID), "unknown")
 	}
 	msg.TraceID = traceID
 
-	s, key, match := ResolveLogCollectSession(b, msg)
+	s, key, match := b.ResolveForNode(msg)
 	// 业务活跃打戳：交互 shell 有 TMOUT=600，一次采集常常跑十几分钟且期间零键盘输入，
 	// shell 必然在 600s 被踢。没有这个戳，EOF 会被当成整条连接失效并 destroySession，
 	// 之后每次 progress 都是 session_missing——前端只能干等到 60s 超时，
@@ -1599,23 +958,23 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 	s.MarkBusy()
 	// 精确命中是常态，只有回退才留痕：日志要能回答"这条命令为什么落到了这台机器"。
 	if s != nil && match != "exact" {
-		obslog.Emit("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": msg.LogAction, "session_key": key, "match": match,
 		})
 	}
 	if s == nil {
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: msg.LogAction,
-			Status: "error", ErrorType: "session_missing", ErrorCode: ErrEnvSessionMissing,
+			Status: "error", ErrorType: "session_missing", ErrorCode: logcontract.ErrEnvSessionMissing,
 			Message: "SSH 会话不存在（需先 ssh_connect）", TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("ERROR", "log_collect.session_missing", "日志收集动作缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("ERROR", "log_collect.session_missing", "日志收集动作缺少 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": msg.LogAction, "task_id": msg.ExecID,
 			// 定性字段：会话数为 0 = 连接生命周期已结束；会话数 >0 但键对不上 = 路由/键问题。
 			// 历史日志只有 action + task_id，两种情况看起来一模一样，只能靠猜。
-			"requested_key":   app.SessionKey(msg.CaseID, msg.NodeIP),
-			"active_sessions": b.SessionCount(),
-			"session_keys":    b.SessionKeyList(8),
+			"requested_key":   session.SessionKey(msg.CaseID, msg.NodeIP),
+			"active_sessions": b.Count(),
+			"session_keys":    b.Keys(8),
 		})
 		return
 	}
@@ -1628,12 +987,12 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 	outcome := "error"
 	// 统一收尾日志：任何分支（含提前 return）都会留下耗时与结果，便于远端定位。
 	defer func() {
-		obslog.Emit("INFO", "log_collect.done", "日志收集动作结束", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.done", "日志收集动作结束", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": action, "task_id": msg.ExecID, "outcome": outcome,
 			"duration_ms": time.Since(startedAt).Milliseconds(),
 		})
 	}()
-	obslog.Emit("INFO", "log_collect.start", "日志收集动作开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+	evidence.Emit("INFO", "log_collect.start", "日志收集动作开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"log_action": action, "task_id": msg.ExecID, "ticket_no": msg.TicketNo,
 		"modules": msg.Modules, "date_from": msg.DateFrom, "date_to": msg.DateTo,
 		"ips": msg.IPs, "extra_paths_count": len(msg.ExtraPaths),
@@ -1659,7 +1018,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: "ok", LogData: probe, TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo,
 		})
-		obslog.Emit("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.probe", "日志收集环境探测完成", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": probe.Architecture, "acli_installed": probe.AcliInstalled,
 			"acli_version": probe.AcliVersion, "acli_build_time": probe.AcliBuildTime,
 			"acli_binary":    probe.AcliBinary,
@@ -1679,19 +1038,19 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		// ── 自定义场景（acli -c）：先证明配置写对了，再下发采集 ──────────────
 		rejectConfigWithCode := func(errType, code, reason string) {
 			if code == "" {
-				code = ValidationErrorCode(errType)
+				code = logcontract.ValidationErrorCode(errType)
 			}
 			models.SendMsg(ws, models.OutMessage{
 				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 				Status: "error", ErrorType: errType, ErrorCode: code,
 				Message: reason, TraceID: traceID, CustomUI: cui,
 			})
-			obslog.Emit("ERROR", "log_collect.config_rejected", "自定义场景配置校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("ERROR", "log_collect.config_rejected", "自定义场景配置校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"error_type": errType, "error_code": code, "reason": reason, "ticket_no": msg.TicketNo,
 			})
 		}
 		rejectConfig := func(errType, reason string) {
-			rejectConfigWithCode(errType, ValidationErrorCode(errType), reason)
+			rejectConfigWithCode(errType, logcontract.ValidationErrorCode(errType), reason)
 		}
 
 		var configPath string
@@ -1765,14 +1124,14 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 				rejectConfig("invalid_config", fmt.Sprintf("自定义场景配置非法：%v", parseErr))
 				return
 			}
-			path, writeErr := writeLogCollectConfig(ctx, s, FirstNonEmpty(msg.ExecID, traceID), msg.ConfigJSON, msg.ConfigSHA256)
+			path, writeErr := writeLogCollectConfig(ctx, s, firstNonEmpty(msg.ExecID, traceID), msg.ConfigJSON, msg.ConfigSHA256)
 			if writeErr != nil {
 				rejectConfig("config_write_failed", fmt.Sprintf("配置文件写入/校验失败：%v", writeErr))
 				return
 			}
 			configPath, configPaths = path, paths
 			preflightMissing = preflightLogCollectPaths(ctx, s, paths)
-			obslog.Emit("INFO", "log_collect.config_written", "自定义场景配置已写入节点", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("INFO", "log_collect.config_written", "自定义场景配置已写入节点", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"config_path": path, "config_sha256": msg.ConfigSHA256,
 				"path_count": len(paths), "preflight_missing": preflightMissing,
 			})
@@ -1782,10 +1141,10 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		if errType != "" {
 			models.SendMsg(ws, models.OutMessage{
 				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-				Status: "error", ErrorType: errType, ErrorCode: ValidationErrorCode(errType),
+				Status: "error", ErrorType: errType, ErrorCode: logcontract.ValidationErrorCode(errType),
 				Message: errMsg, TraceID: traceID, CustomUI: cui,
 			})
-			obslog.Emit("ERROR", "log_collect.rejected", "日志收集参数校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("ERROR", "log_collect.rejected", "日志收集参数校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"error_type": errType, "reason": errMsg, "ticket_no": msg.TicketNo,
 			})
 			// 参数被拒 = 不会有任务，也就永远等不到"终态恢复"：写下去的平台清单
@@ -1805,38 +1164,38 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		// -c 追加在最后：配置文件路径已由平台签发、bridge 回读校验过，
 		// 且此时 msg.ExtraPaths 必为空（否则上面已拒绝），不存在 -p 覆盖风险。
 		if configPath != "" {
-			command += " -c " + ShellQuote(configPath)
+			command += " -c " + remote.ShellQuote(configPath)
 		}
 		archiveStaleLogCollectArchive(ctx, s, msg.CaseID, traceID, cui)
-		output, exitCode, err := RunCommandPty(s, ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
+		output, exitCode, err := s.RunCommandPty(ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
 		status := "ok"
 		code := ""
 		// 失败原因优先取进程错误，其次取 acli 输出里的首个失败行。
 		// RunCommandPty 会把 ssh.ExitError 归一化成 exitCode 后返回 nil，
-		// 只写 ErrString(err) 会得到空串（2026-10-27 实测 19 条失败 create 的 error 全是 ""），
+		// 只写 errString(err) 会得到空串（2026-10-27 实测 19 条失败 create 的 error 全是 ""），
 		// 平台与桥侧日志都无法定因。
-		failure := ErrString(err)
+		failure := errString(err)
 		// 接单确认结论必须随 create 回包与事件一起落库：事后按 trace 反查时，
 		// 要能回答"当时到底有没有看见节点 running"，而不只是"exit_code=0"。
 		ackState := logCollectAckUnknown
 		var ackStates []string
 		if err != nil || exitCode != 0 {
 			status = "error"
-			code = ExecErrorCode(err, exitCode)
-			failure = FirstNonEmpty(failure, logCollectFailureLine(output))
+			code = logcontract.ExecErrorCode(err, exitCode)
+			failure = firstNonEmpty(failure, logCollectFailureLine(output))
 			// acli 明确回了「收集专项 X 不存在」：换成专属码，
 			// 让用户看到的是"专项/版本不匹配"而不是泛化的"命令返回非零"。
 			if logCollectModuleMissing(output) {
-				code = ErrPlugModuleMissing
+				code = logcontract.ErrPlugModuleMissing
 			}
 		} else {
 			// 第一性原理：退出码不是"任务已建立"的证据。必须正向确认一次。
 			ack := confirmLogCollectCreate(ctx, logCollectCreateAckInterval, func(ackCtx context.Context) (string, int, error) {
-				out, ec, runErr := RunCommandPty(s, ackCtx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
+				out, ec, runErr := s.RunCommandPty(ackCtx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
 				return out, ec, runErr
 			})
 			ackState, ackStates = ack.State, ack.States
-			obslog.Emit("INFO", "log_collect.create_ack", "下发后节点接单确认", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("INFO", "log_collect.create_ack", "下发后节点接单确认", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"ticket_no": msg.TicketNo, "result": ackState, "node_states": ackStates,
 			})
 			switch ackState {
@@ -1846,12 +1205,12 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 				status = "error"
 				// 用 015 而不是 008：008 是"查询了一个不存在的任务"，本场景是
 				// "下发之后节点根本没建立"，处置动作不同（核对 acli 版本/专项 vs 核对任务 ID）。
-				code = ErrPlugCreateNotEstablished
+				code = logcontract.ErrPlugCreateNotEstablished
 				failure = "任务下发后节点未建立采集任务（acli 退出码为 0，但 progress 持续报告任务不存在）；请核对节点 acli 版本与所选专项，完整节点输出见任务详情"
 			default:
 				// 结果未知：不替节点下失败结论，保持 ok 并留痕，由前端有界等待兜底。
 				outcome = "ok"
-				obslog.Emit("WARN", "log_collect.create_ack_unknown", "下发后未能确认节点接单", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				evidence.Emit("WARN", "log_collect.create_ack_unknown", "下发后未能确认节点接单", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"ticket_no": msg.TicketNo, "node_states": ackStates,
 				})
 			}
@@ -1918,19 +1277,19 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		// 恰好在尾部，被切掉后现场无法定因（2026-11-09 Q2026110901673）。
 		// 头尾保留 + 票据脱敏：既留住尾部异常，也不能把 Bearer 写进日志和 DB。
 		// 输出上限 64KiB，避免异常刷屏把日志与 WS 报文变成无界存储。
-		safeOutput := stripAnsi(redactUploadTicket(obslog.RedactSensitiveText(output), msg.UploadTicket))
+		safeOutput := stripAnsi(redactUploadTicket(evidence.RedactSensitiveText(output), msg.UploadTicket))
 		createEvidence := terminal.FormatOutputPreview(safeOutput, 48*1024, 16*1024)
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: createEvidence, ErrorCode: code,
 			// Message 只做短摘要：完整证据走 Raw，避免把 64KiB 原文塞进异常与提示。
-			Message: FirstNonEmpty(failure, strings.TrimSpace(sshx.TruncateString(safeOutput, 500))),
-			Detail:  obslog.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
+			Message: firstNonEmpty(failure, strings.TrimSpace(sshx.TruncateString(safeOutput, 500))),
+			Detail:  evidence.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)), TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo, LogData: createLogData,
 		})
-		obslog.Emit("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.create", "日志收集任务下发", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"ticket_no": msg.TicketNo, "exit_code": exitCode, "error": failure,
-			"command":                 obslog.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)),
+			"command":                 evidence.RedactCommand(redactUploadTicket("acli "+command, msg.UploadTicket)),
 			"p1_ticket_used":          msg.UploadTicket != "",
 			"config_used":             configPath != "",
 			"config_path":             configPath,
@@ -1969,7 +1328,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		}
 
 	case "progress":
-		output, exitCode, err := RunCommandPty(s, ctx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
+		output, exitCode, err := s.RunCommandPty(ctx, logCollectAcliInvoke("log_collect progress"), logCollectProgressTimeout)
 		progress := ParseLogCollectProgress(output)
 		progress.NodeState = classifyLogCollectNodeState(progress)
 		// 这里刻意**不用** stat 结果判断"完成归属"：P1 直传成功后插件会自删压缩包，
@@ -1997,7 +1356,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		// 判定任务已完成，回填一个未经验证的推导路径会让它在"任务被清理但包还在"时误判完成。
 		// 大小是纯展示字段，不参与状态机，因此只补 size。
 		// 诊断信息跟着进度事件一起落库：量不到时必须留下"为什么量不到"。
-		archiveProbeResult := ProbeLogCollectArchive(ctx, s, probePath)
+		archiveProbeResult := ProbeLogCollectArchive(ctx, sshx.NewSSHRunner(s), probePath)
 		progress.ArchiveSize = archiveProbeResult.Size
 		// 存在性必须跟着进度一起回给前端：判断"能不能补交付"只认这个结论，
 		// 不认报告里的 archive_path（那个字段在包被删后仍然存在）。
@@ -2009,7 +1368,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		// 逐台明细是 acli 进度原文里已解析好的事实，只落桥日志即可供管理端回读；
 		// 无需证据票据，也不依赖数据面端点（那类端点只承载需要票据的四类证据）。
 		if progress.NodeState == "completed" && len(progress.Hosts) > 0 && markHostResultsReported(msg.ExecID) {
-			obslog.Emit("INFO", "log_collect.host_results", "日志收集逐台明细", traceID, msg.CaseID, msg.NodeIP, cui,
+			evidence.Emit("INFO", "log_collect.host_results", "日志收集逐台明细", traceID, msg.CaseID, msg.NodeIP, cui,
 				logCollectHostResultExtra(progress.Hosts))
 		}
 		if progress.NodeState == "completed" {
@@ -2027,18 +1386,18 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		code := ""
 		if err != nil || exitCode != 0 {
 			status = "error"
-			code = ExecErrorCode(err, exitCode)
+			code = logcontract.ExecErrorCode(err, exitCode)
 		} else {
 			outcome = "ok"
 			if !progress.ParseOK {
 				// 解析降级不是失败：单独出码，前端展示原文，任务状态仍为进行中。
-				code = ErrPlugProgressDegr
+				code = logcontract.ErrPlugProgressDegr
 			}
 		}
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, LogData: progress, Raw: output, ErrorCode: code,
-			Message: ErrString(err), TraceID: traceID, CustomUI: cui,
+			Message: errString(err), TraceID: traceID, CustomUI: cui,
 			TicketNo: msg.TicketNo,
 		})
 		// 探测结论必须随进度一起落库：现场问"为什么面板不给上传入口"时，
@@ -2065,7 +1424,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			// 别的工单的采集，事后只能靠它判断这份进度属于谁。
 			"ticket_no": msg.TicketNo, "task_id": msg.ExecID,
 			"exit_code": exitCode,
-			"error":     ErrString(err), "raw_len": len(output),
+			"error":     errString(err), "raw_len": len(output),
 		}
 		// diag 只在探测失败时非空：空值不写，避免每条进度都多一个无意义键。
 		// 走兜底成功时 diag 里仍保留失败那一级的 exit/stderr（形如 stat:exit=127），
@@ -2074,11 +1433,11 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		if archiveProbeResult.Diag != "" {
 			fields["archive_probe_diag"] = archiveProbeResult.Diag
 		}
-		obslog.Emit("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, fields)
+		evidence.Emit("INFO", "log_collect.progress", "日志收集进度查询", traceID, msg.CaseID, msg.NodeIP, cui, fields)
 		// stat 失败在采集早期是常态（包还没生成），只有进入上传窗口后的失败才值得留证：
 		// 否则每次轮询都多打一条，会把真正的现场信号淹掉。
 		if archiveProbeResult.Diag != "" && progress.Percent >= 80 {
-			obslog.Emit("WARN", "log_collect.archive_size_probe", "压缩包大小探测降级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("WARN", "log_collect.archive_size_probe", "压缩包大小探测降级", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"path": probePath, "level": archiveProbeResult.Level,
 				"diag": archiveProbeResult.Diag,
 			})
@@ -2096,12 +1455,12 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		if pathErr != nil {
 			models.SendMsg(ws, models.OutMessage{
 				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-				Status: "error", ErrorType: "invalid_path", ErrorCode: ErrTransferArchiveMissing,
+				Status: "error", ErrorType: "invalid_path", ErrorCode: logcontract.ErrTransferArchiveMissing,
 				Message: pathErr.Error(), TraceID: traceID, CustomUI: cui,
 			})
 			return
 		}
-		probed := ProbeLogCollectArchive(ctx, s, path)
+		probed := ProbeLogCollectArchive(ctx, sshx.NewSSHRunner(s), path)
 		logData := map[string]any{
 			"path": path, "size": probed.Size,
 			"exists": probed.Exists, "probe_level": probed.Level,
@@ -2113,14 +1472,14 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		switch {
 		case probed.Exists == nil:
 			// 探测本身失败：必须当失败上报，否则前端只能把"测不到"当"不存在"。
-			status, code, errType = "error", ErrTransferArchiveProbe, "archive_probe_unknown"
+			status, code, errType = "error", logcontract.ErrTransferArchiveProbe, "archive_probe_unknown"
 			message = "无法确认压缩包状态（节点命令不可用或通道异常）"
 			if probed.Diag != "" {
 				message += "：" + probed.Diag
 			}
 		case !*probed.Exists:
 			// 文件不存在不是"动作失败"：它是补交付的合法结论（P1 发送成功后插件自删）。
-			code = ErrTransferArchiveMissing
+			code = logcontract.ErrTransferArchiveMissing
 			message = "节点上已确认没有该压缩包"
 		default:
 			outcome = "ok"
@@ -2130,7 +1489,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: status, ErrorCode: code, ErrorType: errType,
 			LogData: logData, Message: message, TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.stat", "日志包状态探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.stat", "日志包状态探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"path": path, "size": probed.Size, "exists": probed.Exists,
 			"probe_level": probed.Level, "probe_diag": probed.Diag,
 			"status": status, "error_code": code,
@@ -2141,7 +1500,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		transferCtx, transferCancel := context.WithTimeout(context.Background(), logCollectTransferTimeout)
 		defer transferCancel()
 		if err := handleLogCollectTransfer(b, transferCtx, ws, s, msg, cui, traceID); err != nil {
-			obslog.Emit("ERROR", "log_collect.transfer", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			evidence.Emit("ERROR", "log_collect.transfer", "日志包交付失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"task_id": msg.ExecID, "error": err.Error(),
 			})
 			return
@@ -2149,23 +1508,23 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		outcome = "ok"
 
 	case "cancel":
-		output, exitCode, err := RunCommandPty(s, ctx, logCollectAcliInvoke("log_collect cancel"), logCollectCancelTimeout)
+		output, exitCode, err := s.RunCommandPty(ctx, logCollectAcliInvoke("log_collect cancel"), logCollectCancelTimeout)
 		status := "ok"
 		code := ""
 		if err != nil || exitCode != 0 {
 			status = "error"
-			code = ErrPlugCancelFailed
+			code = logcontract.ErrPlugCancelFailed
 		} else {
 			outcome = "ok"
 		}
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 			Status: status, ExitCode: exitCode, Raw: output, ErrorCode: code,
-			Message: FirstNonEmpty(ErrString(err), strings.TrimSpace(output)),
+			Message: firstNonEmpty(errString(err), strings.TrimSpace(output)),
 			TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("WARN", "log_collect.cancel", "日志收集任务取消", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-			"exit_code": exitCode, "error": ErrString(err),
+		evidence.Emit("WARN", "log_collect.cancel", "日志收集任务取消", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"exit_code": exitCode, "error": errString(err),
 			"output_preview": stripAnsi(sshx.TruncateString(output, 512)),
 		})
 
@@ -2178,7 +1537,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		restoreCode := ""
 		if restoreErrType != "" {
 			restoreStatus = "error"
-			restoreCode = ValidationErrorCode(restoreErrType)
+			restoreCode = logcontract.ValidationErrorCode(restoreErrType)
 		} else {
 			outcome = "ok"
 		}
@@ -2187,7 +1546,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: restoreStatus, ErrorType: restoreErrType, ErrorCode: restoreCode,
 			Message: restoreErrMsg, LogData: logData, TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.spc_restore_requested", "平台请求恢复场景槽位", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.spc_restore_requested", "平台请求恢复场景槽位", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": msg.ExecID, "spc_slot": msg.SpcSlot,
 			"status": restoreStatus, "error_type": restoreErrType, "message": restoreErrMsg,
 		})
@@ -2201,9 +1560,9 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 		restoreCode := ""
 		if restoreErrType != "" {
 			restoreStatus = "error"
-			restoreCode = ValidationErrorCode(restoreErrType)
+			restoreCode = logcontract.ValidationErrorCode(restoreErrType)
 			if restoreCode == "" {
-				restoreCode = ErrScriptRestoreFailed
+				restoreCode = logcontract.ErrScriptRestoreFailed
 			}
 		} else {
 			outcome = "ok"
@@ -2213,7 +1572,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			Status: restoreStatus, ErrorType: restoreErrType, ErrorCode: restoreCode,
 			Message: restoreErrMsg, LogData: logData, TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.script_restore_requested", "平台请求恢复收集脚本", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.script_restore_requested", "平台请求恢复收集脚本", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"task_id": msg.ExecID, "script_codes": msg.ScriptCodes,
 			"status": restoreStatus, "error_type": restoreErrType, "message": restoreErrMsg,
 		})
@@ -2239,7 +1598,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 			},
 			TraceID: traceID, CustomUI: cui,
 		})
-		obslog.Emit("INFO", "log_collect.capabilities", "日志收集能力探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		evidence.Emit("INFO", "log_collect.capabilities", "日志收集能力探测", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"multi_slot_spc": true, "spc_max_slots": len(logCollectModules),
 			"log_collect_evidence": true, "acli_plugin_sync": true,
 		})
@@ -2247,7 +1606,7 @@ func HandleLogCollect(b *app.Bridge, ws *websocket.Conn, msg models.InMessage, c
 	default:
 		models.SendMsg(ws, models.OutMessage{
 			Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
-			Status: "error", ErrorType: "invalid_action", ErrorCode: ErrPlugInvalidAction,
+			Status: "error", ErrorType: "invalid_action", ErrorCode: logcontract.ErrPlugInvalidAction,
 			Message: "log_action 仅支持 probe / create / progress / cancel / stat / transfer / restore_spc / capabilities",
 			TraceID: traceID, CustomUI: cui,
 		})

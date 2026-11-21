@@ -28,8 +28,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/models"
-	"terminal_bridge/internal/shared/obslog"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -90,7 +91,7 @@ func markEvidenceTLSRelaxed(cfg EvidenceConfig, cause error) {
 	if _, loaded := evidenceTLSRelaxed.LoadOrStore(cfg.TaskID, struct{}{}); loaded {
 		return
 	}
-	obslog.Emit("WARN", "log_collect.evidence_tls_relaxed", "证据通道命中自签证书，已放宽证书校验", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	evidence.Emit("WARN", "log_collect.evidence_tls_relaxed", "证据通道命中自签证书，已放宽证书校验", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "trace_id": cfg.TraceID, "reason": cause.Error(),
 		"scope": "仅本次任务的证据通道", "auth": "X-Evidence-Ticket 鉴权不变",
 	})
@@ -102,7 +103,7 @@ func configureEvidence(msg models.InMessage, customUI string) {
 	}
 	base, err := ValidatePlatformURL(msg.PlatformURL)
 	if err != nil {
-		obslog.Emit("WARN", "log_collect.evidence_disabled", "证据上报未启用：平台地址无效", msg.TraceID, msg.CaseID, msg.NodeIP, "", map[string]any{
+		evidence.Emit("WARN", "log_collect.evidence_disabled", "证据上报未启用：平台地址无效", msg.TraceID, msg.CaseID, msg.NodeIP, "", map[string]any{
 			"reason": err.Error(), "task_id": msg.ExecID,
 		})
 		return
@@ -121,7 +122,7 @@ func configureEvidence(msg models.InMessage, customUI string) {
 	EvidenceConfigs.Store(cfg.TaskID, cfg)
 	// 下发前探测是异步的：绝不因为弱网/平台不可达拖延 acli 下发。
 	go runNetworkProbes(cfg)
-	obslog.Emit("INFO", "log_collect.evidence_enabled", "证据上报已启用", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	evidence.Emit("INFO", "log_collect.evidence_enabled", "证据上报已启用", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "upload_mode": cfg.UploadMode, "trace_id": cfg.TraceID,
 	})
 }
@@ -313,7 +314,7 @@ func runNetworkProbes(cfg EvidenceConfig) {
 		}
 		ack, err := cfg.PostEvidence(ctx, cfg.TaskPath("network-probe"), facts, "")
 		if err != nil {
-			obslog.Emit("WARN", "log_collect.network_probe_failed", "网络探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+			evidence.Emit("WARN", "log_collect.network_probe_failed", "网络探测上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 				"target": target.name, "error": err.Error(),
 			})
 			continue
@@ -512,7 +513,7 @@ func inspectNodeArchive(ctx context.Context, s *sshx.SSHSession, cfg EvidenceCon
 	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	quoted := ShellQuote(path)
+	quoted := remote.ShellQuote(path)
 	manifest := artifactManifest{Source: "node_zip", ArchivePath: path, ArchiveSize: size, Entries: []manifestEntry{}}
 	var lastErr error
 	var lastWindow int64
@@ -613,7 +614,7 @@ func postManifest(ctx context.Context, cfg EvidenceConfig, manifest artifactMani
 	if err == nil {
 		return
 	}
-	obslog.Emit("WARN", event, message, cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+	evidence.Emit("WARN", event, message, cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "error": err.Error(),
 	})
 	cfg.reportEvidenceError(ctx, "artifact-manifest", err)
@@ -635,7 +636,7 @@ func (e EvidenceConfig) reportEvidenceError(ctx context.Context, kind string, ca
 	}
 	resp, postErr := uplink.HttpClientFor(true, 10*time.Second).Do(req)
 	if postErr != nil {
-		obslog.Emit("WARN", "log_collect.evidence_error_report_failed", "证据失败陈述上报失败", e.TraceID, e.CaseID, e.NodeIP, e.CustomUI, map[string]any{
+		evidence.Emit("WARN", "log_collect.evidence_error_report_failed", "证据失败陈述上报失败", e.TraceID, e.CaseID, e.NodeIP, e.CustomUI, map[string]any{
 			"task_id": e.TaskID, "kind": kind, "error": postErr.Error(),
 		})
 		return
@@ -665,10 +666,10 @@ func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg Evidenc
 	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	listOut, _, code, err := s.RunQuickCommandStreams(ctx, "ls -1 "+ShellQuote(processLogDir))
+	listOut, _, code, err := s.RunQuickCommandStreams(ctx, "ls -1 "+remote.ShellQuote(processLogDir))
 	if err != nil || code != 0 {
-		obslog.Emit("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-			"task_id": cfg.TaskID, "error": ErrString(err), "exit_code": code,
+		evidence.Emit("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+			"task_id": cfg.TaskID, "error": errString(err), "exit_code": code,
 		})
 		return
 	}
@@ -683,14 +684,14 @@ func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg Evidenc
 			break
 		}
 		path := processLogDir + name
-		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(maxProcessLogFileBytes)+" "+ShellQuote(path))
+		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(maxProcessLogFileBytes)+" "+remote.ShellQuote(path))
 		payload := processLogPayload{
 			Host: cfg.NodeIP, Path: path, CollectedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 		switch {
 		case contentErr != nil || contentCode != 0:
 			payload.Status = "error"
-			payload.Error = FirstNonEmpty(ErrString(contentErr), "节点侧读取失败")
+			payload.Error = firstNonEmpty(errString(contentErr), "节点侧读取失败")
 		case strings.TrimSpace(content) == "":
 			payload.Status = "empty"
 		default:
@@ -714,7 +715,7 @@ func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg Evidenc
 		_, postErr := cfg.PostEvidence(postCtx, cfg.TaskPath("process-logs"), payload, "")
 		cancel()
 		if postErr != nil {
-			obslog.Emit("WARN", "log_collect.process_log_failed", "采集进程日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+			evidence.Emit("WARN", "log_collect.process_log_failed", "采集进程日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 				"task_id": cfg.TaskID, "path": path, "error": postErr.Error(),
 			})
 		}

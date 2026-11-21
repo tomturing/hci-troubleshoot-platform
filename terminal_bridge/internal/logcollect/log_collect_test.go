@@ -3,16 +3,16 @@ package logcollect
 import (
 	"context"
 	"encoding/json"
+	"golang.org/x/crypto/ssh"
 	"os"
 	"path/filepath"
 	"strings"
-	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/shared/models"
+	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 )
 
 // TestBuildLogCollectCreateCommand 覆盖参数白名单与命令转义。
@@ -165,10 +165,10 @@ func TestLogCollectCreateCommandRequiresInvoke(t *testing.T) {
 }
 
 func TestShellQuote(t *testing.T) {
-	if got := ShellQuote("plain"); got != "'plain'" {
+	if got := remote.ShellQuote("plain"); got != "'plain'" {
 		t.Fatalf("普通值转义错误：%s", got)
 	}
-	if got := ShellQuote("a'b"); got != `'a'\''b'` {
+	if got := remote.ShellQuote("a'b"); got != `'a'\''b'` {
 		t.Fatalf("单引号转义错误：%s", got)
 	}
 }
@@ -296,7 +296,7 @@ func TestManualLogCollectProbe(t *testing.T) {
 		t.Fatal("未探测到 acli 安装")
 	}
 
-	output, exitCode, err := RunCommandPty(session, ctx, "acli log_collect progress", 30*time.Second)
+	output, exitCode, err := session.RunCommandPty(ctx, "acli log_collect progress", 30*time.Second)
 	if err != nil {
 		t.Fatalf("progress 执行失败：%v", err)
 	}
@@ -577,7 +577,7 @@ func TestSessionByNodeIP(t *testing.T) {
 	target := &sshx.SSHSession{}
 	prefixTrap := &sshx.SSHSession{}
 	other := &sshx.SSHSession{}
-	bridge := app.NewBridge()
+	bridge := session.NewHub()
 	bridge.Set("terminal-only@192.0.2.10", target)
 	bridge.Set("Q2026101401684@192.0.2.101", prefixTrap) // 前缀相同的另一台主机，不得被误命中
 	bridge.Set("Q2026101401684@192.0.2.110", other)
@@ -605,7 +605,7 @@ func TestSessionByNodeIP(t *testing.T) {
 // 结果是平台显示已取消、节点上采集任务仍在跑，后续 create 被插件互斥拒绝。
 // 本工单只有一条 SSH 会话时，必须能兜底命中。
 // 回归：RunCommandPty 把 ssh.ExitError 归一化成 exitCode 后返回 nil，
-// 只用 ErrString(err) 时 create 失败原因的 error 字段恒为空（2026-10-27 实测 19/19）。
+// 只用 errString(err) 时 create 失败原因的 error 字段恒为空（2026-10-27 实测 19/19）。
 func TestLogCollectFailureLine(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -693,33 +693,33 @@ func TestClassifyLogCollectNodeState(t *testing.T) {
 
 func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 	single := &sshx.SSHSession{Address: "192.168.33.89:22"}
-	bridge := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single})
+	bridge := session.NewHubWithSessions(map[string]*sshx.SSHSession{"Q2026102601505@192.168.33.89": single})
 
-	got, key, match := ResolveLogCollectSession(bridge, models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
+	got, key, match := bridge.ResolveForNode(models.InMessage{CaseID: "Q2026102601505", LogAction: "cancel"})
 	if got != single || key != "Q2026102601505@192.168.33.89" || match != "only_session_for_case" {
 		t.Fatalf("唯一会话应被兜底命中，实际 got=%v key=%s match=%s", got, key, match)
 	}
 
 	// 多节点时不猜：猜错会取消另一台机器上的采集任务
-	multi := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
+	multi := session.NewHubWithSessions(map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1": {Address: "10.0.0.1:22"},
 		"Q1@10.0.0.2": {Address: "10.0.0.2:22"},
 	})
-	if got, _, _ := ResolveLogCollectSession(multi, models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
+	if got, _, _ := multi.ResolveForNode(models.InMessage{CaseID: "Q1", LogAction: "cancel"}); got != nil {
 		t.Fatal("多节点且无 node_ip 时不得兜底，必须返回 nil 由调用方报 session_missing")
 	}
 
 	// 带了 node_ip 就走精确键，命中原因要能被日志区分
-	if got, key, match := ResolveLogCollectSession(multi, models.InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
+	if got, key, match := multi.ResolveForNode(models.InMessage{CaseID: "Q1", NodeIP: "10.0.0.2"}); got == nil || key != "Q1@10.0.0.2" || match != "exact" {
 		t.Fatalf("精确键应优先命中，实际 key=%s match=%s", key, match)
 	}
 
 	// 同节点其他工单的会话：按节点复用，不应落到 only_session_for_case
-	reuse := app.NewBridgeWithSessions(map[string]*sshx.SSHSession{
+	reuse := session.NewHubWithSessions(map[string]*sshx.SSHSession{
 		"Q1@10.0.0.1":            {Address: "10.0.0.1:22"},
 		"terminal-only@10.9.9.9": {Address: "10.9.9.9:22"},
 	})
-	got2, key2, match2 := ResolveLogCollectSession(reuse, models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
+	got2, key2, match2 := reuse.ResolveForNode(models.InMessage{CaseID: "Q2", NodeIP: "10.9.9.9"})
 	if got2 == nil || key2 != "terminal-only@10.9.9.9" || match2 != "node_ip_suffix" {
 		t.Fatalf("应按节点复用其他工单会话，实际 key=%s match=%s", key2, match2)
 	}
@@ -731,7 +731,7 @@ func TestResolveLogCollectSessionFallsBackToOnlySession(t *testing.T) {
 func TestSessionByAddressHost(t *testing.T) {
 	legacy := &sshx.SSHSession{Address: "192.0.2.10:22"}
 	otherPort := &sshx.SSHSession{Address: "192.0.2.12:2222"}
-	bridge := app.NewBridge()
+	bridge := session.NewHub()
 	// 键故意不带 @IP，复现现场：终端连好了，但键只有 caseID
 	bridge.Set("terminal-only", legacy)
 	bridge.Set("Q2026101401684@192.0.2.12", otherPort)
@@ -789,35 +789,6 @@ func TestFallbackLogCollectArchivePath(t *testing.T) {
 	path := fallbackLogCollectArchivePath("Q2026101401683")
 	if _, err := NormalizeArchivePath(path); err != nil {
 		t.Fatalf("推导路径应能被 normalizeArchivePath 接受：%v", err)
-	}
-}
-
-// TestParseLsFieldSize 覆盖 stat 失败后的兜底解析。
-//
-// 背景：staging 实测显示 stat 在所有采集窗口里都没成功过，
-// 所以兜底路径必须是「宁可返回 false，也不能返回错误的数字」——
-// 一旦把别的字段（权限、时间、目录里的另一个文件）当成大小，用户看到的就是假数据。
-func TestParseLsFieldSize(t *testing.T) {
-	cases := []struct {
-		name   string
-		output string
-		want   int64
-		ok     bool
-	}{
-		{"普通文件", "-rw-r--r-- 1 root root 314572800 Oct 27 10:36 /sf/data/local/acli/tmp/data/log_collect/Q1.zip", 314572800, true},
-		{"文件名含空格", "-rw-r--r-- 1 root root 314572800 Oct 27 10:36 /sf/data/local/acli/tmp/data/log_collect/Q 1.zip", 314572800, true},
-		{"目录统计行", "total 0", 0, false},
-		{"空输出", "", 0, false},
-		{"零字节", "-rw-r--r-- 1 root root 0 Oct 27 10:36 /x.zip", 0, false},
-		{"非数字字段", "-rw-r--r-- 1 root root abc Oct 27 10:36 /x.zip", 0, false},
-		{"通配符展开成多行", "-rw-r--r-- 1 root root 100 Oct 27 10:36 /a.zip\n-rw-r--r-- 1 root root 200 Oct 27 10:36 /b.zip", 0, false},
-		{"字段不足", "-rw-r--r--", 0, false},
-	}
-	for _, c := range cases {
-		got, ok := parseLsFieldSize(c.output)
-		if ok != c.ok || got != c.want {
-			t.Fatalf("%s: 期望 (%d,%v)，实际 (%d,%v)", c.name, c.want, c.ok, got, ok)
-		}
 	}
 }
 

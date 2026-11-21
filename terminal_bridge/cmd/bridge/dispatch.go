@@ -76,14 +76,14 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 			"conn_id": connID, "role": role,
 			"duration_seconds": int64(time.Since(openedAt).Seconds()),
 			"owned_keys":       releasedKeys,
-			"active_sessions":  b.SessionCount(),
+			"active_sessions":  b.Count(),
 		})
 		obslog.DefaultHub.RemoveSubscriber(ws)
 		models.WebsocketWriteLocks.Delete(ws)
 		// 浏览器断开后立即清理凭据缓存，缩短密码/私钥在内存中的生命周期。
 		b.ClearLastAuth(sub.CaseID)
 		// 本连接发起的下载一并取消：浏览器都关了还继续拉完整个文件，白占客户带宽。
-		if cancelled := sftp.CancelSftpTasksForConn(b, connID); cancelled > 0 {
+		if cancelled := sftp.CancelSftpTasksForConn(connID); cancelled > 0 {
 			obslog.Emit("INFO", "sftp.tasks_cancelled_on_disconnect", "连接断开，已取消未完成的下载任务", "", sub.CaseID, "", cui, map[string]any{
 				"conn_id": connID, "cancelled": cancelled,
 			})

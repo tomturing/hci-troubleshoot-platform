@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"terminal_bridge/internal/logcollect"
 	"terminal_bridge/internal/shared/remote"
 	"testing"
 )
@@ -33,10 +32,10 @@ func goldenShellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }
 
-// TestGoldenShellQuoteByteIdentical 转义形态逐字锁定（log_collect 侧）。
+// TestGoldenShellQuoteByteIdentical 转义形态逐字锁定（remote 侧）。
 func TestGoldenShellQuoteByteIdentical(t *testing.T) {
 	for _, v := range []string{"plain", "", "a'b", "$(x)", "/sf/a b", "a\"b", "`id`", "a;rm -rf /"} {
-		if got, want := logcollect.ShellQuote(v), goldenShellQuote(v); got != want {
+		if got, want := remote.ShellQuote(v), goldenShellQuote(v); got != want {
 			t.Fatalf("shellQuote(%q) = %q, want %q", v, got, want)
 		}
 	}

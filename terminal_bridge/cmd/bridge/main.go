@@ -20,7 +20,8 @@ import (
 	"syscall"
 	"terminal_bridge/internal/app"
 	"terminal_bridge/internal/delivery"
-	"terminal_bridge/internal/logcollect"
+	"terminal_bridge/internal/shared/logcontract"
+	"terminal_bridge/internal/shared/metrics"
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
@@ -42,17 +43,17 @@ func getVersion() string { return app.GetVersion() }
 
 func main() {
 	// R0 装配缝：models/obslog 的注入钩子在此接线（所有权仍归 app/cmd）。
-	models.ErrorFieldsFunc = logcollect.LogCollectErrorFields
+	models.ErrorFieldsFunc = logcontract.LogCollectErrorFields
 	models.SendErrorHook = func(msg models.OutMessage, err error) {
 		obslog.Emit("ERROR", "ws.send_failed", "WebSocket 发送失败", msg.TraceID, msg.CaseID, "", msg.CustomUI, map[string]any{
 			"out_type": msg.Type, "exec_id": msg.ExecID, "error": err.Error(),
 		})
-		atomic.AddUint64(&app.PromMetrics.LogsCollectErrors, 1)
+		atomic.AddUint64(&metrics.PromMetrics.LogsCollectErrors, 1)
 	}
-	obslog.MetricsReplayed = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsReplayedTotal, n) }
-	obslog.MetricsDropped = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsDroppedTotal, n) }
-	obslog.MetricsCollectErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectErrors, n) }
-	obslog.MetricsCollected = func(n uint64) { atomic.AddUint64(&app.PromMetrics.LogsCollectedTotal, n) }
+	obslog.MetricsReplayed = func(n uint64) { atomic.AddUint64(&metrics.PromMetrics.LogsReplayedTotal, n) }
+	obslog.MetricsDropped = func(n uint64) { atomic.AddUint64(&metrics.PromMetrics.LogsDroppedTotal, n) }
+	obslog.MetricsCollectErrors = func(n uint64) { atomic.AddUint64(&metrics.PromMetrics.LogsCollectErrors, n) }
+	obslog.MetricsCollected = func(n uint64) { atomic.AddUint64(&metrics.PromMetrics.LogsCollectedTotal, n) }
 	obslog.VersionFunc = getVersion
 	sshx.IsLiveBridgeFunc = app.IsLiveBridge
 	sshx.SelfPortFunc = func() int { return app.BridgeSelfPort }
@@ -60,8 +61,8 @@ func main() {
 	app.VersionFunc = func() string { return Version }
 	app.CommitIDFunc = func() string { return CommitID }
 	app.BuildTimeFunc = func() string { return BuildTime }
-	terminal.MetricsExecErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.ExecCommandErrors, n) }
-	terminal.MetricsVmConsoleOpErrors = func(n uint64) { atomic.AddUint64(&app.PromMetrics.VmConsoleOpErrors, n) }
+	terminal.MetricsExecErrors = func(n uint64) { atomic.AddUint64(&metrics.PromMetrics.ExecCommandErrors, n) }
+	terminal.MetricsVmConsoleOpErrors = func(n uint64) { atomic.AddUint64(&metrics.PromMetrics.VmConsoleOpErrors, n) }
 	showVersion := flag.Bool("version", false, "打印版本与 commit 信息后退出")
 	mode := flag.String("mode", bruntime.EnvOrDefault("HCI_BRIDGE_MODE", bruntime.DesktopMode), "运行模式：desktop 或 cluster")
 	listenAddress := flag.String("listen-address", strings.TrimSpace(os.Getenv("HCI_BRIDGE_LISTEN_ADDRESS")), "监听地址；默认 desktop=127.0.0.1，cluster=0.0.0.0")
@@ -88,6 +89,8 @@ func main() {
 	// 按运行模式校正落盘策略，并记录启动事件：日志路径必须可自证，
 	// 否则排障时无法回答"日志到底写在哪"（工单 Q2026092010235 的直接教训）。
 	obslog.DefaultHub.ApplyRuntimeMode(config.Mode)
+	// 证据门面接线：必须在 obslog 初始化之后、业务 goroutine 启动之前。
+	installEvidenceSink()
 	// stderr 重定向必须晚于 applyRuntimeMode：cluster 模式的日志目录由 Helm 注入，
 	// 提前重定向会把 panic 栈写到 desktop 默认目录。
 	app.RedirectStderrToFile()
@@ -102,7 +105,7 @@ func main() {
 	app.StartSessionReaper(bridge, app.SessionIdleTTL())
 	// 交付执行器：启动即扫描并恢复未完成作业。执行权在 bridge，
 	// 浏览器是否在线不影响；前端只通过 job_status 轮询进度。
-	delivery.DeliveryRunnerInstance = delivery.NewDeliveryRunner(bridge)
+	delivery.DeliveryRunnerInstance = delivery.NewDeliveryRunner(bridge.Hub, deliveryReconnector{b: bridge})
 	delivery.DeliveryRunnerInstance.Start()
 	obslog.Emit("INFO", "bridge.startup", "terminal_bridge 已启动", "", "", "", "", map[string]any{
 		"version":         getVersion(),
@@ -216,7 +219,7 @@ func main() {
 		extra := map[string]any{
 			"signal":          sig.String(),
 			"uptime_seconds":  int64(time.Since(app.ProcessStartedAt).Seconds()),
-			"active_sessions": bridge.SessionCount(),
+			"active_sessions": bridge.Count(),
 		}
 		if consoleEvent := lastConsoleCtrlEvent(); consoleEvent != "" {
 			extra["console_event"] = consoleEvent
