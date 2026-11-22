@@ -2,44 +2,26 @@ package app
 
 import (
 	"sync"
-	"time"
 
-	"terminal_bridge/internal/shared/models"
-
-	"golang.org/x/net/websocket"
+	"terminal_bridge/internal/wsctx"
 )
 
 // 注册式 WS 消息路由（微内核）：app 只持有路由表与派发缝，不认识任何具体消息的
 // 业务语义；各功能域在 init() 自注册 handler（R0c）。取代中央 switch 后，
 // 「支持哪些消息类型」以路由表为唯一事实源，路由表守卫测试逐字冻结清单。
 
-// LogCaseSubscriber 是日志订阅者的最小接口缝：协议边缘只需要「归属工单」读写能力，
-// 不认识 obslog 的私有订阅者类型（依赖倒置，避免 app/装配层反向依赖具体实现）。
-type LogCaseSubscriber interface {
-	BindCase(caseID string)
-	BoundCase() string
-}
+// LogCaseSubscriber 保留为别名：接口本体已归 shared/wsctx（域 handler 只依赖它，
+// 不必为了拿一个两方法的接口而反向 import 装配壳）。
+type LogCaseSubscriber = wsctx.Subscriber
 
-// WSContext 承载单条 WebSocket 连接的派发上下文：连接级状态由 handle() 信封
-// 创建与维护，handler 只经此缝读写，不再依赖闭包捕获的裸局部变量。
-type WSContext struct {
-	B      *Bridge
-	WS     *websocket.Conn
-	CUI    string
-	ConnID string
-	Role   string
-	Sub    LogCaseSubscriber
-	Owned  *OwnedSessionTracker
-	// ActiveKey 记录本连接最近一次 ssh_connect 建立的会话键（含 @nodeIP）。
-	// 键盘输入属于"这条连接的这块终端"，用它兜底比按全局 caseID 猜更可靠。
-	ActiveKey string
-	// LastInputRejectAt 输入被丢弃的提示节流：用户连按回车时不必重复回包刷屏。
-	LastInputRejectAt time.Time
-}
+// WSContext / WSHandler 保留为别名：A5 把这些类型下沉到 shared/wsctx，
+// 装配层与既有测试的写法不用改，域侧从此可以只 import wsctx。
+type WSContext = wsctx.Context
+type WSHandler = wsctx.Handler
 
-// WSHandler 是单种 WS 消息的协议边缘处理器。原 switch case 内的 continue
-// 语义等价于 return（每条消息独立派发，无 fallthrough）。
-type WSHandler func(ctx *WSContext, msg models.InMessage)
+// Bridge 是 wsctx.Lifecycle 的唯一适配器：把这个断言放在装配层，
+// 一旦生命周期方法签名漂移，编译期立刻失败，而不是等到某条 WS 消息在线上静默失效。
+var _ wsctx.Lifecycle = (*Bridge)(nil)
 
 var (
 	wsRoutesMu sync.RWMutex
