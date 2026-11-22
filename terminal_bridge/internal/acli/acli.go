@@ -88,10 +88,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	//   upload  —— 复用已校验的内存缓存重传，不重新下载；
 	//   install —— 复用节点上已校验的安装包重装，不再传字节。
 	// 非法值一律回 all：宁可多做一次完整校验，也不要因一个笔误走了未校验的快捷路径。
-	retryStage := strings.ToLower(strings.TrimSpace(msg.RetryStage))
-	if retryStage != "upload" && retryStage != "install" {
-		retryStage = "all"
-	}
+	retryStage := normalizeAcliRetryStage(msg.RetryStage)
 
 	s, key := b.ResolveAcliSync(msg)
 	if s == nil {
@@ -145,11 +142,9 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		return
 	}
 
-	arch := strings.ToLower(strings.TrimSpace(archOut))
-	targetArch := "x86_64"
-	if strings.Contains(arch, "aarch64") || strings.Contains(arch, "arm64") {
-		targetArch = "aarch64"
-	} else if !strings.Contains(arch, "x86_64") && !strings.Contains(arch, "amd64") {
+	arch, archSupported := parseTargetArch(archOut)
+	targetArch := arch
+	if !archSupported {
 		models.SendMsg(ws, models.OutMessage{
 			Type:         "acli_sync_result",
 			CaseID:       msg.CaseID,
