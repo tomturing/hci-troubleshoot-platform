@@ -361,13 +361,35 @@ func cleanupAcliTmp(ctx context.Context, s *sshx.SSHSession, tmpPath string) {
 
 // ── 安装 ──────────────────────────────────────────────────────────────────────
 
-// buildAcliInstallCommand 构造安装命令。
+// acliInstallSpec 把「安装 acli 二进制」声明成一个动作，而不是一段拼好的命令。
+//
+// Args 只承载渲染所需的最小事实（落点路径）：版本与摘要是「传输阶段」的事实，
+// 不属于安装动作——把它们也塞进来会让声明变成"把所有入参抄一遍"，失去意义。
+func acliInstallSpec(destPath string) reconcile.InstallSpec {
+	return reconcile.InstallSpec{Kind: reconcile.InstallAcli, Args: []string{destPath}}
+}
+
+// renderInstall 是全仓 acli 安装命令的唯一实现。
+//
+// 签名与 reconcile.Deps.InstallFunc 一致：未来骨架若支持集群分发语义，
+// 这个函数可以直接注入，而不需要再写一份（避免"声明一套、执行另一套"的漂移）。
 //
 // PATH 前置是历史踩坑修复：非交互 shell 默认 PATH 里没有 /sf/bin、/sf/sbin，
 // 安装器内部会调用 acli 自身完成集群分发。
-func buildAcliInstallCommand(destPath string) string {
-	return `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; ` +
-		remote.ShellQuote(destPath) + " --install --force"
+//
+// default 分支必须报错，不允许兜底拼 `sh -c`：一旦留了通用逃生口，
+// 声明化就退化成"多一层间接寻址"，且未登记的动作会被静默放行。
+func renderInstall(_ context.Context, _ remote.Runner, d reconcile.DesiredState) (string, error) {
+	switch d.Install.Kind {
+	case reconcile.InstallAcli:
+		if len(d.Install.Args) == 0 || strings.TrimSpace(d.Install.Args[0]) == "" {
+			return "", fmt.Errorf("acli: 安装动作缺少落点路径")
+		}
+		return `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; ` +
+			remote.ShellQuote(d.Install.Args[0]) + " --install --force", nil
+	default:
+		return "", fmt.Errorf("acli: 未登记的安装动作 %q", d.Install.Kind)
+	}
 }
 
 // acliInstallOutcome 汇总安装命令的完整事实，供日志与 UI 共用。
@@ -386,7 +408,13 @@ type acliInstallOutcome struct {
 // 只出现在 stderr；合并成一个字符串后，"退出码非零但看起来全是进度条"就无法解释。
 // S4a：分轨执行委托 remote.RunSplit（唯一分轨实现），命令与结论语义不变。
 func installAcliPackage(ctx context.Context, s *sshx.SSHSession, destPath string) acliInstallOutcome {
-	outcome := acliInstallOutcome{Command: buildAcliInstallCommand(destPath)}
+	cmd, err := renderInstall(ctx, sshx.NewSSHRunner(s), reconcile.DesiredState{Install: acliInstallSpec(destPath)})
+	if err != nil {
+		// 渲染失败属于编程错误（未登记动作或参数缺失），按"命令未执行"返回，
+		// 绝不退化成兜底命令：那会让声明层的错误变成一次真实的远端执行。
+		return acliInstallOutcome{Err: err}
+	}
+	outcome := acliInstallOutcome{Command: cmd}
 	res := remote.RunSplit(ctx, sshx.NewSSHRunner(s), outcome.Command)
 	outcome.DurationMS = res.Duration.Milliseconds()
 	outcome.Stdout = res.Stdout

@@ -24,6 +24,7 @@ owner: termi
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-22 | v1.15 | **S4 安装动作声明化**：`InstallSpec{acli_install}` + `renderInstall` 唯一实现（golden 字节等价 + 字面量守卫）；插件链路从 `plugin_bundle` 拆出 `plugin_set`（新增 `ModeDomainLocal`），纠正"登记比实际弱"；§3.3 S4 行同步 |
 | 2026-11-22 | v1.14 | **P1-3/P1-6 收口**：outbox 按上传轮次 group commit（取批后 + 滚段关档前 fsync，`unsyncedBytes` 免空转）；seed 改批量稳定排序合并（每 512 条 + defer 兜底）；§7 债务表、§8.1-8.3 断电语义同步 |
 | 2026-11-22 | v1.13 | **A5 完成**：会话族 7 条归位 `internal/terminal/session_routes.go`，`ssh_connect` 的 SPC 还原意图改 `SessionDeps` 注入；`LogSessionCreated`/`sessionKeyNode` 下沉 `sshx/session`，输入节流常量归 `wsctx`；`ws_routes.go` 232→52 行、§3.3 与 §7 标完成 |
 | 2026-11-22 | v1.12 | **A5-B2**：terminal 三条（`ssh_exec_command`/`ssh_exec_process`/`vm_console_op`）归位 `internal/terminal/routes.go`，装配层 `ws_routes.go` 494→232 行、handler 12→8；§4-A5 与 §7 债务表同步 |
@@ -137,7 +138,7 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | R0 搬迁 | 完成 | `#1575`，测试零丢失 |
 | S1 原语 | **完成（2026-11-21 复核）** | 节点面 `remote` 收口、云面 `uplink.Push` 统一；实测 `delivery` 生产代码 import sshx=0、`*sshx.SSHSession`=0；`logcollect` 仅被装配层 `cmd/bridge` import，域间依赖边 0 |
 | S2 / S3 reconcile 消费者 | **完成（2026-11-21）** | 建 `reconcile/kinds` 登记册：四条链路必须声明接入程度，未登记由守卫测试判失败；SPC 的"只租意图、写入自管"从隐债变显式声明 |
-| S4 acli 两阶段 | **部分（复核后重述）** | 两阶段协议已落地；`internal/acli` 内无 `InstallSpec` 类声明结构，安装/校验仍是指令式串联。原表述"声明式胶水未迁 kinds"已不准确——kind 改成了登记册，**剩余工作是"把安装动作声明化"，不是搬目录** |
+| S4 acli 两阶段 | **部分完成（2026-11-22）** | 安装动作已声明化：`InstallSpec{acli_install}` + 域内唯一渲染器（golden 字节锁死、字面量守卫防回退）；插件同步链路登记纠偏（`plugin_set` / `domain_local`）。**编排仍未进 Run**：集群冒烟拿不到 Hub、无包复用/断点、无账本三处契约不匹配（见事件文档） |
 | U1 telemetry | 完成 | `#1582`，桌面 otel 符号 0 |
 | L1 obslog 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
 | D1 删除 relay | 完成 | `#1553` `#1554` |

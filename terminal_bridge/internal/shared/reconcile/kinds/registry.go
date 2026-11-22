@@ -38,12 +38,19 @@ const (
 	// ModeDeclarative：只租用声明式建模（DesiredState 用作"验证目标清单"），
 	// 既不判定也不编排。用于"安装后落盘校验"这类只读链路。
 	ModeDeclarative Mode = "declarative"
+	// ModeDomainLocal：域内自持完整收敛（Observe → Compare → Act → Receipt），
+	// 只是类型与骨架不同源、循环跑在域内。维护这条链路看域内实现，不要动骨架。
+	//
+	// 为什么需要这一档而不是塞进 intent_only：intent_only 的语义是"只租持久意图、
+	// 写入自管"，而这类链路连判定与回执都是自己实现的，能力比 intent_only 高一整层。
+	// 用 intent_only 记它会低估能力，正是 SPC 那条债务的反向翻版。
+	ModeDomainLocal Mode = "domain_local"
 )
 
 // Valid 报告 Mode 是否已登记。
 func (m Mode) Valid() bool {
 	switch m {
-	case ModePlanActivate, ModeCompareOnly, ModeIntentOnly, ModeDeclarative:
+	case ModePlanActivate, ModeCompareOnly, ModeIntentOnly, ModeDeclarative, ModeDomainLocal:
 		return true
 	}
 	return false
