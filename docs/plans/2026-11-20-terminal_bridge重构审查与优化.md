@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-22 | v1.9 | **A5 地基**：连接级上下文下沉 `internal/wsctx`（`ctx.B` → `Hub`/`Life`），落点避开 `shared`（禁令 1）；§4-A5 补现状与四步剩余工作，§7 债务表状态改「进行中」 |
 | 2026-11-21 | v1.8 | **状态对账**：S1 改完成、A1/A2/A4 改已修、S4 重述剩余工作、A5 与 P1-3/P1-6 标注复核证据、P2 逐项归位、债务 4 测试数订正为 590/589。所有结论均以实测命令为据，不采信旧标注 |
 | 2026-11-21 | v1.7 | 阶段 3 第 5 项交付静态准备：U0 杀软抽样验证方案（矩阵/判定/回退/留档表）+ Defender 取证脚本；实机结论未出，债务 5 保持 open |
 | 2026-11-21 | v1.6 | 阶段 3 第 2/3 项完成：两个巨文件二拆（函数数零丢失）、outbox 旋钮入契约、seed 语义与失效引用订正；§4 影响、§6.1 表格、§7.2 债务 2/3 同步 |
@@ -254,6 +255,16 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 
 **根因**（代码自述）：域反向 import `app` 会成环，`app` 又 import `obslog`/`terminal`，
 所以只能在装配层注册。**A1 解不开，A5 就解不开**。
+
+> **现状（2026-11-22）**：A1/A2/A3 已解环，上述根因**已不成立**——`ws_routes.go` 头部那段
+> 「域反向 import app 会成环」的注释属过期理由，随分权一并删除。
+> 地基已落地：连接级上下文从 `*app.Bridge` 单字段 `B` 拆为 `Hub`（会话表）+ `Life`（生命周期端口），
+> 类型与端口定义下沉到 `internal/wsctx`（**不能放 `shared`**：禁令 1 禁止 shared 依赖 sshx，
+> 否则 `*sshx.SSHSession` 得全部接口化，域签名跟着改，属过度设计）。
+> 剩余工作：① 路由注册表从 `app` 下沉 `wsctx`（否则域自注册必须 import app，撞禁令 6）；
+> ② 19 个 handler 按域归位（delivery/logcollect/sftp/acli → terminal → 会话族）；
+> ③ `ssh_connect` 内 `logcollect.RecoverSpcRestoreIntents` 需先端口化，否则归位即产生域间边；
+> ④ `bridge_log_token` 判定留在装配层（桥自身日志通道，不属任何业务域）。
 
 ---
 
@@ -566,7 +577,7 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 | A2 | 架构 | obslog 被 23 文件 import | **已修（#1594）**：域 import obslog = 0，改走 `shared/evidence` 门面 |
 | A3 | 架构 | logcollect 伪公共库 | **已修（两批）**：五类符号归位 + 证据端口化 + 输出呈现下沉，域间边 6→0，基线置空 |
 | A4 | 架构 | delivery 持 `*sshx.SSHSession` | **已修（#1594）**：`NodeSession` 端口化，生产代码 import sshx = 0、`*sshx.SSHSession` = 0 |
-| A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | **未修（2026-11-21 复核）**：仍 519 行 / 19 个函数，handler 实现在装配层，域不自注册 |
+| A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | **进行中（2026-11-22）**：上下文缝已下沉 `internal/wsctx`（`ctx.B` → `Hub`/`Life`），handler 实现仍在装配层、域仍不自注册；分权按域分批推进 |
 | P1-1/2/4/5 | 代码 | gaps 重放、seed 互斥、enforce 节流、stderr 轮转 | 已修（阶段 1） |
 | P1-3/6/7 | 代码 | 无 fsync、seed O(n²)、观测字段 | P1-7 已修；**P1-3 未修**（`obslog` 全包 `grep Sync()` 为 0）；**P1-6 未修**（`mergeSeedLocked` 仍逐条 `sort.Search` + `copy`）——2026-11-21 复核 |
 | P2-1~6 | 文档/门禁 | 见 §7 | P2-2/3/6 已修；P2-1 复核为"删除事实记录"语境豁免、无阻断项；P2-5 方案就绪待实机；**P2-4 本次订正**（见 §7.2） |

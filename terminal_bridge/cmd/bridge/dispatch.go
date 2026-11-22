@@ -91,8 +91,10 @@ func handle(b *app.Bridge, ws *websocket.Conn, customUI string) {
 	}()
 
 	// R0c 注册式路由：连接级状态装入派发上下文，handler 经 ctx 缝读写。
+	// Hub 与 Life 拆开传入：handler 只经 wsctx 的端口读写，
+	// 不再为一个聚合壳（*app.Bridge）把整条链路绑在装配层。
 	ctx := &app.WSContext{
-		B: b, WS: ws, CUI: cui, ConnID: connID, Role: role,
+		Hub: b.Hub, Life: b, WS: ws, CUI: cui, ConnID: connID, Role: role,
 		Sub: sub, Owned: ownedSessions,
 	}
 

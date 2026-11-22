@@ -24,6 +24,7 @@ import (
 	"terminal_bridge/internal/shared/obslog"
 	"terminal_bridge/internal/shared/telemetry"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"terminal_bridge/internal/terminal"
 	"time"
 )
@@ -55,21 +56,21 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 		telemetry.String("case.id", msg.CaseID), telemetry.String("server.Address", msg.Host),
 	)
 	_ = connectCtx
-	key := app.SessionKey(msg.CaseID, msg.NodeIP)
+	key := session.SessionKey(msg.CaseID, msg.NodeIP)
 	// 同键覆盖必须走统一销毁入口：否则「旧会话被新连接顶掉」这件事
 	// 在日志里完全不可见（只剩两条同键 ssh.connected，无法判断谁活了多久）。
-	if old := ctx.B.Get(key); old != nil {
+	if old := ctx.Hub.Get(key); old != nil {
 		// 长任务进行中禁止腰斩：用户看到"终端断开"就会去重连，而重连必然走到这里。
 		// 无条件 destroySession 会把正在进行的 12.8 GiB 拉取直接打断到 needs_reauth，
 		// 因此改为只摘表、保留连接，由长任务结束时的自愈逻辑关闭。
-		ctx.B.DestroyOrDetachSession(key, sshx.SessionReasonReconnect, ctx.ConnID)
+		ctx.Life.DestroyOrDetachSession(key, sshx.SessionReasonReconnect, ctx.ConnID)
 		ctx.Owned.Remove(key)
 	}
 	// 如果没指定 nodeIP，也清理默认会话
 	if msg.NodeIP == "" {
-		defaultKey := app.SessionKey(msg.CaseID, "")
-		if old := ctx.B.Get(defaultKey); old != nil {
-			ctx.B.DestroyOrDetachSession(defaultKey, sshx.SessionReasonReconnect, ctx.ConnID)
+		defaultKey := session.SessionKey(msg.CaseID, "")
+		if old := ctx.Hub.Get(defaultKey); old != nil {
+			ctx.Life.DestroyOrDetachSession(defaultKey, sshx.SessionReasonReconnect, ctx.ConnID)
 			ctx.Owned.Remove(defaultKey)
 		}
 	}
@@ -95,7 +96,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 		models.SendMsg(ctx.WS, models.OutMessage{Type: "ssh_error", CaseID: msg.CaseID, Message: message, Detail: detail})
 		return
 	}
-	ctx.B.Set(key, session)
+	ctx.Hub.Set(key, session)
 	connectSpan.End()
 	atomic.AddUint64(&metrics.PromMetrics.SshConnectionsTotal, 1)
 	ctx.Owned.Set(key, session)
@@ -104,7 +105,7 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	// 本连接的键盘输入默认落到刚建立的这个会话（键含 @nodeIP）
 	ctx.ActiveKey = key
 	// 保存认证信息，供后续自动连接其他节点使用
-	ctx.B.SetLastAuth(msg.CaseID, msg)
+	ctx.Hub.SetLastAuth(msg.CaseID, msg)
 	// 归属工单并回放近期日志（异常重传）
 	ctx.Sub.BindCase(msg.CaseID)
 	models.SendMsg(ctx.WS, models.OutMessage{Type: "ssh_connected", CaseID: msg.CaseID, CustomUI: ctx.CUI})
@@ -118,22 +119,22 @@ func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
 	// 抗崩溃（收口设计 §3.2）：bridge 重启后 spc 终态还原的 watcher 没了，
 	// 凭持久意图账本把原件放回去。放进协程：集合性还原可能几十秒，
 	// 不能阻塞连接回包；无意图时几乎零开销。
-	go logcollect.RecoverSpcRestoreIntents(ctx.B.Hub, session, msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI)
+	go logcollect.RecoverSpcRestoreIntents(ctx.Hub, session, msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI)
 
 	caseID := msg.CaseID
 	terminal.On_output_start(session, ctx.WS, stdout, caseID, func(reason string) {
 		if reason == sshx.SessionReasonRemoteEOF {
-			ctx.B.DestroySession(key, sshx.SessionReasonRemoteEOF, "")
+			ctx.Life.DestroySession(key, sshx.SessionReasonRemoteEOF, "")
 			ctx.Owned.Remove(key)
 			return
 		}
-		ctx.B.Remove(key)
+		ctx.Hub.Remove(key)
 		ctx.Owned.Remove(key)
 	})
 }
 
 func handleSSHInput(ctx *app.WSContext, msg models.InMessage) {
-	s, key := ctx.B.Hub.ResolveInput(msg, ctx.ActiveKey, ctx.Owned)
+	s, key := ctx.Hub.ResolveInput(msg, ctx.ActiveKey, ctx.Owned)
 	if s == nil {
 		// 以前这里查不到会话就静默返回，表现为"字打进去了、什么都不到、日志也干净"。
 		// 现在必须留痕：先入库，再（节流）提示前端，避免再次无声无息。
@@ -141,7 +142,7 @@ func handleSSHInput(ctx *app.WSContext, msg models.InMessage) {
 			ctx.LastInputRejectAt = time.Now()
 			obslog.Emit("ERROR", "ssh_input.session_missing", "SSH 会话不存在，键盘输入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 				"input_type": "ssh_input", "active_key": ctx.ActiveKey,
-				"exact_key": app.SessionKey(msg.CaseID, msg.NodeIP), "data_len": len(msg.Data),
+				"exact_key": session.SessionKey(msg.CaseID, msg.NodeIP), "data_len": len(msg.Data),
 			})
 			models.SendMsg(ctx.WS, models.OutMessage{
 				Type:    "ssh_input_rejected",
@@ -151,7 +152,7 @@ func handleSSHInput(ctx *app.WSContext, msg models.InMessage) {
 		}
 		return
 	}
-	if key != app.SessionKey(msg.CaseID, "") && key != app.SessionKey(msg.CaseID, msg.NodeIP) {
+	if key != session.SessionKey(msg.CaseID, "") && key != session.SessionKey(msg.CaseID, msg.NodeIP) {
 		log.Printf("[Bridge] ssh_input 兜底命中会话: case=%s key=%s active=%s", msg.CaseID, key, ctx.ActiveKey)
 	}
 	// 键盘输入本身就是最强的使用证据：用户刚敲过键，shell 被 TMOUT 踢掉时
@@ -161,13 +162,13 @@ func handleSSHInput(ctx *app.WSContext, msg models.InMessage) {
 }
 
 func handleSSHInjectCommand(ctx *app.WSContext, msg models.InMessage) {
-	s, key := ctx.B.Hub.ResolveInput(msg, ctx.ActiveKey, ctx.Owned)
+	s, key := ctx.Hub.ResolveInput(msg, ctx.ActiveKey, ctx.Owned)
 	if s == nil {
 		if ctx.LastInputRejectAt.IsZero() || time.Since(ctx.LastInputRejectAt) >= app.InputRejectNoticeInterval {
 			ctx.LastInputRejectAt = time.Now()
 			obslog.Emit("ERROR", "ssh_input.session_missing", "SSH 会话不存在，命令注入已丢弃", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
 				"input_type": "ssh_inject_command", "active_key": ctx.ActiveKey,
-				"exact_key": app.SessionKey(msg.CaseID, msg.NodeIP),
+				"exact_key": session.SessionKey(msg.CaseID, msg.NodeIP),
 			})
 			models.SendMsg(ctx.WS, models.OutMessage{
 				Type:    "ssh_input_rejected",
@@ -177,7 +178,7 @@ func handleSSHInjectCommand(ctx *app.WSContext, msg models.InMessage) {
 		}
 		return
 	}
-	if key != app.SessionKey(msg.CaseID, "") && key != app.SessionKey(msg.CaseID, msg.NodeIP) {
+	if key != session.SessionKey(msg.CaseID, "") && key != session.SessionKey(msg.CaseID, msg.NodeIP) {
 		log.Printf("[Bridge] ssh_inject_command 兜底命中会话: case=%s key=%s active=%s", msg.CaseID, key, ctx.ActiveKey)
 	}
 	s.InjectCommand(msg.Command)
@@ -200,10 +201,10 @@ func handlePong(ctx *app.WSContext, msg models.InMessage) {
 func handleSSHDisconnect(ctx *app.WSContext, msg models.InMessage) {
 	// 关闭当前 WebSocket 所拥有的该工单全部会话，防止自动节点会话泄漏。
 	for key, owned := range ctx.Owned.DrainCase(msg.CaseID) {
-		if current := ctx.B.Get(key); current == owned {
+		if current := ctx.Hub.Get(key); current == owned {
 			// 显式断开与"页面被关掉"在日志里必须区分：前者是用户意图，
 			// 后者是事故；两者都走同一入口，靠 reason 区分。
-			ctx.B.DestroySession(key, sshx.SessionReasonClientDisconnect, ctx.ConnID)
+			ctx.Life.DestroySession(key, sshx.SessionReasonClientDisconnect, ctx.ConnID)
 		}
 	}
 	models.SendMsg(ctx.WS, models.OutMessage{Type: "ssh_disconnected", CaseID: msg.CaseID})
@@ -211,17 +212,17 @@ func handleSSHDisconnect(ctx *app.WSContext, msg models.InMessage) {
 
 func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 	// 根据 nodeIP 路由到正确的 SSH 会话
-	s, key := ctx.B.Hub.Resolve(msg)
+	s, key := ctx.Hub.Resolve(msg)
 	if s == nil && msg.NodeIP != "" {
 		// 自动连接新节点
-		s = ctx.B.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
-		key = app.SessionKey(msg.CaseID, msg.NodeIP)
+		s = ctx.Life.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
+		key = session.SessionKey(msg.CaseID, msg.NodeIP)
 	}
 	// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话
 	if s == nil && ctx.Sub.BoundCase() != "" {
-		if fb := ctx.B.Get(app.SessionKey(ctx.Sub.BoundCase(), "")); fb != nil {
+		if fb := ctx.Hub.Get(session.SessionKey(ctx.Sub.BoundCase(), "")); fb != nil {
 			s = fb
-			key = app.SessionKey(ctx.Sub.BoundCase(), "")
+			key = session.SessionKey(ctx.Sub.BoundCase(), "")
 			log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", ctx.Sub.BoundCase(), key)
 			// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
 			obslog.Emit("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, ctx.Sub.BoundCase(), msg.NodeIP, ctx.CUI, map[string]any{
@@ -231,7 +232,7 @@ func handleSSHExecCommand(ctx *app.WSContext, msg models.InMessage) {
 	}
 	if s == nil {
 		obslog.Emit("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
-			"exec_id": msg.ExecID, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
+			"exec_id": msg.ExecID, "key": session.SessionKey(msg.CaseID, msg.NodeIP),
 			"sub_case_id": ctx.Sub.BoundCase(), "has_fallback_target": ctx.Sub.BoundCase() != "",
 		})
 		models.SendMsg(ctx.WS, models.OutMessage{
@@ -334,18 +335,18 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 	// 会话路由与 log_collect/acli_sync 对齐：custom-ui 登录建会话时用的
 	// case_id 可能是工单号或 terminal-only，管理端下发只需要按 node_ip
 	// 复用同一 bridge 进程里已存在的 SSH 会话，不再新建连接。
-	s, key, _ := ctx.B.Hub.ResolveForNode(msg)
+	s, key, _ := ctx.Hub.ResolveForNode(msg)
 	if s == nil && msg.NodeIP != "" {
-		s = ctx.B.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
-		key = app.SessionKey(msg.CaseID, msg.NodeIP)
+		s = ctx.Life.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
+		key = session.SessionKey(msg.CaseID, msg.NodeIP)
 	}
 	// 防御（A 修复）：exec 消息缺少 case_id/node_ip 时，回退到当前连接归属的会话。
 	// 因为一次 WebSocket 连接在 ssh_connect 后只存在一个会话，可据此兜底，
 	// 避免空 case_id 导致 exec.session_missing、回采失败且无 DB 记录。
 	if s == nil && ctx.Sub.BoundCase() != "" {
-		if fb := ctx.B.Get(app.SessionKey(ctx.Sub.BoundCase(), "")); fb != nil {
+		if fb := ctx.Hub.Get(session.SessionKey(ctx.Sub.BoundCase(), "")); fb != nil {
 			s = fb
-			key = app.SessionKey(ctx.Sub.BoundCase(), "")
+			key = session.SessionKey(ctx.Sub.BoundCase(), "")
 			log.Printf("[Bridge] EXEC 回退到连接归属会话: case=%s key=%s", ctx.Sub.BoundCase(), key)
 			// 结构化回采：记录兜底发生（原始 case_id 可能为空，已回退到连接归属工单）
 			obslog.Emit("INFO", "exec.session_fallback", "EXEC 回退到连接归属会话(空 case_id 兜底)", msg.TraceID, ctx.Sub.BoundCase(), msg.NodeIP, ctx.CUI, map[string]any{
@@ -355,7 +356,7 @@ func handleSSHExecProcess(ctx *app.WSContext, msg models.InMessage) {
 	}
 	if s == nil {
 		obslog.Emit("ERROR", "exec.session_missing", "SSH 会话不存在，无法执行命令(隔离通道)", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
-			"exec_id": msg.ExecID, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
+			"exec_id": msg.ExecID, "key": session.SessionKey(msg.CaseID, msg.NodeIP),
 			"sub_case_id": ctx.Sub.BoundCase(), "has_fallback_target": ctx.Sub.BoundCase() != "",
 		})
 		models.SendMsg(ctx.WS, models.OutMessage{
@@ -441,16 +442,16 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 		return
 	}
 
-	s, key := ctx.B.Hub.Resolve(msg)
+	s, key := ctx.Hub.Resolve(msg)
 	if s == nil && msg.NodeIP != "" {
 		// 复用既有自动连接：使用最近一次 ssh_connect 的认证信息连接目标节点。
-		s = ctx.B.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
-		key = app.SessionKey(msg.CaseID, msg.NodeIP)
+		s = ctx.Life.AutoConnectNode(ctx.WS, msg, ctx.Owned, ctx.ConnID, ctx.Role)
+		key = session.SessionKey(msg.CaseID, msg.NodeIP)
 	}
 	if s == nil {
 		atomic.AddUint64(&metrics.PromMetrics.VmConsoleOpErrors, 1)
 		obslog.Emit("ERROR", "vm_console.session_missing", "SSH 会话不存在，无法执行控制台固定操作", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
-			"exec_id": msg.ExecID, "operation": msg.Operation, "key": app.SessionKey(msg.CaseID, msg.NodeIP),
+			"exec_id": msg.ExecID, "operation": msg.Operation, "key": session.SessionKey(msg.CaseID, msg.NodeIP),
 		})
 		missing := terminal.VmConsoleResultMessage(vmReq, -1, msg.TraceID, "", 0)
 		missing.TraceID = msg.TraceID
@@ -469,7 +470,7 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 }
 
 func handleAcliSyncRoute(ctx *app.WSContext, msg models.InMessage) {
-	go acli.HandleAcliSync(ctx.B.Hub, ctx.WS, msg, ctx.CUI)
+	go acli.HandleAcliSync(ctx.Hub, ctx.WS, msg, ctx.CUI)
 }
 
 func handleListSessions(ctx *app.WSContext, msg models.InMessage) {
@@ -477,7 +478,7 @@ func handleListSessions(ctx *app.WSContext, msg models.InMessage) {
 	obslog.Emit("INFO", "session.list", "管理端查询已登录 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{})
 	models.SendMsg(ctx.WS, models.OutMessage{
 		Type: "list_sessions_result", CaseID: msg.CaseID,
-		Sessions: ctx.B.Hub.List(), TraceID: msg.TraceID, CustomUI: ctx.CUI,
+		Sessions: ctx.Hub.List(), TraceID: msg.TraceID, CustomUI: ctx.CUI,
 	})
 }
 
@@ -510,10 +511,10 @@ func handleDeliveryCancelRoute(ctx *app.WSContext, msg models.InMessage) {
 }
 
 func handleLogCollectRoute(ctx *app.WSContext, msg models.InMessage) {
-	go logcollect.HandleLogCollect(ctx.B.Hub, ctx.WS, msg, ctx.CUI)
+	go logcollect.HandleLogCollect(ctx.Hub, ctx.WS, msg, ctx.CUI)
 }
 
 func handleSftpOpRoute(ctx *app.WSContext, msg models.InMessage) {
 	// 下载在独立 goroutine 里跑：一个 5 GiB 的流不能把交互式 shell 的消息循环堵住。
-	go sftp.HandleSftpOp(ctx.B.Hub, ctx.WS, msg, ctx.CUI, ctx.ConnID)
+	go sftp.HandleSftpOp(ctx.Hub, ctx.WS, msg, ctx.CUI, ctx.ConnID)
 }
