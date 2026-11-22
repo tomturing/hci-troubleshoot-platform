@@ -59,6 +59,31 @@ func TestKindsRegistryHasExactlyOneIntentOnlySpc(t *testing.T) {
 	}
 }
 
+// TestPluginSyncAndLandingAreSeparated 锁死两条插件链路不被再次合并。
+//
+// 背景：plugin_set（插件同步收敛）此前被误记在 plugin_bundle（安装后落盘校验）上，
+// 结果登记册把一条 domain_local 级的链路记成了最弱的 declarative——实际能力比登记强，
+// 与 SPC 的 intent_only 债务方向相反、危害相同：没人能判断该看哪儿。
+func TestPluginSyncAndLandingAreSeparated(t *testing.T) {
+	registry := newKindsRegistryForTest()
+
+	pluginSync, ok := registry.Get(reconcile.KindPluginSet)
+	if !ok {
+		t.Fatal("plugin_set（插件同步收敛）必须登记")
+	}
+	if pluginSync.Mode != kinds.ModeDomainLocal {
+		t.Fatalf("plugin_set 应登记为 domain_local（自持 Observe/Compare/Act/Receipt），实际 %s", pluginSync.Mode)
+	}
+
+	landing, ok := registry.Get(reconcile.KindPluginBundle)
+	if !ok {
+		t.Fatal("plugin_bundle（安装后落盘校验）必须登记")
+	}
+	if landing.Mode != kinds.ModeDeclarative {
+		t.Fatalf("plugin_bundle 只做只读校验，应登记为 declarative，实际 %s", landing.Mode)
+	}
+}
+
 // newKindsRegistryForTest 用装配层同一份声明构造独立登记册。
 func newKindsRegistryForTest() *kinds.Registry {
 	registry := kinds.NewRegistry()

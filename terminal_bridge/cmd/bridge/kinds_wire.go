@@ -28,7 +28,7 @@ func kindsDescriptors() []kinds.Descriptor {
 			Mode:    kinds.ModeCompareOnly,
 			Owner:   "acli",
 			Explain: "期望态=官方源探测到的版本/日期；与节点 `acli --version` 比对后决定是否重装（无账本）",
-			Note:    "不落账本：节点被第三方清空后必须重新探测，靠账本 Skip 会永久跳过",
+			Note:    "不落账本：节点被第三方清空后必须重新探测，靠账本 Skip 会永久跳过；另声明了 InstallSpec{acli_install} 与 acli 域内渲染器，但编排未走 Run（见事件文档 2026-11-22）",
 		},
 		// 配置下发：走 Provider → DesiredState → Plan → Run → Verify 全流程。
 		{
@@ -49,12 +49,25 @@ func kindsDescriptors() []kinds.Descriptor {
 			Note:    "写入未接 Plan/Activate：自愈顺序（先放回历史备份再备份）与 cmp 保真校验骨架尚未表达，硬接会破坏 golden 命令序列",
 		},
 		// 插件目录：DesiredState 只充当"安装后落盘校验"的目标清单（目录非空 / 文件可执行）。
+		// 注意：这是**只读校验**，不是插件同步；同步收敛见下面的 KindPluginSet。
 		{
 			Kind:    reconcile.KindPluginBundle,
 			Mode:    kinds.ModeDeclarative,
 			Owner:   "acli",
 			Explain: "期望态=内置插件目录树 + log_collect 可执行入口；逐节点探测落盘结果",
-			Note:    "空目录必须判失败（Q2026111700614：47 个空目录被\"安装成功\"掩盖）",
+			Note:    "空目录必须判失败（Q2026111700614：47 个空目录被\"安装成功\"掩盖）；本链路只校验，不做任何写入",
+		},
+		// 插件同步收敛：域内自持 Observe/Compare/Act/Receipt，未走骨架编排。
+		//
+		// 这条之前被误记在 KindPluginBundle 上（那个 Kind 实际只做安装后落盘校验），
+		// 结果是"实际能力比登记的强"——与 SPC 的 intent_only（登记比实际强）方向相反、
+		// 危害相同：没人能从登记册判断该看哪儿。
+		{
+			Kind:    reconcile.KindPluginSet,
+			Mode:    kinds.ModeDomainLocal,
+			Owner:   "acli",
+			Explain: "期望态=平台签发的逐插件清单（name/version/spec_hash/文件/注册项）；逐节点三态收敛并按 .old.<deploy_id> 备份回滚",
+			Note:    "未走 Run：集群扇出（一枚 Hub 会话探多节点）与脚本原子性（同一 SSH 会话内完成备份/写入/注册/自检）骨架契约表达不了；能力完整，缺的是与骨架类型同源",
 		},
 	}
 }

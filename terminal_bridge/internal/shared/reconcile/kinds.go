@@ -18,6 +18,10 @@ const (
 	KindSpcSlot      = "spc_slot"
 	KindConfigFile   = "config_file"
 	KindPluginBundle = "plugin_bundle"
+	// KindPluginSet 是 acli 插件的「同步收敛」链路（与 KindPluginBundle 的
+	// 「安装后落盘校验」是两件事：前者有期望态、三态判定、集群扇出与回执，
+	// 后者只做只读探测）。拆开登记是为了让"改这条链路该看哪儿"有唯一答案。
+	KindPluginSet = "plugin_set"
 )
 
 // InstallSpec.Kind：安装动作是声明式的，descriptor 里不出现命令字符串（补丁 1）。
@@ -112,7 +116,7 @@ func IsMetadataKey(key string) bool { return metadataKeyWhitelist[key] }
 // ValidKind 报告 kind 是否是已登记链路。
 func ValidKind(kind string) bool {
 	switch kind {
-	case KindAcliBinary, KindSpcSlot, KindConfigFile, KindPluginBundle:
+	case KindAcliBinary, KindSpcSlot, KindConfigFile, KindPluginBundle, KindPluginSet:
 		return true
 	}
 	return false
@@ -123,5 +127,5 @@ func ValidKind(kind string) bool {
 // 给 kinds 登记册的守卫用：只有能穷举，才能断言"每条链路都声明了接入程度"。
 // 新增链路时这里与上面两个函数必须同步（守卫测试会双向校验）。
 func AllKinds() []string {
-	return []string{KindAcliBinary, KindSpcSlot, KindConfigFile, KindPluginBundle}
+	return []string{KindAcliBinary, KindSpcSlot, KindConfigFile, KindPluginBundle, KindPluginSet}
 }

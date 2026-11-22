@@ -7,9 +7,15 @@ package acli
 // 凡是需要 SSH/HTTP 的路径都不在此测（它们是对远端事实的采集，不是判定）。
 
 import (
+	"context"
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"path/filepath"
 	"strings"
 	"terminal_bridge/internal/shared/logcontract"
+	"terminal_bridge/internal/shared/reconcile"
 	"testing"
 	"time"
 )
@@ -325,13 +331,75 @@ func TestVerifyReusedRemotePackage(t *testing.T) {
 	}
 }
 
-func TestBuildAcliInstallCommand(t *testing.T) {
-	cmd := buildAcliInstallCommand("/sf/data/local/acli-installer_v1.acli")
-	if !strings.HasPrefix(cmd, `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; `) {
-		t.Fatalf("安装命令必须前置 PATH（非交互 shell 无 /sf/bin）: %s", cmd)
+// 逐字节冻结旧实现在现场产出的安装命令：声明化只允许换写法，不允许改命令。
+// 任何一个字符变化（PATH 列表、引号、参数顺序）都会让现场行为与历史不一致。
+func TestGoldenAcliInstallCommandByteIdentical(t *testing.T) {
+	const dest = "/sf/data/local/acli-installer_v1.acli"
+	const want = `export PATH="$PATH:/sf/bin:/sf/sbin:/usr/sbin:/usr/local/bin"; '/sf/data/local/acli-installer_v1.acli' --install --force`
+
+	got, err := renderInstall(context.Background(), nil, reconcile.DesiredState{Install: acliInstallSpec(dest)})
+	if err != nil {
+		t.Fatalf("渲染安装动作失败: %v", err)
 	}
-	if !strings.Contains(cmd, "'/sf/data/local/acli-installer_v1.acli' --install --force") {
-		t.Fatalf("安装命令缺少 --install --force 或未做 shell 转义: %s", cmd)
+	if got != want {
+		t.Fatalf("安装命令字节漂移:\n got=%q\nwant=%q", got, want)
+	}
+}
+
+// 未登记的动作必须报错：留一个 sh -c 兜底等于让声明层形同虚设。
+func TestRenderInstallRejectsUnknownKind(t *testing.T) {
+	_, err := renderInstall(context.Background(), nil, reconcile.DesiredState{
+		Install: reconcile.InstallSpec{Kind: "sh_c", Args: []string{"rm -rf /"}},
+	})
+	if err == nil {
+		t.Fatal("未登记的安装动作必须报错，禁止兜底拼命令")
+	}
+}
+
+// 缺落点路径同样必须拒绝：否则会渲染出 `” --install --force` 这种能执行但必然失败的命令。
+func TestRenderInstallRejectsMissingDest(t *testing.T) {
+	for _, args := range [][]string{nil, {}, {"  "}} {
+		if _, err := renderInstall(context.Background(), nil, reconcile.DesiredState{
+			Install: reconcile.InstallSpec{Kind: reconcile.InstallAcli, Args: args},
+		}); err == nil {
+			t.Fatalf("args=%q 应被拒绝", args)
+		}
+	}
+}
+
+// 安装命令字面量在包内只能出现一次（渲染器里）。
+//
+// 这是"声明化"的反回退守卫：只要有人图省事再手拼一次，就等于绕过 InstallSpec，
+// 而绕过不会报错、只会在下次改参数时漏改一处——这类漂移历史上已经发生过。
+func TestInstallCommandLiteralOnlyInRenderer(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("枚举包内源文件失败: %v", err)
+	}
+	const literal = "--install --force"
+	var hits []string
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		// 只统计字符串字面量：注释里解释命令是合法的，编译进二进制的才算实现。
+		file, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
+		if err != nil {
+			t.Fatalf("解析 %s 失败: %v", f, err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			if strings.Contains(lit.Value, literal) {
+				hits = append(hits, f)
+			}
+			return true
+		})
+	}
+	if len(hits) != 1 || hits[0] != "acli_package.go" {
+		t.Fatalf("安装命令字面量应只在 acli_package.go 的渲染器里出现一次，实际 %v", hits)
 	}
 }
 
