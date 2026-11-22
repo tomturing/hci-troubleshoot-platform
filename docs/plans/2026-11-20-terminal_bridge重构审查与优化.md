@@ -25,6 +25,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-22 | v1.10 | **A5 第二步**：路由注册表下沉 `internal/wsctx`（域可自注册，`app.*` 保留薄委托），§4-A5 剩余工作①关闭；§3.3 阶段表把 A5 从「完成」改回「部分」（旧口径与 §7 债务表自相矛盾） |
 | 2026-11-22 | v1.9 | **A5 地基**：连接级上下文下沉 `internal/wsctx`（`ctx.B` → `Hub`/`Life`），落点避开 `shared`（禁令 1）；§4-A5 补现状与四步剩余工作，§7 债务表状态改「进行中」 |
 | 2026-11-21 | v1.8 | **状态对账**：S1 改完成、A1/A2/A4 改已修、S4 重述剩余工作、A5 与 P1-3/P1-6 标注复核证据、P2 逐项归位、债务 4 测试数订正为 590/589。所有结论均以实测命令为据，不采信旧标注 |
 | 2026-11-21 | v1.7 | 阶段 3 第 5 项交付静态准备：U0 杀软抽样验证方案（矩阵/判定/回退/留档表）+ Defender 取证脚本；实机结论未出，债务 5 保持 open |
@@ -139,7 +140,8 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | D1 删除 relay | 完成 | `#1553` `#1554` |
 | 阶段 2 A1/A2 | 完成 | `app.Bridge` 拆分、obslog 门面化 |
 | 阶段 2 A3 | **完成（2026-11-21）** | 五类符号物归原主 + 证据端口化 + 输出呈现下沉，域间依赖边 6→0，基线置空 |
-| 阶段 2 A4/A5 | 完成 | delivery 端口化、门禁加固（禁令 6/7 + sunset） |
+| 阶段 2 A4 | 完成 | delivery 端口化、门禁加固（禁令 6/7 + sunset） |
+| 阶段 2 A5 | **部分（2026-11-22）** | 上下文与路由注册表已下沉 `internal/wsctx`，handler 按域归位进行中（见 §4-A5） |
 
 ---
 
@@ -261,7 +263,9 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 > 地基已落地：连接级上下文从 `*app.Bridge` 单字段 `B` 拆为 `Hub`（会话表）+ `Life`（生命周期端口），
 > 类型与端口定义下沉到 `internal/wsctx`（**不能放 `shared`**：禁令 1 禁止 shared 依赖 sshx，
 > 否则 `*sshx.SSHSession` 得全部接口化，域签名跟着改，属过度设计）。
-> 剩余工作：① 路由注册表从 `app` 下沉 `wsctx`（否则域自注册必须 import app，撞禁令 6）；
+> 剩余工作：① **已完成（2026-11-22）** 路由注册表下沉 `wsctx`：
+>    `wsctx.Register` / `RegisterRoutes` / `Lookup` / `Snapshot`，`app.*` 保留薄委托；
+>    批量注册先整体校验再写入，避免半途 panic 留下「半个域在线」的表；
 > ② 19 个 handler 按域归位（delivery/logcollect/sftp/acli → terminal → 会话族）；
 > ③ `ssh_connect` 内 `logcollect.RecoverSpcRestoreIntents` 需先端口化，否则归位即产生域间边；
 > ④ `bridge_log_token` 判定留在装配层（桥自身日志通道，不属任何业务域）。
