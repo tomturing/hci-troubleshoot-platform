@@ -22,6 +22,7 @@ import (
 	"terminal_bridge/internal/shared/obslog"
 	bruntime "terminal_bridge/internal/shared/runtime"
 	"terminal_bridge/internal/sshx"
+	"terminal_bridge/internal/sshx/session"
 	"time"
 )
 
@@ -103,14 +104,9 @@ func NewConnID() string {
 
 // sessionKeyNode 从会话键里取回节点 IP（`caseID@nodeIP` → `nodeIP`）。
 //
-// 键不含 `@` 时返回空串：这类会话来自建单集成流程（未带 node_ip，键退化为 caseID），
-// 它们的 node_ip 字段只能为空，不能猜测。
-func sessionKeyNode(key string) string {
-	if idx := strings.Index(key, "@"); idx >= 0 {
-		return key[idx+1:]
-	}
-	return ""
-}
+// 实现已归 session.NodeFromKey；保留本包装是因为 lifecycle 事件留痕大量使用，
+// 且 lifecycle_test 直接测这个纯函数。
+func sessionKeyNode(key string) string { return session.NodeFromKey(key) }
 
 // RoleOfMessageType 把消息类型映射为连接角色。
 //
@@ -276,20 +272,8 @@ func StartSessionReaper(bridge *Bridge, ttl time.Duration) {
 //
 // 与会话销毁事件成对出现，构成「建立—销毁」闭环；
 // 缺了它就只能看到销毁，无法判断是「从没建立过」还是「建立后被清掉」。
-func LogSessionCreated(session *sshx.SSHSession, key, connID, role, source string) {
-	if session == nil {
-		return
-	}
-	session.OwnerConn = connID
-	session.CreatedAt = time.Now()
-	obslog.Emit("INFO", "session.created", "SSH 会话已建立", "", SessionKeyCase(key), sessionKeyNode(key), "", map[string]any{
-		"key":        key,
-		"conn_id":    connID,
-		"role":       role,
-		"source":     source, // ssh_connect | auto_connect
-		"address":    session.Address,
-		"simulation": session.Simulation,
-	})
+func LogSessionCreated(s *sshx.SSHSession, key, connID, role, source string) {
+	session.LogCreated(s, key, connID, role, source)
 }
 
 // resourceSnapshot 采集进程级资源事实，用于启动/退出/定时采样。

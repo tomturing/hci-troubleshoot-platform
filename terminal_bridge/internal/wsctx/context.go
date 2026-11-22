@@ -66,6 +66,12 @@ type Context struct {
 	LastInputRejectAt time.Time
 }
 
+// InputRejectNoticeInterval 是「输入被丢弃」提示的节流间隔。
+//
+// 为什么放在上下文包：它约束的是连接级状态 LastInputRejectAt 的写频率，
+// 与具体业务无关；放在装配层会让归位后的域 handler 只能反向 import app。
+const InputRejectNoticeInterval = 3 * time.Second
+
 // Handler 是单种 WS 消息的协议边缘处理器。原 switch case 内的 continue
 // 语义等价于 return（每条消息独立派发，无 fallthrough）。
 type Handler func(ctx *Context, msg models.InMessage)

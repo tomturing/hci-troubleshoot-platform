@@ -34,12 +34,18 @@ func writeLogFile(t *testing.T, path string, entries []LogEntry) {
 
 // withLogDir 临时把 DefaultHub 的落盘目录指向测试目录，退出时恢复。
 // 写侧必须持锁：后台 seed/worker 经 hubLogLocation 快照读，publish 持 h.Mu 读。
+//
+// 退出时必须**先关掉指向测试目录的文件句柄**再恢复目录：
+// DefaultHub 是进程级单例，logFile 一经打开就长期 append。若只改回 LogDir，
+// 句柄仍指向测试目录，随后任何 publish/rotate 都会在 t.TempDir 的 RemoveAll
+// 之后重建文件，报 "directory not empty"（CI 上已两次命中，本地因时序宽松难复现）。
 func withLogDir(t *testing.T, dir string) {
 	t.Helper()
 	hubLogLocationMu.Lock()
 	DefaultHub.Mu.Lock()
 	oldDir := DefaultHub.LogDir
 	oldPath := DefaultHub.LogPath
+	oldSource := DefaultHub.LogDirSource
 	DefaultHub.LogDir = dir
 	DefaultHub.LogPath = ""
 	DefaultHub.Mu.Unlock()
@@ -47,8 +53,14 @@ func withLogDir(t *testing.T, dir string) {
 	t.Cleanup(func() {
 		hubLogLocationMu.Lock()
 		DefaultHub.Mu.Lock()
+		if DefaultHub.logFile != nil {
+			_ = DefaultHub.logFile.Close()
+			DefaultHub.logFile = nil
+			DefaultHub.logFileBytes = 0
+		}
 		DefaultHub.LogDir = oldDir
 		DefaultHub.LogPath = oldPath
+		DefaultHub.LogDirSource = oldSource
 		DefaultHub.Mu.Unlock()
 		hubLogLocationMu.Unlock()
 	})

@@ -24,6 +24,7 @@ owner: termi
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-22 | v1.13 | **A5 完成**：会话族 7 条归位 `internal/terminal/session_routes.go`，`ssh_connect` 的 SPC 还原意图改 `SessionDeps` 注入；`LogSessionCreated`/`sessionKeyNode` 下沉 `sshx/session`，输入节流常量归 `wsctx`；`ws_routes.go` 232→52 行、§3.3 与 §7 标完成 |
 | 2026-11-22 | v1.12 | **A5-B2**：terminal 三条（`ssh_exec_command`/`ssh_exec_process`/`vm_console_op`）归位 `internal/terminal/routes.go`，装配层 `ws_routes.go` 494→232 行、handler 12→8；§4-A5 与 §7 债务表同步 |
 | 2026-11-22 | v1.11 | **A5-B1**：delivery/logcollect/sftp/acli 共 7 条 WS 路由归位各域 `routes.go`，装配层改为汇总登记（`ws_routes.go` 520→494 行），并订正其头部过期的「域 import app 成环」理由 |
 | 2026-11-22 | v1.10 | **A5 第二步**：路由注册表下沉 `internal/wsctx`（域可自注册，`app.*` 保留薄委托），§4-A5 剩余工作①关闭；§3.3 阶段表把 A5 从「完成」改回「部分」（旧口径与 §7 债务表自相矛盾） |
@@ -142,7 +143,7 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | 阶段 2 A1/A2 | 完成 | `app.Bridge` 拆分、obslog 门面化 |
 | 阶段 2 A3 | **完成（2026-11-21）** | 五类符号物归原主 + 证据端口化 + 输出呈现下沉，域间依赖边 6→0，基线置空 |
 | 阶段 2 A4 | 完成 | delivery 端口化、门禁加固（禁令 6/7 + sunset） |
-| 阶段 2 A5 | **部分（2026-11-22）** | 上下文与路由注册表已下沉 `internal/wsctx`，handler 按域归位进行中（见 §4-A5） |
+| 阶段 2 A5 | **完成（2026-11-22）** | 上下文与注册表下沉 `internal/wsctx`，19 条路由归位各域；装配层 52 行、仅剩 `bridge_log_token`（见 §4-A5） |
 
 ---
 
@@ -267,12 +268,14 @@ SPC 逻辑 → `reconcile` 消费者（对应设计里的 `kinds/spc`）。
 > 剩余工作：① **已完成（2026-11-22）** 路由注册表下沉 `wsctx`：
 >    `wsctx.Register` / `RegisterRoutes` / `Lookup` / `Snapshot`，`app.*` 保留薄委托；
 >    批量注册先整体校验再写入，避免半途 panic 留下「半个域在线」的表；
-> ② **进行中（2026-11-22，B1/B2 已完成）** 19 个 handler 按域归位：
->    delivery(4)/logcollect(1)/sftp(1)/acli(1)/terminal(3) 已进各域 `routes.go`，
->    装配层改为 `RegisterWSRoutes(域.Routes())` 汇总登记；
->    剩会话族(7) 与 `list_sessions`（共 8 个 handler，装配层 `ws_routes.go` 232 行）；
-> ③ `ssh_connect` 内 `logcollect.RecoverSpcRestoreIntents` 需先端口化，否则归位即产生域间边；
-> ④ `bridge_log_token` 判定留在装配层（桥自身日志通道，不属任何业务域）。
+> ② **已完成（2026-11-22）** 19 个 handler 全部按域归位：
+>    delivery(4)/logcollect(1)/sftp(1)/acli(1)/terminal(3+会话族 7) 写在各域 `routes.go`，
+>    装配层改为 `RegisterWSRoutes(域.Routes())` 汇总登记；`ws_routes.go` 520→52 行，
+>    只剩 `bridge_log_token` 一个 handler；
+> ③ **已完成** `ssh_connect` 的跨域还原意图改 `terminal.SessionDeps.RecoverSpcRestore`
+>    由装配层注入（实现仍 `logcollect.RecoverSpcRestoreIntents`），域间边保持 0；
+> ④ **判定** `bridge_log_token` 留在装配层：它配置桥自身日志通道凭据，不属于任何业务域；
+>    为了「清零」硬塞进某域会制造伪归属。
 
 ---
 
@@ -585,7 +588,7 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 | A2 | 架构 | obslog 被 23 文件 import | **已修（#1594）**：域 import obslog = 0，改走 `shared/evidence` 门面 |
 | A3 | 架构 | logcollect 伪公共库 | **已修（两批）**：五类符号归位 + 证据端口化 + 输出呈现下沉，域间边 6→0，基线置空 |
 | A4 | 架构 | delivery 持 `*sshx.SSHSession` | **已修（#1594）**：`NodeSession` 端口化，生产代码 import sshx = 0、`*sshx.SSHSession` = 0 |
-| A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | **进行中（2026-11-22）**：上下文与注册表均已下沉 `internal/wsctx`；10 条已归位（delivery/logcollect/sftp/acli/terminal），`ws_routes.go` 520→232 行、8 个 handler 仍在装配层；剩会话族 7 条 + `list_sessions` |
+| A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | **已修（2026-11-22）**：`ws_routes.go` 520→52 行、19 条路由全部由各域 `Routes()` 声明；会话族的跨域还原意图改 `SessionDeps` 注入，域间边保持 0。仅 `bridge_log_token` 按判定留在装配层 |
 | P1-1/2/4/5 | 代码 | gaps 重放、seed 互斥、enforce 节流、stderr 轮转 | 已修（阶段 1） |
 | P1-3/6/7 | 代码 | 无 fsync、seed O(n²)、观测字段 | P1-7 已修；**P1-3 未修**（`obslog` 全包 `grep Sync()` 为 0）；**P1-6 未修**（`mergeSeedLocked` 仍逐条 `sort.Search` + `copy`）——2026-11-21 复核 |
 | P2-1~6 | 文档/门禁 | 见 §7 | P2-2/3/6 已修；P2-1 复核为"删除事实记录"语境豁免、无阻断项；P2-5 方案就绪待实机；**P2-4 本次订正**（见 §7.2） |
