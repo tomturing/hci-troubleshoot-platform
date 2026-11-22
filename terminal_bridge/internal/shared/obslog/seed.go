@@ -182,6 +182,20 @@ func (u *logUploader) scanLogFile(path string, offset int64, watermark uint64, e
 	}
 	reader := bufio.NewReaderSize(file, 64*1024)
 	pos, seeded := offset, 0
+	// 批量收集后再合并：逐条插入在 5000 条补传时是 O(n²)（P1-6）。
+	// 用 defer 兜底，保证预算用尽/不完整行/队列满等提前返回时，
+	// 已入账（maxQueuedSeq 已推进）的条目不会滞留在局部变量里丢失。
+	var pending []LogEntry
+	flushPending := func() {
+		if len(pending) == 0 {
+			return
+		}
+		u.Mu.Lock()
+		u.mergeSeedBatchLocked(pending)
+		u.Mu.Unlock()
+		pending = pending[:0]
+	}
+	defer flushPending()
 	for {
 		if *bytesLeft <= 0 || entryBudget <= 0 || time.Now().After(deadline) {
 			return seeded, pos, true
@@ -207,30 +221,54 @@ func (u *logUploader) scanLogFile(path string, offset int64, watermark uint64, e
 		if entry.Seq <= watermark || entry.EventID == "" {
 			continue
 		}
+		needFlush := false
 		u.Mu.Lock()
 		if entry.Seq > u.maxQueuedSeq {
-			u.mergeSeedLocked(entry)
+			pending = append(pending, entry)
 			u.maxQueuedSeq = entry.Seq
 			seeded++
 			entryBudget--
+			needFlush = len(pending) >= seedMergeBatchSize
 		}
 		u.Mu.Unlock()
+		if needFlush {
+			flushPending()
+		}
 	}
 }
 
-// mergeSeedLocked 把补传条目按 seq 升序插入 seedQueue（stderr 条目 Seq=0 恒排尾部）。
-// 多轮续扫与实时流量交错时仍保持队列内 seq 递增，水位推进语义才安全。
-func (u *logUploader) mergeSeedLocked(entry LogEntry) {
-	if entry.Seq == 0 {
-		u.seedQueue = append(u.seedQueue, entry)
+// seedMergeBatchSize 是一次批量合并的条数上限。
+//
+// 太小会退化成逐条插入（回到 O(n²)）；太大则补传队列长时间落后于扫描进度，
+// worker 读不到刚扫到的条目，补传表现为"扫完了但不发"。
+const seedMergeBatchSize = 512
+
+// mergeSeedBatchLocked 把一批补传条目并入 seedQueue，整体保持 seq 升序
+// （stderr 条目 Seq=0 恒排尾部）。
+//
+// 为什么改成批量：原实现逐条 sort.Search + copy，5000 条补传时是 O(n²)，
+// 扫描预算被插入动作吃掉，补传进度上不去（P1-6）。批量后每 512 条一次
+// 全量稳定排序，总量降到 O(n log n)。
+//
+// 正确性：入队条件 entry.Seq > maxQueuedSeq 保证本批 seq 严格递增且大于
+// 既有队列的实时条目，因此排序结果与逐条插入完全一致；SliceStable 让
+// Seq=0 条目之间的相对顺序保持不变（与旧实现的"直接 append 到尾部"等价）。
+func (u *logUploader) mergeSeedBatchLocked(entries []LogEntry) {
+	if len(entries) == 0 {
 		return
 	}
-	idx := sort.Search(len(u.seedQueue), func(i int) bool {
-		return u.seedQueue[i].Seq == 0 || u.seedQueue[i].Seq > entry.Seq
+	u.seedQueue = append(u.seedQueue, entries...)
+	sort.SliceStable(u.seedQueue, func(i, j int) bool {
+		a, b := u.seedQueue[i].Seq, u.seedQueue[j].Seq
+		// Seq=0（stderr 包装）没有 seq 语义，恒排尾部。
+		if a == 0 {
+			return false
+		}
+		if b == 0 {
+			return true
+		}
+		return a < b
 	})
-	u.seedQueue = append(u.seedQueue, LogEntry{})
-	copy(u.seedQueue[idx+1:], u.seedQueue[idx:])
-	u.seedQueue[idx] = entry
 }
 
 // scanStderrFile 从字节水位起读 bridge-stderr.log，把非 JSON 行包装为 bridge.stderr/ERROR。

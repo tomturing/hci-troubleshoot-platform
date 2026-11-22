@@ -137,6 +137,13 @@ type logUploader struct {
 	// 落盘没有必要——放宽的判据是"这个 endpoint 的证书不受信"，
 	// 每次重新判定比持久化一份信任决定更安全（CA 换了能自动回到严格模式）。
 	relaxed map[string]bool
+	// syncFailedLogged 让 fsync 失败只留痕一次：它可能每轮都失败，
+	// 逐轮打印会把真正的问题淹掉。
+	syncFailedLogged bool
+	// unsyncedBytes 是活动段自上次 fsync 以来新写入的字节数。
+	// 为 0 时跳过 fsync：没有脏数据还调 Sync 只是白付一次系统调用与日志提交，
+	// 在慢盘客户机上会无谓地拉长持锁时间。
+	unsyncedBytes int64
 }
 
 var LogUpload = newLogUploader()
@@ -380,6 +387,9 @@ func (u *logUploader) flushOnce() (int, error) {
 	}
 	batch := make([]LogEntry, size)
 	copy(batch, source[:size])
+	// 发送前把活动段刷盘（P1-3）：游标只在本批确认成功后前进，先落盘才能保证
+	// 「游标已越过」与「数据确实在磁盘」一致；断电时最多丢最近一轮尚未刷盘的尾部。
+	u.syncOutboxLocked()
 	token, endpoint := u.token, u.endpoint
 	u.Mu.Unlock()
 
