@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -159,8 +160,12 @@ func (u *logUploader) persistLocked(entry LogEntry) ([]LogEntry, persistOutcome)
 	}
 	// 单段到顶滚新段：drop-oldest 与游标消费都以段为单位。
 	if u.written >= u.segmentBytes {
+		// 关段前必须刷盘：旧段此后不再被写，若它还在 page cache 里，
+		// 断电会让「游标尚未消费到」的整段静默消失（P1-3）。
+		_ = u.outbox.Sync()
 		_ = u.outbox.Close()
 		u.outbox = nil
+		u.unsyncedBytes = 0
 		name := fmt.Sprintf("seg-%019d.jsonl", time.Now().UnixNano())
 		path := filepath.Join(instDir, name)
 		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -187,8 +192,33 @@ func (u *logUploader) persistLocked(entry LogEntry) ([]LogEntry, persistOutcome)
 		return nil, persistFailed
 	}
 	u.written += int64(written)
+	u.unsyncedBytes += int64(written)
 	u.markPersistedLocked(instDir, entryStart)
 	return u.checkDiskBudgetLocked(instDir, int64(written)), persistWritten
+}
+
+// syncOutboxLocked 把活动段尚未落盘的字节刷到磁盘（P1-3）。调用方持有 u.Mu。
+//
+// 为什么是「按上传轮次」而不是「每条日志」：persistLocked 是 publish 热路径，
+// 慢盘客户机上每条 fsync 会直接拖慢日志产生侧（P1-4 已证明这条路径对 IO 放大敏感）。
+// 按批刷盘把断电丢失窗口从「整个段」压到「最近一轮」；平台长期不可达时窗口
+// 最坏等于退避上限（60s），该降级语义写在事件文档里，不再默认「掉电也不丢」。
+//
+// 失败只留痕一次，不置 persistOK：个别文件系统与杀软过滤驱动会返回伪失败，
+// 当成磁盘故障会让整条直传停摆，代价远大于丢最后几条。
+func (u *logUploader) syncOutboxLocked() {
+	if u.outbox == nil || u.unsyncedBytes == 0 {
+		return
+	}
+	if err := u.outbox.Sync(); err != nil {
+		if !u.syncFailedLogged {
+			u.syncFailedLogged = true
+			log.Printf("[obslog] outbox fsync 失败，退化为不保证断电持久: %v", err)
+		}
+		return
+	}
+	u.unsyncedBytes = 0
+	u.syncFailedLogged = false
 }
 
 // checkDiskBudgetLocked 对 enforceDiskBudgetLocked 做节流。

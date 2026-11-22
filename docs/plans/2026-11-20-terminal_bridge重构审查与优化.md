@@ -24,6 +24,7 @@ owner: termi
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-22 | v1.14 | **P1-3/P1-6 收口**：outbox 按上传轮次 group commit（取批后 + 滚段关档前 fsync，`unsyncedBytes` 免空转）；seed 改批量稳定排序合并（每 512 条 + defer 兜底）；§7 债务表、§8.1-8.3 断电语义同步 |
 | 2026-11-22 | v1.13 | **A5 完成**：会话族 7 条归位 `internal/terminal/session_routes.go`，`ssh_connect` 的 SPC 还原意图改 `SessionDeps` 注入；`LogSessionCreated`/`sessionKeyNode` 下沉 `sshx/session`，输入节流常量归 `wsctx`；`ws_routes.go` 232→52 行、§3.3 与 §7 标完成 |
 | 2026-11-22 | v1.12 | **A5-B2**：terminal 三条（`ssh_exec_command`/`ssh_exec_process`/`vm_console_op`）归位 `internal/terminal/routes.go`，装配层 `ws_routes.go` 494→232 行、handler 12→8；§4-A5 与 §7 债务表同步 |
 | 2026-11-22 | v1.11 | **A5-B1**：delivery/logcollect/sftp/acli 共 7 条 WS 路由归位各域 `routes.go`，装配层改为汇总登记（`ws_routes.go` 520→494 行），并订正其头部过期的「域 import app 成环」理由 |
@@ -401,16 +402,16 @@ stderr 在桌面形态由 `redirectStderrToFile` 落进 `bridge-stderr.log`，�
 - `TestWriteFailureCountsAsDroppedWhenQueueFull`：已关闭句柄模拟磁盘满 + 队列填满，
   断言 `dropped+1` 且 `persistOK=false`。
 
-### P1（阶段 1 已修 P1-1/2/4/5/7；P1-3/6 仍未修）
+### P1（阶段 1 已修 P1-1/2/4/5/7；P1-3/6 于 2026-11-22 收口）
 
 | # | 位置 | 缺陷 | 后果 | 修复方向 |
 |---|---|---|---|---|
 | 1 | `outbox.go` `gaps.jsonl` | 只写不读，无轮转、不占预算、无上限 | 崩溃窗口内的 gap 永不上报；文件无限增长 | `recoverOutbox` 重放 gaps 并归档截断；纳入预算 |
 | 2 | `seed.go` `SeedFromLocalLogs` | 无互斥：`configureWithSource` 的 `go` 与 worker 每轮可并发 | 重复入队；进度 `.tmp` 竞态写可能读到半截 JSON 导致全量重扫 | 加 `seedMu`；进度文件按 instance+pid 分文件 |
-| 3 | `outbox.go` `persistLocked` | 无 `fsync` | 断电/硬崩溃丢最后若干条，"重启后仍在磁盘"只在 OS 刷盘后成立 | 关键点 fsync，或明确降级语义并写入文档 |
+| 3 | `outbox.go` `persistLocked` | 无 `fsync` | 断电/硬崩溃丢最后若干条，"重启后仍在磁盘"只在 OS 刷盘后成立 | ~~**已修（2026-11-22）**：按上传轮次 group commit——`flushOnce` 取批后、滚段关档前各 fsync 一次，`unsyncedBytes==0` 时跳过；丢失窗口从"整个段"压到"最近一轮"，退避期最坏 60s（语义写入事件文档）~~ |
 | 4 | `outbox.go` `enforceDiskBudgetLocked` | 每条日志一次 `ReadDir` + N 次 `Stat` + 读 `cursor.json` | publish 热路径 IO 放大，慢盘客户机被拖慢 | 节流（每 N 条/每 T 秒） |
 | 5 | `app/lifecycle.go` stderr | `bridge-stderr.log` 永久 `O_APPEND`，无轮转、不计预算 | 长期运行无限增长，与 outbox 8MB 预算不共享 | 纳入磁盘预算或按大小轮转（轮转后水位与 EventID 需重算） |
-| 6 | `seed.go` `mergeSeedLocked` | 逐条 `sort.Search` + `copy`，O(n²) | 5000 条补传时明显耗时，挤占 2s 预算 | 批量收集后一次排序合并 |
+| 6 | `seed.go` `mergeSeedLocked` | 逐条 `sort.Search` + `copy`，O(n²) | 5000 条补传时明显耗时，挤占 2s 预算 | ~~**已修（2026-11-22）**：改 `mergeSeedBatchLocked` 批量收集（每 512 条 + `defer` 兜底）后一次稳定排序；入队条件保证批内 seq 严格递增，结果与逐条插入等价；新增跨批次与 Seq=0 尾部顺序回归~~ |
 | 7 | `uploader.go` `/status` | 缺 `gaps`/`seed_pending`/`cursor` | 现场无法判断"gap 是否已上报、补传是否卡住" | 补齐字段（`persist_ok` 本次已加） |
 
 ### P2【未修】
@@ -444,7 +445,7 @@ stderr 在桌面形态由 `redirectStderrToFile` 落进 `bridge-stderr.log`，�
 | 平台短暂不可达 | 不丢（内存+磁盘） | 是（恢复后补发） | 可用 |
 | 平台长期不可达（>8MB 积压） | 丢最旧段 | 是（gap） | **修复前：整桥挂死；修复后：可用** |
 | 进程被 kill | 不丢（磁盘段+游标） | 是 | 可用 |
-| 断电 | 可能丢最后若干条（无 fsync） | 否 | 可用 |
+| 断电 | 仅丢最近一轮未刷盘的尾部（2026-11-22 起按轮 fsync；退避期最坏 60s） | 否 | 可用 |
 | 磁盘满 | **修复前：无限重放 + 静默丢；修复后：有界丢弃 + 留痕** | 修复后是 | 修复前：活锁 |
 | 并发 configure（WS+env） | 重复上传（幂等去重） | 是 | 可用 |
 | stderr 文件无限增长 | 磁盘压力 | 否 | 可用（长期风险） |
@@ -456,8 +457,10 @@ Kafka/RocksDB 的 WAL 有两条本实现缺失的不变式：
 1. **段文件只在 checkpoint 之后删除**，且 checkpoint 单调推进、崩溃后可重放——本实现
    近似成立，但 `advanceCursorLocked` 在"段文件意外消失"时会跳到下一段（放弃该段剩余数据），
    属于静默降级。
-2. **写入即持久（fsync 或 group commit）**——本实现没有，属于"性能换持久性"的知情取舍，
-   但文档未写明，容易被误读为"掉电也不丢"。
+2. **写入即持久（fsync 或 group commit）**——2026-11-22 起按上传轮次 group commit：
+   `flushOnce` 取批后与滚段关档前各 fsync 一次，无脏数据时跳过。仍不是"每条即持久"，
+   但丢失窗口被限定为最近一轮（退避期最坏 60s），且该语义已写入事件文档，
+   不再容易被误读为"掉电也不丢"。
 
 ---
 
@@ -590,7 +593,7 @@ delivery 无 sshx 具体类型；禁令基线 ≤3 且每条有到期标签。
 | A4 | 架构 | delivery 持 `*sshx.SSHSession` | **已修（#1594）**：`NodeSession` 端口化，生产代码 import sshx = 0、`*sshx.SSHSession` = 0 |
 | A5 | 架构 | `cmd/bridge/ws_routes.go` 路由未分权 | **已修（2026-11-22）**：`ws_routes.go` 520→52 行、19 条路由全部由各域 `Routes()` 声明；会话族的跨域还原意图改 `SessionDeps` 注入，域间边保持 0。仅 `bridge_log_token` 按判定留在装配层 |
 | P1-1/2/4/5 | 代码 | gaps 重放、seed 互斥、enforce 节流、stderr 轮转 | 已修（阶段 1） |
-| P1-3/6/7 | 代码 | 无 fsync、seed O(n²)、观测字段 | P1-7 已修；**P1-3 未修**（`obslog` 全包 `grep Sync()` 为 0）；**P1-6 未修**（`mergeSeedLocked` 仍逐条 `sort.Search` + `copy`）——2026-11-21 复核 |
+| P1-3/6/7 | 代码 | 无 fsync、seed O(n²)、观测字段 | **全部已修**：P1-7 阶段 1；P1-3 于 2026-11-22 按上传轮次 group commit（`syncOutboxLocked`）；P1-6 于同日改批量合并（`mergeSeedBatchLocked`） |
 | P2-1~6 | 文档/门禁 | 见 §7 | P2-2/3/6 已修；P2-1 复核为"删除事实记录"语境豁免、无阻断项；P2-5 方案就绪待实机；**P2-4 本次订正**（见 §7.2） |
 
 ---
