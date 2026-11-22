@@ -6,7 +6,12 @@ package acli
 // 深度耦合，一次性重排后没有任何东西能证明失败分支行为不变。抽一个纯函数、
 // 补一组分支测试、再抽下一个——每步都能编译、能单测、能回滚。
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+
+	"terminal_bridge/internal/shared/logcontract"
+)
 
 // normalizeAcliRetryStage 归一化前端传入的重试起点。
 //
@@ -40,4 +45,78 @@ func parseTargetArch(unameOut string) (arch string, supported bool) {
 		return "x86_64", true
 	}
 	return a, false
+}
+
+// acliRemoteProbe 是「节点上那份安装包」的探测结果。
+type acliRemoteProbe struct {
+	Size    int64
+	Algo    string
+	Digest  string
+	Missing bool
+	Err     error
+}
+
+// acliReuseDecision 是「能否复用节点上已有安装包」的结论。
+type acliReuseDecision struct {
+	Ready  bool
+	Reason string // probe_failed | missing | verified | rejected
+	Detail string // rejected 时的具体不符点
+}
+
+// decideAcliReuse 决定重跑时能否复用节点上已有的安装包。
+//
+// 为什么必须显式给出 reason：上一轮正是因为「盘上那份包不对」才失败的，
+// 无条件复用等于把同一个错误再执行一遍。三种降级原因在排障上含义完全不同：
+// 探测失败可能是通道问题（可再试）、包不存在需要重传、与基线不符说明盘上那份
+// 就是坏包（必须重传且不能再复用）。
+func decideAcliReuse(retryStage string, probe acliRemoteProbe, baseline *acliPackage) acliReuseDecision {
+	if retryStage == "all" {
+		// 完整流程不探测节点，直接把"需要复用"判为否，也不产生留痕原因。
+		return acliReuseDecision{}
+	}
+	switch {
+	case probe.Err != nil:
+		return acliReuseDecision{Reason: "probe_failed"}
+	case probe.Missing:
+		return acliReuseDecision{Reason: "missing"}
+	}
+	if err := verifyReusedRemotePackage(baseline, probe.Size, probe.Algo, probe.Digest); err != nil {
+		return acliReuseDecision{Reason: "rejected", Detail: errString(err)}
+	}
+	return acliReuseDecision{Ready: true, Reason: "verified"}
+}
+
+// acliInstallVerdict 是安装命令结束后的结论：成功，或失败时的错误码与可读说明。
+type acliInstallVerdict struct {
+	OK     bool
+	Code   string
+	Detail string
+}
+
+// evalAcliInstallOutcome 把安装结果收敛成回执需要的结论。
+//
+// 三种失败必须分开表达，否则现场只能看到「安装失败」：
+//   - 超时：预算耗尽，通常意味着集群分发慢，与包无关；
+//   - 有错误但无退出码：SSH 通道在安装中途断开（远端 shell 已退出）；
+//   - 退出码非零：安装器自己判失败，需要看 stderr。
+func evalAcliInstallOutcome(outcome acliInstallOutcome, timedOut bool) acliInstallVerdict {
+	if outcome.Err == nil && outcome.ExitCode == 0 {
+		return acliInstallVerdict{OK: true}
+	}
+	if timedOut {
+		return acliInstallVerdict{
+			Code:   logcontract.ErrInstallExec,
+			Detail: fmt.Sprintf("acli 安装命令超时（预算 %s）", acliInstallTimeout),
+		}
+	}
+	if outcome.Err != nil && outcome.ExitCode == 0 {
+		return acliInstallVerdict{
+			Code:   logcontract.ErrInstallExec,
+			Detail: "acli 安装命令异常中断（SSH 通道中断或远端 shell 退出）",
+		}
+	}
+	return acliInstallVerdict{
+		Code:   logcontract.ErrInstallExec,
+		Detail: fmt.Sprintf("acli 安装命令退出码 %d", outcome.ExitCode),
+	}
 }

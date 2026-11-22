@@ -24,6 +24,7 @@ owner: termi
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-23 | v1.17 | **S4-W3 第二批**：阶段 8（`decideAcliReuse`，四态含拒绝原因）与阶段 10（`evalAcliInstallOutcome`，超时/通道中断/退出码非零分离）抽为可测纯函数；§3.3 S4 行同步 |
 | 2026-11-23 | v1.16 | **S4-W3 第一批**：阶段 0（`normalizeAcliRetryStage`）与阶段 1（`parseTargetArch`）抽为可测纯函数并补全分支测试；确立"抽一个测一个"的推进方式；§3.3 S4 行同步 |
 | 2026-11-22 | v1.15 | **S4 安装动作声明化**：`InstallSpec{acli_install}` + `renderInstall` 唯一实现（golden 字节等价 + 字面量守卫）；插件链路从 `plugin_bundle` 拆出 `plugin_set`（新增 `ModeDomainLocal`），纠正"登记比实际弱"；§3.3 S4 行同步 |
 | 2026-11-22 | v1.14 | **P1-3/P1-6 收口**：outbox 按上传轮次 group commit（取批后 + 滚段关档前 fsync，`unsyncedBytes` 免空转）；seed 改批量稳定排序合并（每 512 条 + defer 兜底）；§7 债务表、§8.1-8.3 断电语义同步 |
@@ -139,7 +140,7 @@ go tool nm（telemetry 构建） → otel 符号 2099
 | R0 搬迁 | 完成 | `#1575`，测试零丢失 |
 | S1 原语 | **完成（2026-11-21 复核）** | 节点面 `remote` 收口、云面 `uplink.Push` 统一；实测 `delivery` 生产代码 import sshx=0、`*sshx.SSHSession`=0；`logcollect` 仅被装配层 `cmd/bridge` import，域间依赖边 0 |
 | S2 / S3 reconcile 消费者 | **完成（2026-11-21）** | 建 `reconcile/kinds` 登记册：四条链路必须声明接入程度，未登记由守卫测试判失败；SPC 的"只租意图、写入自管"从隐债变显式声明 |
-| S4 acli 两阶段 | **进行中（2026-11-23）** | 安装动作已声明化（`InstallSpec{acli_install}` + 唯一渲染器，golden 与字面量守卫）；插件登记已纠偏（`plugin_set`/`domain_local`）；**W3 已开始**：阶段 0（重试起点）与阶段 1（架构判定）抽为可测纯函数，其余阶段按同法逐个抽取。编排仍未进 Run：集群冒烟拿不到 Hub、无包复用/断点、无账本三处契约不匹配 |
+| S4 acli 两阶段 | **进行中（2026-11-23）** | 安装动作已声明化（`InstallSpec{acli_install}` + 唯一渲染器，golden 与字面量守卫）；插件登记已纠偏（`plugin_set`/`domain_local`）；**W3 进行中**：阶段 0（重试起点）、1（架构判定）、8（重跑复用）、10（安装结论）已抽为可测纯函数，其余按同法逐个抽取。编排仍未进 Run：集群冒烟拿不到 Hub、无包复用/断点、无账本三处契约不匹配 |
 | U1 telemetry | 完成 | `#1582`，桌面 otel 符号 0 |
 | L1 obslog 完备性 | 完成（**含 P0 缺陷，本次修复**） | `#1584` |
 | D1 删除 relay | 完成 | `#1553` `#1554` |

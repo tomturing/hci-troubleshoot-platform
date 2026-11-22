@@ -365,28 +365,29 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	var remoteAlgo, remoteDigest string
 	if retryStage != "all" {
 		size, algo, digest, missing, probeErr := probeRemoteAcliPackage(ctx, s, destPath)
-		switch {
-		case probeErr != nil:
+		reuse := decideAcliReuse(retryStage, acliRemoteProbe{
+			Size: size, Algo: algo, Digest: digest, Missing: missing, Err: probeErr,
+		}, cache.get(key))
+		switch reuse.Reason {
+		case "probe_failed":
 			evidence.Emit("WARN", "acli_sync.reuse_probe_failed", "探测节点已有安装包失败，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"dest_path": destPath, "error": errString(probeErr),
 			})
-		case missing:
+		case "missing":
 			evidence.Emit("INFO", "acli_sync.reuse_missing", "节点上没有可用安装包，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"dest_path": destPath,
 			})
-		default:
-			if reuseErr := verifyReusedRemotePackage(cache.get(key), size, algo, digest); reuseErr == nil {
-				remoteReady = true
-				remoteSize, remoteAlgo, remoteDigest = size, algo, digest
-				evidence.Emit("INFO", "acli_sync.reuse_verified", "节点已有安装包与本地基线一致，复用并跳过传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"dest_path": destPath, "remote_size": size, "remote_algo": algo, "remote_digest": digest,
-				})
-			} else {
-				evidence.Emit("WARN", "acli_sync.reuse_rejected", "节点上的安装包不可复用，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"dest_path": destPath, "reason": errString(reuseErr),
-					"remote_size": size, "remote_algo": algo, "remote_digest": digest,
-				})
-			}
+		case "verified":
+			remoteReady = true
+			remoteSize, remoteAlgo, remoteDigest = size, algo, digest
+			evidence.Emit("INFO", "acli_sync.reuse_verified", "节点已有安装包与本地基线一致，复用并跳过传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"dest_path": destPath, "remote_size": size, "remote_algo": algo, "remote_digest": digest,
+			})
+		case "rejected":
+			evidence.Emit("WARN", "acli_sync.reuse_rejected", "节点上的安装包不可复用，降级为完整传输", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"dest_path": destPath, "reason": reuse.Detail,
+				"remote_size": size, "remote_algo": algo, "remote_digest": digest,
+			})
 		}
 	}
 
@@ -571,29 +572,23 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 
 	preview, stdoutBytes, stderrBytes := acliOutputForLog(outcome)
 	// 结论统一用 InstallSuccess 表达（退出码 0 在 omitempty 下会被吞掉）。
-	installOK := outcome.Err == nil && outcome.ExitCode == 0
+	// 失败原因的分类（超时 / 通道中断 / 退出码非零）收敛在 evalAcliInstallOutcome，
+	// 避免「界面只说安装失败」时还要重读这一段才知道是哪种。
+	verdict := evalAcliInstallOutcome(outcome, installTimedOut)
 	// 完整输出先以 progress 形式回传：错误分支也要回传，否则「装不上」时
 	// 远端只剩一句『安装失败』，排障又要登录节点。
 	models.SendMsg(ws, models.OutMessage{
 		Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "install_output",
 		Architecture: targetArch, TraceID: traceID, Attempts: attempts, RetryStage: "install",
 		PackageFilename: pkgName, PackagePath: destPath, IntegrityState: integrity,
-		InstallSuccess: installOK, InstallExitCode: outcome.ExitCode,
+		InstallSuccess: verdict.OK, InstallExitCode: outcome.ExitCode,
 		InstallMS: outcome.DurationMS, InstallOutput: preview, InstallStderr: sshx.TruncateString(outcome.Stderr, 2048),
 		Message: fmt.Sprintf("acli 安装命令已结束：exit=%d，耗时 %dms（stdout %dB / stderr %dB）",
 			outcome.ExitCode, outcome.DurationMS, stdoutBytes, stderrBytes),
 	})
 
-	if !installOK {
-		code := logcontract.ErrInstallExec
-		detail := fmt.Sprintf("acli 安装命令退出码 %d", outcome.ExitCode)
-		if installTimedOut {
-			code = logcontract.ErrInstallExec
-			detail = fmt.Sprintf("acli 安装命令超时（预算 %s）", acliInstallTimeout)
-		} else if outcome.Err != nil && outcome.ExitCode == 0 {
-			// 无退出码但有错误：通常意味着 SSH 通道在安装过程中断开。
-			detail = "acli 安装命令异常中断（SSH 通道中断或远端 shell 退出）"
-		}
+	if !verdict.OK {
+		code, detail := verdict.Code, verdict.Detail
 		evidence.Emit("ERROR", "acli_sync.install_failed", "acli 安装命令执行失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"dest_path": destPath, "command": outcome.Command, "exit_code": outcome.ExitCode,
 			"duration_ms": outcome.DurationMS, "timed_out": installTimedOut,
