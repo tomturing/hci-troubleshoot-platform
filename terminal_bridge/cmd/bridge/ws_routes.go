@@ -1,13 +1,17 @@
 package main
 
-// R0c 注册式路由：18 种 WS 消息的 handler 统一在装配层注册。
+// R0c 注册式路由：WS 消息按「谁的业务谁声明」分权，装配层只做汇总登记。
 //
-// 为什么暂不由各域 init() 自注册：app 目前仍 import obslog/terminal（搬迁前
-// 既有依赖），域反向 import app 会成环；app→obslog 解环（接缝注入）属逻辑
-// 收口阶段，届时各域注册迁回本域，装配层只留终端协议边缘。
+// 归属规则：消息类型与其 handler 写在所属域的 routes.go（导出 Routes()），
+// 本文件只保留尚未归位的协议边缘。新增或改名一条消息不必再改这里（A5）。
 //
-// 终端/SSH 协议边缘（ssh_connect 跨 logcollect 还原意图、exec_process 跨
-// logcollect 会话解析）同样待域间解环后归位 internal/terminal。
+// 仍留在本文件的两类：
+//   - SSH/终端协议边缘（ssh_connect/ssh_input/ssh_exec_*/vm_console_op 等）：
+//     需要会话生命周期与 AutoConnect；ssh_connect 里还有一处跨域调用
+//     （logcollect.RecoverSpcRestoreIntents），端口化后才能整体归位 internal/terminal；
+//   - list_sessions / bridge_log_token：前者是管理端对会话表的只读视图，
+//     后者配置桥自身日志通道的凭据，都不属于任何具体业务域。
+//
 // handler 体与原 switch case 逐字等价：裸连接变量改经 ctx 缝、continue→return。
 
 import (
@@ -39,15 +43,15 @@ func init() {
 	app.RegisterWSRoute("ssh_exec_command", handleSSHExecCommand)
 	app.RegisterWSRoute("ssh_exec_process", handleSSHExecProcess)
 	app.RegisterWSRoute("vm_console_op", handleVMConsoleOp)
-	app.RegisterWSRoute("acli_sync", handleAcliSyncRoute)
 	app.RegisterWSRoute("list_sessions", handleListSessions)
 	app.RegisterWSRoute("bridge_log_token", handleBridgeLogTokenRoute)
-	app.RegisterWSRoute("delivery_submit", handleDeliverySubmitRoute)
-	app.RegisterWSRoute("delivery_status", handleDeliveryStatusRoute)
-	app.RegisterWSRoute("delivery_resume", handleDeliveryResumeRoute)
-	app.RegisterWSRoute("delivery_cancel", handleDeliveryCancelRoute)
-	app.RegisterWSRoute("log_collect", handleLogCollectRoute)
-	app.RegisterWSRoute("sftp_op", handleSftpOpRoute)
+
+	// 已归位的域：消息类型由域自己声明（Routes()），这里只做汇总登记。
+	// 新增或改名一条消息只需改对应域的 routes.go，不用再动本文件。
+	app.RegisterWSRoutes(acli.Routes())
+	app.RegisterWSRoutes(logcollect.Routes())
+	app.RegisterWSRoutes(sftp.Routes())
+	app.RegisterWSRoutes(delivery.Routes())
 }
 
 func handleSSHConnect(ctx *app.WSContext, msg models.InMessage) {
@@ -469,10 +473,6 @@ func handleVMConsoleOp(ctx *app.WSContext, msg models.InMessage) {
 	go terminal.RunVMConsoleOp(s, func(result models.OutMessage) { models.SendMsg(ctx.WS, result) }, vmReq)
 }
 
-func handleAcliSyncRoute(ctx *app.WSContext, msg models.InMessage) {
-	go acli.HandleAcliSync(ctx.Hub, ctx.WS, msg, ctx.CUI)
-}
-
 func handleListSessions(ctx *app.WSContext, msg models.InMessage) {
 	// 管理端枚举「custom-ui + bridge 已登录」的环境；只回会话摘要，不回凭据。
 	obslog.Emit("INFO", "session.list", "管理端查询已登录 SSH 会话", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{})
@@ -491,30 +491,4 @@ func handleBridgeLogTokenRoute(ctx *app.WSContext, msg models.InMessage) {
 		"endpoint":     msg.LogEndpoint,
 		"token_length": len(msg.LogToken),
 	})
-}
-
-func handleDeliverySubmitRoute(ctx *app.WSContext, msg models.InMessage) {
-	// 交付作业化：立刻返回 job_id，执行权交给 bridge，前端只轮询进度。
-	go delivery.HandleDeliverySubmit(ctx.WS, msg, ctx.CUI)
-}
-
-func handleDeliveryStatusRoute(ctx *app.WSContext, msg models.InMessage) {
-	go delivery.HandleDeliveryStatus(ctx.WS, msg, ctx.CUI)
-}
-
-func handleDeliveryResumeRoute(ctx *app.WSContext, msg models.InMessage) {
-	go delivery.HandleDeliveryResume(ctx.WS, msg, ctx.CUI)
-}
-
-func handleDeliveryCancelRoute(ctx *app.WSContext, msg models.InMessage) {
-	go delivery.HandleDeliveryCancel(ctx.WS, msg, ctx.CUI)
-}
-
-func handleLogCollectRoute(ctx *app.WSContext, msg models.InMessage) {
-	go logcollect.HandleLogCollect(ctx.Hub, ctx.WS, msg, ctx.CUI)
-}
-
-func handleSftpOpRoute(ctx *app.WSContext, msg models.InMessage) {
-	// 下载在独立 goroutine 里跑：一个 5 GiB 的流不能把交互式 shell 的消息循环堵住。
-	go sftp.HandleSftpOp(ctx.Hub, ctx.WS, msg, ctx.CUI, ctx.ConnID)
 }
