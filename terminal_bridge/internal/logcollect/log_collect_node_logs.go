@@ -28,7 +28,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"terminal_bridge/internal/shared/cluster"
 	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
 	"time"
@@ -144,8 +147,57 @@ func processLogDedupKey(taskID, phase string) string {
 	return "process-logs:" + taskID + ":" + phase
 }
 
-// collectNodeLogs 读取节点上 acli 目录下的全部 .log 并上报。
+// processLogBudget 是单轮采集的全局字节预算，跨主机共享、互斥扣减。
+// 第一性：平台按 task 计 20 MiB 上限，多主机必须共享同一池，不能每台各占 20 MiB。
+type processLogBudget struct {
+	mu        sync.Mutex
+	remaining int64
+}
+
+// takeUpTo 返回本次允许上报的字节数（<=want），0 表示预算耗尽。
+// 调用方据此切掉旧日志尾部，保证总量不超上限。
+func (b *processLogBudget) takeUpTo(want int64) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	allow := want
+	if allow > b.remaining {
+		allow = b.remaining
+	}
+	if allow > 0 {
+		b.remaining -= allow
+	}
+	return allow
+}
+
+// resolveProcessLogHosts 解析进程日志采集目标主机清单。
+// 优先级：create 时锚定的 ExpectedHosts（目标快照）→ acli platform node list → 发起节点兜底。
+// 发起节点始终纳入：acli 命令在它上面执行，日志价值最高。
+func resolveProcessLogHosts(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig) []string {
+	seen := map[string]bool{}
+	hosts := make([]string, 0, len(cfg.ExpectedHosts)+1)
+	add := func(ip string) {
+		ip = strings.TrimSpace(ip)
+		if ip != "" && cluster.ValidIPv4(ip) && !seen[ip] {
+			seen[ip] = true
+			hosts = append(hosts, ip)
+		}
+	}
+	add(cfg.NodeIP)
+	for _, ip := range cfg.ExpectedHosts {
+		add(ip)
+	}
+	if len(cfg.ExpectedHosts) == 0 {
+		// ips=all 时没有快照，用 acli 节点清单枚举全部主机（SPC fanout 同源命令）。
+		for _, node := range cluster.NodeList(s, ctx) {
+			add(node.IP)
+		}
+	}
+	return hosts
+}
+
+// collectNodeLogs 读取所有采集主机上 acli 目录下的 .log 并上报。
 // 语义仍是「尽力而为的证据」：任何失败只留事件，绝不影响采集与交付主流程。
+// 2026-11-23：从只采 SSH 发起节点扩展为按目标主机快照扇出（需求第 76 行「各采集主机」）。
 func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig, phase string) {
 	if s == nil {
 		return
@@ -159,29 +211,42 @@ func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig
 	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
-	listOut, _, code, err := s.RunQuickCommandStreams(ctx, nodeLogListCommand())
+	hosts := resolveProcessLogHosts(ctx, s, cfg)
+	budget := &processLogBudget{remaining: int64(nodeLogTaskBytes)}
+	localIPs := cluster.LocalAddresses(s, ctx)
+	fanout := reconcile.Fanout{Concurrency: cluster.FanoutConcurrency, HostTimeout: -1, BatchMode: true}
+	fanout.Each(ctx, hosts, func(hostCtx context.Context, ip string) reconcile.HostResult {
+		collectNodeLogsOnHost(hostCtx, s, ip, localIPs[ip], cfg, phase, budget)
+		return reconcile.HostResult{Host: ip}
+	})
+}
+
+// collectNodeLogsOnHost 采集单台主机，失败只留事件不影响其它主机。
+func collectNodeLogsOnHost(ctx context.Context, s *sshx.SSHSession, host string, local bool, cfg EvidenceConfig, phase string, budget *processLogBudget) {
+	listOut, _, code, err := cluster.RunOnHostStreams(s, ctx, host, local, nodeLogListCommand())
 	if err != nil || code != 0 {
-		evidence.Emit("WARN", "log_collect.process_logs_unavailable", "采集节点日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-			"task_id": cfg.TaskID, "root": nodeLogRoot, "error": errString(err), "exit_code": code,
+		evidence.Emit("WARN", "log_collect.process_logs_unavailable", "采集节点日志目录不可读", cfg.TraceID, cfg.CaseID, host, cfg.CustomUI, map[string]any{
+			"task_id": cfg.TaskID, "root": nodeLogRoot, "host": host, "phase": phase,
+			"error": errString(err), "exit_code": code,
 		})
 		return
 	}
 	paths := parseNodeLogPaths(listOut)
 	if len(paths) == 0 {
-		evidence.Emit("INFO", "log_collect.process_logs_empty", "节点日志目录下没有可上报的 .log", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-			"task_id": cfg.TaskID, "root": nodeLogRoot,
+		evidence.Emit("INFO", "log_collect.process_logs_empty", "节点日志目录下没有可上报的 .log", cfg.TraceID, cfg.CaseID, host, cfg.CustomUI, map[string]any{
+			"task_id": cfg.TaskID, "root": nodeLogRoot, "host": host, "phase": phase,
 		})
 		// 需求第 78 行：目录为空也要落一条 empty 记录，区分「没日志」与「没回传」。
 		// path 用目录哨兵（不做删除/写入），平台侧对 status=empty 放宽 .log 后缀校验。
 		postCtx, cancelPost := context.WithTimeout(ctx, 10*time.Second)
 		_, postErr := cfg.PostEvidence(postCtx, cfg.TaskPath("process-logs"), processLogPayload{
-			Host: cfg.NodeIP, Path: nodeLogRoot + "/", Size: 0,
+			Host: host, Path: nodeLogRoot + "/", Size: 0,
 			Status: "empty", CollectedAt: time.Now().UTC().Format(time.RFC3339), Phase: phase,
 		}, "")
 		cancelPost()
 		if postErr != nil {
-			evidence.Emit("WARN", "log_collect.process_log_failed", "空目录标记上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-				"task_id": cfg.TaskID, "path": nodeLogRoot, "phase": phase, "error": postErr.Error(),
+			evidence.Emit("WARN", "log_collect.process_log_failed", "空目录标记上报失败", cfg.TraceID, cfg.CaseID, host, cfg.CustomUI, map[string]any{
+				"task_id": cfg.TaskID, "host": host, "path": nodeLogRoot, "phase": phase, "error": postErr.Error(),
 			})
 		}
 		return
@@ -190,15 +255,15 @@ func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig
 	count := 0
 	skipped := 0
 	for _, path := range paths {
-		if count >= nodeLogMaxFiles || used >= nodeLogTaskBytes {
+		if count >= nodeLogMaxFiles {
 			// 剩余的按优先级靠后，直接计入 skipped 并留痕，不能静默丢弃。
 			skipped++
 			continue
 		}
 		// tail -c 取尾部：日志诊断关心最近发生了什么，截断必须切旧留新。
-		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(nodeLogFileBytes)+" "+remote.ShellQuote(path))
+		content, _, contentCode, contentErr := cluster.RunOnHostStreams(s, ctx, host, local, "tail -c "+strconv.Itoa(nodeLogFileBytes)+" "+remote.ShellQuote(path))
 		payload := processLogPayload{
-			Host: cfg.NodeIP, Path: path, CollectedAt: time.Now().UTC().Format(time.RFC3339),
+			Host: host, Path: path, CollectedAt: time.Now().UTC().Format(time.RFC3339),
 			Phase: phase,
 		}
 		switch {
@@ -211,6 +276,17 @@ func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig
 			raw := []byte(content)
 			if len(raw) > nodeLogFileBytes {
 				raw = raw[:nodeLogFileBytes]
+				payload.Truncated = true
+			}
+			// 跨主机共享预算：取不到完整额度时按剩余量截断（切旧留新），
+			// 剩余为 0 则跳过该文件并留痕，绝不超额上报。
+			allow := budget.takeUpTo(int64(len(raw)))
+			if allow <= 0 {
+				skipped++
+				continue
+			}
+			if allow < int64(len(raw)) {
+				raw = raw[:allow]
 				payload.Truncated = true
 			}
 			var compressed bytes.Buffer
@@ -228,14 +304,14 @@ func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig
 		_, postErr := cfg.PostEvidence(postCtx, cfg.TaskPath("process-logs"), payload, "")
 		cancel()
 		if postErr != nil {
-			evidence.Emit("WARN", "log_collect.process_log_failed", "节点日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-				"task_id": cfg.TaskID, "path": path, "error": postErr.Error(),
+			evidence.Emit("WARN", "log_collect.process_log_failed", "节点日志上报失败", cfg.TraceID, cfg.CaseID, host, cfg.CustomUI, map[string]any{
+				"task_id": cfg.TaskID, "host": host, "path": path, "phase": phase, "error": postErr.Error(),
 			})
 		}
 		count++
 	}
-	evidence.Emit("INFO", "log_collect.process_logs_collected", "节点日志上报完成", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-		"task_id": cfg.TaskID, "root": nodeLogRoot, "found": len(paths), "collected": count,
+	evidence.Emit("INFO", "log_collect.process_logs_collected", "节点日志上报完成", cfg.TraceID, cfg.CaseID, host, cfg.CustomUI, map[string]any{
+		"task_id": cfg.TaskID, "root": nodeLogRoot, "host": host, "found": len(paths), "collected": count,
 		"skipped": skipped, "bytes": used, "phase": phase,
 	})
 }
