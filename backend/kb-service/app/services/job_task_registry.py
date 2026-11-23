@@ -43,6 +43,15 @@ async def drain_job_tasks(holder: Any, timeout: float, *, label: str) -> tuple[i
     """
     pending = set(holder._job_tasks)  # noqa: SLF001
     if not pending:
+        # 空收尾也要留痕：否则发布演练无法区分"没有在跑 job"和"根本没走到收尾"。
+        logger.info(
+            event="job_tasks_drained",
+            message=f"{label} 在跑 job 收尾完成",
+            inflight=0,
+            abandoned=0,
+            elapsed_seconds=0.0,
+            timeout_seconds=timeout,
+        )
         return 0, 0.0
     started = asyncio.get_running_loop().time()
     _, still_pending = await asyncio.wait(pending, timeout=timeout)

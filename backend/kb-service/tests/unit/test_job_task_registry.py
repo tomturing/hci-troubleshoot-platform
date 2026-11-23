@@ -53,9 +53,21 @@ async def test_unfinished_job_is_cancelled_and_reported():
 
 
 @pytest.mark.asyncio
-async def test_drain_without_tracked_jobs_is_noop():
+async def test_drain_without_tracked_jobs_still_logs_completion(monkeypatch):
+    """空收尾必须落 job_tasks_drained，否则发布演练无法确认收尾真的执行过。"""
+    from app.services import job_task_registry as module
+
+    events: list[str] = []
+
+    class _Logger:
+        def info(self, *, event: str, **_kwargs) -> None:
+            events.append(event)
+
+    monkeypatch.setattr(module, "logger", _Logger())
     holder = _Holder()
+
     assert await drain_job_tasks(holder, timeout=1.0, label="vision") == (0, 0.0)
+    assert events == ["job_tasks_drained"]
 
 
 @pytest.mark.asyncio

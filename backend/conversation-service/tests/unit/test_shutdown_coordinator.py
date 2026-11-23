@@ -61,7 +61,20 @@ async def test_drain_abandons_task_that_has_no_safe_point():
 
 
 @pytest.mark.asyncio
-async def test_drain_without_tasks_is_noop():
+async def test_drain_without_tasks_still_logs_completion(monkeypatch):
+    """空收尾必须落 shutdown_drained，否则发布演练无法确认收尾真的执行过。"""
+    from app.services import shutdown_coordinator as module
+
+    events: list[str] = []
+
+    class _Logger:
+        def info(self, *, event: str, **_kwargs) -> None:
+            events.append(event)
+
+    monkeypatch.setattr(module, "logger", _Logger())
     coordinator = ShutdownCoordinator()
+
     abandoned, elapsed = await coordinator.drain(timeout=1.0)
+
     assert (abandoned, elapsed) == (0, 0.0)
+    assert events == ["shutdown_drained"]

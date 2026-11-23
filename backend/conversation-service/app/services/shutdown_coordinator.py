@@ -91,6 +91,17 @@ class ShutdownCoordinator:
         """
         pending = set(self._tasks)
         if not pending:
+            # 没有在途任务也必须落事件：它是"进程确实走到收尾"的唯一证据。
+            # 否则发布演练只看到 shutdown_signal_received 却看不到 shutdown_drained，
+            # 无法区分"无需收尾"与"被 SIGKILL 前根本没轮到 lifespan"。
+            logger.info(
+                event="shutdown_drained",
+                message="在途后台任务收尾完成",
+                inflight_at_begin=0,
+                abandoned=0,
+                elapsed_seconds=0.0,
+                timeout_seconds=timeout,
+            )
             return 0, 0.0
         started = time.monotonic()
         _, still_pending = await asyncio.wait(pending, timeout=timeout)
