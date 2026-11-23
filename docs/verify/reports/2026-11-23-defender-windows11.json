@@ -1,0 +1,60 @@
+{
+    "generated_at":  "2026-11-23T08:10:26Z",
+    "host":  "WINDOWS11-GPU",
+    "os":  "Microsoft Windows 11 专业工作站版",
+    "os_version":  "Microsoft Windows NT 10.0.26300.0",
+    "powershell":  "5.1.26100.9818",
+    "is_admin":  true,
+    "product":  {
+                    "path":  "C:\\Users\\sangfor\\Downloads\\terminal_bridge.exe",
+                    "size_bytes":  3300864,
+                    "sha256":  "173d13a6bafa5dd14f5f99c94096d9a020ef2de36020b1bf50504c863588200c",
+                    "version":  "terminal_bridge v2.36.0-127-gefeb9efc (commit: efeb9efc956a, built: 2026-11-23T04:12:59Z)",
+                    "pe_sections":  [
+                                        "UPX0",
+                                        "UPX1",
+                                        "UPX2"
+                                    ],
+                    "upx_packed":  true,
+                    "signed":  "NotSigned"
+                },
+    "defender":  {
+                     "available":  true,
+                     "engine_version":  "1.1.26100.4",
+                     "signature_version":  "1.463.428.0",
+                     "realtime_enabled":  true,
+                     "scan_performed":  true,
+                     "scan_threats_found":  false,
+                     "detections":  [
+
+                                    ],
+                     "error":  null
+                 },
+    "third_party":  [
+                        {
+                            "engine":  "360 安全卫士",
+                            "version":  "",
+                            "result":  "",
+                            "note":  "需人工填写"
+                        },
+                        {
+                            "engine":  "火绒安全",
+                            "version":  "",
+                            "result":  "",
+                            "note":  "需人工填写"
+                        },
+                        {
+                            "engine":  "卡巴斯基",
+                            "version":  "",
+                            "result":  "",
+                            "note":  "需人工填写"
+                        },
+                        {
+                            "engine":  "企业 EDR",
+                            "version":  "",
+                            "result":  "",
+                            "note":  "需人工填写（若有）"
+                        }
+                    ],
+    "verdict":  "待人工判定"
+}
