@@ -244,3 +244,30 @@ func TestArchiveTailWindows(t *testing.T) {
 		t.Fatalf("大包应由小到大两档: %v", got)
 	}
 }
+
+func TestArchiveHealthVerdict(t *testing.T) {
+	// 与平台 derive_manifest_quality 同口径：桥侧只给结论，平台给码。
+	cases := []struct {
+		name       string
+		size       int64
+		entryCount int
+		entryBytes int64
+		readable   bool
+		want       string
+	}{
+		{"不可读", 8 << 20, 0, 0, false, "unreadable"},
+		{"体积未知", 0, 0, 0, true, "missing"},
+		{"偏小", 1024, 1, 1024, true, "too_small"},
+		{"空包", 4 << 20, 0, 0, true, "empty_archive"},
+		{"仅元数据", 4 << 20, 2, 2048, true, "metadata_only"},
+		{"内容偏少", 4 << 20, 10, 2048, true, "content_too_small"},
+		{"正常", 8 << 20, 10, 8 << 20, true, "ok"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := archiveHealthVerdict(tc.size, tc.entryCount, tc.entryBytes, tc.readable); got != tc.want {
+				t.Fatalf("verdict=%s want %s", got, tc.want)
+			}
+		})
+	}
+}

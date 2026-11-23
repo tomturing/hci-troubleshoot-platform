@@ -59,7 +59,7 @@ from .log_collect_display_generated import (
 )
 
 SETTLED_STATUSES: frozenset[str] = frozenset({"completed", "failed", "cancelled"})
-_ARTIFACT_QUALITIES = frozenset({"ok", "suspect", "invalid", "unknown"})
+_ARTIFACT_QUALITIES = frozenset({"ok", "suspect", "incomplete", "invalid", "unknown"})
 # 「最差档」排序：unknown 排在最低，避免一个未探测目标把已知的 poor 盖掉。
 _GRADE_RANK = {"unknown": 0, "good": 1, "fair": 2, "poor": 3}
 
@@ -162,7 +162,14 @@ def _normalize_quality(value: Any) -> str:
 
 
 def _default_reason(quality: str) -> str:
-    return {"ok": "ok", "suspect": "entry_count_low", "invalid": "missing"}.get(quality, "not_inspected")
+    # incomplete 必须有自己的默认原因：缺台产物的包不能回退成「尚未探测」，
+    # 否则页面会同时显示「不完整」与「尚未探测包内容」两条互相否定的事实。
+    return {
+        "ok": "ok",
+        "suspect": "entry_count_low",
+        "incomplete": "missing_hosts",
+        "invalid": "missing",
+    }.get(quality, "not_inspected")
 
 
 def archive_bytes(task: Any) -> int | None:
@@ -848,7 +855,9 @@ def _build_conditions(
     if phase == "settled" or quality != "unknown":
         if quality == "ok":
             present.add("artifact_verified")
-        elif quality == "suspect":
+        elif quality in ("suspect", "incomplete"):
+            # missing_hosts 归入「可疑」：包能读，但目标集合没凑齐，
+            # 与条目偏少同属「不能当完整产物交付」。
             present.add("artifact_suspect")
         elif quality == "invalid":
             # 事实描述：608 字节空壳包同样属于「未取到有效日志」。

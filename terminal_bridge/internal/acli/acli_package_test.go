@@ -543,3 +543,26 @@ func TestPkgFactsNilSafe(t *testing.T) {
 		t.Fatal("非 nil 包应返回真实事实")
 	}
 }
+
+func TestInstallDegradedFlags(t *testing.T) {
+	cases := []struct {
+		name       string
+		diskProbed bool
+		missing    []string
+		want       bool
+	}{
+		{"完全成功", true, nil, false},
+		{"磁盘未验证", false, nil, true},
+		{"插件未落盘", true, []string{"192.168.0.11"}, true},
+		{"两者同时", false, []string{"192.168.0.11"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// 降级不是失败：工具确实装上了，但节点事实不完整，
+			// 回执必须显式标出来，前端才能把它和"成功"分开呈现。
+			if got := installDegraded(tc.diskProbed, tc.missing); got != tc.want {
+				t.Fatalf("installDegraded(%v, %v)=%v want %v", tc.diskProbed, tc.missing, got, tc.want)
+			}
+		})
+	}
+}

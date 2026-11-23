@@ -14,7 +14,7 @@ import time
 from typing import Any
 
 from ..config import settings
-from ..domain.log_collect_display_generated import MIN_ARCHIVE_BYTES
+from ..domain.log_collect_display_generated import ARTIFACT_REASON_CODES, MIN_ARCHIVE_BYTES
 
 # 采集 + 打包 + 交付可能跨小时，票据必须覆盖整趟任务生命周期；
 # 仍远短于上传令牌（按天计），且绑定 task_id，泄露也只影响单个任务。
@@ -86,6 +86,21 @@ def derive_manifest_quality(
 
 
 _SP_HOST_ENTRY = re.compile(r"^sp_(\d{1,3}(?:\.\d{1,3}){3})\.(?:tgz|tar\.gz|zip)$")
+
+
+def artifact_reason_code(quality: str, reason: str) -> str:
+    """产物原因 → 规范错误码（空包体检的错误码细分）。
+
+    只认契约里的 ``artifact_reason_code`` 映射，不在代码里另写一张表：
+    阈值与码的对应关系一旦两处维护，必然出现「同一种空包两个码」。
+
+    ``quality`` 为 unknown / 原因为 not_inspected 时返回空串——**没探测过就没有结论**，
+    不能借默认码把「未探测」说成「包坏了」。
+    """
+    normalized_quality = str(quality or "").strip().lower()
+    if normalized_quality in ("", "unknown"):
+        return ""
+    return str(ARTIFACT_REASON_CODES.get(str(reason or "").strip(), "") or "")
 
 
 def reconcile_manifest_hosts(

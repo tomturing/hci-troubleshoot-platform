@@ -4456,3 +4456,68 @@ describe('跨集群目标残留回归', () => {
     wrapper.unmount()
   })
 })
+
+/**
+ * P1 失败兜底（2026-11-23）：终态停止轮询、重试新建任务、参数快照重放、安装降级提示。
+ *
+ * 这几条都是「不写就一定会退化」的结构约束：
+ * - 终态轮询没有预算，页面挂一整夜就是 2880 次读平台 + 探节点；
+ * - 重试若复用旧任务行，failed 是终态且不可回到 completed，失败事实直接被抹掉；
+ * - 重试若读当前表单，用户改过的参数会被当成"重放上一次"。
+ */
+describe('LogCollectPanel P1 失败兜底（结构约束）', () => {
+  const SOURCE = readFileSync(resolve(process.cwd(), 'src/components/LogCollectPanel.vue'), 'utf-8')
+
+  const functionBody = (name: string): string => {
+    const start = SOURCE.indexOf(`function ${name}(`)
+    expect(start).toBeGreaterThan(-1)
+    return SOURCE.slice(start, start + 8000)
+  }
+
+  it('终态自动刷新有次数上限，到上限即停并提示可手动刷新', () => {
+    expect(SOURCE).toMatch(/TERMINAL_POLL_MAX_TICKS\s*=\s*\d+/)
+    const trigger = functionBody('triggerAutoSync')
+    expect(trigger).toMatch(/terminalPollTicks\s*\+=\s*1/)
+    expect(trigger).toMatch(/terminalPollTicks > TERMINAL_POLL_MAX_TICKS/)
+    expect(trigger).toMatch(/stopAutoSync\(\)/)
+    expect(trigger).toMatch(/autoSyncStopped\.value = true/)
+  })
+
+  it('出现新事实（指纹变化）时重置预算，避免误停仍在跑的节点', () => {
+    const trigger = functionBody('triggerAutoSync')
+    expect(trigger).toMatch(/terminalSignature\(task, action\)/)
+    expect(trigger).toMatch(/terminalPollTicks = 0/)
+  })
+
+  it('手动刷新必须重新起一轮自动刷新并重置预算', () => {
+    const resume = functionBody('resumeAutoSync')
+    expect(resume).toMatch(/terminalPollTicks = 0/)
+    expect(resume).toMatch(/startAutoSync\(/)
+    const refresh = functionBody('refreshProgress')
+    expect(refresh).toMatch(/resumeAutoSync\(/)
+  })
+
+  it('重试只对 failed 开放，且必须新建任务（不得复用旧行）', () => {
+    expect(SOURCE).toMatch(/const canRetryAsNewTask = computed\(\(\) => resultTask\.value\?\.status === 'failed'\)/)
+    const retry = functionBody('retryAsNewTask')
+    expect(retry).toMatch(/startRecollect\(task\)/)
+    expect(retry).toMatch(/applyRequestSnapshot\(task\)/)
+    expect(retry).toMatch(/await handleStart\(\)/)
+  })
+
+  it('重试参数取自服务端快照，不读当前表单', () => {
+    const apply = functionBody('applyRequestSnapshot')
+    expect(apply).toMatch(/detail\['request'\]/)
+    expect(apply).toMatch(/ips_truncated/)
+    expect(apply).toMatch(/upload_mode/)
+  })
+
+  it('安装降级必须显式提示，不能只留在长文本里', () => {
+    expect(SOURCE).toMatch(/data\.degraded === true/)
+    expect(SOURCE).toMatch(/acli 安装已降级/)
+  })
+
+  it('平台瞬时不可用不得再说成"平台暂时不可用"（会误导为交付失败）', () => {
+    expect(SOURCE).not.toMatch(/平台暂时不可用/)
+  })
+})

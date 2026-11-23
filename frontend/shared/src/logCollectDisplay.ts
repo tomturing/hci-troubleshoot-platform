@@ -51,6 +51,7 @@ export const CONDITION_LABELS = {
 } as const
 
 export const ARTIFACT_QUALITY_LABELS = {
+  "incomplete": "不完整",
   "invalid": "无效",
   "ok": "有效",
   "suspect": "可疑",
@@ -63,10 +64,24 @@ export const ARTIFACT_REASON_LABELS = {
   "entry_count_low": "条目数量明显低于预期",
   "metadata_only": "仅含配置元数据，没有日志内容",
   "missing": "未取到压缩包",
+  "missing_hosts": "缺少部分目标节点的产物",
   "not_inspected": "尚未探测包内容",
   "ok": "内容校验通过",
   "too_small": "压缩包体积异常偏小",
   "unreadable": "包内容无法读取"
+} as const
+
+export const ARTIFACT_REASON_CODES = {
+  "content_too_small": "LC-TRANSFER-013",
+  "empty_archive": "LC-TRANSFER-012",
+  "entry_count_low": "LC-TRANSFER-013",
+  "metadata_only": "LC-TRANSFER-012",
+  "missing": "LC-TRANSFER-001",
+  "missing_hosts": "LC-TRANSFER-011",
+  "not_inspected": "",
+  "ok": "",
+  "too_small": "LC-TRANSFER-013",
+  "unreadable": "LC-TRANSFER-014"
 } as const
 
 export const NETWORK_GRADE_LABELS = {
@@ -647,30 +662,31 @@ export const FAULT_CATALOG = {
     "tone": "error"
   },
   "LC-ENV-005": {
-    "action": "当前环境无法直连日志服务器，将改用中转上传或仅保留本地包。",
+    "action": "当前环境无法直连日志服务器，平台会自动改用中转上传（P2），一般无需处理。",
     "admin_detail": "curl 探测 http_code；2xx/3xx/4xx 视为可达，5xx 或连接失败为不可达。",
     "business_stage": "probe",
     "check": [
-      "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+      "若同时提示上传失败，请在任务详情查看交付记录。"
     ],
     "component": "hci",
     "evidence": "detail.spc_hosts / bridge_execution_logs（ENV 层原始输出）",
     "fix": [
-      "当前环境无法直连日志服务器，将改用中转上传或仅保留本地包。"
+      "保持页面开启，让平台完成中转上传；无需重新采集。"
     ],
     "http_status": 503,
     "kind": "runtime",
     "layer": "ENV",
     "match_keywords": [
+      "日志服务器直连不可用",
       "日志服务器不可达"
     ],
     "owner": "customer",
-    "problem": "日志服务器不可达",
+    "problem": "日志服务器直连不可用",
     "retryable": "manual",
     "scope": "intranet",
     "stage": "S1",
-    "title_zh": "日志服务器不可达",
-    "tone": "error"
+    "title_zh": "日志服务器直连不可用",
+    "tone": "warning"
   },
   "LC-ENV-006": {
     "action": "SSH 连接已断开，请重新连接后重试。",
@@ -805,17 +821,17 @@ export const FAULT_CATALOG = {
     "tone": "error"
   },
   "LC-EXEC-003": {
-    "action": "命令执行失败，请结合错误详情排查。",
+    "action": "本次下发被节点拒绝，任务没有开始采集。",
     "admin_detail": "保留 exit_code 与 stderr/stdout 摘要；上层按 plugin 语义再分类。",
     "business_stage": "exec",
     "check": [
-      "查看任务详情 create_output 中的节点原始输出。",
+      "在任务详情查看节点返回的原始输出。",
       "确认输出是否为“专项不存在”“参数非法”等明确原因。"
     ],
     "component": "acli",
     "evidence": "detail.spc_hosts / bridge_execution_logs（EXEC 层原始输出）",
     "fix": [
-      "按原始输出修正配置；这是节点侧拒绝，不是平台通道故障。"
+      "按提示修正采集配置后重试，无需重装 acli。"
     ],
     "http_status": 500,
     "kind": "runtime",
@@ -1545,17 +1561,17 @@ export const FAULT_CATALOG = {
     "tone": "warning"
   },
   "LC-PLATFORM-011": {
-    "action": "任务已失败，但未记录可归因的原因；请查看任务详情或联系平台侧定位。",
+    "action": "这次失败没有记录到具体原因；请先点「刷新进度」重试一次，仍失败请把工单号反馈给平台侧。",
     "admin_detail": "失败落库时 error_message 无法匹配任何已知模式，平台按兜底码落库。该码数量上涨说明某个上游在失败时没带原因，需按 trace_id 回溯补码。",
     "business_stage": "api",
     "check": [
-      "查看任务详情 error_message 与 create_output。",
-      "记录任务号与时间，提交支持按 trace 检索桥日志。"
+      "在任务详情查看失败信息与节点输出。",
+      "记录工单号与失败时间，便于平台侧定位。"
     ],
     "component": "htp",
     "evidence": "detail.spc_hosts / bridge_execution_logs（PLATFORM 层原始输出）",
     "fix": [
-      "不要反复重试；先补齐证据再定位，避免丢失现场。"
+      "先重试一次；反复出现请把工单号反馈给平台侧。"
     ],
     "http_status": 500,
     "kind": "runtime",
@@ -1572,16 +1588,16 @@ export const FAULT_CATALOG = {
     "tone": "warning"
   },
   "LC-PLATFORM-012": {
-    "action": "平台处理本次请求时内部出错；请稍后重试，反复失败请联系平台侧。",
+    "action": "平台这次没有把请求处理完；请稍后点「刷新进度」重试，反复失败请把工单号反馈给平台侧。",
     "admin_detail": "平台返回 5xx 且非存储/数据库专项码。查 case-service 日志中同一 trace_id 的堆栈；若集中在收尾接口，优先看并发与超时预算。",
     "business_stage": "api",
     "check": [
-      "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+      "确认页面上的任务状态在重试后是否有变化。"
     ],
     "component": "htp",
     "evidence": "detail.spc_hosts / bridge_execution_logs（PLATFORM 层原始输出）",
     "fix": [
-      "平台处理本次请求时内部出错；请稍后重试，反复失败请联系平台侧。"
+      "稍后点「刷新进度」重试；反复失败请把工单号反馈给平台侧。"
     ],
     "http_status": 500,
     "kind": "runtime",
@@ -1590,24 +1606,24 @@ export const FAULT_CATALOG = {
       "平台内部错误"
     ],
     "owner": "platform",
-    "problem": "平台内部错误",
+    "problem": "平台处理中断",
     "retryable": true,
     "scope": "cloud",
     "stage": "S8",
-    "title_zh": "平台内部错误",
+    "title_zh": "平台处理中断",
     "tone": "warning"
   },
   "LC-PLATFORM-013": {
-    "action": "采集已结束但交付会话未被 bridge 执行（僵尸会话）；请点「补交付」重新上传。",
+    "action": "采集已经结束，但这次上传没有真正开始；请点「上传到平台」重新上传，不需要重新采集。",
     "admin_detail": "采集终态后 delivery_status 长期停留在 queued，bridge 侧无对应作业。多为通道断开或节点侧任务已结束未回报；历史欠账由 061 清理脚本订正。",
     "business_stage": "api",
     "check": [
-      "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+      "确认任务详情里显示采集已完成且有压缩包。"
     ],
     "component": "htp",
     "evidence": "detail.spc_hosts / bridge_execution_logs（PLATFORM 层原始输出）",
     "fix": [
-      "采集已结束但交付会话未被 bridge 执行（僵尸会话）；请点「补交付」重新上传。"
+      "点「上传到平台」重新上传，不需要重新采集。"
     ],
     "http_status": 409,
     "kind": "runtime",
@@ -1616,11 +1632,11 @@ export const FAULT_CATALOG = {
       "交付会话未被执行"
     ],
     "owner": "platform",
-    "problem": "交付会话未被执行",
+    "problem": "上传没有真正执行",
     "retryable": true,
     "scope": "cloud",
     "stage": "S8",
-    "title_zh": "交付会话未被执行",
+    "title_zh": "上传没有真正执行",
     "tone": "warning"
   },
   "LC-PLUGIN-001": {
@@ -1989,18 +2005,18 @@ export const FAULT_CATALOG = {
     "tone": "warning"
   },
   "LC-PLUGIN-015": {
-    "action": "acli create 退出码为 0，但节点上始终查不到任务。通常是节点 acli 版本与所选专项不匹配。",
+    "action": "任务已下发，但节点上始终没有建立采集任务，通常是节点 acli 版本与所选专项不匹配。",
     "admin_detail": "核对节点 acli 版本与所选专项（完整节点输出见任务详情 create_output）；用内置专项做 A/B 对照后重试。不要按任务 ID 不存在处理。",
     "business_stage": "progress",
     "check": [
       "核对节点 acli 版本与所选专项是否匹配。",
-      "任务详情 create_output 里有节点完整输出。"
+      "在任务详情展开节点返回的完整输出。"
     ],
     "component": "acli",
     "evidence": "detail.spc_hosts / bridge_execution_logs（PLUGIN 层原始输出）",
     "fix": [
       "换用节点内置专项做 A/B 对照后重试。",
-      "与任务 ID 无关，不要按“任务不存在”处理。"
+      "这是下发未生效，不是任务被删除。"
     ],
     "http_status": 200,
     "kind": "runtime",
@@ -2675,16 +2691,16 @@ export const FAULT_CATALOG = {
     "tone": "error"
   },
   "LC-TRANSFER-008": {
-    "action": "日志包需要先落到客户机临时目录再上传，当前磁盘可用空间不足；请清理临时副本后重试，无需重新采集。",
+    "action": "日志包需要先落到本机临时目录再上传，当前可用空间不足；请清理临时文件后重试，无需重新采集。",
     "admin_detail": "P2 中转副本默认位于 %TEMP%/hci-log-collect（Windows: C:\\Users\\<user>\\AppData\\Local\\Temp\\hci-log-collect）。清理历史 zip 后重试；bridge 侧 delivery.job_finished 会带 need/free/path。",
     "business_stage": "package",
     "check": [
-      "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+      "确认本机磁盘剩余空间与临时目录占用。"
     ],
     "component": "bridge",
     "evidence": "detail.spc_hosts / bridge_execution_logs（TRANSFER 层原始输出）",
     "fix": [
-      "日志包需要先落到客户机临时目录再上传，当前磁盘可用空间不足；请清理临时副本后重试，无需重新采集。"
+      "清理本机临时目录里的历史日志包后重试，无需重新采集。"
     ],
     "http_status": 507,
     "kind": "runtime",
@@ -2693,24 +2709,24 @@ export const FAULT_CATALOG = {
       "客户机磁盘空间不足"
     ],
     "owner": "customer",
-    "problem": "客户机磁盘空间不足",
+    "problem": "本机磁盘空间不足",
     "retryable": "manual",
     "scope": "local",
     "stage": "S4",
-    "title_zh": "客户机磁盘空间不足",
+    "title_zh": "本机磁盘空间不足",
     "tone": "error"
   },
   "LC-TRANSFER-009": {
-    "action": "客户机上还有其它交付任务未完成，本地临时空间不足以同时容纳本次交付；请等待其它任务完成后再重试，或分批交付，无需重新采集。",
+    "action": "本机上还有其它上传任务未完成，临时空间不足以同时容纳本次交付；请等待其它任务完成后再重试，无需重新采集。",
     "admin_detail": "并发准入：同目录进行中作业未落地字节之和 + 本次需求 > 可用空间。可调低 HCI_BRIDGE_DELIVERY_CONCURRENCY 或清理 %TEMP%/hci-log-collect；delivery.disk_precheck 事件带 reserved_bytes。",
     "business_stage": "package",
     "check": [
-      "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+      "确认本机是否有其它日志包正在上传。"
     ],
     "component": "bridge",
     "evidence": "detail.spc_hosts / bridge_execution_logs（TRANSFER 层原始输出）",
     "fix": [
-      "客户机上还有其它交付任务未完成，本地临时空间不足以同时容纳本次交付；请等待其它任务完成后再重试，或分批交付，无需重新采集。"
+      "等其它任务上传完成后再点「上传到平台」，无需重新采集。"
     ],
     "http_status": 507,
     "kind": "runtime",
@@ -2719,11 +2735,11 @@ export const FAULT_CATALOG = {
       "客户机交付并发容量不足"
     ],
     "owner": "customer",
-    "problem": "客户机交付并发容量不足",
+    "problem": "本机同时上传的任务过多",
     "retryable": "manual",
     "scope": "local",
     "stage": "S4",
-    "title_zh": "客户机交付并发容量不足",
+    "title_zh": "本机同时上传的任务过多",
     "tone": "error"
   },
   "LC-TRANSFER-010": {
@@ -2776,6 +2792,92 @@ export const FAULT_CATALOG = {
     "scope": "local",
     "stage": "S4",
     "title_zh": "节点产物早于本次采集",
+    "tone": "error"
+  },
+  "LC-TRANSFER-012": {
+    "action": "这次采集产出的压缩包里没有日志条目（空包或只含配置元数据）；请核对采集时间范围与场景后重新收集。",
+    "admin_detail": "平台 derive_manifest_quality 判 empty_archive/metadata_only：entry_count<=0，或 entry_total_bytes 极小且条目数<=2。只读 zip 中央目录，不解压、不校验收密条目。",
+    "business_stage": "package",
+    "check": [
+      "确认所选时间范围内节点确实产生了日志。",
+      "确认所选场景包含需要排查的专项日志。"
+    ],
+    "component": "bridge",
+    "evidence": "detail.artifact_manifest.entry_count / entry_total_bytes、artifact_evidence",
+    "fix": [
+      "放宽时间范围或改选包含对应日志的场景后重新收集。"
+    ],
+    "http_status": 200,
+    "kind": "runtime",
+    "layer": "TRANSFER",
+    "match_keywords": [
+      "采集包内没有有效日志",
+      "包内没有日志内容",
+      "空壳包"
+    ],
+    "owner": "customer",
+    "problem": "采集包内没有有效日志",
+    "retryable": "manual",
+    "scope": "local",
+    "stage": "S6",
+    "title_zh": "采集包内没有有效日志",
+    "tone": "error"
+  },
+  "LC-TRANSFER-013": {
+    "action": "这次采集产出的压缩包体积明显小于有效阈值，多半只打进了配置或空目录；请核对时间范围与场景后重新收集。",
+    "admin_detail": "平台 derive_manifest_quality 判 too_small/content_too_small/entry_count_low：archive_size 或 entry_total_bytes 低于 thresholds.min_archive_bytes，或条目数 <3。",
+    "business_stage": "package",
+    "check": [
+      "确认所选时间范围内节点确实产生了日志。",
+      "在任务详情查看产物大小与包内容探测结论。"
+    ],
+    "component": "bridge",
+    "evidence": "archive_size、detail.artifact_manifest.entry_count / entry_total_bytes",
+    "fix": [
+      "放宽时间范围或改选包含对应日志的场景后重新收集。"
+    ],
+    "http_status": 200,
+    "kind": "runtime",
+    "layer": "TRANSFER",
+    "match_keywords": [
+      "采集包体积异常偏小",
+      "压缩包体积异常偏小",
+      "内容偏少"
+    ],
+    "owner": "customer",
+    "problem": "采集包体积异常偏小",
+    "retryable": "manual",
+    "scope": "local",
+    "stage": "S6",
+    "title_zh": "采集包体积异常偏小",
+    "tone": "warning"
+  },
+  "LC-TRANSFER-014": {
+    "action": "平台读不出这次压缩包的目录信息，无法判断包里到底有没有日志；请重新收集一次，连续出现请反馈工单号。",
+    "admin_detail": "bridge 上报 readable=false（zip 中央目录不可解析，或包尾为空/体积未知）。平台据此判 invalid/unreadable，不做解压校验，避免加密包被误判损坏。",
+    "business_stage": "package",
+    "check": [
+      "确认压缩包是否被中途清理或覆盖。",
+      "在任务详情查看产物大小与探测时间。"
+    ],
+    "component": "bridge",
+    "evidence": "detail.artifact_manifest.readable、artifact_evidence.reason",
+    "fix": [
+      "重新收集一次；连续失败请把工单号反馈给平台侧。"
+    ],
+    "http_status": 200,
+    "kind": "runtime",
+    "layer": "TRANSFER",
+    "match_keywords": [
+      "采集包内容无法读取",
+      "包内容无法读取"
+    ],
+    "owner": "customer",
+    "problem": "采集包内容无法读取",
+    "retryable": "manual",
+    "scope": "local",
+    "stage": "S6",
+    "title_zh": "采集包内容无法读取",
     "tone": "error"
   }
 } as const

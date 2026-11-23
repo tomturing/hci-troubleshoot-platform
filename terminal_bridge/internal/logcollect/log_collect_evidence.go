@@ -465,8 +465,37 @@ func inspectLocalArchive(path string) artifactManifest {
 		"min_archive_bytes": minArchiveBytesForEvidence,
 		"reader":            "archive/zip central directory",
 		"entries_capped":    result.EntryCount > maxManifestEntries,
+		"archive_health":    archiveHealthVerdict(result.ArchiveSize, result.EntryCount, result.EntryTotalBytes, true),
 	}
 	return result
+}
+
+// archiveHealthVerdict 是「空包体检」的桥侧结论，与平台 derive_manifest_quality
+// 使用同一组判据与阈值（min_archive_bytes 来自契约）。
+//
+// 为什么只上报不阻断：小于阈值也可能只是这台环境日志本来就少；直接判失败会让
+// 用户丢了唯一的包。桥侧给结论、平台给码，两级判定必须能对上，才能解释
+// 「为什么页面说包不可用，而上传按钮又是灰的」。
+func archiveHealthVerdict(size int64, entryCount int, entryTotalBytes int64, readable bool) string {
+	if !readable {
+		return "unreadable"
+	}
+	if size <= 0 {
+		return "missing"
+	}
+	if size < minArchiveBytesForEvidence {
+		return "too_small"
+	}
+	if entryCount <= 0 {
+		return "empty_archive"
+	}
+	if entryTotalBytes < minArchiveBytesForEvidence && entryCount <= 2 {
+		return "metadata_only"
+	}
+	if entryTotalBytes < minArchiveBytesForEvidence {
+		return "content_too_small"
+	}
+	return "ok"
 }
 
 func ReportLocalArchive(ctx context.Context, cfg EvidenceConfig, path string) {
@@ -557,6 +586,7 @@ func inspectNodeArchive(ctx context.Context, s *sshx.SSHSession, cfg EvidenceCon
 		"reader":            "tail -c + archive/zip",
 		"tail_window_bytes": lastWindow,
 		"reason":            sshx.TruncateString(reason, 400),
+		"archive_health":    "unreadable",
 	}
 	postManifest(ctx, cfg, manifest, "log_collect.node_manifest_failed", "节点侧包内容探测上报失败")
 }
@@ -614,6 +644,7 @@ func fillManifestFromZipTail(raw []byte, size int64, path string) (artifactManif
 		}
 	}
 	result.Evidence["entries_capped"] = result.EntryCount > maxManifestEntries
+	result.Evidence["archive_health"] = archiveHealthVerdict(size, result.EntryCount, result.EntryTotalBytes, true)
 	return result, nil
 }
 

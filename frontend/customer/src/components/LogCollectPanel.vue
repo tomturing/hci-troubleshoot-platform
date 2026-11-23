@@ -7,7 +7,7 @@
  *  2. 20 GiB 不走浏览器：分片由 bridge 直传 `/api/direct/...`；
  *  3. 平台不做任何自动清理：结束后只提示路径与命令，由用户自行清理。
  */
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   buildAcliSyncMessage,
@@ -151,6 +151,16 @@ const TERMINAL_POLL_INTERVAL = 30000
  */
 const EVIDENCE_WAIT_WINDOW_MS = 120000
 const EVIDENCE_WAIT_POLL_INTERVAL = 10000
+
+/**
+ * 终态任务的自动刷新上限（次）。
+ *
+ * 第一性原理：任务已经结束，平台快照不会再自己变化；每 30s 打一次「读平台 + 探节点」
+ * 持续整个页面生命周期，是纯粹的资源消耗，还会让用户误以为「还在跑」。
+ * 只有在**出现新事实**（进度/状态/接管结论变化）时才续期，否则到达上限即停；
+ * 需要时点「刷新进度」会重新起一轮。
+ */
+const TERMINAL_POLL_MAX_TICKS = 4
 
 /**
  * 交付证据等待起点（单调时钟，不持久化）。
@@ -2071,6 +2081,10 @@ function handleMessage(event: MessageEvent) {
     // 阶段二回执无论有没有等待者都要落下来：它是一次真实收敛的**唯一**客户端痕迹，
     // 丢了就等于“插件到底收没收敛”只能登节点翻脚本。
     acliPluginSync.value = parseAcliPluginSync(data)
+    // 安装降级必须"看得见"：只写在长文本 Message 里，用户只会读到开头那句"成功"。
+    if (data.degraded === true) {
+      ElMessage.warning('acli 安装已降级：部分节点内置插件未落盘或磁盘空间未验证，请重试安装后再采集')
+    }
     const waiter = waiters.get('acli_sync')
     if (waiter) {
       waiters.delete('acli_sync')
@@ -2323,13 +2337,34 @@ function terminalSyncInterval(task?: LogCollectTask | null): number {
   return evidenceStillPending(task) ? EVIDENCE_WAIT_POLL_INTERVAL : TERMINAL_POLL_INTERVAL
 }
 
+// 终态快照指纹：只有它变了才算「出现了新事实」，重复读同一份快照不续期。
+let lastTerminalSignature = ''
+
+function terminalSignature(
+  task: LogCollectTask | null | undefined,
+  action: { action?: string } | null | undefined,
+): string {
+  return [
+    task?.status,
+    task?.updated_at,
+    task?.progress,
+    task?.delivery_status,
+    action?.action ?? '',
+  ].join('|')
+}
+
 let autoSyncInterval = 0
+// 终态后已连续自动刷新的次数；出现新事实（进度/状态/接管结论）时归零。
+let terminalPollTicks = 0
+// 自动刷新是否因终态收敛而停止。只影响提示文案，不影响手动刷新。
+const autoSyncStopped = ref(false)
 
 function startAutoSync(interval = POLL_INTERVAL) {
   stopAutoSync()
   // 主流程独占轮询权：它自己会推进状态机，再叠一条自动对账只会两条链路抢写
   // 同一行，输的那条拿 409 并中断交付（Q2026110900356）。
   if (mainFlowActive.value) return
+  autoSyncStopped.value = false
   autoSyncInterval = interval
   resumeTimer = setInterval(() => {
     if (!visible.value) return
@@ -2362,20 +2397,51 @@ async function triggerAutoSync() {
     }
   }
   const action = await syncNodeState({ applyPatches: true, silent: true, source: 'auto' })
-  // 落终态后降频而不是停摆：平台虽已终态，节点可能仍在跑（需要「接管」）或刚异常，
-  // 完全停轮询会让接管入口再也不出现。
-  // 但「证据还没到」是另一回事：短窗口内必须加密刷新，否则页面会永久停在
-  // 「证据回传失败」那一帧（Q2026110302166 证据比终态晚 31s 才落库）。
-  if (action && (action.action === 'patch_completed' || action.action === 'patch_failed')) {
-    const next = terminalSyncInterval(resultTask.value)
-    if (next !== autoSyncInterval) startAutoSync(next)
+  const task = resultTask.value ?? currentTask.value
+  if (!task || !TERMINAL_TASK_STATUSES.includes(task.status)) {
+    // 还在跑：每次都是新事实，预算随时清零。
+    terminalPollTicks = 0
+    lastTerminalSignature = ''
     return
   }
-  const task = resultTask.value ?? currentTask.value
-  if (task && TERMINAL_TASK_STATUSES.includes(task.status)) {
-    const next = terminalSyncInterval(task)
-    if (next !== autoSyncInterval) startAutoSync(next)
+  // 「证据还没到」是另一回事：短窗口内必须加密刷新，否则页面会永久停在
+  // 「证据回传失败」那一帧（Q2026110302166 证据比终态晚 31s 才落库）。
+  // 这个窗口本身有界（EVIDENCE_WAIT_WINDOW_MS），不消耗终态预算。
+  if (evidenceStillPending(task)) {
+    terminalPollTicks = 0
+    lastTerminalSignature = terminalSignature(task, action)
+    if (EVIDENCE_WAIT_POLL_INTERVAL !== autoSyncInterval) startAutoSync(EVIDENCE_WAIT_POLL_INTERVAL)
+    return
   }
+  const signature = terminalSignature(task, action)
+  if (signature !== lastTerminalSignature) {
+    // 终态且没有任何新事实：这只是同一份快照的重复读取，计入预算。
+    // 出现新事实（节点进度/接管结论/交付状态变化）则重新给一轮，避免把
+    // 「节点还在跑、马上就能接管」误停。
+    lastTerminalSignature = signature
+    terminalPollTicks = 0
+  }
+  terminalPollTicks += 1
+  if (terminalPollTicks > TERMINAL_POLL_MAX_TICKS) {
+    stopAutoSync()
+    autoSyncStopped.value = true
+    return
+  }
+  if (TERMINAL_POLL_INTERVAL !== autoSyncInterval) startAutoSync(TERMINAL_POLL_INTERVAL)
+}
+
+/**
+ * 进入/回到「持续跟进」状态：重置终态预算并重排自动刷新。
+ *
+ * 自动刷新因终态收敛停止后，必须有确定性入口重新起一轮——否则用户点了
+ * 「刷新进度」却只刷新一次，接管入口再也不会自己出现。
+ */
+function resumeAutoSync(task?: LogCollectTask | null) {
+  terminalPollTicks = 0
+  lastTerminalSignature = ''
+  startAutoSync(
+    task && TERMINAL_TASK_STATUSES.includes(task.status) ? terminalSyncInterval(task) : POLL_INTERVAL,
+  )
 }
 
 /** 409 后点"查看任务状态"：把面板切到只读接管模式。 */
@@ -2396,11 +2462,13 @@ let syncingNode = false
 let syncPatchBlocked = false
 
 const lastRefreshText = computed(() => {
-  if (!lastRefreshAt.value) return ''
+  // 终态收敛后轮询已停止：必须让用户知道"现在是手动刷新"，否则他会以为页面卡住。
+  const stopped = autoSyncStopped.value ? ' · 自动刷新已停止（任务已结束），可手动刷新' : ''
+  if (!lastRefreshAt.value) return stopped.replace(/^ · /, '')
   const hh = String(lastRefreshAt.value.getHours()).padStart(2, '0')
   const mm = String(lastRefreshAt.value.getMinutes()).padStart(2, '0')
   const ss = String(lastRefreshAt.value.getSeconds()).padStart(2, '0')
-  return `更新于 ${hh}:${mm}:${ss}`
+  return `更新于 ${hh}:${mm}:${ss}${stopped}`
 })
 
 /**
@@ -2447,6 +2515,9 @@ async function refreshProgress(silent = false) {
     if (action && !silent && !['patch_completed', 'patch_failed'].includes(action.action)) {
       ElMessage.info(buildSyncNotice(action))
     }
+    // 自动刷新可能已因终态收敛停止：手动刷新必须把它接回去并重置预算，
+    // 否则用户会看到「刷新了但接管入口再也不出现」。
+    resumeAutoSync(resultTask.value ?? currentTask.value)
     if (!silent && !nodeSyncHint.value) ElMessage.success('已刷新任务进度')
   } catch (e: any) {
     if (!silent) {
@@ -2484,9 +2555,7 @@ async function restoreTaskState(force = false) {
       // 终态任务同样要恢复对账：failed 的节点任务可能仍在跑，
       // 「接管」入口依赖这一次对账（同会话重开面板也走这里）。
       if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
-      startAutoSync(
-        TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? terminalSyncInterval(currentTask.value) : POLL_INTERVAL,
-      )
+      resumeAutoSync(currentTask.value)
     }
     return
   }
@@ -2513,7 +2582,7 @@ async function restoreTaskState(force = false) {
       // 完成 ≠ 已交付：结果态也必须对账一次，否则"包还在节点上、平台没产物"
       // 的任务永远拿不到「上传到平台」，用户只剩"重新采集"这一条错路。
       if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
-      startAutoSync(terminalSyncInterval(latest))
+      resumeAutoSync(latest)
       return
     }
     // 失败记录最后恢复：节点侧任务可能仍在运行，此时唯一正确的下一步是「接管」，
@@ -2582,8 +2651,7 @@ function applyTaskToForm(task: LogCollectTask) {
   }
 }
 
-function startRecollect() {
-  const last = resultTask.value
+function startRecollect(last: LogCollectTask | null = resultTask.value) {
   viewMode.value = 'form'
   stage.value = 'idle'
   currentTask.value = null
@@ -2611,6 +2679,74 @@ function startRecollect() {
   errorMessage.value = ''
   if (last) applyTaskToForm(last)
   if (prepareState.value !== 'ready') void prepare({ silent: true })
+}
+
+/**
+ * 用「参数快照」回填表单。
+ *
+ * 任务列是**投影**：spc 场景的 modules 已被改写成 `["core"]`，交付路径也可能被降级改写过。
+ * 重试必须重放「当时实际下发的参数」，否则"重试一次"实际是另一次采集。
+ * 没有快照（P1 之前的历史任务）时返回 false，由调用方退回到任务列回填。
+ */
+function applyRequestSnapshot(task: LogCollectTask): boolean {
+  const detail = (task.detail ?? {}) as Record<string, unknown>
+  const request = detail['request'] as Record<string, unknown> | undefined
+  if (!request) return false
+  const dateFrom = String(request.date_from ?? '')
+  const dateTo = String(request.date_to ?? '')
+  if (dateFrom && dateTo) form.dateRange = [dateFrom, dateTo]
+  const ips = Array.isArray(request.ips) ? request.ips.map(String).filter(Boolean) : []
+  // 快照里 ips 可能被截断（>200 台），截断时不要拿残缺集合冒充"全部目标"。
+  if (request.ips_truncated) {
+    form.ips = ips.join(',')
+  } else {
+    form.ips = !ips.length || ips.includes('all') ? 'all' : ips.join(',')
+  }
+  form.extraPaths = normalizeExtraPaths(
+    Array.isArray(request.extra_paths) ? (request.extra_paths as string[]) : undefined,
+  )
+  const scenario = request.custom_scenario as Record<string, unknown> | undefined
+  if (scenario && scenario['id']) {
+    form.scenarioMode = 'custom'
+    form.customScenarioId = String(scenario['id'])
+    // 自定义场景下 modules 只是投影（spc 会被服务端改写成 ["core"]），
+    // 回填它会让用户以为"只勾了 core"，实际下发仍由场景决定。
+  } else {
+    form.scenarioMode = 'default'
+    form.customScenarioId = ''
+    if (Array.isArray(request.modules) && request.modules.length) {
+      form.modules = request.modules.map(String) as LogCollectModule[]
+    }
+  }
+  const mode = String(request.upload_mode ?? '')
+  if (mode === 'acli_direct' || mode === 'bridge_relay') {
+    pathMode.value = mode === 'acli_direct' ? 'P1' : 'P2'
+    pathModeTouched.value = true
+  }
+  return true
+}
+
+/** 失败任务是否可以「重试（新建任务）」。 */
+const canRetryAsNewTask = computed(() => resultTask.value?.status === 'failed')
+
+/**
+ * 重试（新建任务）：按参数快照重放一次下发。
+ *
+ * 第一性原理：`failed` 是终态，且平台禁止 failed→completed；复用旧任务行等于抹掉
+ * 上一次失败的事实（进度归零、错误被清空），三次失败后就再也说不清"试过什么"。
+ * 因此重试只能新建 task，参数一律来自服务端快照，不读当前表单——表单可能已被用户改过。
+ */
+async function retryAsNewTask() {
+  const task = resultTask.value
+  if (!task) return
+  if (running.value) return
+  startRecollect(task)
+  const replayed = applyRequestSnapshot(task)
+  if (!replayed) {
+    ElMessage.info('该任务没有参数快照，已按任务记录回填；请确认参数后重新下发')
+  }
+  await nextTick()
+  await handleStart()
 }
 
 // ── 主流程 ──────────────────────────────────────────────────────────────────
@@ -3096,7 +3232,7 @@ async function handleStart() {
       return
     }
     if (isOutcomeUnknownError(error)) {
-      errorMessage.value = '平台暂时不可用，任务仍在后台进行；请稍后点「刷新进度」确认结果'
+      errorMessage.value = '暂时联系不上平台，任务可能仍在后台进行；请稍后点「刷新进度」确认结果'
       stage.value = 'failed'
       ElMessage.warning(errorMessage.value)
       return
@@ -3132,9 +3268,9 @@ async function handleStart() {
     if (mainFlowSeq === myFlow) {
       mainFlowActive.value = false
       if (token === runToken && visible.value && currentTask.value) {
-        startAutoSync(
-          TERMINAL_TASK_STATUSES.includes(currentTask.value.status) ? terminalSyncInterval(currentTask.value) : POLL_INTERVAL,
-        )
+        // 主流程退出即「回到持续跟进」：重置终态预算，否则上一次任务攒下的
+        // 轮询次数会让新任务在第一个终态 tick 就被判"已收敛"。
+        resumeAutoSync(currentTask.value)
       }
       // spc 槽位必须在流程退出时还原：失败/取消同样要撤掉平台清单，
       // 否则下一次采集会拿着上一轮的场景继续收，且没人知道它来自哪里。
@@ -4060,7 +4196,7 @@ async function adoptNodeTask() {
       // 平台瞬时不可用不代表交付失败：后台代传可能仍在跑，此刻 patchTask 多半
       // 也打不通，写进去的只会是一条误导性原因（2026-11-06 Q2026110600940）。
       if (isOutcomeUnknownError(error)) {
-        errorMessage.value = '平台暂时不可用，上传仍在后台继续；请稍后点「刷新进度」确认结果'
+        errorMessage.value = '暂时联系不上平台或本机桥接端，上传可能仍在后台继续；请稍后点「刷新进度」确认结果'
         stage.value = 'failed'
         ElMessage.warning(errorMessage.value)
         return
@@ -4186,6 +4322,11 @@ async function cancelAndRetry() {
   relayStatus.value = 'none'
   stage.value = 'idle'
   errorMessage.value = ''
+  // 重试必须重放「上一次实际下发的参数」，而不是用户此刻可能已经改乱的表单。
+  if (task) {
+    applyTaskToForm(task)
+    applyRequestSnapshot(task)
+  }
   await handleStart()
 }
 
@@ -4898,7 +5039,7 @@ async function pollRelay(taskId: string, token: number) {
       transientFailures += 1
       if (transientFailures >= TRANSIENT_RETRY_LIMIT) {
         throw new RelayPendingError(
-          '平台暂时不可用，归档仍在后台继续；请稍后点「刷新进度」确认结果',
+          '暂时联系不上平台，归档可能仍在后台继续；请稍后点「刷新进度」确认结果',
         )
       }
       await sleep(POLL_INTERVAL)

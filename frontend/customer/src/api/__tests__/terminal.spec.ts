@@ -10,6 +10,7 @@ import {
   checkBridgeRunning,
   getBridgeExecWaitTimeoutMs,
   getBridgeUrl,
+  parseAcliSyncFacts,
   resetBridgeUrlCache,
   resolveBridgeUrl,
 } from '../terminal'
@@ -283,5 +284,15 @@ describe('buildInputMessage / buildInjectCommandMessage', () => {
     expect(input.node_ip).toBeUndefined()
     const inject = JSON.parse(buildInjectCommandMessage('Q1', 'ls'))
     expect(inject.node_ip).toBeUndefined()
+  })
+})
+
+describe('parseAcliSyncFacts 安装降级', () => {
+  it('只有显式 degraded=true 才算降级', () => {
+    // 降级是节点事实，不能靠文案猜测：缺字段一律按未降级，
+    // 否则老版本 bridge 的普通成功都会被标成降级。
+    expect(parseAcliSyncFacts({ degraded: true } as any).degraded).toBe(true)
+    expect(parseAcliSyncFacts({} as any).degraded).toBe(false)
+    expect(parseAcliSyncFacts({ degraded: 'true' } as any).degraded).toBe(false)
   })
 })

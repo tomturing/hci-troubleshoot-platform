@@ -47,6 +47,14 @@ const (
 	// 带着它采集必然失败（Q2026112300134）。
 	ErrInstallPluginIncomplete = "LC-INSTALL-010"
 
+	// ── ARTIFACT：产物内容体检（按 zip 中央目录事实，不是传输失败）──────────
+	// 与 TRANSFER 区分：TRANSFER-001 是「包不存在」，ARTIFACT 是「包在但内容不可用」。
+	// 这三个码由平台按 derive_manifest_quality 推导后落 detail.artifact_code，
+	// bridge 也用同一份契约常量，避免两侧对「空包/偏小/不可读」各有一套阈值口径。
+	ErrArtifactEmpty      = "LC-TRANSFER-012"
+	ErrArtifactTooSmall   = "LC-TRANSFER-013"
+	ErrArtifactUnreadable = "LC-TRANSFER-014"
+
 	ErrExecPtyRequest = "LC-EXEC-001"
 	ErrExecTimeout    = "LC-EXEC-002"
 	ErrExecNonZero    = "LC-EXEC-003"
@@ -195,6 +203,12 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrInstallTruncated:        {"INSTALL", "customer", "true", "install"},
 	ErrInstallBusy:             {"INSTALL", "platform", "true", "install"},
 	ErrInstallPluginIncomplete: {"INSTALL", "customer", "manual", "verify"},
+
+	// 产物体检结论属于客户可处理项（放宽范围/换场景重采），不可自动重试：
+	// 同样的输入再跑一次只会得到同样的空包。
+	ErrArtifactEmpty:      {"TRANSFER", "customer", "manual", "package"},
+	ErrArtifactTooSmall:   {"TRANSFER", "customer", "manual", "package"},
+	ErrArtifactUnreadable: {"TRANSFER", "customer", "manual", "package"},
 
 	ErrExecPtyRequest: {"EXEC", "customer", "false", "exec"},
 	ErrExecTimeout:    {"EXEC", "customer", "true", "exec"},
