@@ -816,6 +816,8 @@ class ConversationService:
             _full_reply_buffer: list[str] = []
             # N-4 修复：记录是否走了 ops-agent 路径（跳过 htp 状态机后验检测）
             _used_ops_agent_path = False
+            # 上游 agent-service 被换副本导致流中断：不是失败，也不能计成一次成功请求。
+            _agent_restart_seen = False
             _message_metadata: dict = {}
             _sop_track_seen = False
             _blocking_interactive_seen = False
@@ -958,11 +960,24 @@ class ConversationService:
                             _error_message = str(agent_event.get("message") or "未知错误")
                             yield f"\x00event:error:{_json.dumps({'message': _error_message}, ensure_ascii=False)}\x00"
                             yield f"\n[Agent Error: {_error_message}]"
+                        elif event_type == "server_restart":
+                            # 上游中断：已产出的文本留在 _full_reply_buffer 交调用方落库，
+                            # 再由调用方向前端发 server_restart 让前端重连续收。
+                            _agent_restart_seen = True
+                            logger.warning(
+                                event="agent_upstream_restart",
+                                message="agent-service 流失常中断，转交客户端重连",
+                                conversation_id=str(conversation_id),
+                                reason=str(agent_event.get("reason") or "unknown"),
+                            )
+                            yield "\x00event:server_restart:{}\x00"
+                            break
                         elif event_type == "done":
                             break
 
                     # 空响应兜底：agent-service 返回 done 但没有任何内容（且未收到 error 事件）
-                    if not _full_reply_buffer and not _agent_had_error:
+                    # 重启中断不算「空响应」：上游只是换了副本，前端会重连。
+                    if not _full_reply_buffer and not _agent_had_error and not _agent_restart_seen:
                         logger.warning(
                             event="agent_empty_response",
                             message="agent-service 返回空响应（无 text_chunk）",
@@ -1009,7 +1024,9 @@ class ConversationService:
                             _full_reply_buffer.append(chunk)
                             yield chunk
 
-                AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
+                # 重启中断既不是成功也不是失败：本次请求没跑完，结果由前端重连后续收。
+                if not _agent_restart_seen:
+                    AI_REQUESTS_TOTAL.labels(assistant_type=resolved_assistant_type, status="success").inc()
 
                 # 审计日志写入已完全下沉至 agent-service：在发起 LLM 调用的瞬间捕获 100% 原始全量 Prompt 并安全记录。
                 # 此处废除重复双写。
@@ -3584,5 +3601,16 @@ class ConversationService:
                 _error_message = str(agent_event.get("message") or "未知错误")
                 yield f"\x00event:error:{_json.dumps({'message': _error_message}, ensure_ascii=False)}\x00"
                 yield f"\n[Agent Error: {_error_message}]"
+            elif event_type == "server_restart":
+                # 续写流连接被换副本中断：不要发 [DONE]（那会让前端认为已正常收尾），
+                # 交给调用方透传 server_restart 触发退避重连。
+                logger.warning(
+                    event="agent_upstream_restart",
+                    message="resume-stream 上游中断，转交客户端重连",
+                    conversation_id=str(conversation_id),
+                    reason=str(agent_event.get("reason") or "unknown"),
+                )
+                yield "\x00event:server_restart:{}\x00"
+                break
             elif event_type == "done":
                 break

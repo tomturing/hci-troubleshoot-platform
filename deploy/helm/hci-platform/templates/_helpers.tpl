@@ -112,6 +112,9 @@ SSH 会话目前只保存在单 Pod 内存中；cluster 模式也不能以 wildc
 {{- define "hci.workloadPodSpecExtras" -}}
 {{- $root := .root -}}
 {{- $name := .name -}}
+{{- /* 优雅退出窗口：所有 workload 在此统一渲染，杜绝"某个服务忘了配就退回 30s"。
+       取值见 workloadDefaults.gracePeriods 与 hci.gracePeriod 的注释。 */ -}}
+terminationGracePeriodSeconds: {{ include "hci.gracePeriod" (dict "root" $root "name" $name) | trim | int }}
 {{- if and $root.Values.workloadDefaults.securityContext.enabled $root.Values.workloadDefaults.securityContext.pod }}
 securityContext:
 {{ toYaml $root.Values.workloadDefaults.securityContext.pod | nindent 2 }}
@@ -242,6 +245,35 @@ ops-agent 和 pai-agent 为内部服务，base_url 固定不变。
 {{- end -}}
 
 {{/*
+长任务优雅退出窗口（terminationGracePeriodSeconds）的单一事实源。
+
+第一性原理：Pod 被替换时，kubelet 给进程的时间就是这一个数字——
+  preStop 睡眠（等负载均衡视图更新）+ 进程收敛（等在途请求/任务到安全点）
+必须都装进这个窗口，超出的部分被 SIGKILL 直接砍断。
+所以它不是"调大一点更安全"的参数，而是"最长在途工作有多长"的声明。
+
+k8s 默认 30s 对同步 CRUD 够用，对下面这些形态一定不够（都有代码级证据）：
+  - case-service：分片代传单片 300s、20GiB 包合并（已 300s）
+  - agent-service：SSE 主链路，上游 ops-agent read timeout 300s、人工确认等待 120s
+  - conversation-service：同一条用户链路的 SSE，且 AI 回复靠 BackgroundTasks 落库
+  - diagnosis-service worker：单任务 900s（靠租约回收，不靠 grace 等满）
+  - kb-service：vision/signal 单次 30~60s
+  - api-gateway：WebSocket 终端长连接（grace 救不了长连接，靠主动 close + 客户端重连）
+
+取值集中在 workloadDefaults.gracePeriods，按 workload 名查；未登记的服务用 default。
+单服务如需例外，直接改表里对应行——不要再用 <serviceKey>.terminationGracePeriodSeconds
+另开一条旁路，那会让「谁真正决定了 grace」分裂成两个事实源（preStop 校验也得跟着猜）。
+*/}}
+{{- define "hci.gracePeriod" -}}
+{{- $table := .root.Values.workloadDefaults.gracePeriods | default dict -}}
+{{- $raw := get $table .name -}}
+{{- if kindIs "invalid" $raw -}}
+{{- $raw = get $table "default" -}}
+{{- end -}}
+{{- default 30 $raw | int -}}
+{{- end -}}
+
+{{/*
 停止监听前的强制等待（preStop），供所有 Deployment 的容器共用。
 
 第一性原理：请求会不会打到「正在死的 Pod」，取决于两个互相独立的时钟——
@@ -259,7 +291,8 @@ Killing 的同一秒起连续 3 秒出现 28 个 502，而 endpoints 全程非�
 必须小于 terminationGracePeriodSeconds，否则 preStop 先吃掉优雅期、超时后
 kubelet 直接 SIGKILL，在途请求照样丢——所以这里直接 fail 掉而不是交给人工检查。
 
-用法：{{- include "hci.preStopLifecycle" (dict "root" . "key" "adminUI") | nindent 10 }}
+用法：{{- include "hci.preStopLifecycle" (dict "root" . "key" "adminUI" "name" "admin-ui") | nindent 10 }}
+name 是 workload 名，用于查 workloadDefaults.gracePeriods；缺省时退回 30s。
 */}}
 {{- define "hci.preStopLifecycle" -}}
 {{- $svc := index .root.Values .key | default dict -}}
@@ -267,7 +300,14 @@ kubelet 直接 SIGKILL，在途请求照样丢——所以这里直接 fail 掉�
 {{- if hasKey $svc "preStopSleepSeconds" -}}
 {{- $sleep = get $svc "preStopSleepSeconds" | int -}}
 {{- end -}}
-{{- $grace := get $svc "terminationGracePeriodSeconds" | default 30 | int -}}
+{{- /* 优雅期必须与 hci.workloadPodSpecExtras 渲染用的是同一个数，否则校验形同虚设：
+       grace 若来自 workloadDefaults.gracePeriods 表，这里也要查表，而不是默认 30。 */ -}}
+{{- $grace := 30 -}}
+{{- if hasKey $svc "terminationGracePeriodSeconds" -}}
+{{- $grace = get $svc "terminationGracePeriodSeconds" | int -}}
+{{- else if .name -}}
+{{- $grace = include "hci.gracePeriod" (dict "root" .root "name" .name) | trim | int -}}
+{{- end -}}
 {{- if gt $sleep 0 -}}
 {{- if ge $sleep $grace -}}
 {{- fail (printf "preStopSleepSeconds=%d 必须小于 terminationGracePeriodSeconds=%d：preStop 会先吃掉优雅期，超时后 kubelet 直接 SIGKILL，在途请求照样丢" $sleep $grace) -}}

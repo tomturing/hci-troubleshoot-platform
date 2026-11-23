@@ -280,6 +280,9 @@ async def send_message(
         merge_queue = asyncio.Queue()
         ai_task = None
         external_task = None
+        # 上游（agent-service）换副本导致流中断：已向客户端发过 server_restart，
+        # 此时绝不能再补 [DONE]——前端会把 [DONE] 当成正常收尾而放弃重连。
+        _server_restart = False
 
         async def ai_producer():
             try:
@@ -317,21 +320,30 @@ async def send_message(
                 return
             _persistence_scheduled = True
             resolved_case_id = _case_id or message.case_id
-            if ai_content:
-                background_tasks.add_task(
-                    service.save_assistant_message,
-                    conversation_id=conversation_id,
-                    case_id=resolved_case_id,
-                    content="".join(ai_content),
-                    metadata=_message_metadata,
-                )
-            for interactive_event in _interactive_events:
-                background_tasks.add_task(
-                    service.save_interactive_request_message,
-                    conversation_id=conversation_id,
-                    case_id=resolved_case_id,
-                    event=interactive_event,
-                )
+
+            async def _persist_all() -> None:
+                # 顺序是契约：普通回复必须先于交互卡落库（前端按 created_at 排序渲染）。
+                if ai_content:
+                    await service.save_assistant_message(
+                        conversation_id=conversation_id,
+                        case_id=resolved_case_id,
+                        content="".join(ai_content),
+                        metadata=_message_metadata,
+                    )
+                for interactive_event in _interactive_events:
+                    await service.save_interactive_request_message(
+                        conversation_id=conversation_id,
+                        case_id=resolved_case_id,
+                        event=interactive_event,
+                    )
+
+            coordinator = getattr(request.app.state, "shutdown", None)
+            if coordinator is not None:
+                # 登记成可 join 的任务：滚动发布时进程会等它写完再退出。
+                # BackgroundTasks 没有句柄，SIGTERM 后可能整段丢失。
+                coordinator.track(_persist_all(), name="conversation_persist")
+            else:
+                background_tasks.add_task(_persist_all)
 
         try:
             # 同时监听 AI 流和外部事件队列
@@ -349,9 +361,20 @@ async def send_message(
             if external_event_queue:
                 external_task = asyncio.create_task(external_producer())
 
+            shutdown = getattr(request.app.state, "shutdown", None)
             while True:
+                # 滚动发布：收到 SIGTERM 后主动收盘，而不是等 grace 耗尽被 SIGKILL。
+                # 先落库已生成内容，再告知前端"换副本重连"，用户只看到极短停顿。
+                if shutdown is not None and shutdown.is_shutting_down:
+                    schedule_message_persistence()
+                    yield "event: server_restart\ndata: {}\n\n"
+                    return
                 # 从合并队列中读取一个事件，此处是非阻塞挂起，零 CPU 占用，极速 TTFT 传递！
-                source, data = await merge_queue.get()
+                # 用 1s 超时轮询而不是无限等待：AI 上游慢时也必须能及时响应退出信号。
+                try:
+                    source, data = await asyncio.wait_for(merge_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
 
                 if source == "done":
                     break
@@ -374,10 +397,13 @@ async def send_message(
                                 "tool_call",
                                 "tool_result",
                                 "diagnostic_outcome",
+                                "server_restart",
                             ):
                                 # 透传完整 JSON，无需包装
                                 yield f"event: {evt_type}\ndata: {evt_data}\n\n"
-                                if evt_type == "metadata":
+                                if evt_type == "server_restart":
+                                    _server_restart = True
+                                elif evt_type == "metadata":
                                     with contextlib.suppress(Exception):
                                         _message_metadata.update(json.loads(evt_data))
                                 elif evt_type == "interactive_request":
@@ -400,7 +426,9 @@ async def send_message(
             # BackgroundTasks 按添加顺序执行：先保存普通回复，再保存交互卡。
             schedule_message_persistence()
 
-            yield "data: [DONE]\n\n"
+            # 上游重启时已发过 server_restart，收尾权交给前端重连；发 [DONE] 会让它误判完成。
+            if not _server_restart:
+                yield "data: [DONE]\n\n"
 
         except asyncio.CancelledError:
             # 客户端断开连接，若已收到部分 AI 回复则在后台保存，避免丢失
@@ -730,17 +758,61 @@ async def resume_ops_agent_stream(
     # 安全修复：会话归属校验（防 IDOR 接收他人续写流）
     await verify_conversation_ownership(conversation_id, request, service)
     ai_content: list[str] = []
+    shutdown_coordinator = getattr(request.app.state, "shutdown", None)
+    persisted = False
+
+    def schedule_resume_persistence() -> None:
+        """续写内容落库；登记成可 join 的任务，发布时进程会等它写完再退出。"""
+        nonlocal persisted
+        if persisted or not ai_content:
+            return
+        persisted = True
+
+        async def _persist() -> None:
+            await service.save_assistant_message_for_resume(
+                conversation_id=conversation_id,
+                content="".join(ai_content),
+            )
+
+        if shutdown_coordinator is not None:
+            shutdown_coordinator.track(_persist(), name="conversation_resume_persist")
+        else:
+            background_tasks.add_task(_persist)
 
     async def event_generator():
+        restart_pending = False
+        # 手动 pull 而不是 async for：续写流在 ops-agent 思考时可能长时间无字节，
+        # async for 会一直挂在 await 上，退出标志一秒内看不到，只能等 grace 耗尽被 SIGKILL。
+        # 注意不能用 asyncio.wait_for——超时会取消 anext，async generator 之后就废了。
+        stream = service.resume_ops_agent_stream(conversation_id)
+        pending_next: asyncio.Future = asyncio.ensure_future(anext(stream))
         try:
-            async for chunk in service.resume_ops_agent_stream(conversation_id):
+            while True:
+                done, _ = await asyncio.wait({pending_next}, timeout=1.0)
+                if not done:
+                    if shutdown_coordinator is not None and shutdown_coordinator.is_shutting_down:
+                        schedule_resume_persistence()
+                        yield "event: server_restart\ndata: {}\n\n"
+                        return
+                    continue
+                try:
+                    chunk = pending_next.result()
+                except StopAsyncIteration:
+                    break
+                pending_next = asyncio.ensure_future(anext(stream))
+                if shutdown_coordinator is not None and shutdown_coordinator.is_shutting_down:
+                    schedule_resume_persistence()
+                    yield "event: server_restart\ndata: {}\n\n"
+                    return
                 if chunk:
                     if chunk.startswith("\x00event:") and chunk.endswith("\x00"):
                         inner = chunk[7:-1]
                         parts = inner.split(":", 1)
                         evt_type = parts[0]
                         evt_data = parts[1] if len(parts) > 1 else ""
-                        if evt_type in ("interactive_request", "tool_call", "tool_result"):
+                        if evt_type in ("interactive_request", "tool_call", "tool_result", "server_restart"):
+                            if evt_type == "server_restart":
+                                restart_pending = True
                             yield f"event: {evt_type}\ndata: {evt_data}\n\n"
                         else:
                             event_payload = json.dumps({"to": evt_data}, ensure_ascii=False)
@@ -749,20 +821,10 @@ async def resume_ops_agent_stream(
                     ai_content.append(chunk)
                     encoded_chunk = json.dumps({"content": chunk}, ensure_ascii=False)
                     yield f"data: {encoded_chunk}\n\n"
-            # 续写内容落库（fire-and-forget）
-            if ai_content:
-                background_tasks.add_task(
-                    service.save_assistant_message_for_resume,
-                    conversation_id=conversation_id,
-                    content="".join(ai_content),
-                )
+            # 续写内容落库
+            schedule_resume_persistence()
         except asyncio.CancelledError:
-            if ai_content:
-                background_tasks.add_task(
-                    service.save_assistant_message_for_resume,
-                    conversation_id=conversation_id,
-                    content="".join(ai_content),
-                )
+            schedule_resume_persistence()
             raise
         except Exception as e:
             logger.error(
@@ -772,9 +834,17 @@ async def resume_ops_agent_stream(
                 error_message=str(e),
                 conversation_id=str(conversation_id),
             )
-            yield "data: [DONE]\n\n"
+            if not restart_pending:
+                yield "data: [DONE]\n\n"
         else:
-            yield "data: [DONE]\n\n"
+            # 已发 server_restart 说明是上游换副本：不发 [DONE]，让前端退避重连。
+            if not restart_pending:
+                yield "data: [DONE]\n\n"
+        finally:
+            # 客户端断开或上面 return 时，别把上游 anext 留成悬挂任务。
+            if not pending_next.done():
+                pending_next.cancel()
+                await asyncio.gather(pending_next, return_exceptions=True)
 
     return StreamingResponse(
         sse_keepalive(
