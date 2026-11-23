@@ -148,12 +148,83 @@ mappings:
     dynamic_values: true
     comparison: identity
 
-  - id: offline.hci_knowledge_root
-    compose_env: DSH_OFFLINE_HCI_KNOWLEDGE_ROOT
+  - id: offline.weknora_base_url
+    compose_env: DSH_OFFLINE_WEKNORA_BASE_URL
     compose_service: dsh-offline
     helm_chart: deploy/helm/hci-platform-dsh
-    helm_values: [dsh.pluginEnv.HCI_KNOWLEDGE_ROOT]
-    rendered_env: [HCI_KNOWLEDGE_ROOT]
+    helm_values: [dsh.pluginEnv.WEKNORA_BASE_URL]
+    rendered_env: [WEKNORA_BASE_URL]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.weknora_api_key
+    compose_env: DSH_OFFLINE_WEKNORA_API_KEY
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WEKNORA_API_KEY]
+    rendered_env: [WEKNORA_API_KEY]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+    sensitive: true
+
+  - id: offline.weknora_tenant_id
+    compose_env: DSH_OFFLINE_WEKNORA_TENANT_ID
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WEKNORA_TENANT_ID]
+    rendered_env: [WEKNORA_TENANT_ID]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.weknora_case_kb_ids
+    compose_env: DSH_OFFLINE_WEKNORA_KB_CASE_IDS
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WEKNORA_KB_CASE_IDS]
+    rendered_env: [WEKNORA_KB_CASE_IDS]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.weknora_playbook_kb_ids
+    compose_env: DSH_OFFLINE_WEKNORA_KB_PLAYBOOK_IDS
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WEKNORA_KB_PLAYBOOK_IDS]
+    rendered_env: [WEKNORA_KB_PLAYBOOK_IDS]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.weknora_agent_kb_ids
+    compose_env: DSH_OFFLINE_WEKNORA_HCI_AGENT_KB_IDS
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WEKNORA_HCI_AGENT_KB_IDS]
+    rendered_env: [WEKNORA_HCI_AGENT_KB_IDS]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.weknora_quick_agent_id
+    compose_env: DSH_OFFLINE_WEKNORA_HCI_QUICK_AGENT_ID
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WEKNORA_HCI_QUICK_AGENT_ID]
+    rendered_env: [WEKNORA_HCI_QUICK_AGENT_ID]
+    template_selector: dsh.pluginEnv
+    dynamic_values: true
+    comparison: identity
+
+  - id: offline.weknora_reasoning_agent_id
+    compose_env: DSH_OFFLINE_WEKNORA_HCI_REASONING_AGENT_ID
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.pluginEnv.WEKNORA_HCI_REASONING_AGENT_ID]
+    rendered_env: [WEKNORA_HCI_REASONING_AGENT_ID]
     template_selector: dsh.pluginEnv
     dynamic_values: true
     comparison: identity
