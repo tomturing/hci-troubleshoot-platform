@@ -856,10 +856,10 @@ async def process_logs(task_id: UUID) -> ProcessLogListResponse:
     await _task_row(task_id)
     rows = await _fetch(
         """
-        SELECT log_id, host, path, size, sha256, truncated, status, error, collected_at
+        SELECT log_id, host, path, size, sha256, truncated, status, error, collected_at, phase
         FROM log_collect_process_log
         WHERE task_id = :task_id
-        ORDER BY collected_at DESC NULLS LAST
+        ORDER BY phase, collected_at DESC NULLS LAST
         """,
         {"task_id": str(task_id)},
     )
@@ -875,6 +875,7 @@ async def process_logs(task_id: UUID) -> ProcessLogListResponse:
             status=row["status"],
             error=row["error"],
             collected_at=row["collected_at"],
+            phase=row["phase"],
         )
         for row in rows
     ]
