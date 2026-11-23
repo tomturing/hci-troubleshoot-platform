@@ -47,7 +47,10 @@ class TestDeriveErrorCode:
             ("源包已变化（上传会话大小不一致），需按新基线重建", "LC-TRANSFER-010"),
             ("节点压缩包在 5 分钟内仍未写完", "LC-TRANSFER-010"),
             # 旧包守卫：路径里出现 /sf/data/local 也不得误判成磁盘不足
-            ("节点上的压缩包（/sf/data/local/acli/tmp/data/log_collect/Q.zip）早于本次采集开始，判定为上一次任务的产物", "LC-TRANSFER-011"),
+            (
+                "节点上的压缩包（/sf/data/local/acli/tmp/data/log_collect/Q.zip）早于本次采集开始，判定为上一次任务的产物",
+                "LC-TRANSFER-011",
+            ),
             ("节点上的压缩包修改于 14:58:36 早于本次采集开始", "LC-TRANSFER-011"),
             ("本地副本不存在，无法补交付", "LC-TRANSFER-001"),
             ("校验和不一致：期望 abc 实际 def", "LC-TRANSFER-002"),
@@ -161,6 +164,25 @@ class TestAttributeFailure:
         assert task.detail["baseline_report_hash"] == "abc"
         assert task.detail["error_code_derivation"]["code"] == "LC-TRANSFER-003"
 
+    def test_probe_command_missing_maps_to_env_009(self):
+        """节点缺 stat/ls 必须独立成码。
+
+        归到 LC-TRANSFER-006 会让客户去重连，归到 LC-EXEC-003 会让人以为 acli
+        安装坏了——真因是节点 shell 裁剪了命令，两条错路都白跑一轮。
+        """
+        task = self._task(
+            status="failed",
+            error_message="无法确认压缩包状态：节点 shell 缺少探测命令（stat/ls 均不可用）：stat:exit=127",
+        )
+        LogCollectService.attribute_failure(task)
+        assert task.error_code == "LC-ENV-009"
+
+    def test_probe_unknown_without_command_missing_stays_transfer_006(self):
+        """同样的「无法确认」但不带缺命令证据时，仍归通道异常，不得升格成环境问题。"""
+        task = self._task(status="failed", error_message="无法确认日志包状态：通道读写超时")
+        LogCollectService.attribute_failure(task)
+        assert task.error_code == "LC-TRANSFER-006"
+
 
 class TestBackfillMigrationConsistency:
     """062 回填迁移的规则表必须与 Python 侧逐条一致。
@@ -206,10 +228,7 @@ class TestSpcFixMigrationConsistency:
     """
 
     _MIGRATION = (
-        Path(__file__).resolve().parents[4]
-        / "database"
-        / "data-migrations"
-        / "064_log_collect_error_code_spc_fix.sql"
+        Path(__file__).resolve().parents[4] / "database" / "data-migrations" / "064_log_collect_error_code_spc_fix.sql"
     )
     _ROW = re.compile(r"^\s*\(\d+,\s*'([^']*)',\s*'([^']+)'\)", re.MULTILINE)
 

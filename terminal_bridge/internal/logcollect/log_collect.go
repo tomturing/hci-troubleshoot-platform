@@ -617,8 +617,14 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		switch {
 		case probed.Exists == nil:
 			// 探测本身失败：必须当失败上报，否则前端只能把"测不到"当"不存在"。
+			// 再按「节点缺命令」与「通道/权限异常」分流：前者客户去放命令白名单，
+			// 后者重连即可，把两者压成同一句「或」会让客户无从下手。
 			status, code, errType = "error", logcontract.ErrTransferArchiveProbe, "archive_probe_unknown"
 			message = "无法确认压缩包状态（节点命令不可用或通道异常）"
+			if probed.Unavailable {
+				code, errType = logcontract.ErrEnvProbeCommandMissing, "probe_command_missing"
+				message = "无法确认压缩包状态：节点 shell 缺少探测命令（stat/ls 均不可用）"
+			}
 			if probed.Diag != "" {
 				message += "：" + probed.Diag
 			}

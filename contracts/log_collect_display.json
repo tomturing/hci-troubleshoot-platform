@@ -38,6 +38,7 @@
     "network_degraded": "网络质量不佳",
     "stalled": "传输已停滞",
     "task_stalled": "任务长时间无进展",
+    "progress_stalled": "进度长时间未变化",
     "synthetic_test": "验证 / 压测任务",
     "bridge_outdated": "桥接端版本较旧"
   },
@@ -109,6 +110,7 @@
     "max_process_log_task_bytes": 20971520,
     "stall_seconds": 60,
     "task_stall_hours": 24,
+    "progress_stall_minutes": 20,
     "archive_verify_wait_minutes": 10
   },
   "bands": {
@@ -634,6 +636,13 @@
       "keywords": [
         "节点离线",
         "host offline"
+      ]
+    },
+    {
+      "code": "LC-ENV-009",
+      "keywords": [
+        "缺少探测命令",
+        "探测命令不可用"
       ]
     },
     {
@@ -1374,6 +1383,34 @@
       "http_status": 409,
       "match_keywords": [
         "目标节点离线"
+      ]
+    },
+    "LC-ENV-009": {
+      "kind": "runtime",
+      "layer": "ENV",
+      "component": "hci",
+      "scope": "intranet",
+      "stage": "S3",
+      "business_stage": "package",
+      "title_zh": "节点缺少文件探测命令",
+      "problem": "节点 shell 里 stat 与 ls 都不可用，无法确认压缩包状态",
+      "action": "节点环境缺少文件探测命令，平台无法确认压缩包是否存在；请确认节点是否裁剪了系统命令后重试。",
+      "check": [
+        "在节点上执行 stat 与 ls，确认两条命令都存在。",
+        "确认节点是否使用了受控/受限 shell 白名单。"
+      ],
+      "fix": [
+        "恢复系统命令或放开白名单后重试。"
+      ],
+      "admin_detail": "两级探测（stat -c %s 与 ls -l）均返回 126/127 或命令缺失文本；与通道异常、权限拒绝严格区分，后者仍走 LC-TRANSFER-006。",
+      "evidence": "bridge_execution_logs（stat/ls 逐级 exit 与 stderr）",
+      "tone": "error",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "match_keywords": [
+        "缺少探测命令",
+        "探测命令不可用"
       ]
     },
     "LC-INSTALL-001": {
@@ -3936,6 +3973,14 @@
     {
       "needle": "节点上的压缩包",
       "code": "LC-TRANSFER-011"
+    },
+    {
+      "needle": "缺少探测命令",
+      "code": "LC-ENV-009"
+    },
+    {
+      "needle": "探测命令不可用",
+      "code": "LC-ENV-009"
     }
   ],
   "layers": {
