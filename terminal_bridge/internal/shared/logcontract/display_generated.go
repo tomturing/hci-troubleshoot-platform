@@ -78,6 +78,14 @@ var contractErrors = map[string]contractError{
 		Component: "hci",
 		Stage:     "S4",
 	},
+	"LC-ENV-009": {
+		Title:     "节点缺少文件探测命令",
+		Problem:   "节点 shell 里 stat 与 ls 都不可用，无法确认压缩包状态",
+		Action:    "节点环境缺少文件探测命令，平台无法确认压缩包是否存在；请确认节点是否裁剪了系统命令后重试。",
+		Layer:     "ENV",
+		Component: "hci",
+		Stage:     "S3",
+	},
 	"LC-EXEC-001": {
 		Title:     "申请伪终端失败",
 		Problem:   "申请伪终端失败",

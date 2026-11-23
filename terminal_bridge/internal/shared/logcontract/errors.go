@@ -28,6 +28,9 @@ const (
 	ErrEnvSessionMissing  = "LC-ENV-006"
 	ErrEnvSSHAuthFailed   = "LC-ENV-007"
 	ErrEnvNodeOffline     = "LC-ENV-008"
+	// 节点 shell 缺少 stat/ls：探测结论必须是「无法确认」，且与通道异常分开归因，
+	// 否则现场会把它当成「包被删了」或「网络断了」，两条路都指向错误的处理动作。
+	ErrEnvProbeCommandMissing = "LC-ENV-009"
 
 	ErrInstallReqFailed = "LC-INSTALL-001"
 	ErrInstallDownload  = "LC-INSTALL-002"
@@ -192,6 +195,8 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrEnvSessionMissing:  {"ENV", "platform", "true", "exec"},
 	ErrEnvSSHAuthFailed:   {"ENV", "customer", "manual", "exec"},
 	ErrEnvNodeOffline:     {"ENV", "customer", "manual", "collect"},
+	// 恢复依赖节点侧放开命令白名单，同会话重试不会自己变好，只能人工处理后重发。
+	ErrEnvProbeCommandMissing: {"ENV", "customer", "manual", "package"},
 
 	ErrInstallReqFailed:        {"INSTALL", "platform", "true", "install"},
 	ErrInstallDownload:         {"INSTALL", "customer", "true", "install"},
