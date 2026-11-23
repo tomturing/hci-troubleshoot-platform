@@ -168,6 +168,10 @@ func writeLogCollectConfig(
 
 	// 不落账本：config 按 task_id 隔离、总是覆写，账本对它不产生任何判定价值，
 	// 逐任务落盘只会让 state 目录无界增长。
+	if len(desired) == 0 {
+		// provider 返回空切片且 err 为 nil 时，直接索引会在采集主路径上 panic。
+		return "", fmt.Errorf("配置写入未生成期望态描述（provider 返回空切片）")
+	}
 	res := reconcile.Run(ctx, reconcile.Deps{Runner: sshx.NewSSHRunner(s)}, desired[0])
 	switch res.Status {
 	case reconcile.StatusOK, reconcile.StatusSkipped:
