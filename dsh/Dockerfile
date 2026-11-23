@@ -1,7 +1,7 @@
 # DSH（DeepSeek Harness）Web UI 容器镜像
 #
 # 上游项目：https://github.com/deepseek-ai/deepseek-harness
-# 版本锁定：0.2.1-rc.2。上游处于 developer preview 且明确声明会有破坏性变更，
+# 版本锁定：0.2.1-rc.3。上游处于 developer preview 且明确声明会有破坏性变更，
 # 升级版本必须单独评审，不可跟随 latest。
 #
 # 三条上游契约约束（改动前请先阅读
@@ -15,11 +15,11 @@
 #      /__internal/token 接口读取。
 #   3. 就绪信号：该启动行由上游在 Loader 树就绪后才打印，是官方的
 #      readiness 信号，因此可作为抓取 token 的同步点。
-# 新增的 hci-offline-diagnosis-bundle 0.4.1 要求 Node >=24.9；旧服务继续使用
-# 原有插件和配置，因此升级基础运行时不会改变旧服务的 profile 组合。
+# v2 的 WeKnora bundle 与现存的历史 HCI bundle 都要求 Node >=24.9；旧制品仍保留在
+# 镜像中用于回滚，但当前离线实例只通过环境 values 装配 WeKnora 插件组合。
 FROM node:24.9.0-bookworm-slim
 
-ARG DSH_VERSION=0.2.1-rc.2
+ARG DSH_VERSION=0.2.1-rc.3
 # DSH plugin manager 通过 pnpm 管理 profile bundle，版本固定避免 CLI 行为漂移。
 ARG PNPM_VERSION=10.33.4
 # HCI 离线 bundle 使用锁文件安装 Python 依赖；固定 uv 版本避免构建行为漂移。
