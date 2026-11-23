@@ -127,6 +127,19 @@ func acliShouldRetry(attempt int) bool {
 	return attempt < acliMaxAttempts
 }
 
+// evalAcliVerifyOutcome 判定安装后的版本验证是否成立。
+//
+// 两个条件缺一不可：退出码 0 只证明 `acli --version` 跑通，ver 非空才证明
+// 安装后的入口真的可执行。只判退出码会把「命令能跑但解析不出产品版本」
+// 当成成功——回执写着"安装成功"，用户点开终端却是空的。
+//
+// 判定失败时也要返回已解析出的 ver/build：回执需要展示"到底探测到了什么"，
+// 只回一句"验证失败"会迫使排障者登录节点重跑一次。
+func evalAcliVerifyOutcome(out string, exitCode int) (ver, build string, ok bool) {
+	ver, build = ParseAcliVersion(out)
+	return ver, build, exitCode == 0 && ver != ""
+}
+
 // acliInstallVerdict 是安装命令结束后的结论：成功，或失败时的错误码与可读说明。
 type acliInstallVerdict struct {
 	OK     bool
