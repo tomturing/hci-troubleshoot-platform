@@ -571,7 +571,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	// 才能区分「本来就缺」与「这次安装把它打坏」——Q2026112300134 的分歧点就在这里，
 	// 当时只能靠现场翻 acli.log 的 rsync 报错反推。
 	beforeCtx, cancelBefore := context.WithTimeout(ctx, 2*time.Minute)
-	beforeStates := verifyClusterPluginLanding(b, beforeCtx, s)
+	beforeStates := verifyClusterPluginLanding(beforeCtx, s)
 	cancelBefore()
 	evidence.Emit("INFO", "acli_sync.plugin_snapshot", "安装前逐节点插件快照", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"phase": "before", "nodes": beforeStates, "missing": missingPluginNodes(beforeStates),
