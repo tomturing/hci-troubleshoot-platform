@@ -719,6 +719,94 @@ describe('LogCollectPanel', () => {
     }
   })
 
+  /**
+   * 现场回归（Q2026112300145）：acli 安装与采集紧邻发生（相隔 13 秒）。
+   *
+   * 旧实现的复查调度只要撞上 running 就直接 return 丢弃：安装成功后内部重探失败时
+   * stage 仍是 installing（running=true），这次复查被吞掉；安装收尾把 stage 还原成
+   * idle 后，再没有任何事件能触发探测，面板就永久停在"安装前的版本 + 节点清单获取失败"，
+   * 用户只能 F5。契约：采集中只能延后，采集终态必须补做一次。
+   */
+  it('安装收尾时尚在 running：复查不丢弃，阶段结束后自动补探', async () => {
+    connectSsh()
+    // 不做真实 HTTP：重试安装要先取一次阶段二凭据，桩成同步可用
+    resolveAcliPluginSyncCredentialsMock.mockResolvedValue({
+      credentials: { platformUrl: 'https://platform.example', pluginTicket: 'tk-7' },
+      error: '',
+    })
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const wrapper = mountPanel()
+    try {
+      await vi.advanceTimersByTimeAsync(5)
+      await flushPromises()
+
+      // 1) 首探：acli 未安装、节点清单为空（现场安装前的状态）
+      replyProbe({
+        status: 'ok',
+        log_data: probePayload({
+          acli_installed: false,
+          acli_version: '',
+          acli_binary: '',
+          hosts: [],
+          catalog_source: 'platform_default',
+        }),
+      })
+      await flushPromises()
+      expect(wrapper.text()).toContain('acli 未安装')
+
+      // 2) 先落一个安装失败态，拿到「重试安装」入口（该路径不需要确认弹窗）
+      fakeSocket.onmessage?.({
+        data: JSON.stringify({
+          type: 'acli_sync_result',
+          status: 'error',
+          stage: 'install',
+          error_code: 'LC-INSTALL-002',
+          error_retryable: 'true',
+          message: 'acli 安装命令退出码 2',
+        }),
+      })
+      await flushPromises()
+      const retryButton = wrapper
+        .find('.lc-acli-fail')
+        .findAll('button')
+        .find((btn) => btn.text().includes('重试安装'))
+      expect(retryButton).toBeTruthy()
+
+      // 3) 点重试：stage → installing（running=true）
+      // openSocket 的 onopen 是 setTimeout(0)，假时钟下必须推进才会真正发出 acli_sync
+      await retryButton!.trigger('click')
+      await vi.advanceTimersByTimeAsync(10)
+      await flushPromises()
+      expect(sentMessages.some((raw) => JSON.parse(raw).type === 'acli_sync')).toBe(true)
+      const beforeReinstall = probeCount()
+
+      // 4) 安装成功 → 内部强制重探一次
+      fakeSocket.onmessage?.({ data: JSON.stringify({ type: 'acli_sync_result', status: 'installed' }) })
+      await flushPromises()
+      expect(probeCount()).toBe(beforeReinstall + 1)
+
+      // 5) 重探失败：不改写安装结果，但这次复查不能因为 running 被丢弃
+      replyProbe({ status: 'error', message: 'probe 超时（90s）' })
+      await flushPromises()
+
+      // 6) 收尾把 stage 还原成 idle（running=false）→ 被推迟的复查补做
+      await vi.advanceTimersByTimeAsync(31000)
+      await flushPromises()
+      expect(probeCount()).toBe(beforeReinstall + 2)
+
+      // 7) 补探读到装好后的真值：界面自动点亮，不需要 F5
+      replyProbe({ status: 'ok', log_data: probePayload() })
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(10)
+      await flushPromises()
+      expect(wrapper.text()).toContain('1.0.1')
+      expect(wrapper.text()).not.toContain('acli 未安装，无法自动读取节点清单')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   // 回归：两抽屉同时展开时左栏被压到 500px 上下，
   // descriptions 固定 2 列会把「发起节点」压成一字一行。列数必须跟随抽屉宽度。
   it('描述表列数随抽屉宽度切换：窄容器单列、宽容器两列', async () => {
