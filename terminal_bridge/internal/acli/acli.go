@@ -410,8 +410,9 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 
 			// 9.1 拿包：优先复用“只重传”场景下的已校验缓存。
 			if pkg == nil {
+				cached := cache.get(key)
 				// 基线包（Data 为空，来自账本恢复）只能做校验基线，不能当上传字节。
-				if cached := cache.get(key); cached != nil && cached.Data != nil && retryStage == "upload" {
+				if planAcliPackage(retryStage, cached) == packageFromCache {
 					pkg = cached
 					evidence.Emit("INFO", "acli_sync.package_reused", "复用已校验的安装包缓存，跳过下载", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 						"size": cached.Size, "sha256": cached.SHA256, "md5": cached.MD5, "filename": cached.Filename,
@@ -482,8 +483,8 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 				"remote_size": writeRes.RemoteSize, "remote_algo": writeRes.Algo, "remote_digest": writeRes.Digest,
 				"remote_fail_reason": writeRes.FailReason,
 			})
-			if attempt < acliMaxAttempts {
-				backoff := time.Duration(attempt) * 2 * time.Second
+			if acliShouldRetry(attempt) {
+				backoff := acliRetryBackoff(attempt)
 				models.SendMsg(ws, models.OutMessage{
 					Type: "acli_sync_progress", CaseID: msg.CaseID, Status: "retrying",
 					Architecture: targetArch, TraceID: traceID, Attempts: attempt,
