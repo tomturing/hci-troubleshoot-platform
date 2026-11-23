@@ -190,8 +190,20 @@ $report = [ordered]@{
     verdict          = '待人工判定'
 }
 
-$report | ConvertTo-Json -Depth 6 | Tee-Object -FilePath $OutFile -Encoding UTF8 | Out-Host
+# Windows PowerShell 5.1 的 Tee-Object **没有** -Encoding（那是 PS7 才加的）：
+# 用它会在参数绑定阶段就失败，报告一个字都没落盘，而后面无条件打印"报告已写入"——
+# 取证脚本谎报成功比不产出更危险（现场会以为已经留档，直接开始判定）。
+# 所以这里三步分开：显式写文件 → 写失败就 exit 3 → 成功才打印。
+$json = $report | ConvertTo-Json -Depth 6
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+try {
+    [System.IO.File]::WriteAllText($OutFile, $json, $utf8NoBom)
+} catch {
+    Write-Error "报告写入失败: $($_.Exception.Message)"
+    exit 3
+}
 
+Write-Host $json
 Write-Host ''
 Write-Host "报告已写入: $OutFile"
 Write-Host "判定口径见 docs/verify/U0-杀软抽样验证方案.md（Defender 有检出即视为不通过，需走未压缩回退）。"
