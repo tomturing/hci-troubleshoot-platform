@@ -25,6 +25,12 @@ const (
 	// （每次注入都是一次 stdin 写，密集到秒级会干扰用户正在输入的命令）。
 	// 取 120s 表示"即使连续丢两次心跳，第 6 分钟仍会补上"。
 	shellHeartbeatInterval = 120 * time.Second
+	// shellHeartbeatQuietWindow 是"用户刚敲过键"的静默窗口：窗口内跳过本轮心跳。
+	//
+	// 为什么需要：心跳注入的是 NUL，bash 里等于 set-mark 无害，但用户若正在
+	// vi/less/top 等前台程序里操作，多出来的字节会干扰界面。跳过 30s 后
+	// 下一次 tick 在 120s 后，距上次输入最多 150s，仍远小于 TMOUT=600。
+	shellHeartbeatQuietWindow = 30 * time.Second
 )
 
 // DefaultSessionBusyGrace 是"业务活跃"保护窗口。

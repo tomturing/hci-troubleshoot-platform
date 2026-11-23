@@ -254,6 +254,13 @@ Agent 的工具是其与外部世界交互的**唯一合法通道**：
 已连接时零探测直接放行；刷新后 bridge 侧残留会话**不复用**（协议无查询能力，
 见 [排障前置 Bridge 与 SSH 门禁设计](../../custom-ui/events/2026-11-02-排障前置Bridge与SSH门禁设计.md)）。
 
+**2026-11-23 起补一层自愈**：门禁只解决「用户没连」，不解决「连过但会话中途没了」。
+会话会因节点 `TMOUT`、sshd 重启、桥进程重启而消失，而日志收集动辄几十分钟。
+现在 `stores/chat.ts` 在内存里保留最近一次连接凭据（`sshLastCredential`，**不落盘**），
+日志收集探测命中 `LC-ENV-006` 时先 `reconnectSSHSilent()` 重建会话再重试一次；
+桥侧同时用 `lastAuth` 做后台重连（见 [SSH 会话整体保活](../../../solution/events/2026-11-23-会话整体保活.md)）。
+只有两侧凭据都丢了（桥进程重启 + 页面刷新同时发生）才回到上面的登录门禁。
+
 ---
 
 ## 三、核心架构决策记录
@@ -1048,8 +1055,8 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 
 | # | 组件 | 任务 | 优先级 |
 |---|------|------|--------|
-| T1 | `terminal_bridge/main.go` | 新增 `ssh_exec_command` 消息类型（自动执行+marker捕获） | P0 |
-| T2 | `terminal_bridge/main.go` | 新增 `exec_result` 出站消息类型 | P0 |
+| T1 | `terminal_bridge/cmd/bridge/main.go` | 新增 `ssh_exec_command` 消息类型（自动执行+marker捕获） | P0 |
+| T2 | `terminal_bridge/cmd/bridge/main.go` | 新增 `exec_result` 出站消息类型 | P0 |
 | T3 | `frontend/customer/src/api/terminal.ts` | 新增 `buildExecCommandMessage(execId, command)` | P0 |
 | T4 | `frontend/customer/src/stores/chat.ts` | 监听 SSE `agent_exec_command`，路由到 bridge，POST 结果回传 | P0 |
 | T5 | `conversation-service` | 新增 `POST /internal/conversations/{id}/agent-exec`（agent→conv 内部接口） | P0 |
@@ -1087,7 +1094,7 @@ async def _execute_tool_call(self, tool_name: str, tool_args: dict) -> str:
 | 2026-06-01 | v2.0.1 | 紧急修复。ORM 模型同步迁移 20260528000000：移除 `tool_type` 列，修复 agent-service CrashLoopBackOff（`UndefinedColumnError: column tool_definition.tool_type does not exist`）|
 | 2026-06-05 | v2.1 | 补充深度分析。阐明声明式定义与底层代码配合机制，剖析"参数 Schema"修改的影响以及"使用命令模板（usage_template）"完全未被消费的实现漏洞。 |
 | 2026-06-10 | v2.2 | **FactStore 事实持久化表（PR #430）**：`desired_schema.sql` 新增 `fact` 表（T4-3），存储诊断推理过程中采集的客观事实数据；配合 `evidence_builder.py` 增加历史事实检查，解决 env_context 为空时的判定逻辑 |
-| 2026-06-11 | v2.3 | **SSH终端代理双通道隔离执行（PR #443）**：① `terminal_bridge/main.go` 新增 `ssh_exec_process` 命令分支，使用独立 SSH Session（禁用 PTY）执行命令，通过 `stdoutPipe`/`stderrPipe` 物理分流并实时推送 `exec_stdout`/`exec_stderr` 帧；② `frontend/customer/src/api/terminal.ts` 支持 `buildAgentExecProcessMessage` 消息发送；③ `frontend/customer/src/stores/chat.ts` 设立流式缓冲区 `execBuffers`，在 `postExecResult` 时传入物理隔离的标准流；④ `frontend/customer/src/components/MessageBubble.vue` 物理隔离渲染 stdout 与 stderr 纯文本区域；⑤ `backend/agent-service/app/tools/acli/executor.py` 重构输出解析提取器，优先读取双通道物理隔离输出且向下兼容单通道合并输出逻辑 |
+| 2026-06-11 | v2.3 | **SSH终端代理双通道隔离执行（PR #443）**：① `terminal_bridge/cmd/bridge/main.go` 新增 `ssh_exec_process` 命令分支，使用独立 SSH Session（禁用 PTY）执行命令，通过 `stdoutPipe`/`stderrPipe` 物理分流并实时推送 `exec_stdout`/`exec_stderr` 帧；② `frontend/customer/src/api/terminal.ts` 支持 `buildAgentExecProcessMessage` 消息发送；③ `frontend/customer/src/stores/chat.ts` 设立流式缓冲区 `execBuffers`，在 `postExecResult` 时传入物理隔离的标准流；④ `frontend/customer/src/components/MessageBubble.vue` 物理隔离渲染 stdout 与 stderr 纯文本区域；⑤ `backend/agent-service/app/tools/acli/executor.py` 重构输出解析提取器，优先读取双通道物理隔离输出且向下兼容单通道合并输出逻辑 |
 | 2026-06-12 | v2.6 | **容器执行适配器（PR-D）**：新增 `container_exec.py`，实现 `BuiltCommand`、`ContainerCommandBuilder` 与 `ContainerExecAdapter`；`bash_exec` 由固定 `docker exec` 改为远端 wrapper 探测 docker/crictl/ctr；conversation-service `agent_exec_command` 透传 `tool_name/container/original_command/built_command`；FactStore 保留结构化审计字段 |
 | 2026-06-12 | v2.5 | **工具管理 UI 校验闭环（PR-B）**：管理端工具编辑弹窗新增“校验工具定义”按钮，保存前自动调用 `/api/v1/tools/validate`，统一展示 error/warning 列表；`error` 阻断保存，`warning` 可保存但必须在页面可见。SOP 发布联动仍按 T-EXEC-11 推进。 |
 | 2026-06-12 | v2.9 | **新增告警解析与任务解析技能（PR #453）**：`database/seeds/03_skill_definitions.sql` 新增 `hci-alert-parsing` 和 `hci-task-parsing` 两个 Markdown Prompt-based Skill，用于解析 HCI 平台告警事件和任务日志。特性：① 触发语义精确化（描述含具体故障场景如"虚机开关机失败"、"迁移失败"）；② `allowed_tools: bash` 声明执行权限；③ metadata tags 扩展（增加 `node-ip`、`error-code`、`request-id` 等场景标签）；④ node_ip 匹配规则改为优先级表格；⑤ Gotchas 条目从 2 条扩展至 5/7 条，覆盖时间戳毫秒级处理、request_id 前导逗号清理等高频陷阱。详见 [告警与任务解析技能优化报告.md](../../events/2026-06-12-告警与任务解析技能优化报告.md) |
@@ -1175,5 +1182,6 @@ sequenceDiagram
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-11-23 | v3.8 | §2.3 补会话自愈：门禁只解决「用户没连」，不解决「连过但会话中途没了」；`stores/chat.ts` 内存保留最近一次连接凭据，探测命中 `LC-ENV-006` 时静默重建会话再重试一次，桥侧同步用 `lastAuth` 后台重连 | [SSH 会话整体保活](../../../solution/events/2026-11-23-会话整体保活.md) |
 | 2026-11-02 | v3.7 | 新增 §2.3「工具面可用性的前置条件」：阐明缺 SSH 会话时后端仍接受消息、SOP 却永远等不到回包，并记录前端排障前置门禁（bridge 可握手 + `sshConnectionState==='connected'`，或用户选择「无 SSH 排障」） | [排障前置 Bridge 与 SSH 门禁设计](../../custom-ui/events/2026-11-02-排障前置Bridge与SSH门禁设计.md) |
 | 2026-10-26 | — | T3/T4 两处 `frontend/src/` 补全为 `frontend/customer/src/` | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |
