@@ -14,12 +14,24 @@ deploy/env/
   platform.env          # 所有非敏感变量基准（提交 git）
   secrets.env.example   # 敏感变量模板（提交 git）
   secrets.env           # 本地真实敏感值（不提交 git，.gitignore 屏蔽）
+  weknora.env.example   # WeKnora full（Neo4j + MinIO）本地模板（提交 git）
+  weknora.env           # WeKnora 本地真实密钥（不提交 git，.gitignore 屏蔽）
 
 deploy/helm/
   hci-platform/         # 业务服务 Helm Chart
   hci-platform-infra/   # 集群级资源（StorageClass + ClusterRole）
   hci-platform-data/    # 数据层（PostgreSQL + Redis）
   hci-platform-obs/     # 可观测性栈（Loki + Tempo + Grafana + Prometheus）
+  hci-platform-weknora/ # WeKnora full（独立 namespace / 独立数据卷）
+```
+
+WeKnora 的 Compose 栈独立启动，避免普通开发环境无条件占用 ParadeDB、Neo4j 和 MinIO
+资源：
+
+```bash
+cp deploy/env/weknora.env.example deploy/env/weknora.env
+# 替换 change-me 密钥后执行
+make weknora-up
 ```
 
 ## 应急 Helm 直接部署（仅在无法通过 ArgoCD 时使用）

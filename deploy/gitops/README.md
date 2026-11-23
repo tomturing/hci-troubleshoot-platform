@@ -14,12 +14,14 @@ deploy/gitops/
 │   │   ├── hci-platform-infra-dev.yaml    集群级资源（dev 集群一次性）
 │   │   ├── hci-platform-data-dev.yaml     数据层 dev（hci-dev ns）
 │   │   ├── hci-platform-obs-dev.yaml      可观测性栈 dev（hci-observability ns）
-│   │   └── hci-platform-dev.yaml          业务服务 dev（hci-dev ns）
+│   │   ├── hci-platform-dev.yaml          业务服务 dev（hci-dev ns）
+│   │   └── hci-platform-weknora-dev.yaml  WeKnora full dev（hci-weknora ns）
 │   └── cloud/   ← 云端 staging + prod 环境 ArgoCD Application 清单
 │       ├── hci-platform-infra-staging.yaml / hci-platform-infra-prod.yaml
 │       ├── hci-platform-data-staging.yaml / hci-platform-data-prod.yaml
 │       ├── hci-platform-obs-staging.yaml / hci-platform-obs-prod.yaml
-│       └── hci-platform-staging.yaml / hci-platform-prod.yaml
+│       ├── hci-platform-staging.yaml / hci-platform-prod.yaml
+│       └── hci-platform-weknora-staging.yaml / hci-platform-weknora-prod.yaml
 ├── argocd-ops/         ← ArgoCD 运维清单（watchdog 等）
 ├── env-repo-template/  ← 环境仓库骨架（复制到 hci-platform-env）
 └── local/              ← 本地密钥（不提交，仅本地）

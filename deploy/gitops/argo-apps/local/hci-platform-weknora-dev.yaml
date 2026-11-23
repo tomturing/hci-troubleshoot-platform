@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-weknora-dev
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "dev WeKnora full — Neo4j + MinIO（namespace: hci-weknora）"
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hci-weknora
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-weknora
+      helm:
+        releaseName: hci-platform-weknora
+        valueFiles:
+          - $values/environments/dev/weknora-values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  syncPolicy:
+    automated:
+      # 保留 PVC/Secret，避免知识库数据和 SYSTEM_AES_KEY 被自动回收。
+      prune: false
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m
+    syncOptions:
+      - CreateNamespace=true

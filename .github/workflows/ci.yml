@@ -1135,11 +1135,20 @@ jobs:
             exit 1
           fi
 
-          # WeKnora chart：四个必填密钥缺一个就渲染失败，必须显式给占位值。
-          # 同时验证镜像坐标带 registry 前缀（CI 回写 tag 时依赖这一形态）。
+          # WeKnora chart：按生产 full 形态渲染核心服务 + Neo4j + MinIO。
+          # 所有必填密钥显式给占位值，并验证可选有状态服务也使用 registry 前缀；
+          # 否则 values 看似启用，集群才会以 ImagePullBackOff 暴露缺镜像问题。
           helm template weknora deploy/helm/hci-platform-weknora \
             --namespace hci-weknora \
             --set global.imageRegistry=ghcr.io/example/hci/ \
+            --set app.env.STORAGE_TYPE=minio \
+            --set imagePullSecret.create=true \
+            --set imagePullSecret.username=ci-only \
+            --set imagePullSecret.token=ci-only \
+            --set minio.enabled=true \
+            --set minio.rootPassword=ci-only \
+            --set neo4j.enabled=true \
+            --set neo4j.password=ci-only \
             --set secrets.dbPassword=ci-only \
             --set secrets.redisPassword=ci-only \
             --set secrets.jwtSecret=ci-only \
@@ -1152,6 +1161,14 @@ jobs:
           fi
           if ! grep -q "ghcr.io/example/hci/weknora-ui" /tmp/hci-platform-weknora-rendered.yaml; then
             echo "WeKnora 镜像地址未正确拼接 global.imageRegistry"
+            exit 1
+          fi
+          if ! grep -q "ghcr.io/example/hci/weknora-minio:RELEASE.2026-08-04T00-00-00Z" /tmp/hci-platform-weknora-rendered.yaml; then
+            echo "WeKnora full 未渲染私有 MinIO 镜像"
+            exit 1
+          fi
+          if ! grep -q "ghcr.io/example/hci/weknora-neo4j:2025.10.1" /tmp/hci-platform-weknora-rendered.yaml; then
+            echo "WeKnora full 未渲染私有 Neo4j 镜像"
             exit 1
           fi
 

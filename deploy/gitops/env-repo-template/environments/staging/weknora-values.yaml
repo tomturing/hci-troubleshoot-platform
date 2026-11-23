@@ -16,9 +16,31 @@ frontend:
     # 自建前缀镜像（VITE_BASE_PATH=/weknora/），tag 由 CI 构建后自动回写。
     tag: ""
 
+# full 形态：核心服务继续使用 Chart 默认值，同时启用 MinIO 对象存储与
+# Neo4j GraphRAG。两个密码均为必填，真实值只写环境仓库。
+app:
+  env:
+    STORAGE_TYPE: minio
+
+minio:
+  enabled: true
+  image:
+    repository: weknora-minio
+    tag: RELEASE.2026-08-04T00-00-00Z
+  rootPassword: ""
+  bucketName: weknora
+
+neo4j:
+  enabled: true
+  image:
+    repository: weknora-neo4j
+    tag: "2025.10.1"
+  password: ""
+
 # ghcr 拉取凭证。hci-weknora 与 hci-staging 跨命名空间，Secret 不能复用，
 # 由 chart 在本命名空间渲染同名 Secret。
 imagePullSecret:
+  create: true
   username: ""
   token: ""
 

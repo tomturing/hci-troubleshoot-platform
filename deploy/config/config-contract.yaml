@@ -43,13 +43,8 @@ non_compose:
   - SCHEDULER_SERVICE_PORT
   - VITE_API_BASE_URL
   - WARM_POOL_SIZE
-  # WeKnora 由独立 Chart 部署，本地 Compose 不启动该实例；网关侧参数只在
-  # Helm 形态下注入（admin-ui 的 WEKNORA_UPSTREAM 除外，Compose 也用它）。
-  - WEKNORA_EMBED_CHANNEL_ID
-  - WEKNORA_EMBED_ORIGIN
-  - WEKNORA_EMBED_PUBLISH_TOKEN
-  - WEKNORA_PUBLIC_PATH
-  - WEKNORA_SERVICE_URL
+  # WeKnora 本体由独立 Compose/Chart 部署；网关与 admin-ui 的连接参数由主
+  # Compose/Chart 同时注入，因此不再列入 non_compose。
 
 # DSH 的 profile/LLM/plugin 启动参数由独立 Chart
 # deploy/helm/hci-platform-dsh 管理；主业务 Chart 不复制这些字段。
