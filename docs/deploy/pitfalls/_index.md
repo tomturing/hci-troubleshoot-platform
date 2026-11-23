@@ -2,7 +2,7 @@
 status: active
 category: deploy
 audience: agent
-last_updated: 2026-09-09
+last_updated: 2026-11-23
 owner: team
 update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 ---
@@ -15,7 +15,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 > 2. 再写入对应分类 file
 > 3. 同一 commit/PR 提交，不允许分开提交
 >
-> **下一个可用编号：D-028**（旧格式延续：PIT-050）
+> **下一个可用编号：D-031**（旧格式延续：PIT-050）
 
 ---
 
@@ -26,7 +26,7 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | 触发场景 | 读取文件 | 当前条目 |
 |---------|---------|---------|
 | 网络/502/503/超时/SSL/Clash TUN/LLM | [network-service-check.md](network-service-check.md) | §一~十一, PIT-039, PIT-046, D-008 |
-| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016, D-023, D-026 |
+| 编写/审查 Shell/Makefile/CI 脚本 / GitHub Actions / Compose | [shell.md](shell.md) | PIT-001, PIT-002, D-012, D-016, D-023, D-026, D-028, D-029, D-030 |
 | K8s/K3s 镜像/Helm/网络/HostPath/DB 迁移/ArgoCD/日志采集器迁移 | [k8s.md](k8s.md) | PIT-014~019, PIT-021, PIT-022, PIT-024, PIT-034, PIT-037, PIT-038, PIT-043, PIT-044, PIT-045, D-001~D-022, D-024, D-025, D-027 |
 | ArgoCD 升级/多集群/PreSync SA/Redis EOF/PreSync Hook 镜像/失败 Hook 残留/db-seed Hook 失败 | [k8s.md](k8s.md) | D-001, D-002, D-003, D-004, D-005, D-011, D-014 |
 | Grafana 重定向/Ingress/iframe 白屏 | [grafana.md](grafana.md) | PIT-011, PIT-012, PIT-020, PIT-036 |
@@ -93,6 +93,8 @@ update_trigger: 新增部署坑 / 发现部署问题 / PIT 编号变更
 | **D-026** | shell.md | 发布基线依赖可变 Actions 展示名导致服务永久缺失、每次 main push 补偿重建并产生 promotion PR 风暴 |
 | **D-027** | k8s.md | 镜像 ENV 烘焙仅本地可解析的 upstream 默认值（host.docker.internal），集群内 Nginx 启动期 [emerg] crashloop；Helm 必须按 terminalBridge.enabled 注入 FQDN 或回环占位 |
 | **D-028** | shell.md | CI 的 compose 隐式构建不继承 build-push-action 的 `MIRROR_MODE=off`，海外 Runner 走阿里云源时 `apk upgrade` 撞包 404；compose 必须显式声明 build args |
+| **D-029** | shell.md | arm64 宿主机 + 单架构镜像时 Compose 在 manifest 解析阶段直接失败（no matching manifest for linux/arm64/v8）；只对缺 arm64 变体的服务显式钉 `platform`，不要整栈钉 amd64 |
+| **D-030** | shell.md | Compose healthcheck 的 `-p '$${VAR}'` 单引号在 `CMD-SHELL` 下阻断展开，redis/neo4j 恒定 WRONGPASS/permission denied，容器 unhealthy 却不影响手工登录 |
 
 ---
 

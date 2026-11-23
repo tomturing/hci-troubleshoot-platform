@@ -128,6 +128,27 @@ spec:
               value: {{ .Values.app.env.STORAGE_TYPE | quote }}
             - name: LOCAL_STORAGE_BASE_DIR
               value: {{ .Values.app.env.LOCAL_STORAGE_BASE_DIR | quote }}
+            {{- if .Values.minio.enabled }}
+            # full 部署的 MinIO 对象存储连接参数
+            - name: MINIO_ENDPOINT
+              value: {{ printf "%s:9000" (include "weknora.serviceName" (dict "component" "minio" "context" .)) | quote }}
+            - name: MINIO_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "weknora.secretName" . }}
+                  key: MINIO_ACCESS_KEY_ID
+            - name: MINIO_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "weknora.secretName" . }}
+                  key: MINIO_SECRET_ACCESS_KEY
+            - name: MINIO_BUCKET_NAME
+              value: {{ .Values.minio.bucketName | quote }}
+            - name: MINIO_PATH_PREFIX
+              value: {{ .Values.minio.pathPrefix | quote }}
+            - name: MINIO_USE_SSL
+              value: {{ .Values.minio.useSSL | quote }}
+            {{- end }}
             # Document reader
             - name: DOCREADER_ADDR
               value: {{ printf "%s:50051" (include "weknora.serviceName" (dict "component" "docreader" "context" .)) | quote }}

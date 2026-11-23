@@ -5,14 +5,13 @@ Run with Helm on PATH and PyYAML installed:
 """
 
 import os
-from pathlib import Path
 import re
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 import yaml
-
 
 CHART = Path(os.environ.get("HELM_CHART_DIR", Path(__file__).resolve().parents[1]))
 
@@ -28,6 +27,7 @@ def render(values=None):
             [
                 "helm", "template", "audit", str(CHART),
                 "--namespace", "audit",
+                "--set", "nameOverride=weknora",
                 "--set", "secrets.existingSecret=fixture-secret",
                 *arguments,
             ],
@@ -117,7 +117,7 @@ class AppStorageTests(unittest.TestCase):
                    and doc["metadata"]["name"] == "audit-weknora-data-files")
         self.assertEqual(pvc["spec"]["accessModes"], ["ReadWriteOnce"])
         env = app["spec"]["template"]["spec"]["containers"][0]["env"]
-        self.assertIn({"name": "STORAGE_TYPE", "value": "local"}, env)
+        self.assertIn({"name": "STORAGE_TYPE", "value": "minio"}, env)
 
     def data_files_claim(self, documents):
         return next(doc for doc in documents
@@ -156,6 +156,64 @@ class AppStorageTests(unittest.TestCase):
         self.assertFalse(any(doc["kind"] == "PersistentVolumeClaim"
                              and doc["metadata"]["name"] == "audit-weknora-data-files"
                              for doc in documents))
+
+    def test_full_stack_renders_minio_neo4j_and_app_connections(self):
+        documents = self.documents({
+            "app": {"env": {"STORAGE_TYPE": "minio"}},
+            "minio": {"enabled": True},
+            "neo4j": {"enabled": True},
+        })
+        deployment_names = {
+            doc["metadata"]["name"]
+            for doc in documents
+            if doc["kind"] == "Deployment"
+        }
+        self.assertIn("audit-weknora-minio", deployment_names)
+        self.assertIn("audit-weknora-neo4j", deployment_names)
+
+        app = self.app(documents)
+        env = app["spec"]["template"]["spec"]["containers"][0]["env"]
+        env_names = {entry["name"] for entry in env}
+        self.assertTrue({
+            "MINIO_ENDPOINT",
+            "MINIO_ACCESS_KEY_ID",
+            "MINIO_SECRET_ACCESS_KEY",
+            "MINIO_BUCKET_NAME",
+            "NEO4J_ENABLE",
+            "NEO4J_URI",
+            "NEO4J_USERNAME",
+            "NEO4J_PASSWORD",
+        }.issubset(env_names))
+        self.assertIn({"name": "STORAGE_TYPE", "value": "minio"}, env)
+
+        pvc_names = {
+            doc["metadata"]["name"]
+            for doc in documents
+            if doc["kind"] == "PersistentVolumeClaim"
+        }
+        self.assertIn("audit-weknora-minio", pvc_names)
+        self.assertIn("audit-weknora-neo4j", pvc_names)
+
+    def test_image_pull_secret_fails_closed_without_token(self):
+        result = render({"imagePullSecret": {
+            "create": True,
+            "username": "ci-user",
+            "token": "",
+        }})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("imagePullSecret.token is required", result.stderr)
+
+    def test_image_pull_secret_is_rendered_when_credentials_exist(self):
+        documents = self.documents({"imagePullSecret": {
+            "create": True,
+            "username": "ci-user",
+            "token": "ci-token",
+        }})
+        secret = next(
+            doc for doc in documents
+            if doc["kind"] == "Secret" and doc["metadata"]["name"] == "ghcr-pull-secret"
+        )
+        self.assertEqual(secret["type"], "kubernetes.io/dockerconfigjson")
 
 
 if __name__ == "__main__":

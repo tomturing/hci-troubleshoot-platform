@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 把 WeKnora 的上游镜像同步到私有 registry。
 #
-# 为什么必须同步：集群节点的 Docker Hub 加速器对第三方 namespace 返回
-# 403 Forbidden（wechatopenai/* 实测），kubelet 直连 docker.io 也不可达，
-# 所以 k8s 只能消费私有 registry 里的副本。
+# 用途：为离线/私有客户环境准备不依赖外网的镜像副本。staging 当前按环境仓
+# values 直拉上游镜像；离线环境则把下面六个镜像同批同步并切换 repository，
+# 避免 full values 已启用但 Pod 因缺少 Neo4j/MinIO 副本而 ImagePullBackOff。
 #
 # 依赖 crane（https://github.com/google/go-containerregistry），无需 docker daemon。
 # 用法：
@@ -32,8 +32,12 @@ copy "wechatopenai/weknora-app:${VERSION}"            "weknora-app:${VERSION}"
 copy "wechatopenai/weknora-docreader:${VERSION}"      "weknora-docreader:${VERSION}"
 copy "paradedb/paradedb:v0.25.11-pg17"                "weknora-postgres:v0.25.11-pg17"
 copy "redis:7.0-alpine"                               "weknora-redis:7.0-alpine"
+copy "neo4j:2025.10.1"                                "weknora-neo4j:2025.10.1"
+copy "pgsty/minio:RELEASE.2026-08-04T00-00-00Z"       "weknora-minio:RELEASE.2026-08-04T00-00-00Z"
 
 echo "[sync] 完成。请把以下 tag 写进 hci-platform-env 的 weknora-values.yaml："
 echo "  app/docreader: ${VERSION}"
 echo "  postgres:      v0.25.11-pg17"
 echo "  redis:         7.0-alpine"
+echo "  neo4j:         2025.10.1"
+echo "  minio:         RELEASE.2026-08-04T00-00-00Z"
