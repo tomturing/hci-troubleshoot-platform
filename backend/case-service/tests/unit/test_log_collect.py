@@ -518,7 +518,10 @@ class TestErrorCatalog:
 
     def test_code_format_and_layer_consistency(self):
         catalog = load_error_catalog()
-        pattern = re.compile(r"^LC-(ENV|INSTALL|EXEC|PLUGIN|SPC|SCRIPT|TRANSFER|PLATFORM)-\d{3}$")
+        # COLLECT：采集期告警（LC-COLLECT-001 等），交付成功也可能存在。
+        pattern = re.compile(
+            r"^LC-(ENV|INSTALL|EXEC|PLUGIN|SPC|SCRIPT|TRANSFER|PLATFORM|COLLECT)-\d{3}$"
+        )
         for code, meta in catalog.items():
             assert pattern.match(code), code
             # 码前缀必须与 layer 同构，否则"看码定界"失效

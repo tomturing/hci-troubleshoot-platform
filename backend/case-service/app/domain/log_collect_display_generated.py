@@ -41,7 +41,8 @@ CONDITION_LABELS = {   'artifact_verified': '产物已校验',
     'stalled': '传输已停滞',
     'task_stalled': '任务长时间无进展',
     'synthetic_test': '验证 / 压测任务',
-    'bridge_outdated': '桥接端版本较旧'}
+    'bridge_outdated': '桥接端版本较旧',
+    'collect_alert_observed': '采集时有部分日志未收全'}
 
 ARTIFACT_QUALITY_LABELS = {'ok': '有效', 'suspect': '可疑', 'incomplete': '不完整', 'invalid': '无效', 'unknown': '未知'}
 
@@ -2094,7 +2095,56 @@ FAULT_CATALOG = {   'LC-HCI-001': {   'component': 'hci',
                            'owner': 'customer',
                            'retryable': 'manual',
                            'http_status': 200,
-                           'match_keywords': ['采集包内容无法读取', '包内容无法读取']}}
+                           'match_keywords': ['采集包内容无法读取', '包内容无法读取']},
+    'LC-COLLECT-001': {   'kind': 'runtime',
+                          'layer': 'COLLECT',
+                          'component': 'acli',
+                          'scope': 'intranet',
+                          'stage': 'S4',
+                          'business_stage': 'package',
+                          'title_zh': '部分日志未收全',
+                          'problem': '采集过程中读取部分文件时出错，压缩包可能不完整',
+                          'action': '包已送达，但可能缺少个别日志；请重新收集一次以获取完整日志',
+                          'check': [   '查看任务详情的「采集告警」一行，确认是否提示“部分日志未收全”。',
+                                       '记录错误码 LC-COLLECT-001 与工单号，便于支持定位。'],
+                          'fix': [   '请重新收集一次；本次压缩包虽已归档，但不能保证包含全部日志。',
+                                     '若反复出现，请把工单号和错误码反馈给技术支持，不要反复重试覆盖现场。'],
+                          'admin_detail': '节点 collection_log.log 出现 `failed add ... to tar ... '
+                                          '[Errno 5] Input/output error`；tarfile.add 已写 header 但 '
+                                          'copyfileobj 中途失败，后续条目接在残数据后，导致内层 tgz 出现坏块（GNU tar: '
+                                          'Skipping to next header）。证据原文、文件名与行号见 '
+                                          'detail.collect_alerts[].evidence；完整上下文在 '
+                                          'log_collect_process_log.content_gz。',
+                          'evidence': 'detail.collect_alerts[] (code=LC-COLLECT-001, source, '
+                                      'node_ip, line, '
+                                      'collected_at)、log_collect_process_log.content_gz',
+                          'tone': 'warning',
+                          'owner': 'customer',
+                          'retryable': 'manual',
+                          'http_status': 200,
+                          'match_keywords': ['部分日志未收全', 'Input/output error', 'Errno 5']},
+    'LC-COLLECT-002': {   'kind': 'runtime',
+                          'layer': 'COLLECT',
+                          'component': 'acli',
+                          'scope': 'intranet',
+                          'stage': 'S4',
+                          'business_stage': 'package',
+                          'title_zh': '个别文件未纳入压缩包',
+                          'problem': '采集时有少量文件未能加入压缩包（多为失效链接或已移除的文件）',
+                          'action': '本次日志仍可使用；若怀疑缺少某个具体文件，请重新收集',
+                          'check': ['查看任务详情的「采集告警」一行，确认提示的是“个别文件未纳入”。', '如需确认具体文件名，请联系支持人员查看任务进展。'],
+                          'fix': ['通常无需处理，本次压缩包可用。', '若排查依赖被跳过的文件，请修复节点上的失效链接后重新收集。'],
+                          'admin_detail': '节点 collection_log.log 出现 `failed add ... to tar, error: '
+                                          'file: ... -> ... not exists`：软链目标缺失或文件已被移除。此类跳过不破坏 tar '
+                                          '流结构，与 LC-COLLECT-001 的 EIO 损坏不同，故仅 warning。逐条文件名见 '
+                                          'detail.collect_alerts[].evidence。',
+                          'evidence': 'detail.collect_alerts[] (code=LC-COLLECT-002, source, '
+                                      'node_ip, line, collected_at)',
+                          'tone': 'warning',
+                          'owner': 'customer',
+                          'retryable': 'manual',
+                          'http_status': 200,
+                          'match_keywords': ['个别文件未纳入压缩包', 'not exists']}}
 
 FAULT_MATCHERS = [   {   'code': 'LC-HTP-004',
         'keywords': ['pentest-cleanup', 'test_cleanup', 'ssrf_test_cleanup', 'ssrf_probe_cleanup']},

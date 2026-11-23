@@ -621,4 +621,48 @@ describe('平台派生结论优先', () => {
     expect(headline.type).toBe('success')
     expect(headline.title).toContain('已交付')
   })
+
+  // 回归（Q2026112300867）：包已交付、sha256 四处一致，但节点打包时 EIO
+  // 写坏了内层 tgz。客户必须看到「已交付 + 采集告警(错误码)」两件事，
+  // 而不是既看不到告警、又冒出一条「未记录到错误码」的红条。
+  it('已交付但有采集告警：标题保持已交付，描述带错误码且降为 warning', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: true,
+      when: '11-23 15:14',
+      display: {
+        conclusion: 'success',
+        conclusion_label: '已交付',
+        conclusion_tone: 'success',
+        phase_label: '已结束',
+        conditions: [],
+        collect_alert: {
+          code: 'LC-COLLECT-001',
+          title: '部分日志未收全',
+          customer_text: '包已送达，但可能缺少个别日志；请重新收集一次以获取完整日志',
+          tone: 'warning',
+        },
+      },
+    })
+    expect(headline.type).toBe('warning')
+    expect(headline.title).toContain('已交付')
+    expect(headline.description).toContain('LC-COLLECT-001')
+    expect(headline.description).toContain('可能缺少个别日志')
+    expect(headline.description).not.toContain('未记录到可定位的错误码')
+    expect(headline.description).not.toContain('采集失败')
+  })
+
+  it('有采集告警时不再拿 no_code 兜底文案冒充无错', () => {
+    const headline = buildResultHeadline({
+      status: 'completed',
+      delivered: true,
+      display: {
+        conclusion: 'success',
+        conclusion_label: '已交付',
+        conclusion_tone: 'success',
+        collect_alert: { code: 'LC-COLLECT-001', customer_text: '包可能不完整' },
+      },
+    })
+    expect(headline.description).not.toContain('平台未记录到可定位的错误码')
+  })
 })

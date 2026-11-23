@@ -283,6 +283,22 @@ const structuredDetail = computed<Record<string, unknown>>(() => {
 const structuredKeys = computed(() => Object.keys(structuredDetail.value))
 const structuredJson = computed(() => JSON.stringify(structuredDetail.value, null, 2))
 
+/** 采集告警原文：只给 admin 看（客户侧只有三问文案）；file/line 是定位坏包的关键。 */
+interface CollectAlertRow {
+  code?: string
+  source?: string
+  node_ip?: string
+  file?: string
+  line?: string
+  collected_at?: string
+  trace_id?: string
+}
+const collectAlertRows = computed<CollectAlertRow[]>(() => {
+  const raw = structuredDetail.value.collect_alerts
+  if (!Array.isArray(raw)) return []
+  return raw.filter((item): item is CollectAlertRow => !!item && typeof item === 'object')
+})
+
 /**
  * 可解释性：错误码是节点直报的，还是平台按文案推断的。
  * 推断出来的码不能当成权威事实展示，管理员必须能一眼分辨。
@@ -766,6 +782,28 @@ const summaryCells = computed(() => [
               {{ detailTask.trace_id || '—' }} 查询桥日志。
             </div>
             <pre v-else class="upload-raw">{{ structuredJson }}</pre>
+          </el-collapse-item>
+          <!--
+            采集告警原文：客户侧只看到「是什么问题 + 三问」；
+            这里给专家看文件名、原始日志行、节点与采集时刻，用于定位坏包来源。
+          -->
+          <el-collapse-item name="collect-alerts">
+            <template #title>
+              采集告警原文<span v-if="collectAlertRows.length">（{{ collectAlertRows.length }} 条）</span>
+            </template>
+            <div v-if="!collectAlertRows.length" class="upload-sub">本次采集未发现告警证据</div>
+            <el-table v-else :data="collectAlertRows" size="small" border>
+              <el-table-column prop="code" label="错误码" width="150" />
+              <el-table-column prop="node_ip" label="节点" width="130" />
+              <el-table-column prop="file" label="涉及文件" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="line" label="原始日志行" min-width="260" show-overflow-tooltip />
+              <el-table-column prop="source" label="日志来源" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="collected_at" label="采集时刻" width="170" />
+            </el-table>
+            <div class="upload-sub">
+              调用链：<code>{{ collectAlertRows[0]?.trace_id || detailTask?.trace_id || '—' }}</code>
+              （完整上下文见「进程日志」页签的 collection_log.log）
+            </div>
           </el-collapse-item>
         </el-collapse>
 

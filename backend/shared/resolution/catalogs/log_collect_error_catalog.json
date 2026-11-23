@@ -920,6 +920,28 @@
       "http_status": 200,
       "user_hint": "平台读不出这次压缩包的目录信息，无法判断包里到底有没有日志；请重新收集一次，连续出现请反馈工单号。",
       "ops_hint": "bridge 上报 readable=false（zip 中央目录不可解析，或包尾为空/体积未知）。平台据此判 invalid/unreadable，不做解压校验，避免加密包被误判损坏。"
+    },
+    {
+      "code": "LC-COLLECT-001",
+      "layer": "COLLECT",
+      "stage": "package",
+      "title_zh": "部分日志未收全",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 200,
+      "user_hint": "包已送达，但可能缺少个别日志；请重新收集一次以获取完整日志",
+      "ops_hint": "节点 collection_log.log 出现 `failed add ... to tar ... [Errno 5] Input/output error`；tarfile.add 已写 header 但 copyfileobj 中途失败，后续条目接在残数据后，导致内层 tgz 出现坏块（GNU tar: Skipping to next header）。证据原文、文件名与行号见 detail.collect_alerts[].evidence；完整上下文在 log_collect_process_log.content_gz。"
+    },
+    {
+      "code": "LC-COLLECT-002",
+      "layer": "COLLECT",
+      "stage": "package",
+      "title_zh": "个别文件未纳入压缩包",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 200,
+      "user_hint": "本次日志仍可使用；若怀疑缺少某个具体文件，请重新收集",
+      "ops_hint": "节点 collection_log.log 出现 `failed add ... to tar, error: file: ... -> ... not exists`：软链目标缺失或文件已被移除。此类跳过不破坏 tar 流结构，与 LC-COLLECT-001 的 EIO 损坏不同，故仅 warning。逐条文件名见 detail.collect_alerts[].evidence。"
     }
   ]
 }
