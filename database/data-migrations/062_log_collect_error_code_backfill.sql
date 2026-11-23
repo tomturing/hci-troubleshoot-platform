@@ -119,7 +119,13 @@ INSERT INTO lc_error_rules (ord, needle, code) VALUES
         (85, '超时', 'LC-EXEC-002'),
         (86, '早于本次采集开始', 'LC-TRANSFER-011'),
         (87, '上一次任务的产物', 'LC-TRANSFER-011'),
-        (88, '节点上的压缩包', 'LC-TRANSFER-011');
+        (88, '节点上的压缩包', 'LC-TRANSFER-011'),
+        -- 89/90：节点缺 stat/ls 的探测结论单列。放在表尾而非 LC-ENV-008 后面，
+        -- 因为这两条 needle 足够长且完整（"缺少探测命令"），不会被前面的泛化规则抢占；
+        -- 若将来 message 改用「无法确认日志包」开头，必须先把它前移到 LC-TRANSFER-006 之前，
+        -- 否则历史回填会继续落成 LC-TRANSFER-006。
+        (89, '缺少探测命令', 'LC-ENV-009'),
+        (90, '探测命令不可用', 'LC-ENV-009');
 
 WITH targets AS (
     SELECT

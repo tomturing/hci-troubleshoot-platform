@@ -19,6 +19,9 @@ func TestDecideArchiveProbe(t *testing.T) {
 		wantSz  int64
 		// wantDiag 为空表示不检查；非空表示必须包含这些片段。
 		wantDiag []string
+		// wantUnavail 为真表示必须把「无法确认」归因为节点缺命令（LC-ENV-009），
+		// 而不是通道异常（LC-TRANSFER-006）——两者处理动作完全不同。
+		wantUnavail bool
 	}{
 		{
 			name:     "stat 正常时直接用 stat 的大小",
@@ -73,6 +76,8 @@ func TestDecideArchiveProbe(t *testing.T) {
 			wantEx:   nil,
 			wantSz:   0,
 			wantDiag: []string{"stat:exit=127", "ls:exit=127"},
+			// 两级都是 127：这是节点缺命令，归 LC-ENV-009。
+			wantUnavail: true,
 		},
 		{
 			// 极端情况：命令不存在但输出里恰好带 "not exist" 字样（如受限 shell 的
@@ -84,6 +89,29 @@ func TestDecideArchiveProbe(t *testing.T) {
 			wantEx:   nil,
 			wantSz:   0,
 			wantDiag: nil,
+			// 两级都是命令不可用：这是节点环境缺命令，不是通道问题。
+			wantUnavail: true,
+		},
+		{
+			name:     "一级命令缺失、一级超时仍判通道异常",
+			stat:     archiveProbeAttempt{Stderr: "stat: not found", Code: 127, Err: errExit(127)},
+			ls:       archiveProbeAttempt{Err: context.DeadlineExceeded},
+			wantLvl:  "none",
+			wantEx:   nil,
+			wantSz:   0,
+			wantDiag: []string{"stat:exit=127"},
+			// 超时不是「命令不存在」的证据，不能算到节点环境头上。
+			wantUnavail: false,
+		},
+		{
+			name:        "权限拒绝不算命令缺失（要客户改权限，不是放开白名单）",
+			stat:        archiveProbeAttempt{Stderr: "stat: cannot stat '/sf': Permission denied", Code: 1, Err: errExit(1)},
+			ls:          archiveProbeAttempt{Stderr: "ls: cannot open directory: Permission denied", Code: 2, Err: errExit(2)},
+			wantLvl:     "none",
+			wantEx:      nil,
+			wantSz:      0,
+			wantDiag:    []string{"Permission denied"},
+			wantUnavail: false,
 		},
 		{
 			name:     "ls 成功但输出解析不出：存在确定、大小未知",
@@ -110,6 +138,9 @@ func TestDecideArchiveProbe(t *testing.T) {
 			}
 			if got.Size != c.wantSz {
 				t.Fatalf("Size = %d, want %d", got.Size, c.wantSz)
+			}
+			if got.Unavailable != c.wantUnavail {
+				t.Fatalf("Unavailable = %v, want %v（决定归 LC-ENV-009 还是 LC-TRANSFER-006）", got.Unavailable, c.wantUnavail)
 			}
 			for _, frag := range c.wantDiag {
 				if !strings.Contains(got.Diag, frag) {

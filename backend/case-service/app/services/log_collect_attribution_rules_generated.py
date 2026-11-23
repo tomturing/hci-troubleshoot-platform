@@ -93,4 +93,6 @@ ATTRIBUTION_RULES: tuple[tuple[str, str], ...] = (
     ("早于本次采集开始", "LC-TRANSFER-011"),
     ("上一次任务的产物", "LC-TRANSFER-011"),
     ("节点上的压缩包", "LC-TRANSFER-011"),
+    ("缺少探测命令", "LC-ENV-009"),
+    ("探测命令不可用", "LC-ENV-009"),
 )
