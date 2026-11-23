@@ -461,7 +461,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 					evidenceCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 					defer cancel()
 					inspectNodeArchive(evidenceCtx, session, evidenceCfg, evidencePath, evidenceSize)
-					collectNodeProcessLogs(evidenceCtx, session, evidenceCfg)
+					collectNodeLogs(evidenceCtx, session, evidenceCfg)
 				}()
 			}
 		}

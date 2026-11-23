@@ -261,6 +261,44 @@ class TestEvidenceRoutes:
         assert response.status_code == 200
         assert any("INSERT INTO log_collect_process_log" in sql for sql, _ in session.calls)
 
+    def test_process_log_accepts_acli_root_and_subdir_logs(self, client):
+        """采集范围扩到 today/acli 全目录：acli.log 与 cmd_output 下的 .log 都必须收。"""
+        test_client, _ = client
+        import base64
+
+        payload = base64.b64encode(gzip.compress(b"acli init failed")).decode()
+        for path in (
+            "/sf/log/today/acli/acli.log",
+            "/sf/log/today/acli/cmd_output/acli_platform.node.list.log",
+            "/sf/log/today/acli/plugins/log_collect/log_collect.log",
+        ):
+            response = test_client.post(
+                f"/api/direct/log-collect/tasks/{TASK_ID}/process-logs",
+                json={
+                    "host": "node-1",
+                    "path": path,
+                    "size": 10,
+                    "content_gz_b64": payload,
+                },
+                headers={"X-Evidence-Ticket": routes.tickets.issue(TASK_ID)},
+            )
+            assert response.status_code == 200, path
+
+    def test_process_log_rejects_non_log_and_prefix_lookalike(self, client):
+        """只收 .log，且必须真在根目录下：acli_eval/ 这类相似前缀不能借道。"""
+        test_client, _ = client
+        for path in (
+            "/sf/log/today/acli/acli.txt",
+            "/sf/log/today/acli_eval/other.log",
+            "/sf/log/today/acli/../../etc/passwd.log",
+        ):
+            response = test_client.post(
+                f"/api/direct/log-collect/tasks/{TASK_ID}/process-logs",
+                json={"host": "node-1", "path": path, "size": 10},
+                headers={"X-Evidence-Ticket": routes.tickets.issue(TASK_ID)},
+            )
+            assert response.status_code == 400, path
+
     def test_bandwidth_endpoints_require_probe_ticket(self, client):
         test_client, _ = client
         assert (
