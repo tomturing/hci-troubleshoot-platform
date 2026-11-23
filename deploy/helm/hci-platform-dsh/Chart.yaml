@@ -12,4 +12,4 @@ description: |
   3. dsh 依赖 WebSocket 做 Agent 流式输出，反代必须转发 Upgrade。
 type: application
 version: 1.0.0
-appVersion: "0.2.1-rc.2"
+appVersion: "0.2.1-rc.3"
