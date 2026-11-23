@@ -61,7 +61,8 @@ func normalizeRetryable(value any) string {
 // TestErrorCatalogMatchesGoMeta 强制 Go 常量表与 JSON 单一真源完全一致。
 func TestErrorCatalogMatchesGoMeta(t *testing.T) {
 	catalog := loadErrorCatalog(t)
-	codePattern := regexp.MustCompile(`^LC-(ENV|INSTALL|EXEC|PLUGIN|SPC|SCRIPT|TRANSFER|PLATFORM)-\d{3}$`)
+	// COLLECT：采集期告警（LC-COLLECT-001 等），交付成功也可能存在。
+	codePattern := regexp.MustCompile(`^LC-(ENV|INSTALL|EXEC|PLUGIN|SPC|SCRIPT|TRANSFER|PLATFORM|COLLECT)-\d{3}$`)
 
 	seen := make(map[string]bool, len(catalog.Errors))
 	for _, item := range catalog.Errors {
