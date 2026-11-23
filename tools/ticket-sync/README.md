@@ -565,6 +565,20 @@ uv run python -m app.cli Q2026102100147 --keep-archive  # 保留下载的 zip �
 
 退出码：`0` 成功；`2` 参数或配置问题；`3` 业务失败（`TicketError`）。
 
+手上已经有下载好的归档、只想在本地拆开看（不经服务、不落 `/sf/tickets`）时，用同口径的
+独立脚本 [scripts/unpack-log.sh](scripts/unpack-log.sh)：
+
+```bash
+# 缺省在【当前目录】生成 <归档名去后缀>/，例如 Q2026102100147/
+TICKET_ARCHIVE_PASSWORD='***' bash tools/ticket-sync/scripts/unpack-log.sh Q2026102100147.zip
+bash tools/ticket-sync/scripts/unpack-log.sh -p '***' -d 8 -f Q2026102100147.zip ./logs/Q2026102100147
+```
+
+密码优先级：`-p` > 环境变量 `TICKET_ARCHIVE_PASSWORD` > `~/.config/hci-ticket-sync/ticket-sync.env`。
+脚本与 `app/extractor.py` 同一套判定：按**魔数**识别格式（扩展名只兜底）、逐层展开嵌套包
+（内层解到同名兄弟目录）、解完补权限；内层归档解压成功后删除（`--keep-archives` 保留），
+**输入归档本身永不删除**。解压失败但已有产物时保留可读部分，退出码 `1`。
+
 ### 3.6 测试
 
 ```bash

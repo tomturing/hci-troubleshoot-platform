@@ -128,7 +128,7 @@ dsh:
   # ======================== DSH 插件 ========================================
   # packages 是需要安装到 web profile 的 npm bundle 包。入口脚本启动前执行
   # `dsh plugin --profile web add <package>`，因此包必须声明 dsh.bundle。
-  # 例：['@deepseek-ai/dsh-experimental-terminal-bundle@0.2.1-rc.2']
+  # 例：['@deepseek-ai/dsh-experimental-terminal-bundle@0.2.1-rc.3']
   # 包名使用精确版本，避免 Pod 重建时解析到不同的插件代码。
   plugins:
     packages: []
