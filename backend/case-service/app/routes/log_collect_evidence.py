@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response
 from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
@@ -35,6 +35,7 @@ from ..schemas.log_collect_evidence import (
     BandwidthAck,
     EvidenceAck,
     EvidenceErrorIn,
+    FailureSnapshotIn,
     NetworkProbeAck,
     NetworkProbeIn,
     ProcessLogIn,
@@ -45,6 +46,7 @@ from ..services.log_collect_evidence_service import (
     LogCollectEvidenceTicket,
     derive_manifest_quality,
     probe_grade,
+    reconcile_manifest_hosts,
 )
 from .log_collect import get_log_collect_service
 
@@ -317,6 +319,14 @@ async def put_artifact_manifest(
         entry_total_bytes=payload.entry_total_bytes,
         readable=payload.readable,
     )
+    # 目标节点对账：中央目录 ok 只说明包能读，不代表每台都产出了 sp_<ip>.tgz。
+    # 只有把创建时的目标快照与条目名做差集，才能拦住「acli 报 6/6、实际 3 台」的假完成。
+    missing_hosts, unexpected_hosts = reconcile_manifest_hosts(
+        payload.expected_hosts,
+        [str(entry.get("name") or "") for entry in payload.entries if isinstance(entry, dict)],
+    )
+    if quality == "ok" and missing_hosts:
+        quality, reason = "incomplete", "missing_hosts"
     task = await _require_task(service, task_id)
     session = service.repository.session
     params = {
@@ -355,6 +365,9 @@ async def put_artifact_manifest(
                 "entry_total_bytes": payload.entry_total_bytes,
                 "has_encrypted": payload.has_encrypted,
                 "readable": payload.readable,
+                "expected_hosts": payload.expected_hosts or [],
+                "missing_hosts": missing_hosts,
+                "unexpected_hosts": unexpected_hosts,
                 "inspected_at": datetime.now(UTC).isoformat(),
                 "trace_id": _trace_of(task),
             },
@@ -523,3 +536,54 @@ async def bandwidth_downlink(
         media_type="application/octet-stream",
         headers={"Cache-Control": "no-store", "X-Probe-Id": str(probe_id)},
     )
+
+
+@router.post("/tasks/{task_id}/failure-snapshot", response_model=EvidenceAck)
+async def put_failure_snapshot(
+    task_id: UUID,
+    # 显式声明为 body：本文件其余端点依赖模型注解自动识别，但新端点在此 FastAPI
+    # 版本下会被当成 query 参数（422 loc=["query","payload"]），直接标注最稳。
+    payload: FailureSnapshotIn = Body(...),
+    x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    service: Any = Depends(get_log_collect_service),
+) -> EvidenceAck:
+    """失败现场快照：节点上关键路径与磁盘事实，写入 detail.failure_snapshot。
+
+    第一性原理：失败结论已经写进任务状态，但「为什么失败」的现场（文件在不在、
+    磁盘还有多少）只有节点知道。把这份事实随证据上报，才能做到「组件坏掉时
+    平台自己闭环」，而不是每次都让客户登录设备敲 ls / df。
+
+    只写 evidence 容器（服务端 single-writer），不碰任务状态与交付字段。
+    """
+    if not tickets.verify(str(task_id), x_evidence_ticket):
+        raise _unauthorized()
+    await _require_task(service, task_id)
+    session = service.repository.session
+    snapshot = {
+        "reason": payload.reason,
+        "host": payload.host,
+        "files": payload.files,
+        "disk": payload.disk,
+        "collected_at": payload.collected_at or datetime.now(UTC).isoformat(),
+    }
+    await session.execute(
+        text(
+            """
+            UPDATE log_collect_task
+            SET detail = COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
+                    'failure_snapshot', CAST(:snapshot AS jsonb)),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = :task_id
+            """
+        ),
+        {"task_id": str(task_id), "snapshot": json.dumps(snapshot, ensure_ascii=False)},
+    )
+    await session.commit()
+    logger.info(
+        "log_collect.failure_snapshot task_id=%s reason=%s host=%s files=%s",
+        task_id,
+        payload.reason,
+        payload.host,
+        len(payload.files),
+    )
+    return EvidenceAck(task_id=task_id)

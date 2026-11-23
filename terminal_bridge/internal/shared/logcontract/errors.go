@@ -43,6 +43,9 @@ const (
 	// 同一会话的安装包传输正在进行中：并发重试会各自写同一目标路径，
 	// 历史现场因此出现过"包不对"。此码显式拒绝，而不是让它们互相覆盖。
 	ErrInstallBusy = "LC-INSTALL-009"
+	// 安装器 exit 0 但内置插件未落盘：集群分发可能静默留下空目录，
+	// 带着它采集必然失败（Q2026112300134）。
+	ErrInstallPluginIncomplete = "LC-INSTALL-010"
 
 	ErrExecPtyRequest = "LC-EXEC-001"
 	ErrExecTimeout    = "LC-EXEC-002"
@@ -182,15 +185,16 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrEnvSSHAuthFailed:   {"ENV", "customer", "manual", "exec"},
 	ErrEnvNodeOffline:     {"ENV", "customer", "manual", "collect"},
 
-	ErrInstallReqFailed: {"INSTALL", "platform", "true", "install"},
-	ErrInstallDownload:  {"INSTALL", "customer", "true", "install"},
-	ErrInstallBadStatus: {"INSTALL", "platform", "true", "install"},
-	ErrInstallUpload:    {"INSTALL", "customer", "true", "install"},
-	ErrInstallExec:      {"INSTALL", "customer", "manual", "install"},
-	ErrInstallVerify:    {"INSTALL", "product", "manual", "install"},
-	ErrInstallChecksum:  {"INSTALL", "customer", "true", "verify"},
-	ErrInstallTruncated: {"INSTALL", "customer", "true", "install"},
-	ErrInstallBusy:      {"INSTALL", "platform", "true", "install"},
+	ErrInstallReqFailed:        {"INSTALL", "platform", "true", "install"},
+	ErrInstallDownload:         {"INSTALL", "customer", "true", "install"},
+	ErrInstallBadStatus:        {"INSTALL", "platform", "true", "install"},
+	ErrInstallUpload:           {"INSTALL", "customer", "true", "install"},
+	ErrInstallExec:             {"INSTALL", "customer", "manual", "install"},
+	ErrInstallVerify:           {"INSTALL", "product", "manual", "install"},
+	ErrInstallChecksum:         {"INSTALL", "customer", "true", "verify"},
+	ErrInstallTruncated:        {"INSTALL", "customer", "true", "install"},
+	ErrInstallBusy:             {"INSTALL", "platform", "true", "install"},
+	ErrInstallPluginIncomplete: {"INSTALL", "customer", "manual", "verify"},
 
 	ErrExecPtyRequest: {"EXEC", "customer", "false", "exec"},
 	ErrExecTimeout:    {"EXEC", "customer", "true", "exec"},

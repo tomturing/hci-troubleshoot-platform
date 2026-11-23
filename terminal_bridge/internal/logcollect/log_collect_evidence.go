@@ -56,6 +56,10 @@ type EvidenceConfig struct {
 	NodeIP       string
 	CustomUI     string
 	Host         string
+	// ExpectedHosts 是创建时确定的目标节点快照（不是当前节点列表）。
+	// 随产物清单上报，供平台把「目标集合」与 sp_<ip>.tgz 对账：
+	// acli 在缺台时仍会报 100%，不对账就永远发现不了（Q2026112300134）。
+	ExpectedHosts []string
 }
 
 var EvidenceConfigs sync.Map    // task_id -> EvidenceConfig
@@ -108,6 +112,7 @@ func configureEvidence(msg models.InMessage, customUI string) {
 		TaskID: msg.ExecID, CaseID: msg.CaseID, PlatformURL: base,
 		Ticket: msg.EvidenceTicket, TraceID: msg.TraceID, TLSInsecure: msg.TransferTLSInsecure,
 		LogServerURL: msg.RemoteURL, UploadMode: mode, NodeIP: msg.NodeIP, CustomUI: customUI,
+		ExpectedHosts: expectedHostsFromIPs(msg.IPs),
 	}
 	// 每次新下发都重新严格校验一次：平台换成正式 CA 后不应继续沿用旧的放宽状态。
 	evidenceTLSRelaxed.Delete(cfg.TaskID)
@@ -117,6 +122,26 @@ func configureEvidence(msg models.InMessage, customUI string) {
 	evidence.Emit("INFO", "log_collect.evidence_enabled", "证据上报已启用", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "upload_mode": cfg.UploadMode, "trace_id": cfg.TraceID,
 	})
+}
+
+// expectedHostsFromIPs 把 create 的 -i 参数解析成目标节点快照。
+// "all"/空 表示集合由节点侧决定，平台无法据此对账——返回 nil 而不是猜一个集合。
+func expectedHostsFromIPs(ips string) []string {
+	value := strings.TrimSpace(ips)
+	if value == "" || strings.EqualFold(value, "all") {
+		return nil
+	}
+	seen := map[string]bool{}
+	hosts := make([]string, 0, 8)
+	for _, part := range strings.Split(value, ",") {
+		ip := strings.TrimSpace(part)
+		if ip == "" || seen[ip] || !spcValidIPv4(ip) {
+			continue
+		}
+		seen[ip] = true
+		hosts = append(hosts, ip)
+	}
+	return hosts
 }
 
 func EvidenceFor(taskID string) (EvidenceConfig, bool) {
@@ -402,7 +427,9 @@ type artifactManifest struct {
 	Entries         []manifestEntry `json:"entries"`
 	HasEncrypted    bool            `json:"has_encrypted"`
 	Readable        bool            `json:"readable"`
-	Evidence        map[string]any  `json:"evidence"`
+	// ExpectedHosts 是创建时的目标节点快照；平台据此与 sp_<ip>.tgz 对账。
+	ExpectedHosts []string       `json:"expected_hosts,omitempty"`
+	Evidence      map[string]any `json:"evidence"`
 }
 
 // inspectLocalArchive 只读本地 zip 中央目录，绝不解压内容、绝不校验收密条目。

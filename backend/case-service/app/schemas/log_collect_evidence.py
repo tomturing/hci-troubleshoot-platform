@@ -75,7 +75,25 @@ class ArtifactManifestIn(BaseModel):
     entries: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
     has_encrypted: bool = False
     readable: bool = Field(default=True, description="中央目录是否读得出来")
+    # 本次任务要求采集的目标节点（创建时的快照，不是当前节点列表）。
+    # 只用于把「目标集合」与产物条目 sp_<ip>.tgz 对账：acli 会在缺台时仍报 100%，
+    # 不看这个集合就会出现「包质量 ok、实际少一半节点」的假成功（Q2026112300134）。
+    expected_hosts: list[str] | None = Field(default=None, max_length=512)
     evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class FailureSnapshotIn(BaseModel):
+    """失败现场快照：节点上关键路径的存在性与磁盘事实。
+
+    这份数据只回答「失败时节点长什么样」，不参与状态判定；由 bridge 在任务
+    失败终态时上报，平台写入 detail.failure_snapshot（服务端 single-writer）。
+    """
+
+    reason: str = Field(default="", max_length=128)
+    host: str = Field(default="", max_length=64)
+    files: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
+    disk: dict[str, Any] | None = None
+    collected_at: str | None = Field(default=None, max_length=64)
 
 
 class EvidenceErrorIn(BaseModel):

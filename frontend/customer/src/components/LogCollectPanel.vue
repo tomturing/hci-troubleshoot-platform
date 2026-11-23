@@ -3002,12 +3002,6 @@ async function handleStart() {
     createOutputEvidence = String(created.raw || '')
       .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, 'Bearer [REDACTED]')
       .slice(0, 16 * 1024)
-    if (created.status !== 'ok') {
-      // 下发失败的规范码必须留住：它是后面 patch failed 写库的唯一来源。
-      lastNodeErrorCode = String(created.error_code || '')
-      throw new Error(created.message || '任务下发失败')
-    }
-
     // 配置文件落点 + 预检结论随任务落库：只留在桥日志里，换端/关页面后
     // 就无法回答"这次到底要收什么、哪些路径没找到"。
     const configReceipt = (created.log_data ?? {}) as {
@@ -3062,6 +3056,14 @@ async function handleStart() {
           `有 ${missing.length} 台节点未能写入场景清单，已在发起节点前中止本次采集`,
         )
       }
+    }
+
+    // 失败回包也要留证：spc 逐台结果（哪台哪个槽位、备份命令的真实 stderr）
+    // 只在这次回包里出现过一次，抛错前不落库就永久丢失（Q2026112300134）。
+    if (created.status !== 'ok') {
+      // 下发失败的规范码必须留住：它是后面 patch failed 写库的唯一来源。
+      lastNodeErrorCode = String(created.error_code || '')
+      throw new Error(created.message || '任务下发失败')
     }
 
     // 平台任务必须随阶段推进：pending 不能直接跳到终态，否则 PATCH 会被状态机拒绝
