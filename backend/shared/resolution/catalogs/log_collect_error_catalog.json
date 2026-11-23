@@ -108,6 +108,17 @@
       "ops_hint": "插件进度会把离线节点标记为 failed/host offline。"
     },
     {
+      "code": "LC-ENV-009",
+      "layer": "ENV",
+      "stage": "package",
+      "title_zh": "节点缺少文件探测命令",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 409,
+      "user_hint": "节点环境缺少文件探测命令，平台无法确认压缩包是否存在；请确认节点是否裁剪了系统命令后重试。",
+      "ops_hint": "两级探测（stat -c %s 与 ls -l）均返回 126/127 或命令缺失文本；与通道异常、权限拒绝严格区分，后者仍走 LC-TRANSFER-006。"
+    },
+    {
       "code": "LC-INSTALL-001",
       "layer": "INSTALL",
       "stage": "install",

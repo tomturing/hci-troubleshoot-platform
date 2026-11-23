@@ -271,3 +271,32 @@ func TestArchiveHealthVerdict(t *testing.T) {
 		})
 	}
 }
+
+func TestEvidenceForByCaseFallback(t *testing.T) {
+	const (
+		caseID = "Q2026112300736"
+		taskID = "task-evidence-fallback"
+		other  = "task-evidence-other"
+	)
+	t.Cleanup(func() {
+		EvidenceConfigs.Delete(taskID)
+		EvidenceConfigs.Delete(other)
+	})
+
+	EvidenceConfigs.Store(taskID, EvidenceConfig{TaskID: taskID, CaseID: caseID})
+	if cfg, ok := EvidenceForByCase("", caseID); !ok || cfg.TaskID != taskID {
+		t.Fatalf("唯一配置应回退命中 taskID=%s", taskID)
+	}
+	if _, ok := EvidenceForByCase("", "Q-OTHER"); ok {
+		t.Fatal("不同 case 不应回退命中")
+	}
+	// 精确匹配优先：即使同 case 有其它配置，也不要走回退。
+	EvidenceConfigs.Store(other, EvidenceConfig{TaskID: other, CaseID: caseID})
+	if cfg, ok := EvidenceForByCase(taskID, caseID); !ok || cfg.TaskID != taskID {
+		t.Fatal("exec_id 精确命中时不应被多配置阻断")
+	}
+	// 多任务并存不猜：case 有两个配置且 exec_id 未命中时必须拒绝。
+	if _, ok := EvidenceForByCase("", caseID); ok {
+		t.Fatal("同 case 多任务并存时不应回退，避免错采")
+	}
+}

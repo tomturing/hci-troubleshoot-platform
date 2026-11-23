@@ -13,6 +13,7 @@ P0 修复（2026-09）：client_id 不再来自用户自报的 X-Client-ID，而
 身份越权"。admin 只读路由改由 require_admin 强制 INTERNAL_API_TOKEN。
 """
 
+import asyncio
 import json
 
 import httpx
@@ -24,6 +25,11 @@ from shared.utils.exceptions import ErrorCode
 
 from app.config import settings
 from app.security.gateway_auth import require_admin, require_user
+from app.services.shutdown_signal import (
+    SERVER_RESTART_FRAME,
+    STOP_POLL_INTERVAL_SECONDS,
+    shutdown_signal,
+)
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 logger = get_logger("gateway-conversations")
@@ -41,6 +47,57 @@ def _signed_outbound_headers(headers: dict | None, client_id: str | None) -> dic
     if client_id:
         merged.update(sign_client_identity(client_id, settings.INTERNAL_API_TOKEN))
     return merged
+
+
+async def _iter_upstream_sse(response: httpx.Response, *, url: str):
+    """透传上游 SSE 字节；网关自身退出时补一条 server_restart 后收盘。
+
+    为什么不用 ``asyncio.wait_for(anext(iterator), 1.0)``：超时会取消正在 await 的
+    anext，httpx 的 async generator 被取消后无法继续迭代（后续只能拿到
+    StopAsyncIteration，等于把流截断）。这里把 anext 挂成一个保留的 Task，超时只是
+    "这一秒没数据"，检查退出标志后继续等同一个 Task。
+    """
+    iterator = response.aiter_bytes()
+    pending: asyncio.Future = asyncio.ensure_future(anext(iterator))
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=STOP_POLL_INTERVAL_SECONDS)
+            if not done:
+                # 上游在思考、暂时没有新字节：正好是检查退出标志的时机。
+                if shutdown_signal.is_stopping:
+                    closed = shutdown_signal.note_stream_closed()
+                    logger.info(
+                        event="gateway_sse_closed_for_restart",
+                        message="网关退出，在途 SSE 收盘并让前端重连",
+                        url=url,
+                        closed_streams=closed,
+                    )
+                    yield SERVER_RESTART_FRAME
+                    return
+                continue
+            try:
+                chunk = pending.result()
+            except StopAsyncIteration:
+                return
+            # 先发送已拿到的字节再判断是否收盘：这一帧是上游真实产出的内容，
+            # 因为要退出而丢掉只会让用户少看到一段已生成的回复。
+            yield chunk
+            if shutdown_signal.is_stopping:
+                closed = shutdown_signal.note_stream_closed()
+                logger.info(
+                    event="gateway_sse_closed_for_restart",
+                    message="网关退出，在途 SSE 收盘并让前端重连",
+                    url=url,
+                    closed_streams=closed,
+                )
+                yield SERVER_RESTART_FRAME
+                return
+            pending = asyncio.ensure_future(anext(iterator))
+    finally:
+        # 客户端断开或上面 return 时，别把上游 anext 留成悬挂任务。
+        if not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
 
 
 async def _read_json_body_limited(request: Request, max_bytes: int) -> dict:
@@ -126,7 +183,7 @@ async def proxy_request_stream(
                     )
                     yield f"event: error\ndata: {error_data}\n\n".encode()
                     return
-                async for chunk in response.aiter_bytes():
+                async for chunk in _iter_upstream_sse(response, url=url):
                     yield chunk
         except httpx.TimeoutException as e:
             logger.error(

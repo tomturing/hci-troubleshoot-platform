@@ -35,6 +35,11 @@ from app.routes import (
 from app.routes import audit as audit_route
 from app.services.agent_client import AgentClient
 from app.services.environment_client import EnvironmentClient
+from app.services.shutdown_coordinator import (
+    DEFAULT_DRAIN_TIMEOUT_SECONDS,
+    ShutdownCoordinator,
+    install_signal_handlers,
+)
 from app.services.simulation_context_client import SimulationContextClient
 from app.services.sse_pusher import SSEPusher
 
@@ -178,6 +183,17 @@ async def lifespan(app: FastAPI):
     app.state.environment_client = environment_client
     app.state.simulation_context_client = simulation_context_client
     app.state.agent_client = agent_client
+    # 退出协调器：SSE 生成器靠它判断"该收盘了"，落库任务靠它登记以便退出时 join。
+    # 必须在 yield 之前挂上，否则滚动发布的第一秒就可能漏登记任务。
+    shutdown = ShutdownCoordinator()
+    app.state.shutdown = shutdown
+    # 必须在这里（lifespan startup，即 uvicorn capture_signals 之后）挂信号处理：
+    # 晚到 lifespan shutdown 再置位的话，SSE 必须自己先结束才轮得到它，等于永远不生效。
+    if not install_signal_handlers(shutdown):
+        logger.warning(
+            event="shutdown_signal_unavailable",
+            message="未能拦截退出信号：发布时在途 SSE 只能等 grace 到期被动断开",
+        )
 
     # 注入路由依赖
     conversations.set_dependencies(
@@ -212,6 +228,24 @@ async def lifespan(app: FastAPI):
         logger.warning(event="effect_verification_reclaim_skipped", error=str(exc))
 
     yield
+
+    # 退出顺序是硬约束：先停新活（SSE 收盘），再等落库任务写完，最后才关连接池。
+    # 反过来的话，落库任务会拿到已关闭的 session/连接池，用户看到回复、库里却没有。
+    inflight_tasks = shutdown.begin_shutdown()
+    logger.info(
+        event="service_shutting_down",
+        message="收到退出信号，停止接新流并收尾在途任务",
+        inflight_tasks=inflight_tasks,
+        drain_timeout_seconds=DEFAULT_DRAIN_TIMEOUT_SECONDS,
+    )
+    abandoned, elapsed = await shutdown.drain(DEFAULT_DRAIN_TIMEOUT_SECONDS)
+    if abandoned:
+        logger.error(
+            event="service_shutdown_abandoned",
+            message="收尾超时，被迫放弃部分后台任务（内容可能未落库，需按会话 ID 复核）",
+            abandoned_tasks=abandoned,
+            elapsed_seconds=round(elapsed, 3),
+        )
 
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
     if ai_registry:

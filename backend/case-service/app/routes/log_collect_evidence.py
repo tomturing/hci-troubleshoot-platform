@@ -243,9 +243,15 @@ async def put_process_log(
     if not tickets.verify(str(task_id), x_evidence_ticket):
         raise _unauthorized()
     path = payload.path
+    # 目录为空时上报目录哨兵路径（status=empty、无正文），用于区分「没日志」与「没回传」；
+    # 其余记录仍严格限定 today/acli 下的 .log，避免放宽后任意文件被写入。
+    empty_marker = payload.status == "empty" and path.rstrip("/") == PROCESS_LOG_DIR.rstrip("/")
     if (
-        not path.startswith(PROCESS_LOG_DIR)
-        or not path.endswith(".log")
+        not empty_marker
+        and (
+            not path.startswith(PROCESS_LOG_DIR)
+            or not path.endswith(".log")
+        )
         or ".." in path
         or "\x00" in path
     ):
@@ -263,12 +269,17 @@ async def put_process_log(
 
     task = await _require_task(service, task_id)
     session = service.repository.session
+    # 预算按轮独立：init 轮采到的安装日志不能被终态轮挤掉，
+    # 否则失败时最关键的证据（acli 安装/初始化）反而丢失。
     used = await session.execute(
-        text("SELECT COALESCE(SUM(size), 0) FROM log_collect_process_log WHERE task_id = :task_id"),
-        {"task_id": str(task_id)},
+        text(
+            "SELECT COALESCE(SUM(size), 0) FROM log_collect_process_log "
+            "WHERE task_id = :task_id AND phase = :phase"
+        ),
+        {"task_id": str(task_id), "phase": payload.phase},
     )
     if int(used.scalar() or 0) + payload.size > MAX_PROCESS_LOG_TASK_BYTES:
-        raise HTTPException(status_code=413, detail="该任务进程日志总量超过上限")
+        raise HTTPException(status_code=413, detail="该轮进程日志总量超过上限")
 
     log_id = uuid4()
     result = await session.execute(
@@ -276,10 +287,10 @@ async def put_process_log(
             """
             INSERT INTO log_collect_process_log
                 (log_id, task_id, case_id, trace_id, host, path, size, sha256,
-                 content_gz, truncated, status, error, collected_at)
+                 content_gz, truncated, status, error, collected_at, phase)
             VALUES
                 (:log_id, :task_id, :case_id, :trace_id, :host, :path, :size, :sha256,
-                 :content_gz, :truncated, :status, :error, :collected_at)
+                 :content_gz, :truncated, :status, :error, :collected_at, :phase)
             ON CONFLICT DO NOTHING
             RETURNING log_id
             """
@@ -298,6 +309,7 @@ async def put_process_log(
             "status": payload.status,
             "error": payload.error,
             "collected_at": payload.collected_at or datetime.now(UTC),
+            "phase": payload.phase,
         },
     )
     inserted = result.first()

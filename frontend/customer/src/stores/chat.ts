@@ -1778,6 +1778,11 @@ export const useChatStore = defineStore('chat', () => {
     // 用索引而非 find()，确保 Vue 响应式能正确追踪数组元素属性变更
     const getAiMsgIndex = () => messages.value.findIndex((m) => m.id === aiMsgId)
 
+    // 服务端滚动发布时会在流尾发 server_restart 主动收盘；这里记下来，
+    // 等 finally 复位 isStreaming 之后再向新副本 resume，避免被防重入挡回去。
+    // 必须声明在 try 之外：finally 里要读它，放 try 内是块级作用域，运行到 finally 直接 ReferenceError。
+    let serverRestartDuringStream = false
+
     try {
       const response = await fetch(`/api/conversations/${conversationId.value}/message`, {
         method: 'POST',
@@ -1823,6 +1828,13 @@ export const useChatStore = defineStore('chat', () => {
             }
             const idx = getAiMsgIndex()
             if (idx === -1) break
+            if (pendingEventType === 'server_restart') {
+              // 服务端主动收盘（Pod 即将退出）：标记后由 finally 触发 resume-stream，
+              // 服务端已把本段内容落库，重连只会拿到"剩余未写"的部分，不会重复。
+              serverRestartDuringStream = true
+              pendingEventType = 'message'
+              continue
+            }
             if (pendingEventType === 'error') {
               // 解析服务端返回的结构化错误信息（H-2：SSE 错误帧标准化）
               let errorMsg = 'AI 响应出现错误，请稍后重试。'
@@ -2250,6 +2262,16 @@ export const useChatStore = defineStore('chat', () => {
         messages.value.push(reportMsg)
       }
       isStreaming.value = false
+      // 必须在 isStreaming 复位之后再重连：resumeOpsAgentStream 有防重入检查，
+      // 提前调用会被自己挡回去，用户就会停在半句话上。
+      if (serverRestartDuringStream) {
+        serverRestartDuringStream = false
+        // 与续写流同样留 2s：编排层把 Service 指向新副本需要时间，
+        // 立刻重连大概率又命中正在退出的 Pod。
+        window.setTimeout(() => {
+          void resumeOpsAgentStream()
+        }, 2000)
+      }
     }
   }
 
@@ -2351,6 +2373,10 @@ export const useChatStore = defineStore('chat', () => {
    *
    * 若 ops-agent 中 active_prompt=False 或 session 不存在，后端立即返回 [DONE]，不挂起。
    */
+  // 发布收盘后的续写重连次数：多副本轮转时可能连续命中正在退出的 Pod，
+  // 限 2 次是为了避免无限重连；正常情况第 1 次就会落到新副本并跑完。
+  let resumeRestartRetries = 0
+
   async function resumeOpsAgentStream(): Promise<void> {
     if (!conversationId.value) return
     // 防重入：isStreaming=true 时说明已有流在运行（场景A/B同时触发时去重）
@@ -2367,6 +2393,11 @@ export const useChatStore = defineStore('chat', () => {
     })
 
     const getAiMsgIndex = () => messages.value.findIndex((m) => m.id === aiMsgId)
+
+    // 续写流里再次遇到发布收盘：不能把 running 的工具调用标成 failed（那是误报），
+    // 也不能立刻递归重连（多副本轮转时可能连续命中），退避后再接一次。
+    // 必须声明在 try 之外：finally 里要读它，放 try 内是块级作用域，运行到 finally 直接 ReferenceError。
+    let serverRestartDuringResume = false
 
     try {
       const response = await fetch(`/api/conversations/${conversationId.value}/resume-stream`, {
@@ -2395,6 +2426,14 @@ export const useChatStore = defineStore('chat', () => {
           } else if (line.startsWith('data: ')) {
             const data = line.slice(6)
             if (data === '[DONE]') {
+              pendingEventType = 'message'
+              // 正常跑完说明已落到健康副本，重置退避计数。
+              resumeRestartRetries = 0
+              continue
+            }
+            if (pendingEventType === 'server_restart') {
+              // 服务端滚动发布：本段内容已由服务端落库，标记后由 finally 退避重连。
+              serverRestartDuringResume = true
               pendingEventType = 'message'
               continue
             }
@@ -2458,17 +2497,21 @@ export const useChatStore = defineStore('chat', () => {
     } catch (e: any) {
       console.warn('[resumeOpsAgentStream] 连接失败:', e)
     } finally {
-      for (const message of messages.value) {
-        const metadata = message.metadata as any
-        const event = metadata?.kind === 'tool_call' ? metadata.event : null
-        if (event?.status === 'running') {
-          metadata.event = {
-            ...event,
-            status: 'failed',
-            error: event.error || '执行流已结束，但未收到对应的执行结果；请重新发起诊断。',
+      // 发布收盘时上游其实还活着，只是换了 Pod；此时把 running 标 failed 是误报，
+      // 会让用户看到"执行流已结束"而实际任务仍在继续。
+      if (!serverRestartDuringResume) {
+        for (const message of messages.value) {
+          const metadata = message.metadata as any
+          const event = metadata?.kind === 'tool_call' ? metadata.event : null
+          if (event?.status === 'running') {
+            metadata.event = {
+              ...event,
+              status: 'failed',
+              error: event.error || '执行流已结束，但未收到对应的执行结果；请重新发起诊断。',
+            }
+            // 结果缺失即提示补采本地日志：自动回采可能未覆盖桥侧证据
+            markDiagnosticIncomplete('tool_result_missing')
           }
-          // 结果缺失即提示补采本地日志：自动回采可能未覆盖桥侧证据
-          markDiagnosticIncomplete('tool_result_missing')
         }
       }
       const idx = getAiMsgIndex()
@@ -2482,6 +2525,13 @@ export const useChatStore = defineStore('chat', () => {
         }
       }
       isStreaming.value = false
+      if (serverRestartDuringResume && resumeRestartRetries < 2) {
+        resumeRestartRetries += 1
+        // 留出编排层把 Service 指向新副本的时间；太急会连续命中同一个正在退出的 Pod。
+        window.setTimeout(() => {
+          void resumeOpsAgentStream()
+        }, 2000)
+      }
     }
   }
 

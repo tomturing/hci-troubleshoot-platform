@@ -72,6 +72,12 @@
 14. 任何「成功后的副作用触发」若经过可能被守卫吞掉的通道，必须先把 UI 状态推进到与后端一致，再尽力触发，且被吞掉时必须有用户可感知的反馈；「清空输入框」绝不可先于状态确认执行。
 15. 破坏性/写端点的展示态变更（清空、推进、关闭对话框）必须先取回最新详情再确认成功，避免假报错与脏态残留；服务间契约变更一律遵守 §8.2 禁令。
 
+**发布与在途任务**（详见 `docs/solution/events/2026-11-23-滚动发布不中断在途任务.md`）
+
+16. `terminationGracePeriodSeconds` 只延后 SIGKILL，不提供任何交接能力，**不能**当作"发布不影响任务"的方案。新增承载长任务的服务必须在 `workloadDefaults.gracePeriods` 登记，且 `preStop + 收尾上限 < grace`；不得再用 `<serviceKey>.terminationGracePeriodSeconds` 另开旁路（那会让"谁决定 grace"分裂成两个事实源）。
+17. 请求外的后台任务**必须可 join**：登记句柄 + 有界 drain，禁止裸 `asyncio.create_task` 后不管。退出顺序是硬约束——先 drain 在途任务，**再**收敛批量任务状态，反过来会把还在跑的任务先标成中断、随后又被 job 写回，状态自相矛盾。
+18. 长连接（SSE）服务收到 SIGTERM 必须在流内发 `event: server_restart` 并结束、**不发 `[DONE]`**；退出标志必须在 lifespan **startup** 里挂到 uvicorn 之上——uvicorn 的顺序是「停止接新连接 → 等现有连接结束 → 才跑 lifespan shutdown」，在 lifespan shutdown 里置位是死代码。
+
 ---
 
 ## 2. 技术栈

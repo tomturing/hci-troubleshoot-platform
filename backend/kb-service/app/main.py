@@ -38,13 +38,50 @@ from app.routes import (
     version_governance,
     vm_console_admin,
 )
+from app.services import signal_job_manager, vision_job_manager
 from app.services.embedding import EmbeddingService
+from app.services.job_task_registry import drain_job_tasks
 from app.utils.jieba_hci import init_jieba
 
 # 在应用创建前初始化 OpenTelemetry
 init_telemetry(settings.SERVICE_NAME)
 
 logger = get_logger(settings.SERVICE_NAME, settings.LOG_LEVEL)
+
+# kb-service 的 terminationGracePeriodSeconds 是 120s（Helm workloadDefaults.gracePeriods）。
+# drain 上限定 60s：留一半给 uvicorn 收尾、连接池关闭与 preStop 睡眠，避免 grace 耗尽被 SIGKILL。
+KB_JOB_DRAIN_TIMEOUT_SECONDS = 60.0
+
+
+async def _drain_kb_jobs() -> None:
+    """等待 vision / signal / root-signal 三类在跑 job 收尾。
+
+    这些 job 由 asyncio.create_task 后台执行、单次 30~60s，uvicorn 退出时不会等它们；
+    不 join 就会「Pod 一换、job 直接消失、轮询方 404」。
+
+    顺序是硬约束：必须在本函数之后才调 reconcile_interrupted_batch_jobs——reconcile 会把
+    running 的批量任务直接标成中断，若 job 还在跑并继续写结果，状态就会自相矛盾。
+    """
+    managers = (
+        ("vision", vision_job_manager.peek_job_manager()),
+        ("signal", signal_job_manager.peek_signal_job_manager()),
+        # 根因信号是独立实例（与关键信号物理隔离），必须单独 drain
+        ("root_signal", extract_root_signal.get_root_signal_job_manager()),
+    )
+    abandoned_total = 0
+    for label, manager in managers:
+        if manager is None:  # 该管理器从未被使用过，无需 drain
+            continue
+        abandoned, _ = await drain_job_tasks(
+            manager, timeout=KB_JOB_DRAIN_TIMEOUT_SECONDS, label=label
+        )
+        abandoned_total += abandoned
+    if abandoned_total:
+        logger.warning(
+            event="kb_service_jobs_abandoned_on_shutdown",
+            message="grace 内未能收尾的在跑 job 已被取消；job 为进程内状态，需调用方重新触发",
+            abandoned_jobs=abandoned_total,
+        )
 
 
 @asynccontextmanager
@@ -125,6 +162,8 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info(event="service_stopping", message=f"Stopping {settings.SERVICE_NAME}")
+    # 先把手上的异步 job 干完（有界），再收敛批量任务状态，最后关连接池。
+    await _drain_kb_jobs()
     try:
         reconciliation = await admin.reconcile_interrupted_batch_jobs(
             reason="service_shutdown",

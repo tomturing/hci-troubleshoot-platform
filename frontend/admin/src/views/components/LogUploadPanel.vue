@@ -77,6 +77,14 @@ const processLogContent = ref<Record<string, string>>({})
 const processLogTruncated = ref<Record<string, boolean>>({})
 const errorText = ref('')
 
+// 进程日志轮次标签：三轮证据都展示，不静默隐藏任何一轮（对抗性审查：
+// 只显示终态轮会让管理员误以为初始化轮丢失）。存量行 phase 缺省 terminal。
+function processLogPhaseLabel(phase: string | undefined): string {
+  if (phase === 'init') return '初始化轮'
+  if (phase === 'terminal_failed') return '失败终态轮'
+  return '终态轮'
+}
+
 const filters = reactive({
   days: 7,
   case_id: '',
@@ -878,7 +886,7 @@ const summaryCells = computed(() => [
               <div class="upload-path-row">
                 <el-button size="small" @click="loadProcessLogContent(item.log_id)">查看内容</el-button>
                 <code class="upload-code">{{ item.host }} · {{ item.path }}</code>
-                <span class="upload-sub">{{ item.size_text ?? '—' }} · {{ item.status }}</span>
+                <span class="upload-sub">{{ processLogPhaseLabel(item.phase) }} · {{ item.size_text ?? '—' }} · {{ item.status }}</span>
               </div>
               <div v-if="item.error" class="upload-error">{{ item.error }}</div>
               <pre v-if="processLogContent[item.log_id] !== undefined" class="upload-log-content">{{ processLogContent[item.log_id] }}</pre>

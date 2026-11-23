@@ -153,6 +153,43 @@ func EvidenceFor(taskID string) (EvidenceConfig, bool) {
 	return cfg, ok
 }
 
+// EvidenceForByCase 在 exec_id 缺失/错配时按 case_id 回退查找证据配置。
+// 只在该 case 内存中恰好有一个有效配置时才回退：多任务并存时不猜，避免错采。
+// 2026-11-23：progress 轮询长期不传 exec_id（前端已修），旧桥/旧页面仍可能触发，
+// 这里是纵深防御，保证成功终态与失败终态都能找到票据与平台地址。
+func EvidenceForByCase(taskID, caseID string) (EvidenceConfig, bool) {
+	if cfg, ok := EvidenceFor(taskID); ok {
+		return cfg, true
+	}
+	target := strings.TrimSpace(caseID)
+	if target == "" {
+		return EvidenceConfig{}, false
+	}
+	var found EvidenceConfig
+	count := 0
+	EvidenceConfigs.Range(func(key, value any) bool {
+		cfg, ok := value.(EvidenceConfig)
+		if ok && strings.TrimSpace(cfg.CaseID) == target && strings.TrimSpace(cfg.TaskID) != "" {
+			found = cfg
+			count++
+			if count > 1 {
+				return false
+			}
+		}
+		return true
+	})
+	if count != 1 {
+		return EvidenceConfig{}, false
+	}
+	evidence.Emit("INFO", "log_collect.evidence_fallback", "证据配置按工单回退命中",
+		found.TraceID, found.CaseID, found.NodeIP, found.CustomUI, map[string]any{
+			"requested_task_id": taskID,
+			"resolved_task_id":  found.TaskID,
+			"case_id":           found.CaseID,
+		})
+	return found, true
+}
+
 // newEvidenceRequest 构造带票据的请求；重试必须重建，首次请求已消耗 body。
 func (e EvidenceConfig) newEvidenceRequest(ctx context.Context, target string, body []byte, probeTicket string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))

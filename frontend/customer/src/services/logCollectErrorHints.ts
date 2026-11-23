@@ -56,6 +56,11 @@ const HINTS: Record<string, LogCollectErrorHint> = {
     check: ["确认节点电源与网络。"],
     fix: ["节点恢复在线后重试。"],
   },
+  "LC-ENV-009": {
+    title: "节点缺少文件探测命令",
+    check: ["在节点上执行 stat 与 ls，确认两条命令都存在。", "确认节点是否使用了受控/受限 shell 白名单。"],
+    fix: ["恢复系统命令或放开白名单后重试。"],
+  },
   "LC-EXEC-001": {
     title: "申请伪终端失败",
     check: ["按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"],

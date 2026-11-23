@@ -46,10 +46,7 @@ spec:
         prometheus.io/port: {{ .Values.caseService.port | quote }}
         prometheus.io/path: "/metrics"
     spec:
-      {{- with .Values.caseService.terminationGracePeriodSeconds }}
-      # 在途请求最长可达几分钟（合并 20GiB 包），30s 会在中途 SIGKILL。
-      terminationGracePeriodSeconds: {{ . }}
-      {{- end }}
+      {{- /* 优雅期由 hci.workloadPodSpecExtras 统一渲染（workloadDefaults.gracePeriods） */}}
       {{- include "hci.workloadPodSpecExtras" (dict "root" . "name" "case-service") | nindent 6 }}
       containers:
         - name: case-service
@@ -117,7 +114,7 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
             failureThreshold: 30
-          {{- include "hci.preStopLifecycle" (dict "root" . "key" "caseService") | nindent 10 }}
+          {{- include "hci.preStopLifecycle" (dict "root" . "key" "caseService" "name" "case-service") | nindent 10 }}
           resources:
             {{- toYaml .Values.caseService.resources | nindent 12 }}
           {{- if or .Values.caseService.logCollectStorage.enabled .Values.caseService.dshSessions.enabled }}

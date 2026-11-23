@@ -678,3 +678,39 @@ class TestEvidenceDelivery:
             now=NOW,
         )
         assert self.s7(payload)["status"] == "skipped"
+
+
+class TestProgressStalled:
+    """采集中断可辨识：进度长时间未变化才算停滞，且只对 collecting 判定。
+
+    对抗点：如果对 packaging 也用同一阈值，十几 GB 的包在打 zip 期间没有任何
+    新输出，正常长任务会被报成「中断」，用户据此重采，反而制造重复产物。
+    """
+
+    def test_collecting_silent_past_threshold_is_stalled(self):
+        task = make_task(status="collecting", progress=40, updated_at=NOW - timedelta(minutes=21))
+
+        assert "progress_stalled" in key_list(derive(task, now=NOW))
+
+    def test_collecting_recent_progress_is_not_stalled(self):
+        task = make_task(status="collecting", progress=40, updated_at=NOW - timedelta(minutes=5))
+
+        assert "progress_stalled" not in key_list(derive(task, now=NOW))
+
+    def test_packaging_long_silence_is_not_progress_stall(self):
+        task = make_task(status="packaging", progress=95, updated_at=NOW - timedelta(hours=3))
+
+        assert "progress_stalled" not in key_list(derive(task, now=NOW))
+
+    def test_progress_stall_supersedes_task_stall(self):
+        """两条「停滞」不能同屏：进度停滞更具体，任务级停滞让位。"""
+        task = make_task(
+            status="collecting",
+            progress=40,
+            created_at=NOW - timedelta(hours=30),
+            updated_at=NOW - timedelta(minutes=30),
+        )
+
+        keys = key_list(derive(task, now=NOW))
+        assert "progress_stalled" in keys
+        assert "task_stalled" not in keys

@@ -63,6 +63,9 @@ class ProcessLogIn(BaseModel):
     status: Literal["ok", "empty", "error"] = "ok"
     error: str | None = Field(default=None, max_length=1024)
     collected_at: datetime | None = None
+    # 采集轮次：init=下发后初始化轮，terminal=成功终态，terminal_failed=失败/取消终态。
+    # 缺省 terminal，兼容旧桥不带该字段的上报。
+    phase: Literal["init", "terminal", "terminal_failed"] = "terminal"
 
 
 class ArtifactManifestIn(BaseModel):

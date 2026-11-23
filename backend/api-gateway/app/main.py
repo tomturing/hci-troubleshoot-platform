@@ -51,6 +51,7 @@ from app.routes import (
 )
 from app.security.jwt_verify import JwtVerifier  # 阶段1：auth-service JWT 验签
 from app.services.session import SessionManager
+from app.services.shutdown_signal import install_shutdown_signal
 from app.services.terminal import TerminalService
 
 # 在应用创建前初始化 OpenTelemetry
@@ -98,6 +99,14 @@ async def lifespan(app: FastAPI):
     # 部分分支的 websocket 路由未实现 terminal service 注入函数，做兼容判断
     if hasattr(websocket, "set_terminal_service"):
         websocket.set_terminal_service(terminal_service)
+
+    # 必须在这里（lifespan startup，即 uvicorn capture_signals 之后）挂信号处理：
+    # 等到 lifespan shutdown 再置位时，在途连接必须自己先结束才轮得到它，等于永远不生效。
+    if not install_shutdown_signal():
+        logger.warning(
+            event="gateway_shutdown_signal_unavailable",
+            message="未能拦截退出信号：发布时在途 SSE 会被直接切断",
+        )
 
     yield
 

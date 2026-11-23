@@ -2265,6 +2265,14 @@ function sendAndWait(
           {
             ...(options as any),
             nodeIp: nodeIp.value,
+            // 终态证据采集（failure-snapshot / 进程日志）按 exec_id 从内存取证据配置：
+            // progress 轮询长期只传 {}，导致 EvidenceFor("") 恒 miss，成功任务也无日志。
+            // 统一在这里补齐，不覆盖调用方显式传入的 execId（create 用它绑定新任务）。
+            execId:
+              (options as any).execId ||
+              currentTask.value?.task_id ||
+              resumedTaskId.value ||
+              undefined,
           },
         ),
       )
