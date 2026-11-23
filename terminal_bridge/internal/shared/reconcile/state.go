@@ -47,6 +47,12 @@ type FileFact struct {
 }
 
 // AppliedState 是桥侧持久化的"上次成功同步"记录。
+//
+// 它描述的是**应用意图**，不是节点当前状态：策略若配了 immediate 还原，
+// 写入成功后原件会被放回，DesiredHash 却仍留在这里。Compare 因此必须以节点
+// 事实为准（plan.go 中 factAligned 先于 ledgerAligned 判定），否则会把
+// "已还原"误判成"已同步"。将来若要让探测失败路径也能识别还原，需在此
+// 加 RestoredAt，并把"已还原"做成显式的不一致源。
 type AppliedState struct {
 	Kind        string     `json:"kind"`
 	NodeIP      string     `json:"node_ip"`

@@ -10,6 +10,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"terminal_bridge/internal/shared/remote"
@@ -313,5 +314,90 @@ func TestPipelineIntentSaveFailureIsDegraded(t *testing.T) {
 	}
 	if _, err := os.Stat(backup); err != nil {
 		t.Fatalf("备份仍须保留供人工兜底：%v", err)
+	}
+}
+
+// --- 回执证据与失败归因回归 ---
+
+// cleanupFailRunner 只拦"删备份"这一条 rm：写入/还原照常走真 shell。
+// 目的是验证"没删掉就不能报已清理"，而不是模拟整条链路失败。
+type cleanupFailRunner struct{ shellRunner }
+
+func isBackupCleanup(command string) bool {
+	trimmed := strings.TrimSpace(command)
+	return strings.HasPrefix(trimmed, "rm -f ") && strings.Contains(trimmed, ".bak")
+}
+
+func (r *cleanupFailRunner) RunQuickCommandStreams(ctx context.Context, command string) (string, string, int, error) {
+	if isBackupCleanup(command) {
+		r.record(command)
+		return "", "cleanup blocked", 1, nil
+	}
+	return r.shellRunner.RunQuickCommandStreams(ctx, command)
+}
+
+func (r *cleanupFailRunner) RunQuickCommand(ctx context.Context, command string) (string, int, error) {
+	if isBackupCleanup(command) {
+		r.record(command)
+		return "cleanup blocked", 1, nil
+	}
+	return r.shellRunner.RunQuickCommand(ctx, command)
+}
+
+// TestPipelineInstallEvidenceOnSuccess 成功回执必须能区分"没配安装动作"与"装过"：
+// 只有失败路径才记 install_exit 的话，排查"到底装没装"只能再去节点翻文件。
+func TestPipelineInstallEvidenceOnSuccess(t *testing.T) {
+	_, target, backup, runner := policyFixture(t)
+	desired := policyDesired(target, backup, ReconcilePolicy{})
+	result := Run(context.Background(), Deps{Runner: runner}, desired)
+	if result.Status != StatusOK {
+		t.Fatalf("应成功：%+v", result)
+	}
+	if result.Field("install_kind") != InstallNone || result.Field("install_exit") != "0" {
+		t.Fatalf("成功路径缺安装证据：%+v", result.Evidence)
+	}
+}
+
+// TestPipelineBackupCleanupFailureIsDegraded 备份没删掉却报"已清理"等于自欺；
+// 必须降级并留出具体路径，供现场人工收尾。
+func TestPipelineBackupCleanupFailureIsDegraded(t *testing.T) {
+	_, target, backup, _ := policyFixture(t)
+	runner := &cleanupFailRunner{}
+	desired := policyDesired(target, backup, ReconcilePolicy{
+		OnSuccessRestore: RestoreSpec{Strategy: RestoreOriginal, WaitFor: WaitImmediate},
+	})
+	result := Run(context.Background(), Deps{Runner: runner}, desired)
+	if result.Status != StatusOK {
+		t.Fatalf("写入与还原应成功，仅清理降级：%+v", result)
+	}
+	if !result.Degraded {
+		t.Fatalf("备份清理失败必须置 Degraded：%+v", result)
+	}
+	if result.Field("backup_kept") != "partial" {
+		t.Fatalf("不得把清理失败报成 backup_kept=false：%+v", result.Evidence)
+	}
+	if result.Field("backup_cleanup_failed") != backup {
+		t.Fatalf("必须留下清理失败的具体路径：%+v", result.Evidence)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("替身只是拒绝删除，备份应仍在：%v", err)
+	}
+}
+
+// TestPipelineSmokeUnregisteredRendererUsesVerifyCode 冒烟渲染器缺失必须归
+// verify 域，不能再借 install_unsupported（否则排查会误入安装段）。
+func TestPipelineSmokeUnregisteredRendererUsesVerifyCode(t *testing.T) {
+	_, target, backup, runner := policyFixture(t)
+	desired := policyDesired(target, backup, ReconcilePolicy{})
+	desired.Smoke = SmokeSpec{Kind: "unregistered_kind"}
+	result := Run(context.Background(), Deps{Runner: runner}, desired)
+	if result.Status != StatusError || result.Stage != StageVerify {
+		t.Fatalf("应回执 verify 段失败：%+v", result)
+	}
+	if result.ErrorCode != CodeVerifyFailed {
+		t.Fatalf("应归 verify_failed，实际 %q", result.ErrorCode)
+	}
+	if result.Retryable {
+		t.Fatalf("缺渲染器是能力问题，不该标可重试：%+v", result)
 	}
 }

@@ -40,10 +40,13 @@ type FetchFunc func(ctx context.Context, spec FileSpec) ([]byte, error)
 
 // Deps 是流水线的全部外部依赖。
 type Deps struct {
-	Runner    remote.Runner
-	State     *Store
-	Guard     *Guard     // 主机键互斥（B3）；nil 表示不互斥（单节点一次性动作）
-	Activator *Activator // 写入集与回滚/还原执行器；nil 时每次 Run 自建一个
+	Runner remote.Runner
+	State  *Store
+	Guard  *Guard // 主机键互斥（B3）；nil 表示不互斥（单节点一次性动作）
+	// Activator 是写入集与回滚/还原执行器。**必须每次 Run 新建，或留空让 Run 内部自建**。
+	// 它只增不删、Entries() 返回全量，跨多次 Run 复用会把回滚/还原作用到上一次的条目
+	// （其中包含删除上一轮备份，而备份是终态还原的唯一来源）。
+	Activator *Activator
 	// RestoreIntent 是 WaitFor=task_terminal 时要持久化的还原意图。
 	// 内容由消费者给（spc 的槽位/目录/本机地址是产品语义，骨架不该认识），
 	// 骨架只负责"何时落盘"——漏落盘就等于把平台清单永久留在节点上。
@@ -122,10 +125,18 @@ func Run(ctx context.Context, deps Deps, d DesiredState) Result {
 		return withRollback(ctx, deps, activator, d, fail.WithEvidence(ev...))
 	}
 
-	if res, fail := runInstall(ctx, deps, d); fail != nil {
+	installRes, installFail := runInstall(ctx, deps, d)
+	if installFail != nil {
 		return withRollback(ctx, deps, activator, d,
-			fail.WithEvidence(ev...).WithEvidence(KV("install_exit", strconv.Itoa(res.ExitCode))))
+			installFail.WithEvidence(ev...).WithEvidence(KV("install_exit", strconv.Itoa(installRes.ExitCode))))
 	}
+	// 成功也要留痕：回执必须能区分"没配安装动作"与"配了且执行成功"，
+	// 否则排查"到底装没装"只能再去节点上翻文件。
+	installKind := d.Install.Kind
+	if installKind == "" {
+		installKind = InstallNone
+	}
+	ev = append(ev, KV("install_kind", installKind), KV("install_exit", strconv.Itoa(installRes.ExitCode)))
 
 	smokeRes, smokeEv, fail := runSmoke(ctx, deps, d, writes)
 	ev = append(ev, smokeEv...)
@@ -244,13 +255,31 @@ func restoreOnSuccess(ctx context.Context, deps Deps, activator *Activator, d De
 		ev = append(ev, KV("restore_error", err.Error()))
 	}
 	if !degraded && !d.Policy.KeepBackup {
+		cleaned, cleanupFailed := 0, 0
 		for _, entry := range entries {
 			if entry.IsDirTree {
 				continue // 目录树备份的清理归消费者（插件保留 .old.$SYNC_ID 供追认）
 			}
-			remote.Run(ctx, deps.Runner, "rm -f "+remote.ShellQuote(entry.BackupPath))
+			// 删除结果必须校验：没删掉却报"已清理"，与本函数头"绝不把没验过
+			// 伪装成验过了"直接冲突；残留备份还会污染下一轮同名登记的判定。
+			res := remote.Run(ctx, deps.Runner, "rm -f "+remote.ShellQuote(entry.BackupPath))
+			if res.Err != nil || res.ExitCode != 0 {
+				cleanupFailed++
+				ev = append(ev, KV("backup_cleanup_failed", entry.BackupPath))
+				continue
+			}
+			cleaned++
 		}
-		ev = append(ev, KV("backup_kept", "false"))
+		switch {
+		case cleanupFailed > 0:
+			// 部分失败不能报"已清"：残留是可见风险，必须降级并留出具体路径。
+			degraded = true
+			ev = append(ev, KV("backup_kept", "partial"),
+				KV("backup_cleaned", strconv.Itoa(cleaned)),
+				KV("backup_cleanup_failed_count", strconv.Itoa(cleanupFailed)))
+		default:
+			ev = append(ev, KV("backup_kept", "false"))
+		}
 	}
 	return ev, degraded
 }
@@ -313,7 +342,8 @@ func writeFiles(ctx context.Context, deps Deps, activator *Activator, d DesiredS
 			if err != nil {
 				return writes, ev, resultPtr(Failed(StageDownload, downloadCode(err), err.Error(), true))
 			}
-			verifySpec.Data = data
+			// verifySpec 只喂 VerifyWrite；后者只比 size 与摘要，从不读 Data。
+			// 这里不再回填原文，避免后人误以为它做了逐字节比对（那一步在 runSmoke）。
 			wr, werr = remote.WriteFile(ctx, deps.Runner, remote.WriteSpec{
 				Path: f.Path, Data: data, Size: f.Size, SHA256: f.SHA256, Mode: f.Mode,
 				OnProgress: deps.OnProgress,
@@ -321,6 +351,10 @@ func writeFiles(ctx context.Context, deps Deps, activator *Activator, d DesiredS
 		}
 		// 写入原语对"脚本以约定非零码终结"返回 (result, nil)：结论在回显里，
 		// 必须由调用方显式判定。漏掉这一步等于把 exit 21/22 当成写入成功。
+		//
+		// CopyFile 内部已自检一次 VerifyWrite，这里对 inline/remote 统一再判一次：
+		// 两处都只比元数据、不产生额外往返。保留它失败归类才有唯一出口，
+		// 不要当冗余删掉——删了 remote 分支就失去兜底。
 		if werr == nil {
 			wr.Integrity, werr = remote.VerifyWrite(verifySpec, wr)
 		}
@@ -333,6 +367,12 @@ func writeFiles(ctx context.Context, deps Deps, activator *Activator, d DesiredS
 			KV("write_exit", strconv.Itoa(wr.ExitCode)),
 			KV("integrity", wr.Integrity),
 		)
+		// 期望有摘要、节点却只给出 size_only/空结论 = 摘要工具缺失（HCI 极简宿主
+		// 常见，sha256sum/md5sum 都可能没有）。单独记一条，避免只看到
+		// integrity=size_only 时被误读成"校验通过"。
+		if f.SHA256 != "" && wr.Integrity != "sha256" && wr.Integrity != "md5" {
+			ev = append(ev, KV("digest_unavailable", f.Path))
+		}
 		if werr != nil {
 			stage, code, retryable := StageWrite, CodeWriteFailed, true
 			var we *remote.WriteError
@@ -429,8 +469,15 @@ func runSmoke(ctx context.Context, deps Deps, d DesiredState, writes []remote.Wr
 				continue
 			}
 			if f.Source.Kind != SourceInline || len(f.Source.Data) == 0 {
+				// 把写入阶段的完整性档位带出来：真因往往是节点缺 sha256sum/md5sum
+				// （integrity=size_only），而不是"回读内容不一致"。不带上档位，
+				// 定责会一律偏向校验层，掩盖节点工具缺失。
+				integrity := "unknown"
+				if i < len(writes) && writes[i].Integrity != "" {
+					integrity = writes[i].Integrity
+				}
 				return remote.ExecResult{}, ev, resultPtr(Failed(StageVerify, CodeVerifyFailed,
-					fmt.Sprintf("回读校验失败：%s 无 sha256 结论且原文不可用于逐字节比对", f.Path), true))
+					fmt.Sprintf("回读校验失败：%s 的完整性档位为 %s（期望 sha256），且来源非内联无法逐字节比对", f.Path, integrity), true))
 			}
 			command := "printf '%s' " + remote.ShellQuote(string(f.Source.Data)) + " | cmp -s - " + remote.ShellQuote(f.Path)
 			res := remote.Run(ctx, deps.Runner, command)
@@ -443,7 +490,9 @@ func runSmoke(ctx context.Context, deps Deps, d DesiredState, writes []remote.Wr
 		return remote.ExecResult{}, ev, nil
 	default:
 		if deps.SmokeFunc == nil {
-			return remote.ExecResult{}, ev, resultPtr(Failed(StageVerify, CodeInstallUnsupported,
+			// 用 verify 域自己的码：install_unsupported 会让排查误入安装段
+			// （同一个码在 runInstall 里另指"安装动作无渲染器"）。
+			return remote.ExecResult{}, ev, resultPtr(Failed(StageVerify, CodeVerifyFailed,
 				fmt.Sprintf("冒烟测试 %q 未登记渲染器", d.Smoke.Kind), false))
 		}
 		res, err := deps.SmokeFunc(ctx, deps.Runner, d)
