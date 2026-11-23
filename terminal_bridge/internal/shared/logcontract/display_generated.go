@@ -14,6 +14,22 @@ type contractError struct {
 }
 
 var contractErrors = map[string]contractError{
+	"LC-COLLECT-001": {
+		Title:     "部分日志未收全",
+		Problem:   "采集过程中读取部分文件时出错，压缩包可能不完整",
+		Action:    "包已送达，但可能缺少个别日志；请重新收集一次以获取完整日志",
+		Layer:     "COLLECT",
+		Component: "acli",
+		Stage:     "S4",
+	},
+	"LC-COLLECT-002": {
+		Title:     "个别文件未纳入压缩包",
+		Problem:   "采集时有少量文件未能加入压缩包（多为失效链接或已移除的文件）",
+		Action:    "本次日志仍可使用；若怀疑缺少某个具体文件，请重新收集",
+		Layer:     "COLLECT",
+		Component: "acli",
+		Stage:     "S4",
+	},
 	"LC-ENV-001": {
 		Title:     "不支持的硬件架构",
 		Problem:   "不支持的硬件架构",

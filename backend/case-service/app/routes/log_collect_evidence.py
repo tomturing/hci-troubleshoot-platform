@@ -25,6 +25,11 @@ from shared.observability.logger import get_logger
 from shared.observability.otel import get_current_trace_id
 from sqlalchemy import text
 
+from ..domain.log_collect_alerts import (
+    extract_collect_alerts,
+    is_collect_alert_source,
+    merge_collect_alerts,
+)
 from ..domain.log_collect_display_generated import (
     MIN_ARCHIVE_BYTES,
     NETWORK_GRADE_LABELS,
@@ -309,10 +314,79 @@ async def put_process_log(
     )
     inserted = result.first()
     await session.commit()
+    await _sync_collect_alerts(
+        service,
+        task_id=task_id,
+        path=path,
+        payload=payload,
+        content=content,
+        trace_id=_trace_of(task),
+    )
     return EvidenceAck(
         task_id=task_id,
         id=str(inserted[0]) if inserted else str(log_id),
         duplicate=inserted is None,
+    )
+
+
+async def _sync_collect_alerts(
+    service: Any,
+    *,
+    task_id: UUID,
+    path: str,
+    payload: Any,
+    content: bytes | None,
+    trace_id: str,
+) -> None:
+    """把采集插件日志里的失败行抽成告警快照，供客户/管理两端共用。
+
+    证据正文已经落库，这一步是旁路派生：失败只记日志，绝不影响上报回执。
+    只在 collection_log.log 且正文可读时运行；重采后日志干净会自动清空旧告警。
+    """
+    if not is_collect_alert_source(path) or not content:
+        return
+    try:
+        text = gzip.decompress(content).decode("utf-8", errors="replace")
+    except (OSError, EOFError, UnicodeError) as exc:
+        logger.warning(
+            "collect_alerts.decode_failed task_id=%s path=%s error=%s trace_id=%s",
+            task_id, path, str(exc), trace_id,
+        )
+        return
+    fresh = extract_collect_alerts(
+        path,
+        text,
+        collected_at=payload.collected_at.isoformat() if payload.collected_at else None,
+        trace_id=trace_id,
+        node_ip=payload.host,
+    )
+    session = service.repository.session
+    row = await session.execute(
+        text("SELECT detail FROM log_collect_task WHERE task_id = :task_id"),
+        {"task_id": str(task_id)},
+    )
+    raw_detail = row.scalar()
+    detail = dict(raw_detail) if isinstance(raw_detail, dict) else {}
+    merged = merge_collect_alerts(detail.get("collect_alerts"), fresh, source=path)
+    previous = detail.get("collect_alerts")
+    if previous == merged or (not previous and not merged):
+        return
+    await session.execute(
+        text(
+            """
+            UPDATE log_collect_task
+            SET detail = COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
+                    'collect_alerts', CAST(:alerts AS jsonb)),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = :task_id
+            """
+        ),
+        {"task_id": str(task_id), "alerts": json.dumps(merged, ensure_ascii=False)},
+    )
+    await session.commit()
+    logger.info(
+        "log_collect.collect_alerts task_id=%s source=%s alert_count=%s trace_id=%s",
+        task_id, path, len(merged), trace_id,
     )
 
 

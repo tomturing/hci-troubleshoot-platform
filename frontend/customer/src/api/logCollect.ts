@@ -216,6 +216,20 @@ export interface LogCollectDisplayView {
   upload_mode_label?: string | null
   stages?: LogCollectStageView[]
   fault_attribution?: LogCollectFaultView | null
+  /**
+   * 采集告警：与 conclusion 正交（交付成功也可能有）。
+   * 客户侧给出「是什么问题 + 错误码 + 如何确认/处理」；证据原文只在 admin-ui 展示。
+   */
+  collect_alert?: {
+    code?: string | null
+    title?: string | null
+    customer_text?: string | null
+    tone?: string | null
+    check?: string[]
+    fix?: string[]
+    node_ip?: string | null
+    collected_at?: string | null
+  } | null
   /** 唯一调用链：客户截图反馈时随文案一起给出 */
   trace_id?: string | null
 }

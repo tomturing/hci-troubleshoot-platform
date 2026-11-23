@@ -26,7 +26,11 @@ def test_repository_dsh_contract_covers_offline_compose_variables() -> None:
     """仓库内所有 DSH_OFFLINE_* Compose 输入必须拥有三层映射。"""
     result = run_contract("--skip-render")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "映射=20" in result.stdout
+    # 断言跟随契约实际条数：新增映射时校验脚本输出会同步变化，
+    # 硬编码数字会让「合法扩张契约」误报失败（#1633 DSH v1/v2 分流即因此挂 CI）。
+    contract = yaml.safe_load((ROOT / "deploy/config/dsh-config-contract.yaml").read_text(encoding="utf-8"))
+    expected = len(contract["mappings"])
+    assert f"映射={expected}" in result.stdout, result.stdout
 
 
 def test_missing_offline_mapping_fails_loudly(tmp_path: Path) -> None:

@@ -423,6 +423,13 @@ export function buildResultHeadline(args: {
     conditions?: Array<{ label: string }>
     /** 首个异常点；存在时客户侧只呈现一句话定界 */
     fault_attribution?: { customer_text?: string | null } | null
+    /** 采集告警：与交付结论正交，交付成功时也要说清「包可能不完整」 */
+    collect_alert?: {
+      code?: string | null
+      title?: string | null
+      customer_text?: string | null
+      tone?: string | null
+    } | null
     trace_id?: string | null
   } | null
   /** 平台派生的产物证据 */
@@ -458,10 +465,18 @@ export function buildResultHeadline(args: {
     // （如空壳包）仍要完整展示诊断，绝不能把真实失败信息裁掉。
     const settledOk = delivered && ['success', 'partial'].includes(String(display.conclusion || ''))
     if (settledOk) {
+      // 采集告警与交付结论正交：包确实交付成功，但 acli 日志显示采集时丢了部分文件。
+      // 客户要能一眼看到「是什么问题 + 错误码」，同时不被误导成交付失败。
+      const alert = display.collect_alert
+      const alertCode = String(alert?.code || '').trim()
+      const alertText = String(alert?.customer_text || '').trim()
+      const alertLine = alertCode || alertText
+        ? `[${alertCode}] ${alertText || UI_TEXT.labels.task_failed}`.trim()
+        : ''
       return {
-        type: tone,
+        type: alertLine ? 'warning' : tone,
         title: fmt(UI_TEXT.headline.conclusion_with_time, { conclusion: display.conclusion_label, when }),
-        description: '',
+        description: alertLine,
       }
     }
     // 客户侧只回答三件事：哪里出了问题、什么问题、下一步做什么。

@@ -14,6 +14,7 @@ import {
   COMPONENTS,
   CONDITION_LABELS,
   CONCLUSION_LABELS,
+  CONCLUSION_TONES,
   FAULT_ATTRIBUTION,
   FAULT_CATALOG,
   PHASE_LABELS,
@@ -38,6 +39,7 @@ import type { LogCollectDisplayView, LogCollectStageView } from '../src/api/logC
 
 const params = new URLSearchParams(window.location.search)
 const isDeliveredScenario = params.get('scenario') === 'delivered'
+const isCollectAlertScenario = params.get('scenario') === 'collect-alert'
 const requested = params.get('code') ?? ''
 const code: FaultCode = (requested in FAULT_CATALOG ? requested : 'LC-HCI-001') as FaultCode
 const traceId = `trace-${code}-Q2026111300155`
@@ -150,8 +152,36 @@ const deliveredCleanupTip = buildNodeCleanupTip(
   ['/sf/data/local/acli/tmp/data/log_collect/Q2026111600624.zip'],
 )
 
+// 采集告警回归（Q2026112300867）：包已交付、sha256 一致，但节点 EIO 写坏了内层 tar。
+// 客户横幅必须给出「已交付 + [错误码] 问题」，三问卡由真实 LogCollectStatusCard 渲染。
+const collectAlertCode = 'LC-COLLECT-001'
+const collectAlertTrace = 'lc-Q2026112300867-1795417871054'
+const collectAlertDisplay: LogCollectDisplayView = {
+  ...display,
+  conclusion: 'success',
+  conclusion_label: CONCLUSION_LABELS.success,
+  conclusion_tone: CONCLUSION_TONES.success,
+  conditions: [{ key: 'collect_alert_observed', label: CONDITION_LABELS.collect_alert_observed }],
+  fault_attribution: null,
+  trace_id: collectAlertTrace,
+  collect_alert: {
+    code: collectAlertCode,
+    title: FAULT_CATALOG[collectAlertCode].title_zh,
+    customer_text: FAULT_CATALOG[collectAlertCode].action,
+    tone: FAULT_CATALOG[collectAlertCode].tone,
+    check: FAULT_CATALOG[collectAlertCode].check,
+    fix: FAULT_CATALOG[collectAlertCode].fix,
+  },
+}
+const collectAlertHeadline = buildResultHeadline({
+  status: 'completed',
+  delivered: true,
+  when: '2026-11-23 15:14',
+  display: collectAlertDisplay,
+})
+
 function triggerFault(): void {
-  if (!isDeliveredScenario) showCustomerFault('', code)
+  if (!isDeliveredScenario && !isCollectAlertScenario) showCustomerFault('', code)
 }
 
 onMounted(triggerFault)
@@ -221,8 +251,32 @@ onMounted(triggerFault)
       </div>
     </section>
 
+    <!--
+      采集告警回归（Q2026112300867）：已交付 + sha256 一致，但节点 EIO 写坏内层 tar。
+      客户必须看到「已交付 + [错误码] 问题 + 三问」，且横幅 type=warning、无 no_code。
+    -->
+    <section v-if="isCollectAlertScenario" class="verify-section" data-testid="collect-alert-section">
+      <h2>{{ isDeliveredScenario ? '5' : '4' }}. 已交付但有采集告警（Q2026112300867）</h2>
+      <div class="verify-customer">
+        <el-alert
+          :type="collectAlertHeadline.type"
+          :closable="false"
+          show-icon
+          :title="collectAlertHeadline.title"
+          :description="collectAlertHeadline.description"
+        />
+        <LogCollectStatusCard
+          variant="result"
+          :display="collectAlertDisplay"
+          :conditions="collectAlertDisplay.conditions"
+          :show-diagnosis="false"
+        />
+      </div>
+      <div data-testid="collect-alert-trace">{{ collectAlertTrace }}</div>
+    </section>
+
     <section class="verify-section">
-      <h2>{{ isDeliveredScenario ? '4' : '3' }}. 错误字典全量（{{ catalogRows.length }} 条，客户与管理端同源）</h2>
+      <h2>{{ isDeliveredScenario || isCollectAlertScenario ? '6' : '3' }}. 错误字典全量（{{ catalogRows.length }} 条，客户与管理端同源）</h2>
       <el-table :data="catalogRows" size="small" border>
         <el-table-column prop="code" label="错误码" width="140" />
         <el-table-column prop="scope" label="大段" width="80" />

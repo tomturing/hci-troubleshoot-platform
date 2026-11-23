@@ -29,6 +29,7 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .log_collect_alerts import primary_collect_alert
 from .log_collect_display_generated import (
     ARCHIVE_VERIFY_WAIT_MINUTES,
     ARTIFACT_QUALITY_LABELS,
@@ -87,6 +88,7 @@ _CONDITION_ORDER: tuple[str, ...] = (
     "task_stalled",
     "synthetic_test",
     "bridge_outdated",
+    "collect_alert_observed",
 )
 
 # 与当前交付路径相关的探测目标：P1 只看 5888，P2 只看平台数据口。
@@ -928,6 +930,8 @@ def _build_conditions(
         present.add("archive_unconfirmed")
     if detail.get("bridge_outdated"):
         present.add("bridge_outdated")
+    if primary_collect_alert(detail) is not None:
+        present.add("collect_alert_observed")
 
     return [{"key": key, "label": CONDITION_LABELS[key]} for key in _CONDITION_ORDER if key in present]
 
@@ -992,6 +996,24 @@ def derive(
         network=network,
         trace_id=trace_id,
     )
+    # 采集告警与交付结论正交：交付成功仍写 success，但客户需要知道「包可能不全」。
+    # 这里只输出规范码与展示文案；证据原文/file/line 留在 detail.collect_alerts，
+    # 由 admin-ui 的任务进展展示给专家，不进客户视图。
+    alert = primary_collect_alert(detail)
+    collect_alert = None
+    if alert is not None:
+        item = FAULT_CATALOG.get(str(alert.get("code") or ""))
+        if item is not None:
+            collect_alert = {
+                "code": alert.get("code"),
+                "title": item.get("title_zh") or item.get("problem"),
+                "customer_text": item.get("action") or item.get("problem"),
+                "tone": item.get("tone") or "warning",
+                "check": list(item.get("check") or []),
+                "fix": list(item.get("fix") or []),
+                "node_ip": alert.get("node_ip"),
+                "collected_at": alert.get("collected_at"),
+            }
 
     return {
         "display": {
@@ -1020,6 +1042,7 @@ def derive(
             ),
             "stages": stages,
             "fault_attribution": fault_attribution,
+            "collect_alert": collect_alert,
             "trace_id": trace_id,
         },
         "artifact": artifact,
