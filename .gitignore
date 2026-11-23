@@ -74,6 +74,7 @@ CLAUDE.local.md
 
 # 环境敏感配置（敏感：密码/Token/API Key，不提交 git）
 deploy/env/secrets.env
+deploy/env/weknora.env
 
 # hci-sim dev 验收的稳定 SSH host key（仅本机使用，不提交）
 .hci-sim-state/

@@ -5,11 +5,11 @@
 #
 # 来源：https://github.com/Tencent/WeKnora/helm/values.yaml @ v0.9.0
 # 平台化改动（其余保持上游原样，便于升级时 diff）：
-#   - 镜像全部指向私有 registry（节点无法直连 Docker Hub，见
-#     weknora/scripts/sync-upstream-images.sh）
+#   - 支持 global.imageRegistry 私有镜像前缀；直拉/镜像副本由环境仓 values 决定
 #   - 关闭 chart 自带 Ingress：/weknora/ 由 admin-ui 同源反代 + 前缀剥离
 #   - 资源上限按单节点 staging 收敛
 #   - 新增 imagePullSecret / embed 两段平台参数
+#   - 补齐 full 形态（核心服务 + Neo4j + MinIO）的可部署模板
 #
 # 环境级密钥、模型 key、embed token 一律由 hci-platform-env 注入，
 # 本文件只放结构与安全默认值。
@@ -64,7 +64,7 @@ global:
 imagePullSecret:
   # 同一命名空间内如有第二个 release，可置 false 复用既有 Secret，
   # 避免两个 Application 争抢同名资源。
-  create: true
+  create: false
   name: ghcr-pull-secret
   registry: ghcr.io
   username: ""
@@ -537,16 +537,52 @@ secrets:
 minio:
   # -- Enable MinIO
   enabled: false
+
+  service:
+    # -- Service 名称覆盖；空值保持 "minio"
+    name: ""
+    type: ClusterIP
+    apiPort: 9000
+    consolePort: 9001
+
   image:
-    repository: pgsty/minio
-    tag: latest
+    # -- 私有 registry 副本；上游 v0.9.0 Compose 使用同一固定版本。
+    repository: weknora-minio
+    tag: RELEASE.2026-08-04T00-00-00Z
+    pullPolicy: IfNotPresent
+
   # -- Root user
   rootUser: minioadmin
   # -- Root password (REQUIRED if enabled)
   rootPassword: ""
+
+  # -- WeKnora app 使用的默认 bucket；MinIO 启动时幂等预建。
+  bucketName: weknora
+  # -- 可选对象 key 前缀
+  pathPrefix: ""
+  # -- 集群内 Service 使用明文 HTTP；外部托管 MinIO 才应开启。
+  useSSL: "false"
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  securityContext:
+    allowPrivilegeEscalation: false
+
   persistence:
     enabled: true
     size: 20Gi
+    # -- 复用既有 PVC；空值时由 Chart 创建
+    existingClaim: ""
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # -- Neo4j configuration (Knowledge Graph)
 # Equivalent to: docker compose --profile neo4j
@@ -560,8 +596,8 @@ neo4j:
     name: ""
 
   image:
-    # -- Image repository
-    repository: neo4j
+    # -- 私有 registry 副本
+    repository: weknora-neo4j
     # -- Image tag (matches docker-compose.yml)
     tag: "2025.10.1"
 

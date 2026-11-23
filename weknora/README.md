@@ -33,27 +33,75 @@ admin-ui 侧对应页面：`frontend/admin/src/views/KnowledgeBaseView.vue`，
 
 | 组件 | 上游镜像 | 平台地址 |
 | --- | --- | --- |
-| app | `wechatopenai/weknora-app:v0.9.0` | 同步到 ghcr（见下） |
-| docreader | `wechatopenai/weknora-docreader:v0.9.0` | 同步到 ghcr |
-| postgres | `paradedb/paradedb:v0.25.11-pg17` | 同步到 ghcr |
-| redis | `redis:7.0-alpine` | 同步到 ghcr |
-| ui | 自建（`weknora/ui/Dockerfile`） | CI 构建并推送 ghcr |
+| app | `wechatopenai/weknora-app:v0.9.0` | staging 直拉；离线环境同步到 ghcr |
+| docreader | `wechatopenai/weknora-docreader:v0.9.0` | staging 直拉；离线环境同步到 ghcr |
+| postgres | `paradedb/paradedb:v0.25.11-pg17` | staging 直拉；离线环境同步到 ghcr |
+| redis | `redis:7.0-alpine` | staging 直拉；离线环境同步到 ghcr |
+| neo4j | `neo4j:2025.10.1` | staging 直拉；离线环境同步到 ghcr |
+| minio | `pgsty/minio:RELEASE.2026-08-04T00-00-00Z` | staging 直拉；离线环境同步到 ghcr |
+| ui | 自建（`weknora/ui/Dockerfile`） | CI 构建并推送 ghcr（**单架构，只有 linux/amd64**） |
 
 > 上游 tag 是 `v0.9.0`，**不是** `0.9.0`（后者在 Docker Hub 上不存在，会 404）。
 
-`weknora/scripts/sync-upstream-images.sh` 用 `crane copy` 把上游四个镜像搬进私有 registry；
+> 自建 UI 镜像由 `.github/workflows/weknora-images.yml` 单平台构建，manifest 里没有 arm64。
+> Apple Silicon 本机必须由 Compose 钉 `platform: linux/amd64` 走模拟层（已内置，见下节），
+> 而清单里六个上游镜像都有 arm64 变体，**不要**给整栈钉 amd64 —— Postgres/Neo4j 跑模拟层会明显变慢。
+
+`weknora/scripts/sync-upstream-images.sh` 用 `crane copy` 把上游六个镜像搬进私有 registry；
 线上入口是 `.github/workflows/weknora-images.yml`（Actions 手动 Run workflow，按版本幂等）。
-集群节点的 Docker Hub 加速器对第三方 namespace 返回 403，因此**不能**依赖直连
-Docker Hub，镜像必须先同步。
+staging 节点已实测可直拉上述六个上游镜像；自建前缀 UI 仍只能来自 ghcr。
+离线/私有客户环境不能依赖外网，部署前必须先运行同步工作流，并在环境仓把 repository
+切换为对应的 `weknora-*` 私有副本。
 
 ## 部署
 
 - Chart：`deploy/helm/hci-platform-weknora/`（vendored 官方 chart + 平台化）
 - 命名空间：`hci-weknora`（ArgoCD `CreateNamespace=true`）
-- ArgoCD：`deploy/gitops/argo-apps/cloud/hci-platform-weknora-staging.yaml`
-- 环境参数：`hci-platform-env` 的 `environments/<env>/weknora-values.yaml`
+- ArgoCD：
+  - dev：`deploy/gitops/argo-apps/local/hci-platform-weknora-dev.yaml`
+  - staging：`deploy/gitops/argo-apps/cloud/hci-platform-weknora-staging.yaml`
+  - prod：`deploy/gitops/argo-apps/cloud/hci-platform-weknora-prod.yaml`
+- 环境参数：独立仓库 `/Users/royin/workspace/sources-sangfor/hci-platform-env` 的
+  `environments/<env>/weknora-values.yaml`（dev/staging/prod 各自的环境唯一事实源）
 - 流量：**不创建自己的 Ingress**。`/weknora/` 由 admin-ui nginx 反代并剥离前缀，
   与 admin-ui 同源。chart 的 `ingress.enabled=false`。
+
+这是 Argo CD multi-source 双仓部署：本仓只维护 Chart，`deploy/gitops/env-repo-template/`
+仅用于新环境初始化和结构参考，**不会被现有 staging Application 直接读取**；镜像地址、
+启用开关、容量与环境密钥都必须修改 `hci-platform-env` 的实际 values。
+
+平台 `full` 形态固定为核心五组件 + Neo4j + MinIO，且应用 `STORAGE_TYPE=minio`、
+`NEO4J_ENABLE=true`。它不包含上游 Compose 的其他实验性向量库、Dex、SearXNG 或
+Langfuse；这些组件若需要，必须另行做容量和安全评审。
+
+### 本地 Docker Compose
+
+```bash
+cp deploy/env/weknora.env.example deploy/env/weknora.env
+# 替换 change-me 密钥后启动；三个 profile 显式同时激活。
+make weknora-up
+make weknora-status
+```
+
+独立 Compose 加入主平台 external network，服务名 `weknora` 可被 admin-ui 与
+api-gateway 直接解析；因此本地管理台仍从 `http://localhost:3002/weknora/` 同源访问。
+
+本地有两个只在 Compose 生效的适配，Helm 部署不受影响：
+
+| 适配 | 原因 |
+| --- | --- |
+| `platform: ${WEKNORA_UI_PLATFORM:-linux/amd64}` | 自建 UI 镜像只有 amd64；不钉平台时 Compose 在 manifest 解析阶段直接失败，整条 `up` 中止。本地自建 arm64 镜像后把该变量改成 `linux/arm64` |
+| `weknora-ui-local-prefix.conf`（挂到 `/etc/nginx/conf.d/`，对外发布 `18080:8081`） | 前缀版镜像的静态资源与 axios baseURL 都带 `/weknora/`，集群里由 admin-ui nginx 剥前缀（`frontend/admin/nginx.conf`）。本地没有那一层，直连会白屏（`/weknora/assets/*.js` 落到 SPA 兜底返回 `index.html`，MIME 变 `text/html`）且 `/weknora/api/*` 不反代。该 server 做同样的 strip 前缀反代，使 `http://localhost:18080/weknora/` 与线上等价；容器自带的 80 仍保留给 admin-ui 链路 |
+
+验收口径（三个都要 200，且 MIME 正确）：
+
+```bash
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' http://localhost:18080/weknora/
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' http://localhost:18080/weknora/assets/<hash>.js
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:18081/health
+```
+
+`.../weknora/assets/*.js` 返回 `200 text/html` 就是前缀没被剥掉（白屏），不是构建产物缺失。
 
 ## 首次接入步骤（人工一次性）
 
@@ -74,7 +122,7 @@ Docker Hub，镜像必须先同步。
 ## 升级 SOP
 
 1. 改 `weknora/ui/Dockerfile` 的 `ARG WEKNORA_VERSION` 与 `WEKNORA_IMAGE_TAG`。
-2. 跑 `weknora/scripts/sync-upstream-images.sh <新版本>` 同步四个上游镜像。
+2. 跑 `weknora/scripts/sync-upstream-images.sh <新版本>` 同步六个上游镜像。
 3. 等 CI 构建出新 UI tag，把它写进 `weknora-values.yaml` 的 `ui.image.tag`。
 4. 在 staging 打开 `/weknora/` 与问答面板各走一遍（升级后必须验，不能只看 Pod Running）。
 

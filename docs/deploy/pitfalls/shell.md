@@ -2,7 +2,7 @@
 status: active
 category: deploy
 audience: operator
-last_updated: 2026-10-21
+last_updated: 2026-11-23
 owner: team
 ---
 
@@ -154,3 +154,62 @@ CI 不能依赖它；只给 build-push-action 传参，漏掉 compose 隐式构�
    本轮只做路径同源修复。
 
 **参考案例**：2026-10-21 #1181 合并后 main CI 连续 3 次红，根因即 compose 路径未传 `MIRROR_MODE=off`。
+
+## D-029：arm64 宿主机 + 单架构镜像，Compose 在 manifest 解析阶段直接失败
+
+**触发场景**：Apple Silicon（arm64）本机跑 `make weknora-up`。七个服务里只有自建前缀版 UI 镜像
+（`ghcr.io/.../weknora-ui`，CI 单平台构建）的 manifest list 只有 `linux/amd64`；
+app / docreader / postgres / redis / neo4j / minio 都有 arm64 变体。
+
+**症状**：整条 `docker compose up -d` 在任何容器创建之前就退出：
+
+```
+✘ Image ghcr.io/.../weknora-ui:v0.9.0  Error no matching manifest for linux/arm64/v8
+Error response from daemon: no matching manifest for linux/arm64/v8 in the manifest list entries
+```
+
+伴随同一批镜像显示 `Interrupted` / `No such image`——那只是 Compose 因首个失败取消其余拉取的连带输出，
+不是这些镜像缺失，不要去排查它们。
+
+**根因**：Compose 默认按宿主平台解析 manifest。单架构镜像没有 arm64 条目时，Docker 不会自动回落到
+amd64 模拟，必须在服务里显式声明 `platform:`（相当于 `docker pull --platform linux/amd64`）。
+
+**正确做法**：
+
+1. 对已确认单架构的服务显式写 `platform: ${..._PLATFORM:-linux/amd64}`，用变量兜底以便换成原生镜像；
+2. 先确认失败范围再决定钉平台：`docker pull --platform linux/arm64 <镜像>` 能成功就说明有 arm64 变体，
+   不要顺手给整栈都钉 amd64（Postgres/Neo4j 跑模拟层会明显变慢）；
+3. 官方 multi-arch 镜像（redis/neo4j/minio 等）钉了 amd64 反而丢掉原生性能；
+4. 想彻底免掉模拟层，就本地按同一 Dockerfile 构建 arm64 镜像（本项目 UI 的基础镜像
+   `wechatopenai/weknora-ui` 本身有 arm64），再把 `..._IMAGE`/`..._PLATFORM` 指过去。
+
+**参考案例**：2026-11-23 本机 `make weknora-up` 首次执行即因该单架构 UI 镜像整体中断。
+
+## D-030：Compose healthcheck 里 `-p '$${VAR}'` 的单引号会阻断变量展开，容器恒定 unhealthy
+
+**触发场景**：`deploy/docker/docker-compose.weknora.yml` 里 redis / neo4j 的健康检查需要在
+`CMD-SHELL` 里用容器环境变量传密码。
+
+**症状**：两个容器本身 `Up` 且服务正常（手工 `docker exec` 里 `redis-cli -a "$REDIS_PASSWORD" ping`
+返回 `PONG`、`cypher-shell` 也能登录），但 `docker inspect` 的健康检查输出恒定是：
+
+```
+AUTH failed: WRONGPASS invalid username-password pair or user is disabled.
+42NFF: syntax error or access rule violation - permission/access denied.
+```
+
+随后 `dependency failed to start: container ... is unhealthy`，依赖它的 app / frontend 根本不启动，
+表象容易被误读成「密码配错了」。
+
+**根因**：`$$` 在 Compose 里只负责转义成 `$`，写成 `-p '$${NEO4J_PASSWORD}'` 落进容器就是
+`-p '${NEO4J_PASSWORD}'`；`CMD-SHELL` 走 `sh -c`，**单引号内的变量不展开**，客户端实际用字面量
+`${NEO4J_PASSWORD}` 去认证。同一文件的 redis 与 neo4j 两处都犯了，所以修了一个还会撞下一个。
+
+**正确做法**：
+
+1. 变量必须放在双引号里：`test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]`；
+2. 排查顺序：先 `docker inspect <c> --format '{{json .State.Health}}'` 看真实退出码与输出，
+   再在容器内用同样的命令手工复现——手工能过、healthcheck 不能过，基本就是引号/展开问题；
+3. `AUTH failed` 不必然是密码错：把 `-a` 参数换成变量引用形式比对，能立刻区分「值传错」与「根本没展开」。
+
+**参考案例**：2026-11-23 `make weknora-up` 连续两轮分别卡在 redis、neo4j 的 `unhealthy`。

@@ -27,6 +27,7 @@ argo-apps/
 | `hci-platform-dev.yaml` | hci-platform-dev | dev 业务服务（hci-dev ns） |
 | `hci-platform-dsh-dev.yaml` | hci-platform-dsh-dev | 旧版 DSH 诊断工作台（hci-dsh ns） |
 | `hci-platform-dsh-offline-dev.yaml` | hci-platform-dsh-offline-dev | HCI 单 Agent 离线诊断 DSH（同 namespace，独立 release；仅读取 dsh-offline-values.yaml） |
+| `hci-platform-weknora-dev.yaml` | hci-platform-weknora-dev | dev WeKnora full（hci-weknora ns，Neo4j + MinIO） |
 
 **Bootstrap 命令（首次或重建后）：**
 ```bash
@@ -58,6 +59,7 @@ bash scripts/ops/argocd-apply-apps.sh --scope local --yes
 | `hci-platform-obs-prod.yaml` | hci-platform-obs-prod | prod |
 | `hci-platform-prod.yaml` | hci-platform-prod | prod（手动同步） |
 | `hci-platform-weknora-staging.yaml` | hci-platform-weknora-staging | staging WeKnora 知识库（hci-weknora ns，admin-ui 同源内嵌） |
+| `hci-platform-weknora-prod.yaml` | hci-platform-weknora-prod | prod WeKnora full（hci-weknora ns，手动同步） |
 | `hci-platform-dsh-staging.yaml` / `hci-platform-dsh-offline-staging.yaml` | staging DSH 两个独立实例；offline 仅读取 dsh-offline-values.yaml | staging |
 | `hci-platform-dsh-prod.yaml` / `hci-platform-dsh-offline-prod.yaml` | prod DSH 两个独立实例；offline 仅读取 dsh-offline-values.yaml | prod（手动同步） |
 

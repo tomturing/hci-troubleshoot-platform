@@ -1,11 +1,12 @@
 # HCI智能排障平台 - Makefile
 # 依赖管理: uv (https://docs.astral.sh/uv/)
 
-.PHONY: help install compose-check compose-network compose-build-services config-contract-check dev-up dev-down db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e live-e2e-disk-badtrack semantic-e2e-prepare semantic-online-up semantic-online-status semantic-online-verify semantic-online-matrix semantic-online-down semantic-offline-prepare semantic-offline-collect semantic-offline-upload semantic-offline-result semantic-offline-verify signal-v2-e2e-prepare signal-v2-online-matrix signal-v2-offline-stack signal-v2-offline-matrix signal-v2-offline-prepare signal-v2-offline-collect signal-v2-offline-upload signal-v2-offline-result signal-v2-offline-verify signal-v2-e2e-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
+.PHONY: help install compose-check compose-network compose-build-services config-contract-check dev-up dev-down weknora-up weknora-down weknora-status db-sync diagnosis-dev-keys diagnosis-sample-preflight diagnosis-sample-postgres-preflight diagnosis-lab-list diagnosis-lab-check diagnosis-lab-sync diagnosis-lab-up diagnosis-lab-status diagnosis-lab-connection diagnosis-lab-renew diagnosis-lab-online-smoke diagnosis-lab-offline-run diagnosis-lab-reset diagnosis-lab-down diagnosis-sample-e2e live-e2e-disk-badtrack semantic-e2e-prepare semantic-online-up semantic-online-status semantic-online-verify semantic-online-matrix semantic-online-down semantic-offline-prepare semantic-offline-collect semantic-offline-upload semantic-offline-result semantic-offline-verify signal-v2-e2e-prepare signal-v2-online-matrix signal-v2-offline-stack signal-v2-offline-matrix signal-v2-offline-prepare signal-v2-offline-collect signal-v2-offline-upload signal-v2-offline-result signal-v2-offline-verify signal-v2-e2e-down test lint clean quality-gate conflict-check post-merge k3s-release k3s-deploy-prod release-observe rollback-drill local-deploy local-deploy-import gen-schemas schema-check build-offline-collector test-offline-collector
 
 # Docker Compose v2 是 Docker 官方当前发行形态，也是 GitHub Runner 提供的命令。
 # 仍可通过 `make COMPOSE=docker-compose ...` 兼容仅安装 v1 的旧环境。
 COMPOSE ?= docker compose
+WEKNORA_ENV_FILE ?= deploy/env/weknora.env
 # 首次全量构建会同时请求 ghcr.io/astral-sh/uv；本地 Docker Engine 并发过高
 # 会使部分元数据请求超时，因此逐个构建业务服务以保持稳定。
 
@@ -17,6 +18,9 @@ help:
 	@echo "  make dev-up         - 启动开发环境(Docker Compose)"
 	@echo "  make config-contract-check - 校验 Compose、.env.example 与 Helm 配置契约"
 	@echo "  make dev-down       - 停止开发环境"
+	@echo "  make weknora-up     - 启动 WeKnora full（核心 + Neo4j + MinIO）"
+	@echo "  make weknora-down   - 停止 WeKnora full（保留数据卷）"
+	@echo "  make weknora-status - 查看 WeKnora full 服务状态"
 	@echo "  make diagnosis-dev-keys - 生成/校验本地离线诊断 RSA-3072 加密密钥"
 	@echo "  make diagnosis-sample-preflight - 启动前验证 5 篇在线/离线诊断 KBD 样例"
 	@echo "  make diagnosis-sample-postgres-preflight - 数据迁移后、服务启动前验证 5 篇 KBD 数据库闭环"
@@ -112,6 +116,24 @@ dev-up: compose-check compose-network config-contract-check diagnosis-dev-keys d
 	@echo "  - Conversation Service: http://localhost:8002"
 	@echo "  - Scheduler Service: http://localhost:8003"
 	@echo "  - Admin UI: http://localhost:3002"
+
+weknora-up: compose-check compose-network
+	@test -f "$(WEKNORA_ENV_FILE)" || { \
+		echo "缺少 $(WEKNORA_ENV_FILE)，请先复制 deploy/env/weknora.env.example 并替换密钥"; \
+		exit 2; \
+	}
+	$(COMPOSE) --env-file "$(WEKNORA_ENV_FILE)" -f deploy/docker/docker-compose.weknora.yml \
+		--profile full --profile neo4j --profile minio up -d
+
+weknora-down: compose-check
+	@test -f "$(WEKNORA_ENV_FILE)" || { echo "缺少 $(WEKNORA_ENV_FILE)"; exit 2; }
+	$(COMPOSE) --env-file "$(WEKNORA_ENV_FILE)" -f deploy/docker/docker-compose.weknora.yml \
+		--profile full --profile neo4j --profile minio down
+
+weknora-status: compose-check
+	@test -f "$(WEKNORA_ENV_FILE)" || { echo "缺少 $(WEKNORA_ENV_FILE)"; exit 2; }
+	$(COMPOSE) --env-file "$(WEKNORA_ENV_FILE)" -f deploy/docker/docker-compose.weknora.yml \
+		--profile full --profile neo4j --profile minio ps
 
 diagnosis-dev-keys:
 	@echo "检查本地离线诊断加密密钥..."
