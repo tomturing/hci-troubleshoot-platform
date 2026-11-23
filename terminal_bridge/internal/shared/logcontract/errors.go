@@ -55,6 +55,11 @@ const (
 	ErrArtifactTooSmall   = "LC-TRANSFER-013"
 	ErrArtifactUnreadable = "LC-TRANSFER-014"
 
+	// 采集期告警：交付成功也可能存在，与 delivery_status 正交。
+	// 001 是 EIO 写坏 tar 流（包可能不完整），002 是失效链接（个别文件未纳入）。
+	ErrCollectIO      = "LC-COLLECT-001"
+	ErrCollectPartial = "LC-COLLECT-002"
+
 	ErrExecPtyRequest = "LC-EXEC-001"
 	ErrExecTimeout    = "LC-EXEC-002"
 	ErrExecNonZero    = "LC-EXEC-003"
@@ -209,6 +214,10 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrArtifactEmpty:      {"TRANSFER", "customer", "manual", "package"},
 	ErrArtifactTooSmall:   {"TRANSFER", "customer", "manual", "package"},
 	ErrArtifactUnreadable: {"TRANSFER", "customer", "manual", "package"},
+
+	// 采集告警：与交付结论正交，客户需重新收集或反馈支持，不做自动重试。
+	ErrCollectIO:      {"COLLECT", "customer", "manual", "package"},
+	ErrCollectPartial: {"COLLECT", "customer", "manual", "package"},
 
 	ErrExecPtyRequest: {"EXEC", "customer", "false", "exec"},
 	ErrExecTimeout:    {"EXEC", "customer", "true", "exec"},
