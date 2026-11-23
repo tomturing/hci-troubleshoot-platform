@@ -799,15 +799,32 @@ function stopFactRecheck() {
  * 与重试的关系：复查不复用重试（`retries: false`），否则一次瞬态失败会被放大成
  * 3×3 次 SSH 调用；复查次数也不因成功而归零，只由用户动作（手动重探/换单/换节点）复位。
  */
+/** 采集结束后要补做的一次复查；采集中探测会抢会话，所以只能延后、不能丢弃。 */
+let recheckPendingAfterRun = false
+
 function scheduleFactRecheck() {
   stopFactRecheck()
-  // 采集中不复查：探测要连发多条 SSH 命令，会和采集抢同一个会话
-  if (!visible.value || running.value) return
+  if (!visible.value) return
+  // 采集中不立即复查：探测要连发多条 SSH 命令，会和采集抢同一个会话。
+  // 但直接丢弃会让"acli 刚升级完"的快照永久停在旧版本（Q2026112300145），
+  // 所以记成 pending，由 watch(running) 在采集终态补做一次。
+  if (running.value) {
+    recheckPendingAfterRun = true
+    return
+  }
   if (!needsFactRecheck(probeResult.value)) return
   if (probeRecheckCount.value >= PROBE_RECHECK_MAX) return
   probeRecheckTimer = setTimeout(() => {
     probeRecheckTimer = null
-    if (!visible.value || running.value) return
+    if (!visible.value) return
+    // 到点时采集已经开始了：这里不能直接丢弃。安装成功后 30s 才到期，而用户往往
+    // 十几秒内就点了「开始收集」（本工单相隔 13 秒），一丢弃就再没有任何事件能
+    // 触发复查，快照永久停在安装前（Q2026112300145）。改为记 pending 交给
+    // watch(running) 在采集终态补做。
+    if (running.value) {
+      recheckPendingAfterRun = true
+      return
+    }
     probeRecheckCount.value += 1
     void prepare({ silent: true, retries: false, resetRecheck: false })
   }, PROBE_RECHECK_INTERVAL_MS)
@@ -1837,6 +1854,14 @@ async function prepare(
 const running = computed(() =>
   ['probing', 'installing', 'creating', 'collecting', 'pulling', 'uploading', 'relaying'].includes(stage.value),
 )
+
+// 采集终态补做被推迟的事实复查：acli 安装与采集常常紧邻发生（本工单相隔 13 秒），
+// 采集中丢弃复查会让页面一直显示安装前的版本与"节点清单获取失败"。
+watch(running, (active) => {
+  if (active || !recheckPendingAfterRun) return
+  recheckPendingAfterRun = false
+  scheduleFactRecheck()
+})
 
 const progressStatus = computed(() =>
   stage.value === 'failed' ? 'exception' : stage.value === 'done' ? 'success' : undefined,
@@ -3210,17 +3235,24 @@ async function markAcliInstalled() {
   acliFailure.value = null
   resetAcliLive()
   probeResult.value = { ...(probeResult.value as ProbeResult), acli_installed: true }
+  // 安装是事实层面的强变更，必须重开复查预算：预算被前面几次"装好但还没同步"
+  // 的失败复查耗光时，下面即使安排了复查也会被 `>= PROBE_RECHECK_MAX` 直接拦住，
+  // 用户装成功了却永远看不到新快照。
+  probeRecheckCount.value = 0
   // 安装成功后必须重探：节点清单与场景目录只有 acli 可用后才读得到，
   // 不重探会让用户"装完 acli 仍看到读不到节点清单"，误判为安装无效。
   // 只探一次（retries: false）：安装已经成功，重探失败不该再拖住用户等待；
   // 真没探到会由事实复查在 30s 后自动补读。
   const refreshed = await prepare({ silent: true, retries: false })
-  if (!refreshed && prepareState.value === 'failed') {
-    // 重探失败不改写安装结果，也不让面板停在红色错误态：采集仍可继续（-i all 合法）
-    prepareState.value = 'ready'
-    prepareError.value = ''
-    // 重探失败不能就此停在旧快照：交给事实复查把「装好了但没读到清单」补上，
-    // 否则用户又回到「必须 F5」的老路
+  if (!refreshed) {
+    if (prepareState.value === 'failed') {
+      // 重探失败不改写安装结果，也不让面板停在红色错误态：采集仍可继续（-i all 合法）
+      prepareState.value = 'ready'
+      prepareError.value = ''
+    }
+    // 无论"被并发去重"还是"真失败"都必须安排复查：
+    // prepare 因 prepareState=probing 复用进行中的探测时会直接返回 false，
+    // 只在 failed 分支安排会让这一支静默跳过，快照永久停在安装前（Q2026112300145）。
     scheduleFactRecheck()
   }
 }
