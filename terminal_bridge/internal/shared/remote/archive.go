@@ -40,6 +40,13 @@ var (
 	// 或不吃这个参数）。与"文件不存在"必须分开，否则会把盘上的包判成已删除。
 	ArchiveProbeToolMissingRe = regexp.MustCompile(`(?i)(command not found|: not found|unknown command|not supported|invalid option|illegal option|permission denied)`)
 
+	// ArchiveProbeCommandMissingRe 只匹配「命令本身不存在/不认识这个参数」。
+	// 刻意不含 permission denied：权限拒绝要改权限，缺命令要放开白名单，
+	// 两者指向的处理动作不同，混成一个码会把客户引到错误方向。
+	ArchiveProbeCommandMissingRe = regexp.MustCompile(
+		`(?i)(command not found|: not found|unknown command|not supported|invalid option|illegal option)`,
+	)
+
 	// archiveProbeFileMissingRe 匹配"文件不存在"：只有拿到这类明确证据才允许下结论。
 	archiveProbeFileMissingRe = regexp.MustCompile(`(?i)(no such file|cannot access|cannot stat|does not exist|not exist)`)
 )
@@ -77,6 +84,10 @@ type ArchiveProbe struct {
 	Exists *bool
 	// Level 记录结论由哪一级命令给出：stat / ls / missing / none。
 	Level string
+	// Unavailable 表示「无法确认」的原因是两级命令都跑不起来（126/127 或命令缺失文本），
+	// 而不是通道异常或权限拒绝。前者要客户恢复节点命令，后者要重连；混成一个码会让
+	// 现场按错误的方向处理（Q2026102900165 的 stat exit 127 曾被当成「包已被删除」）。
+	Unavailable bool
 	// Diag 非空即表示有过失败尝试（走了兜底或全失败），必须随事件落库。
 	Diag string
 }
@@ -107,6 +118,19 @@ func (a archiveProbeAttempt) unavailable() bool {
 		return true
 	}
 	return ArchiveProbeToolMissingRe.MatchString(a.Stdout + "\n" + a.Stderr)
+}
+
+// commandMissing 判断这一级是不是「命令不存在/不被支持」，用于把 LC-ENV-009
+// （节点缺命令）从一团「无法确认」里单列出来。
+//
+// 与 unavailable 的分工：unavailable 为了安全侧把权限拒绝也算进来（宁可说
+// 「测不到」也不说「文件没了」），但归因必须更严格——权限拒绝落在这里就会
+// 让客户去放开命令白名单，而真正要改的是目录权限。
+func (a archiveProbeAttempt) commandMissing() bool {
+	if a.Code == 126 || a.Code == 127 {
+		return true
+	}
+	return ArchiveProbeCommandMissingRe.MatchString(a.Stdout + "\n" + a.Stderr)
 }
 
 func (a archiveProbeAttempt) diag(name string) string {
@@ -168,7 +192,10 @@ func decideArchiveProbe(statA, lsA archiveProbeAttempt) ArchiveProbe {
 	}
 	// 其余（命令不可用、权限、通道异常、上下文取消）一律未知：
 	// 平台宁可显示「无法确认」，也不能替用户断言包已被删除。
+	// 再把「命令不可用」从这团未知里单列出来：只有两级都判命令缺失才算环境问题，
+	// 一级缺失 + 一级超时仍然指向通道异常，不能算到节点环境头上。
 	probe.Level = "none"
+	probe.Unavailable = statA.commandMissing() && lsA.commandMissing()
 	return probe
 }
 

@@ -83,6 +83,7 @@ _CONDITION_ORDER: tuple[str, ...] = (
     "archive_unconfirmed",
     "network_degraded",
     "stalled",
+    "progress_stalled",
     "task_stalled",
     "synthetic_test",
     "bridge_outdated",
@@ -136,6 +137,39 @@ def is_task_stalled(task: Any, *, now: datetime | None = None) -> bool:
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=UTC)
     return (now - created_at).total_seconds() >= THRESHOLDS["task_stall_hours"] * 3600
+
+
+def is_progress_stalled(task: Any, *, now: datetime | None = None) -> bool:
+    """采集阶段进度长时间没有变化：只对 status=collecting 判定。
+
+    第一性原理：用户此刻要回答的是「还该不该等」，而不是「任务创建了多久」。
+    任务级 task_stalled 看 created_at、阈值 24 小时，回答不了刚掉线十分钟的情况；
+    这里看最后更新时间，回答「节点还在推进吗」。
+
+    为什么只认 collecting：probing/installing/packaging/uploading 都存在合法的长静默
+    （装 acli、打十几 GB 的包、分片上传排队），用同一阈值会把正常长任务误报成中断。
+    collecting 阶段插件按固定节奏上报，静默超过阈值只可能是插件停了、节点掉了或通道断了。
+
+    措辞边界：SQLAlchemy 的 updated_at 是 onupdate，同值重复上报不会产生 UPDATE，
+    所以这里只能断言「进度没有变化」，不能断言「没有收到心跳」——后者会把
+    「节点在按时上报但卡在同一个百分比」错报成通信中断。
+    """
+    if _get(task, "status") != "collecting":
+        return False
+    now = now or datetime.now(UTC)
+    updated = _get(task, "updated_at")
+    if isinstance(updated, datetime):
+        updated_at = updated
+    elif isinstance(updated, str):
+        try:
+            updated_at = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    else:
+        return False
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return (now - updated_at).total_seconds() >= THRESHOLDS["progress_stall_minutes"] * 60
 
 
 def _as_int(value: Any) -> int | None:
@@ -880,7 +914,10 @@ def _build_conditions(
         present.add("network_degraded")
     if isinstance(transfer, Mapping) and transfer.get("stalled"):
         present.add("stalled")
-    if is_task_stalled(task, now=now):
+    if is_progress_stalled(task, now=now):
+        # 进度停滞比任务级停滞更具体，两者同时成立时只说前者，避免同屏两条「停滞」。
+        present.add("progress_stalled")
+    elif is_task_stalled(task, now=now):
         # 任务级停滞与 60s 传输停滞并存但语义不同：前者说明整单没有被推进。
         present.add("task_stalled")
     if is_synthetic_task(task):
