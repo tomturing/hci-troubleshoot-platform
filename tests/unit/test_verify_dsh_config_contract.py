@@ -26,7 +26,13 @@ def test_repository_dsh_contract_covers_offline_compose_variables() -> None:
     """仓库内所有 DSH_OFFLINE_* Compose 输入必须拥有三层映射。"""
     result = run_contract("--skip-render")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "映射=20" in result.stdout
+    # 期望条数从契约文件读取，不写死字面量：新增映射时本体校验器已经逐条校验，
+    # 覆盖率由脚本的「DSH_OFFLINE_* Compose 变量未纳入映射契约」检查兜底。
+    # 写死条数会让「只改 deploy/ 的 PR」在 PR 快速单测里跳过本用例，却在 main 的
+    # 全量单测里失败（#1633 即如此），因此这里只断言「声明多少条就校验多少条」。
+    contract = yaml.safe_load((ROOT / "deploy/config/dsh-config-contract.yaml").read_text(encoding="utf-8"))
+    expected = len(contract.get("mappings") or [])
+    assert f"映射={expected}" in result.stdout
 
 
 def test_missing_offline_mapping_fails_loudly(tmp_path: Path) -> None:
