@@ -25,8 +25,9 @@ import time
 import uuid
 from typing import Any
 
-from app.services.job_task_registry import track_job_task
 from shared.observability.logger import get_logger
+
+from app.services.job_task_registry import track_job_task
 
 logger = get_logger("kb-service-vision-job-manager")
 

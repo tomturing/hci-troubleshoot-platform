@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import contextlib
 import os
 import signal
 import socket
@@ -285,10 +286,8 @@ async def run() -> None:
             task_id = await next_task(database)
             if task_id is None:
                 # 用 wait_for 而不是 sleep：否则发布时要白等一个完整轮询周期才响应退出。
-                try:
+                with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=settings.DIAGNOSIS_WORKER_POLL_SECONDS)
-                except asyncio.TimeoutError:
-                    pass
                 continue
             task = asyncio.create_task(process_task(database, task_id, worker_id))
             stop_wait = asyncio.create_task(stop.wait())
@@ -317,7 +316,7 @@ async def run() -> None:
                 try:
                     await asyncio.wait_for(asyncio.shield(task), timeout=SHUTDOWN_DRAIN_SECONDS)
                     drained = True
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     drained = False
                 if not drained:
                     # 收不完就交还队列：新副本立刻接手，不必等 900s 租约超时。

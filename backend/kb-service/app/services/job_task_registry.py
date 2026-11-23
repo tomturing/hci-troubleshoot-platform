@@ -15,7 +15,8 @@ job 任务由 ``asyncio.create_task`` 裸启动、没有句柄：
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Coroutine
+from collections.abc import Coroutine
+from typing import Any
 
 from shared.observability.logger import get_logger
 

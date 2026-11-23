@@ -373,7 +373,7 @@ async def send_message(
                 # 用 1s 超时轮询而不是无限等待：AI 上游慢时也必须能及时响应退出信号。
                 try:
                     source, data = await asyncio.wait_for(merge_queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
 
                 if source == "done":

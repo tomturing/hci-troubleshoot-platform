@@ -23,7 +23,8 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
-from typing import Any, Coroutine
+from collections.abc import Coroutine
+from typing import Any
 
 from shared.observability.logger import get_logger
 
