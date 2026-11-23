@@ -187,6 +187,35 @@ func TestEvalAcliInstallOutcome(t *testing.T) {
 	}
 }
 
+// 版本验证：退出码 0 只证明命令跑通，ver 非空才证明入口可执行。
+//
+// 只判退出码的历史后果：回执写"安装成功"，用户点开终端一片空白，
+// 因为 --version 全量走 stderr 时 stdout 为空也能返回 0。
+func TestEvalAcliVerifyOutcome(t *testing.T) {
+	cases := []struct {
+		name  string
+		out   string
+		code  int
+		ok    bool
+		ver   string
+		build string
+	}{
+		{"正常输出", "__ACLI_BIN__=/sf/bin/acli\n1.0.3\nbuild 2026-11-01T10:00:00Z\n", 0, true, "1.0.3", "2026-11-01T10:00:00Z"},
+		{"退出码非零仍返回已解析版本", "1.0.3\nbuild x\n", 1, false, "1.0.3", "x"},
+		{"输出不可解析", "__ACLI_ABSENT__\n", 0, false, "", ""},
+		{"空输出", "", 0, false, "", ""},
+		{"banner 噪声后取首个版本行", "Welcome to HCI\n1.0.1\n", 0, true, "1.0.1", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ver, build, ok := evalAcliVerifyOutcome(tc.out, tc.code)
+			if ok != tc.ok || ver != tc.ver || build != tc.build {
+				t.Fatalf("evalAcliVerifyOutcome()=(%q,%q,%v)，期望 (%q,%q,%v)", ver, build, ok, tc.ver, tc.build, tc.ok)
+			}
+		})
+	}
+}
+
 // 超时且同时带错误时必须报超时：否则现场会去查 SSH 通道，而真正原因是集群分发慢。
 func TestEvalAcliInstallOutcomeTimeoutWins(t *testing.T) {
 	got := evalAcliInstallOutcome(acliInstallOutcome{ExitCode: 0, Err: errors.New("eof")}, true)

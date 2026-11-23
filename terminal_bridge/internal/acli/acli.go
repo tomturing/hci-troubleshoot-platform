@@ -623,8 +623,8 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	verifyRes := remote.Run(verifyCtx, sshx.NewSSHRunner(s), versionCmd)
 	cancelVerify()
 	verifyOut, verifyCode := verifyRes.Stdout, verifyRes.ExitCode
-	newVer, newBuild := ParseAcliVersion(verifyOut)
-	if verifyCode == 0 && newVer != "" {
+	newVer, newBuild, verifyOK := evalAcliVerifyOutcome(verifyOut, verifyCode)
+	if verifyOK {
 		log.Printf("[Bridge] acli 安装成功且已验证: ver=%s build=%s key=%s", newVer, newBuild, key)
 
 		// 12. 逐节点校验插件落盘：安装器退出码 0 只证明发起节点装好，
