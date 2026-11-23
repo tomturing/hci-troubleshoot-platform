@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from shared.observability.metrics import (
     LOG_COLLECT_CONTRACT_DRIFT_TOTAL,
     LOG_COLLECT_TRACE_FALLBACK_TOTAL,
 )
+from sqlalchemy import text
 
 from ..domain.log_collect_display import snapshot_artifact_evidence
 from ..models.log_collect import LogCollectTask
@@ -67,14 +69,133 @@ _PUBLIC_DETAIL_RESERVED_KEYS = frozenset(
         "error_code_derivation",
         "baseline_report_hash",
         "write_audit",
+        # 采集参数快照是「平台当时实际下发了什么」的权威副本：
+        # 放开它等于允许前端改写历史，重试时按篡改后的参数重建任务。
+        "request",
+        # 产物补登记与空包体检结论同样只能由服务端写。
+        "artifact_recovered",
+        "artifact_code",
     }
 )
+
+
+def _canonical_sha256(payload: dict[str, Any]) -> str:
+    """按固定序列化计算摘要：键序与空格都不能影响结果。"""
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+# 可补登记的产物质量：包能读且不是空包/残缺包。
+# invalid（不可读/过小/空包）不补登记——把明知不可用的包登记成"产物位置"，
+# 等于把用户引去点一个必然失败的上传。
+_ARTIFACT_RECOVERABLE_QUALITIES = frozenset({"ok", "suspect", "incomplete"})
+
+
+def build_artifact_backfill_patch(
+    task: Any,
+    manifest: dict[str, Any],
+) -> LogCollectTaskPatch | None:
+    """失败任务产物补登记的纯判定：返回要落库的 patch，或 None 表示不补。
+
+    只写定位事实（路径/体积/摘要 + 质量结论），**不碰 status / delivery_status**：
+    产物还在 ≠ 已交付，两者混在一个字段里就会出现"failed 却显示已交付"的矛盾记录。
+    """
+    if str(getattr(task, "status", "") or "") not in ("failed", "cancelled"):
+        return None
+    if getattr(task, "archive_path", None):
+        # 已有权威路径：交付链写过，不允许第二写入者覆盖。
+        return None
+    path = str(manifest.get("archive_path") or "").strip()
+    size = int(manifest.get("archive_size") or 0)
+    quality = str(manifest.get("quality") or "").strip().lower()
+    if not path or size <= 0 or quality not in _ARTIFACT_RECOVERABLE_QUALITIES:
+        return None
+    now = datetime.now(UTC)
+    detail = dict(getattr(task, "detail", None) or {})
+    inspected_at = manifest.get("inspected_at")
+    detail["artifact_recovered"] = {
+        "found": True,
+        "archive_path": path,
+        "archive_size": size,
+        "archive_sha256": manifest.get("archive_sha256"),
+        "quality": quality,
+        "reason": manifest.get("reason"),
+        "source": manifest.get("source"),
+        "inspected_at": inspected_at.isoformat() if hasattr(inspected_at, "isoformat") else inspected_at,
+        "recovered_at": now.isoformat(),
+        "note": (
+            "任务已结束；这里只补登记节点已上报的产物位置与体积，"
+            "不代表已交付。需要归档请点「上传到平台」。"
+        ),
+    }
+    return LogCollectTaskPatch(
+        archive_path=path,
+        archive_size=size,
+        archive_sha256=manifest.get("archive_sha256"),
+        detail=detail,
+    )
+
+
+def _build_request_snapshot(
+    payload: LogCollectTaskCreate,
+    *,
+    scenario_snapshot: dict[str, Any] | None,
+    upload_mode: str,
+    config_sha256: str | None,
+    path_count: int | None,
+) -> dict[str, Any]:
+    """把「这次到底下发了什么」固化成可重放的参数快照。
+
+    第一性原理：重试的可信度取决于参数是否可重放。此前重试只能靠前端表单 + 任务列，
+    而任务列的 modules 已被 spc 改写成 ``["core"]``、表单又可能被用户改过，
+    于是「重试一次」实际可能是另一次采集。这里记录的是服务端归一化后的结果，
+    并附 sha256：任何后续改动都会让摘要对不上，可当证据用。
+
+    只放参数，不放凭据：``remote_url`` 只记 ``*_set``，P1 票据永不入库。
+    """
+    # 目标集合与额外路径都可能很长：detail 是任务行的一部分，不能变成大对象存储。
+    # 截断时保留计数，重放仍能判断「当时点了多少台」。
+    ips = [str(ip).strip() for ip in payload.ips if str(ip).strip()]
+    extra_paths = [str(path).strip() for path in (payload.extra_paths or []) if str(path).strip()]
+    snapshot: dict[str, Any] = {
+        "modules": list(payload.modules),
+        "date_from": str(payload.date_from),
+        "date_to": str(payload.date_to),
+        "ips": ips[:200],
+        "ips_count": len(ips),
+        "ips_truncated": len(ips) > 200,
+        "extra_paths": extra_paths[:100],
+        "extra_paths_count": len(extra_paths),
+        "extra_paths_truncated": len(extra_paths) > 100,
+        "upload_mode": upload_mode,
+        "remote_url_set": bool(payload.remote_url),
+        "origin_node_ip": payload.origin_node_ip,
+        "arch": payload.arch,
+        "acli_version": payload.acli_version,
+        "config_sha256": config_sha256,
+        "path_count": path_count,
+        "recorded_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if scenario_snapshot:
+        snapshot["custom_scenario"] = {
+            "id": scenario_snapshot.get("id"),
+            "revision": scenario_snapshot.get("revision"),
+            "code": scenario_snapshot.get("code"),
+            "label": scenario_snapshot.get("label"),
+            "source": scenario_snapshot.get("source"),
+            "item_count": scenario_snapshot.get("item_count"),
+        }
+    snapshot["sha256"] = _canonical_sha256(snapshot)
+    return snapshot
 
 
 def _build_task_detail(
     payload: LogCollectTaskCreate,
     *,
     scenario_snapshot: dict[str, Any] | None = None,
+    upload_mode: str | None = None,
+    config_sha256: str | None = None,
+    path_count: int | None = None,
 ) -> dict[str, Any]:
     """把"下发前的事实"固化进任务 detail。
 
@@ -91,6 +212,14 @@ def _build_task_detail(
     detail: dict[str, Any] = {}
     if scenario_snapshot:
         detail["scenario"] = scenario_snapshot
+    # 采集参数快照：重试/补登记/追责都以它为准，不再依赖前端表单回填。
+    detail["request"] = _build_request_snapshot(
+        payload,
+        scenario_snapshot=scenario_snapshot,
+        upload_mode=upload_mode or "",
+        config_sha256=config_sha256,
+        path_count=path_count,
+    )
     if payload.baseline_report_hash:
         detail["baseline_report_hash"] = payload.baseline_report_hash
     if payload.probe:
@@ -204,6 +333,11 @@ class LogCollectService:
                 active_task=active,
             )
 
+        # 交付路径必须在建行之前定稿：参数快照要记录「实际生效」的那条，
+        # 而不是客户端可能没填的 None。
+        effective_upload_mode = payload.upload_mode or (
+            "acli_direct" if payload.remote_url else "bridge_relay"
+        )
         task = LogCollectTask(
             # 工单号只有一个：acli -s、产物名与任务归属全部使用 case_id
             case_id=payload.case_id,
@@ -225,7 +359,7 @@ class LogCollectService:
             # 只在交付完成时补写的话，采集中的任务与补交付失败的任务都读不到它，
             # 事后也无法区分"用户选了 P2"和"P1 失败后降级成 P2"。
             # 未传时按 remote_url 推断，兼容未升级的客户端（P1 必带地址，P2 必不带）。
-            upload_mode=payload.upload_mode or ("acli_direct" if payload.remote_url else "bridge_relay"),
+            upload_mode=effective_upload_mode,
             # 探测事实随任务落库：失败任务必须能回答"用的哪版 acli / 什么架构"。
             # 只存前端内存时，关面板或换端后这条证据就没了（2026-10-27 实测 38/38 全空）。
             arch=payload.arch,
@@ -234,7 +368,14 @@ class LogCollectService:
             progress=0,
             # 下发锚定的报告指纹与探测快照必须随任务落库：前端内存里的基线在关面板、
             # 换浏览器、重启后会丢失，届时就无法判断"节点报告属于哪一次下发"。
-            detail=_build_task_detail(payload, scenario_snapshot=scenario_snapshot),
+            # 参数快照按**实际生效**的 upload_mode 记录，重试才有可重放的依据。
+            detail=_build_task_detail(
+                payload,
+                scenario_snapshot=scenario_snapshot,
+                upload_mode=effective_upload_mode,
+                config_sha256=config_sha256,
+                path_count=path_count,
+            ),
             created_by=client_id,
             # trace_id 由平台兜底生成：前端若未传，任务仍必须有一个可贯穿
             # 「平台 → bridge → HCI → 回采日志」的链路 ID，否则远端无法按链路定位。
@@ -523,6 +664,59 @@ class LogCollectService:
         await self.repository.flush()
         await self.repository.refresh(task)
         return task
+
+    async def backfill_failed_artifact(self, task_id) -> LogCollectTask | None:
+        """失败任务的产物补登记：把节点已上报的产物位置补回任务行。
+
+        第一性原理：交付失败不等于产物不存在。包已经在节点上打过、bridge 也读到了
+        中央目录，但平台既没登记路径也没登记大小，用户就只剩「重新采集」一条路——
+        而重新采集是唯一会真正丢日志的动作。
+
+        边界（对抗性审查）：
+        - 只处理 failed/cancelled：其它状态由正常交付链写，不能出现第二个写入者；
+        - 已有 ``archive_path`` 不覆盖：它是交付链的权威事实；
+        - ``invalid``/``unknown`` 质量不登记：把一个明知不可用的包登记成产物位置，
+          等于把用户引去传一个必然失败的文件；
+        - **只写定位事实**，不碰 ``delivery_status``/``status``：登记产物不是交付成功。
+        """
+        task = await self.get_task(task_id)
+        if task.status not in ("failed", "cancelled"):
+            return None
+        if task.archive_path:
+            return None
+        row = (
+            (
+                await self.repository.session.execute(
+                    text(
+                        """
+                        SELECT archive_path, archive_size, archive_sha256, quality, reason,
+                               source, inspected_at
+                        FROM log_collect_artifact_manifest
+                        WHERE task_id = :task_id
+                        ORDER BY inspected_at DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"task_id": str(task_id)},
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if not row:
+            return None
+        patch = build_artifact_backfill_patch(task, dict(row))
+        if patch is None:
+            return None
+        updated = await self.update_task(task_id, patch, server_authoritative=True)
+        logger.info(
+            "task.artifact_backfilled task_id=%s quality=%s size=%s trace_id=%s",
+            task_id,
+            patch.detail.get("artifact_recovered", {}).get("quality") if patch.detail else None,
+            patch.archive_size,
+            getattr(task, "trace_id", ""),
+        )
+        return updated
 
     async def cancel_task(self, task_id, reason: str | None = None) -> LogCollectTask:
         task = await self.get_task(task_id)

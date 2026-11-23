@@ -224,17 +224,24 @@ class TestCreateTask:
         await service.create_task(make_payload(baseline_report_hash="7843-1a2b3c4d"), "client-1")
 
         task = mock_repo.create.await_args.args[0]
-        assert task.detail == {"baseline_report_hash": "7843-1a2b3c4d"}
+        assert task.detail["baseline_report_hash"] == "7843-1a2b3c4d"
+        # P1：参数快照随任务落库，重试才有可重放的依据。
+        assert task.detail["request"]["upload_mode"] == task.upload_mode
 
-    async def test_detail_empty_when_baseline_absent(self, service, mock_repo):
-        """没有基线时 detail 保持空对象：不写入假指纹，前端据此退化为"按节点态为准"。"""
+    async def test_detail_without_baseline_has_no_fake_fingerprint(self, service, mock_repo):
+        """没有基线时不写入假指纹，前端据此退化为"按节点态为准"。
+
+        detail 不再为空：P1 起固定包含 ``request`` 参数快照；这里只断言
+        **不含** 伪造的基线，避免测试把"快照"误判成回归。
+        """
         mock_repo.get_active_by_case = AsyncMock(return_value=None)
         mock_repo.create = AsyncMock(return_value=MagicMock(spec=LogCollectTask))
 
         await service.create_task(make_payload(), "client-1")
 
         task = mock_repo.create.await_args.args[0]
-        assert task.detail == {}
+        assert "baseline_report_hash" not in task.detail
+        assert task.detail["request"]["date_from"] == str(task.date_from)
         assert len(task.trace_id) == 32  # W3C trace_id：32 位小写 hex
 
     async def test_trace_id_preserved_when_provided(self, service, mock_repo):

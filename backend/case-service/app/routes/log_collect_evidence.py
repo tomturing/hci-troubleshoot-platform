@@ -44,6 +44,7 @@ from ..schemas.log_collect_evidence import (
 from ..services.log_collect_evidence_service import (
     MAX_BANDWIDTH_BYTES,
     LogCollectEvidenceTicket,
+    artifact_reason_code,
     derive_manifest_quality,
     probe_grade,
     reconcile_manifest_hosts,
@@ -329,10 +330,13 @@ async def put_artifact_manifest(
         quality, reason = "incomplete", "missing_hosts"
     task = await _require_task(service, task_id)
     session = service.repository.session
+    # 空包体检的细分码：一个原因对应一个码，页面据此给出不同处置建议。
+    artifact_code = artifact_reason_code(quality, reason)
     params = {
         "task_id": str(task_id),
         "case_id": task.get("case_id"),
         "trace_id": _trace_of(task),
+        "artifact_code": artifact_code,
         "source": payload.source,
         "archive_path": payload.archive_path,
         "archive_size": payload.archive_size,
@@ -418,6 +422,9 @@ async def put_artifact_manifest(
                     COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
                         'artifact_quality', CAST(:quality AS text),
                         'artifact_reason', CAST(:reason AS text),
+                        -- 空包体检细分码：NULLIF 让「未探测/正常」不落空壳键，
+                        -- 读侧只用 `detail ->> 'artifact_code'` 就能判断有没有细分码。
+                        'artifact_code', NULLIF(CAST(:artifact_code AS text), ''),
                         'artifact_evidence', CAST(:evidence AS jsonb),
                         'artifact_manifest', CAST(:manifest_snapshot AS jsonb))
                     -- 成功清单到达即作废旧的失败陈述：重试成功不该继续显示失败。
@@ -430,11 +437,24 @@ async def put_artifact_manifest(
         params,
     )
     await session.commit()
+    # 清单可能晚于失败终态到达：失败后再补一次产物定位，用户才有「上传到平台」的入口。
+    # 旁路动作，失败只记日志，不影响证据落库本身。
+    if str(task.get("status") or "") in ("failed", "cancelled"):
+        try:
+            await service.backfill_failed_artifact(task_id)
+        except Exception as exc:  # noqa: BLE001 - 补登记不能反噬证据写入
+            logger.warning(
+                "artifact.backfill_failed",
+                task_id=str(task_id),
+                trace_id=_trace_of(task),
+                error=str(exc),
+            )
     logger.info(
-        "log_collect.artifact_manifest task_id=%s quality=%s reason=%s entries=%s trace_id=%s",
+        "log_collect.artifact_manifest task_id=%s quality=%s reason=%s code=%s entries=%s trace_id=%s",
         task_id,
         quality,
         reason,
+        artifact_code,
         payload.entry_count,
         _trace_of(task),
     )

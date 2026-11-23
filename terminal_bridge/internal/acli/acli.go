@@ -648,16 +648,25 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			// B7 降级留痕：空间没验过就是没验过，成功回执里如实标注。
 			installedMessage += "\n提示：磁盘空间探测失败，本次安装未验证可用空间。"
 		}
+		// 安装降级（install_degraded）的唯一判据是「节点事实」：
+		// 安装器退出码 0 只证明发起节点装好，集群分发可能静默留下空目录。
+		// 这类结论不是失败（工具确实装上了），但也绝不能报成完全成功——
+		// 带着残缺插件去 create 必然 LC-INSTALL-010，用户却以为是平台下发坏了。
+		var missingPlugins []string
 		if len(pluginStates) > 0 {
+			missingPlugins = missingPluginNodes(pluginStates)
 			evidence.Emit("INFO", "acli_sync.node_plugin_verify", "安装后逐节点校验内置插件落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"phase": "after", "nodes": pluginStates, "missing": missingPluginNodes(pluginStates),
+				"phase": "after", "nodes": pluginStates, "missing": missingPlugins,
 				"missing_before": missingPluginNodes(beforeStates),
 			})
-			if missing := missingPluginNodes(pluginStates); len(missing) > 0 {
+			if len(missingPlugins) > 0 {
 				evidence.Emit("WARN", "acli_sync.node_plugin_missing", "部分节点内置插件未落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-					"missing": missing, "nodes": pluginStates,
+					"missing": missingPlugins, "nodes": pluginStates,
 				})
-				installedMessage += fmt.Sprintf("\n警示：节点 %s 的内置插件未落盘（明细见日志），请重试安装。", strings.Join(missing, ", "))
+				installedMessage += fmt.Sprintf(
+					"\n安装降级：节点 %s 的内置插件未落盘（明细见日志），请重试安装后再采集。",
+					strings.Join(missingPlugins, ", "),
+				)
 			}
 		}
 
@@ -692,7 +701,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 			InstallSuccess: true, InstallExitCode: 0, InstallMS: outcome.DurationMS,
 			Message:    installedMessage,
 			PluginSync: pluginReceipt,
-			Degraded:   !diskProbed,
+			Degraded:   installDegraded(diskProbed, missingPlugins),
 		})
 		evidence.Emit("INFO", "acli_sync.installed", "acli 安装并验证成功", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"architecture": targetArch, "version": newVer, "build": newBuild, "key": key,

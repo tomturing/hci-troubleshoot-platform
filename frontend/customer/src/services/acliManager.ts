@@ -197,6 +197,16 @@ export function ensureAcliReady(
               facts,
             })
           }
+          // 安装降级（install_degraded）：工具确实装上了，但节点侧事实不完整。
+          // 必须与"成功"分开呈现，否则用户会直接去 create，然后在节点上撞 LC-INSTALL-010。
+          if (facts.degraded) {
+            onProgress?.({
+              type: 'warn',
+              text: '安装降级：部分节点内置插件未落盘或磁盘空间未验证；请重试安装后再采集。',
+              status: 'degraded',
+              facts,
+            })
+          }
           resolve(result)
         } else if (msg.status === 'disk_space_insufficient') {
           const text = msg.message || '/sf/data/local 空间不足'

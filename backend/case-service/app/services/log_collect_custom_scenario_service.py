@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 from sqlalchemy import text
@@ -25,6 +25,11 @@ from ..schemas.log_collect_custom_scenario import (
     LogCollectCustomScenarioCreate,
     LogCollectCustomScenarioResponse,
     LogCollectCustomScenarioUpdate,
+)
+from .log_collect_date_placeholders import (
+    expand_path_with_format,
+    item_date_format,
+    validate_item_placeholders,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +105,17 @@ def _validate_items_for_source(items: list[dict[str, Any]], source: str) -> None
 def _serialize(items: list[dict[str, Any]], source: str) -> tuple[str, str, int]:
     """按通道选择序列化器：两条通道的产物完全不同，绝不能混用。"""
     _validate_items_for_source(items, source)
+    problems: list[str] = []
+    for index, item in enumerate(items, start=1):
+        for problem in validate_item_placeholders(item):
+            problems.append(f"第 {index} 条：{problem}")
+        # filters 里也可能带 {date}（spc 的 exclude 规则），同一口径一并校验。
+        for condition in item.get("filters") or []:
+            if isinstance(condition, dict):
+                for problem in validate_item_placeholders(condition):
+                    problems.append(f"第 {index} 条过滤规则：{problem}")
+    if problems:
+        raise ValueError("；".join(problems))
     if source == "spc":
         return serialize_spc(items)
     return serialize_config(items)
@@ -353,22 +369,21 @@ def expand_scenario_paths(
        CLI 会覆盖 config.paths，因此必须在平台侧合并，且只下发 ``-c``；
     3. 去重保序：重复项不会报错，但会让体积预估翻倍。
 
-    ``{date}`` 的展开格式按 ``YYYY-MM-DD``（与 ``-d`` 参数同形）。
-    该格式需以插件 spc 的 ``date_placeholders`` 为准；若现场实际是别的格式，
-    预检会把它们列为缺失路径并由用户二次确认，不会静默收错。
+    ``{date}`` 的展开格式由清单项自己的 ``date_placeholders[].format`` 决定
+    （``%Y-%m-%d`` / ``%Y%m%d`` / ``%Y%m`` / ``%d``，见
+    ``log_collect_date_placeholders``）；未声明时沿用历史行为 ``YYYY-MM-DD``。
+    格式不在白名单内的清单在保存阶段就被拒绝，因此这里不会出现静默猜格式。
     """
-    days = (date_to - date_from).days + 1
     result: list[str] = []
     for item in items:
         path = str(item.get("path", "")).strip()
         if not path:
             continue
-        if "{date}" in path:
-            for offset in range(days):
-                day = date_from + timedelta(days=offset)
-                result.append(path.replace("{date}", day.isoformat()))
-        else:
-            result.append(path)
+        # 格式必须按清单自己声明的来：/sf/log/{date}.tar.gz 是 %d，
+        # blackbox 是 %Y%m%d。一律按 ISO 展开会让猜错的那一半路径静默判假。
+        result.extend(
+            expand_path_with_format(path, item_date_format(item), date_from, date_to)
+        )
     for raw in extra_paths or []:
         path = str(raw).strip()
         if path:

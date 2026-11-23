@@ -342,6 +342,10 @@ def render_python(contract: dict) -> str:
         "\n",
         _py_literal("ARTIFACT_REASON_LABELS", contract["artifact_reason"]),
         "\n",
+        # 产物原因 → 运行时错误码：空包体检的「错误码细分」只认这一份映射，
+        # 前端/后端都不许各写一套阈值到码的对照表。
+        _py_literal("ARTIFACT_REASON_CODES", contract["artifact_reason_code"]),
+        "\n",
         _py_literal("NETWORK_GRADE_LABELS", contract["network_grade"]),
         "\n",
         _py_literal("TRANSFER_STAGE_LABELS", contract["transfer_stage"]),
@@ -390,6 +394,8 @@ def render_ts(contract: dict) -> str:
         _ts_literal("ARTIFACT_QUALITY_LABELS", contract["artifact_quality"]),
         "\n",
         _ts_literal("ARTIFACT_REASON_LABELS", contract["artifact_reason"]),
+        "\n",
+        _ts_literal("ARTIFACT_REASON_CODES", contract["artifact_reason_code"]),
         "\n",
         _ts_literal("NETWORK_GRADE_LABELS", contract["network_grade"]),
         "\n",
@@ -694,6 +700,18 @@ def validate_contract(contract: dict) -> None:
     for rule in contract.get("attribution_rules", []):
         if rule["code"] not in catalog:
             problems.append(f"补码规则引用不存在的码：{rule['code']}")
+
+    # 产物原因 → 错误码：必须覆盖全部原因，且引用的码真实存在。
+    # 少一个键就会在运行时静默回退，用户看到「未归因」而排查者查不到细分码。
+    reason_codes = contract.get("artifact_reason_code") or {}
+    for reason in contract["artifact_reason"]:
+        if reason not in reason_codes:
+            problems.append(f"artifact_reason_code 缺少原因映射：{reason}")
+    for reason, code in reason_codes.items():
+        if reason not in contract["artifact_reason"]:
+            problems.append(f"artifact_reason_code 含未知原因：{reason}")
+        if code and code not in catalog:
+            problems.append(f"artifact_reason_code.{reason} 引用了不存在的错误码：{code}")
 
     if problems:
         raise ValueError("契约校验失败：\n  - " + "\n  - ".join(problems))

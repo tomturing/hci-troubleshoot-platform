@@ -370,3 +370,65 @@ describe('acliManager', () => {
     expect(seen.some((l) => l.status === 'plugins')).toBe(false)
   })
 })
+
+describe('安装降级（install_degraded）', () => {
+  const makeSocket = () => {
+    const listeners: Record<string, Function[]> = {}
+    const socket = {
+      send: vi.fn(),
+      addEventListener: (type: string, fn: any) => {
+        listeners[type] = listeners[type] || []
+        listeners[type].push(fn)
+      },
+      removeEventListener: (type: string, fn: any) => {
+        listeners[type] = (listeners[type] || []).filter((f) => f !== fn)
+      },
+    } as unknown as WebSocket
+    return { socket, listeners }
+  }
+
+  it('降级仍然 resolve，但必须显式提示而不冒充成功', async () => {
+    const { socket, listeners } = makeSocket()
+    const logs: { text: string; type: string }[] = []
+    const promise = ensureAcliReady(socket, 'case-degraded', (l) => logs.push({ text: l.text, type: l.type }))
+
+    listeners['message']?.[0]?.({
+      data: JSON.stringify({
+        type: 'acli_sync_result',
+        case_id: 'case-degraded',
+        status: 'installed',
+        current_version: '1.0.3',
+        architecture: 'x86_64',
+        message: 'acli 工具安装成功',
+        degraded: true,
+      }),
+    })
+
+    const result = await promise
+    // 降级不是失败：工具确实装上了，失败会把用户引去重装。
+    expect(result.facts.degraded).toBe(true)
+    expect(logs.some((l) => l.text.includes('安装降级'))).toBe(true)
+    expect(logs.some((l) => l.type === 'warn')).toBe(true)
+  })
+
+  it('未降级时不产生警告噪音', async () => {
+    const { socket, listeners } = makeSocket()
+    const logs: { text: string }[] = []
+    const promise = ensureAcliReady(socket, 'case-ok', (l) => logs.push({ text: l.text }))
+
+    listeners['message']?.[0]?.({
+      data: JSON.stringify({
+        type: 'acli_sync_result',
+        case_id: 'case-ok',
+        status: 'installed',
+        current_version: '1.0.3',
+        architecture: 'x86_64',
+        message: 'acli 工具安装成功',
+      }),
+    })
+
+    const result = await promise
+    expect(result.facts.degraded).toBe(false)
+    expect(logs.some((l) => l.text.includes('安装降级'))).toBe(false)
+  })
+})

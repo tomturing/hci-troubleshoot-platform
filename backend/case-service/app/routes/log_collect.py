@@ -48,6 +48,7 @@ from ..services.log_collect_custom_scenario_service import (
     serialize_config,
     serialize_spc,
 )
+from ..services.log_collect_date_placeholders import validate_item_placeholders
 from ..services.log_collect_default_scenario_service import LogCollectDefaultScenarioService
 from ..services.log_collect_evidence_service import LogCollectEvidenceTicket
 from ..services.log_collect_node_path import expected_node_archive_path
@@ -387,6 +388,13 @@ async def create_task(
             # extra_paths 在这里转成 copy 条目，与清单一起下发（不能再走 -p）。
             for path in payload.extra_paths or []:
                 items.append({"action": "copy", "path": path, "category": "file", "note": None})
+            # spc 通道的 {date} 由插件按 date_placeholders 展开：格式不在白名单内时
+            # 平台与插件会对同一路径渲染出不同结果，必须在建任务前拒绝。
+            placeholder_problems: list[str] = []
+            for item in items:
+                placeholder_problems.extend(validate_item_placeholders(item))
+            if placeholder_problems:
+                raise HTTPException(status_code=422, detail="；".join(placeholder_problems))
             spc_text, spc_sha, _size = serialize_spc(items)
             custom_scenario = (scenario.scenario_id, scenario.revision)
             config_plan = (spc_text, spc_sha, len(items))
@@ -1039,6 +1047,21 @@ async def update_task(
         task = await service.update_task(task_id, patch)
     except (InvalidTransitionError, TaskConflictError) as exc:
         raise _problem(exc.code, str(exc)) from exc
+    # 失败落库后立刻补登记节点已上报的产物位置：包可能还在节点上，
+    # 不登记就只能重新采集（唯一真正会丢日志的动作）。
+    # 补登记失败绝不影响本次状态回写本身，故仅记日志。
+    if task.status in ("failed", "cancelled"):
+        try:
+            recovered = await service.backfill_failed_artifact(task_id)
+            if recovered is not None:
+                task = recovered
+        except Exception:  # noqa: BLE001 - 证据补登记是旁路，不能反噬主流程
+            logger.warning(
+                "artifact.backfill_failed task_id=%s trace_id=%s",
+                task_id,
+                getattr(task, "trace_id", ""),
+                exc_info=True,
+            )
     return _to_response(task)
 
 

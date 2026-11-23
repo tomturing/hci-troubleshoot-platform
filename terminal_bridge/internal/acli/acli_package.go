@@ -563,6 +563,18 @@ func missingPluginNodes(states []nodePluginState) []string {
 	return missing
 }
 
+// installDegraded 是「安装降级」的唯一判据（install_degraded）。
+//
+// 两种降级必须都能表达，且都不等于失败：
+//   - 磁盘空间未验证（B7）：装完了但没验证过可用空间；
+//   - 集群内置插件未落盘：安装器 exit 0，但部分节点的插件目录是空的。
+//
+// 旧实现只把降级写进 Message 长文本，前端读不到结论，用户会直接去 create，
+// 然后在节点上撞 LC-INSTALL-010，看起来像"平台下发坏了"。
+func installDegraded(diskProbed bool, missingPlugins []string) bool {
+	return !diskProbed || len(missingPlugins) > 0
+}
+
 // ── 缓存（支撑"只重试上传"）──────────────────────────────────────────────────
 
 type acliPackageCacheEntry struct {

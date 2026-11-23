@@ -683,6 +683,11 @@ export interface AcliSyncFacts {
   installMs: number
   installOutput: string
   installStderr: string
+  /**
+   * 安装是否降级（install_degraded）：工具装上了，但磁盘空间未验证或
+   * 部分节点内置插件未落盘。降级不是失败，也绝不能当完全成功展示。
+   */
+  degraded: boolean
 }
 
 function asText(value: unknown): string {
@@ -722,6 +727,7 @@ export function parseAcliSyncFacts(message: unknown): AcliSyncFacts {
     installMs: asNumber(data.install_ms),
     installOutput: asText(data.install_output),
     installStderr: asText(data.install_stderr),
+    degraded: data.degraded === true,
   }
 }
 
