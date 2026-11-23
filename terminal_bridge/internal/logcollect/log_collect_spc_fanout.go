@@ -332,6 +332,13 @@ type spcRejection struct {
 	ErrType string
 	Code    string
 	Message string
+	// 逐台逐槽位的写入结果，随拒绝回包落库到 detail.spc_hosts。
+	// 没有这份证据时，页面只能看到「目标 6 台，成功 3 台」，哪台哪个槽位、
+	// 备份失败的真实 stderr 都只存在于桥日志里（Q2026112300134 的排查代价）。
+	Hosts         []map[string]any
+	Slot          string
+	Slots         []string
+	RestoreStatus string
 }
 
 // spcRestorePlan 描述一次恢复要做的事；不依赖内存状态，平台显式调用时也能用。
@@ -461,7 +468,10 @@ func buildSpcPrepareCommand(target, backup string) string {
 	selfHeal := fmt.Sprintf("if [ -n \"$__prev\" ]; then cp -p \"$__prev\" %s 2>/dev/null; fi", remote.ShellQuote(target))
 	// 校验只在"本次刚创建备份"的同一分支里做：同一任务重试时备份已存在，
 	// 此时 target 可能就是上一轮写入的平台清单，再比对必然失败并误判环境异常。
-	backupCmd := fmt.Sprintf("if [ ! -f %s ]; then cp -p %s %s 2>/dev/null || { printf 'SPC_PREPARE_FAIL reason=backup_failed\\n'; exit 0; }; "+
+	// cp 不再把 stderr 丢进 /dev/null：备份失败的唯一真因（No such file / Permission
+	// denied / No space left）就在那两行里。之前吞掉后 detail 只剩 backup_failed，
+	// 现场只能泛泛地查权限与磁盘（Q2026112300134）。
+	backupCmd := fmt.Sprintf("if [ ! -f %s ]; then cp -p %s %s || { printf 'SPC_PREPARE_FAIL reason=backup_failed\\n'; exit 0; }; "+
 		"cmp -s %s %s || { printf 'SPC_PREPARE_FAIL reason=backup_mismatch\\n'; exit 0; }; fi",
 		remote.ShellQuote(backup), remote.ShellQuote(target), remote.ShellQuote(backup), remote.ShellQuote(target), remote.ShellQuote(backup))
 	orig := fmt.Sprintf("__orig=$(sha256sum %s 2>/dev/null | awk '{print $1}')", remote.ShellQuote(backup))
@@ -708,11 +718,27 @@ func prepareSpcScenario(b *session.Hub, ctx context.Context, s *sshx.SSHSession,
 			ErrType: errType,
 			Code:    code,
 			Message: spcRejectionMessage(written, report),
+			// 逐台证据必须随拒绝一起回给平台：只写 ERROR 事件的话，页面上永远
+			// 看不到哪台哪个槽位、备份命令的真实 stderr（Q2026112300134）。
+			Hosts: spcPersistHosts(results),
+			Slot:  slot,
+			Slots: append([]string(nil), slots...),
+		}
+		if len(rejection.Slots) == 0 {
+			rejection.Slots = []string{slot}
 		}
 		// 只回滚已写入的主机：从未写入的节点不需要恢复，把它计入 restore_failed
 		// 会推导出"可能残留平台清单"的假告警（2026-11-17 Q2026110302166 现场：
 		// 192.0.2.11 SSH 认证失败、written=false，却被报成回滚失败）。
 		restored, restoreFailed := rollbackSpcAll(b, s, state, "写入未通过，已回滚", spcWrittenTargets(results))
+		switch {
+		case restoreFailed > 0:
+			rejection.RestoreStatus = "failed"
+		case restored > 0:
+			rejection.RestoreStatus = "success"
+		default:
+			rejection.RestoreStatus = "none"
+		}
 		if restoreFailed > 0 {
 			// 主因码保持不变：回滚失败是叠加风险，覆盖主因会让用户按错误的码排查。
 			rejection.Message = sshx.TruncateString(rejection.Message+
@@ -973,10 +999,11 @@ func applySpcSlotToHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession,
 		return state
 	}
 	if !spcMarkerHas(prepareOut, "SPC_PREPARE_OK") {
-		state.ErrorCode = firstNonEmpty(spcMarkerField(prepareOut, "reason"), spcErrBackup)
+		reason := firstNonEmpty(spcMarkerField(prepareOut, "reason"), spcErrBackup)
+		state.ErrorCode = reason
 		// 合并 stderr：宿主机缺命令、目录不可写等真实原因只在 stderr 里，
 		// 只取 stdout 会只剩一个 backup_failed，现场无法自证。
-		state.ErrorDetail = SpcOutputTail(SpcJoinDiag(prepareOut, prepareErrOut), 2, 200)
+		state.ErrorDetail = SpcFailureDetail(prepareOut, SpcJoinDiag(prepareOut, prepareErrOut), reason)
 		return state
 	}
 	state.OriginalSHA = spcMarkerField(prepareOut, "orig")

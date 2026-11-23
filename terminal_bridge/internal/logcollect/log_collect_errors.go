@@ -124,6 +124,20 @@ func spcErrorDetail(output string, err error) string {
 	return sshx.TruncateString(strings.Join(parts, " | "), 400)
 }
 
+// SpcFailureDetail 组合「标记行 reason + stderr 尾部」，保证 detail 永不只剩一个码。
+// reason 是 shell 标记行里的值（如 backup_failed），stderr 才是真因
+// （cp: cannot stat ... / permission denied / no space left）。
+func SpcFailureDetail(markerOut, diag, reason string) string {
+	parts := make([]string, 0, 2)
+	if value := strings.TrimSpace(reason); value != "" {
+		parts = append(parts, "reason="+value)
+	}
+	if tail := SpcOutputTail(diag, 3, 200); tail != "" {
+		parts = append(parts, tail)
+	}
+	return sshx.TruncateString(strings.Join(parts, " | "), 400)
+}
+
 // SpcOutputTail 取输出末尾若干行，跳过空行与标记行。
 // 标记行（SPC_WRITE_FAIL reason=...）本身没有诊断价值，留下只会挤掉 stderr。
 func SpcOutputTail(output string, maxLines, maxLen int) string {

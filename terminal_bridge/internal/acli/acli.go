@@ -567,6 +567,16 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	})
 
 	installCtx, cancelInstall := context.WithTimeout(ctx, acliInstallTimeout)
+	// 安装前快照：安装器会先清空集群 plugins 目录。只有「装前/装后」各一份事实，
+	// 才能区分「本来就缺」与「这次安装把它打坏」——Q2026112300134 的分歧点就在这里，
+	// 当时只能靠现场翻 acli.log 的 rsync 报错反推。
+	beforeCtx, cancelBefore := context.WithTimeout(ctx, 2*time.Minute)
+	beforeStates := verifyClusterPluginLanding(b, beforeCtx, s)
+	cancelBefore()
+	evidence.Emit("INFO", "acli_sync.plugin_snapshot", "安装前逐节点插件快照", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+		"phase": "before", "nodes": beforeStates, "missing": missingPluginNodes(beforeStates),
+	})
+
 	outcome := installAcliPackage(installCtx, s, destPath)
 	installTimedOut := installCtx.Err() != nil
 	cancelInstall()
@@ -640,7 +650,8 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		}
 		if len(pluginStates) > 0 {
 			evidence.Emit("INFO", "acli_sync.node_plugin_verify", "安装后逐节点校验内置插件落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
-				"nodes": pluginStates, "missing": missingPluginNodes(pluginStates),
+				"phase": "after", "nodes": pluginStates, "missing": missingPluginNodes(pluginStates),
+				"missing_before": missingPluginNodes(beforeStates),
 			})
 			if missing := missingPluginNodes(pluginStates); len(missing) > 0 {
 				evidence.Emit("WARN", "acli_sync.node_plugin_missing", "部分节点内置插件未落盘", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{

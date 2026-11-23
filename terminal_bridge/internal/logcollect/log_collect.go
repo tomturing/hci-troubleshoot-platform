@@ -119,14 +119,20 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 
 	case "create":
 		// ── 自定义场景（acli -c）：先证明配置写对了，再下发采集 ──────────────
-		rejectConfigWithCode := func(errType, code, reason string) {
+		// logData 是可变参数：常规拒绝只带错误码；spc/脚本拒绝额外带逐台证据，
+		// 前端在失败回包上也要把它补写进任务详情（否则证据只存在于桥日志）。
+		rejectConfigWithCode := func(errType, code, reason string, logData ...map[string]any) {
 			if code == "" {
 				code = logcontract.ValidationErrorCode(errType)
+			}
+			var payload any
+			if len(logData) > 0 && len(logData[0]) > 0 {
+				payload = logData[0]
 			}
 			models.SendMsg(ws, models.OutMessage{
 				Type: "log_collect_result", CaseID: msg.CaseID, LogAction: action,
 				Status: "error", ErrorType: errType, ErrorCode: code,
-				Message: reason, TraceID: traceID, CustomUI: cui,
+				Message: reason, TraceID: traceID, CustomUI: cui, LogData: payload,
 			})
 			evidence.Emit("ERROR", "log_collect.config_rejected", "自定义场景配置校验失败", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 				"error_type": errType, "error_code": code, "reason": reason, "ticket_no": msg.TicketNo,
@@ -134,6 +140,23 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		}
 		rejectConfig := func(errType, reason string) {
 			rejectConfigWithCode(errType, logcontract.ValidationErrorCode(errType), reason)
+		}
+
+		// ── 前置兜底：内置插件不完整时绝不下发 ────────────────────────────────
+		// 安装器 exit 0 不代表集群分发完整（Q2026112300134：3 台 plugins 空目录）。
+		// 带着缺插件的节点发起采集，只会把「安装不完整」包装成下游的
+		// LC-SPC-003 / LC-EXEC-xxx，把排查引向权限与磁盘。这里先查清楚。
+		preflightCfg, _ := EvidenceFor(msg.ExecID)
+		if missing, checked := preflightLogCollectPlugin(ctx, s); len(missing) > 0 {
+			reportFailureSnapshot(ctx, s, preflightCfg, "plugin_incomplete")
+			rejectConfigWithCode("plugin_incomplete", logcontract.ErrInstallPluginIncomplete,
+				"节点内置插件不完整，继续采集必然失败："+pluginFailureDetail(missing),
+				map[string]any{"plugin_missing": missing})
+			return
+		} else if checked {
+			evidence.Emit("INFO", "log_collect.plugin_preflight_ok", "内置插件校验通过", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"task_id": msg.ExecID,
+			})
 		}
 
 		var configPath string
@@ -175,8 +198,14 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 			}
 			state, rejection := prepareSpcScenario(b, ctx, s, msg, traceID, cui)
 			if rejection != nil {
+				// 逐台证据随拒绝一起回包：只发 ERROR 事件时，页面永远看不到
+				// 哪台哪个槽位、备份命令的真实 stderr（Q2026112300134）。
+				reportFailureSnapshot(ctx, s, preflightCfg, "spc_"+rejection.Code)
 				// 带规范码回包：前端按码给出检查/修复建议，不再只显示"日志收集失败"。
-				rejectConfigWithCode(rejection.ErrType, rejection.Code, rejection.Message)
+				rejectConfigWithCode(rejection.ErrType, rejection.Code, rejection.Message, map[string]any{
+					"spc_slot": rejection.Slot, "spc_slots": rejection.Slots,
+					"spc_hosts": rejection.Hosts, "restore_status": rejection.RestoreStatus,
+				})
 				// 脚本已经写进去了但清单没通过：任务不会建立，脚本必须立刻还原，
 				// 否则节点会长期跑一份"平台写了但平台不承认"的脚本。
 				if scriptState != nil {
@@ -286,6 +315,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 				outcome = "ok"
 			case logCollectAckNotEstablished:
 				status = "error"
+				reportFailureSnapshot(ctx, s, preflightCfg, "create_not_established")
 				// 用 015 而不是 008：008 是"查询了一个不存在的任务"，本场景是
 				// "下发之后节点根本没建立"，处置动作不同（核对 acli 版本/专项 vs 核对任务 ID）。
 				code = logcontract.ErrPlugCreateNotEstablished

@@ -116,6 +116,11 @@ const HINTS: Record<string, LogCollectErrorHint> = {
     check: ["按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"],
     fix: ["上一次上传仍在进行，请稍候再试（重复点击会被拒绝，避免并发写坏同名安装包）。"],
   },
+  "LC-INSTALL-010": {
+    title: "安装后内置插件不完整",
+    check: ["确认节点 /sf/data/local/acli/plugins/log_collect/ 下 plugin 与 manifest.json 都存在且非空。", "查看 acli.log 中 built_in_plugin 初始化是否报 rsync/unlinkat 失败。"],
+    fix: ["重新安装 acli（安装完成后单独执行一次 acli --version 让其完成内置插件初始化），再重试。", "多次重装仍缺插件，按 acli 内置插件安装缺陷反馈厂商。"],
+  },
   "LC-PLATFORM-001": {
     title: "身份校验失败",
     check: ["按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"],
