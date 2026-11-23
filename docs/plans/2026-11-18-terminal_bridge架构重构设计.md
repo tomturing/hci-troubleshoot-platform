@@ -26,6 +26,7 @@ owner: terminal_bridge
 
 | 日期 | 版本 | 变更摘要 |
 |------|------|---------|
+| 2026-11-23 | v2.9 | U0 杀软抽样范围收敛为 Windows Defender 并实测通过（`v2.36.0-127`，无检出且可启动，报告留档）；§6.3 风险表的"发布前抽样验证主流杀软"改为实测口径，360/火绒/EDR/AppLocker 标注未验证并指向方案 §7.2 重启条件；风险清单第 10 条同步 |
 | 2026-11-20 | v2.8 | 命名与可靠性收敛：① `internal/logpush` → `internal/shared/obslog`、`Blog()` → `Emit()`（ADR 见《2026-11-20-terminal_bridge重构审查与优化》§15：`log+动作` 缺"日志主体"维度导致与 logcollect 混淆；经三条判据确认不并入 telemetry——变化原因、依赖方向、build tag 开关语义均不同）；事件名 `log_upload.*`、前端 `type=bridge_log`、`/status` 字段、`HCI_BRIDGE_LOG_*` 四类跨端契约不变；obslog 下沉 shared 后域间依赖基线 11 条 → 6 条；新增包文档 `obslog/doc.go` 明确"桥自身事件"与"客户节点日志采集"边界。② 阶段 1 可靠性补齐：gaps.jsonl 重启重放 + 归档 + 纳入总占用；补传扫描 seedMu 串行化；预算检查按 maxBytes/8 与 5s 双阈值节流；stderr 启动时按 60MB 轮转一代并写代数标记，event_id 带代数避免偏移复用被幂等误丢。③ 新增回归测试 3 例（gaps 重放、损坏行跳过、代数读取） |
 | 2026-11-20 | v2.7 | 实施后审查与 P0 修复（详见《2026-11-20-terminal_bridge重构审查与优化》）：L2 outbox 预算超限路径 `enforceDiskBudgetLocked` 在持 `u.Mu` 时调 `Blog`，经 `publish → enqueue` 同 goroutine 重入 `u.Mu` 造成自死锁（平台久不可达、弱网积压时触发，桥整体挂死），改为 stderr 留痕经 L3 补传上报，不再产生重复 gap 事件；`persistOK` 由单向闩锁改为可复位（写成功即复位并把游标钳回本条起点，避免越过故障期空洞误删后续段），`refillFromDiskLocked` 在故障期暂停（杜绝无限重放），落盘失败且内存队列满时计入 `dropped` 并留痕（"零静默丢弃"在磁盘满分支补全），`/status` 新增 `persist_ok`；新增 3 个生产接线回归测试（全局 `LogUpload`，非局部实例），并做缺陷回退的反向验证。审查同时记录 5 项架构债（Shared Kernel、横切 logpush、logcollect 伪公共库、delivery 未接 Runner、路由未分权）与 7 项 P1，留待后续阶段收敛 |
 | 2026-11-20 | v2.6 | 终局对账（两文档逐条核对代码事实）：全部阶段完成——P-1 止血、U0（#1581）、R0（#1575）、S1-S4/D1（收口设计 v2.0-s4b/e2e，uplink 部分 #1580）、U1（#1582）、L1（#1584）。目标树与落地的结构差异留痕（设计意图均满足，守卫钉死）：① kinds/ 目录未建——reconcile 为纯数据驱动骨架（kinds.go Kind 枚举+pipeline），消费者声明式胶水住功能域（acli/logcollect），新增链路只加 DesiredState 值+Provider 不改骨架，remote_convergence_test.go golden 逐字+形态扫描守卫；② 注册式路由由装配层 cmd/bridge/ws_routes.go 统一注册（v2.1 ③，域 init 自注册会成环），18 种消息守卫冻结；③ shared/runtime 新增（env/mode 公共助手，目标树未列）；④ uplink/token.go 未独立成文件——令牌约定住唯一消费者 logpush；⑤ models 仅 ws.go（delivery 视图 DTO 住 delivery 域，无跨进程需求）；⑥ cmd/bridge/main.go 236 行（目标 <200，超出为启动注释与装配接线，无业务逻辑）；⑦ 模块根留 5 个 package main 守卫测试（golden/静态形态扫描，跨域守卫不属任何单域）。CI 补桌面产物 logpush 符号门禁（风险 #19，实测 124 符号/otel 0）；U2 可选未做（U0 ≤5MB fail-closed 门禁已防体积回归）；手动上传入口退役为 gated 后续（等价性已过，待版本覆盖+≥2 周观察期，不占 bridge 阶段）。全量验收：544 测试函数零丢失、race/双 tag/双 GOOS 绿、import 禁令 11 条冻结未新增 |
@@ -604,8 +605,8 @@ type Span interface { AddEvent(string, ...Attr); SetStatus(code, msg string); En
 
 | 代价 | 说明 | 缓解 |
 |------|------|------|
-| 杀软误报率上升 | 加壳是恶意软件常用手法，部分 EDR 敏感 | 客户群为运维工程师，发布前抽样验证主流杀软 |
-| AppLocker/WDAC 可能拦截加壳程序 | 企业策略环境 | 保留未压缩产物作为备选下载 |
+| 杀软误报率上升 | 加壳是恶意软件常用手法，部分 EDR 敏感 | 客户群为运维工程师，发布前抽样验证——**2026-11-23 范围收敛为 Windows Defender 并实测通过**（`docs/verify/U0-杀软抽样验证方案.md` §7）；360/火绒/EDR **未验证**，按 §7.2 触发条件重启 |
+| AppLocker/WDAC 可能拦截加壳程序 | 企业策略环境 | 保留未压缩产物作为备选下载；**AppLocker 本期未验证**（同上 §7.1） |
 | 启动解压开销 | 几十 ms 级 | 可忽略 |
 | 版本清单一致性 | bridge-version.json 的 sha256 必须按**压缩后**产物计算 | CI 同 commit 产出 exe+清单（现有门禁逻辑不变） |
 
@@ -651,7 +652,7 @@ type Span interface { AddEvent(string, ...Attr); SetStatus(code, msg string); En
 | 7 | 测试迁移遗漏造成覆盖空洞 | 先迁测试再迁实现；R0 验收对比迁移前后测试函数清单 |
 | 8 | 生成代码（contract）再生成路径失效 | 保留生成器路径约定，R0 验证再生成 diff 为空 |
 | 9 | Windows 平台文件后缀误改导致交叉编译失败 | _unix/_windows 后缀原样保留；CI 双 GOOS 冒烟构建 |
-| 10 | UPX 产物被杀软/策略拦截 | 保留未压缩备选产物；发布前抽样验证（§6.3） |
+| 10 | UPX 产物被杀软/策略拦截 | 保留未压缩备选产物；抽样验证（§6.3）已完成 Defender 范围，其余引擎未验证（方案 §7.2） |
 | 11 | 压缩后清单 sha256 失配误报版本不一致 | 清单按压缩后产物计算，exe+清单同 commit（现有 fail-closed 门禁） |
 | 12 | 重构被误期待为体积优化 | §1.4 明示业务代码仅 0.67MB；体积指标归 U0/U1 |
 | 13 | 桌面剥离 OTel 误伤集群可观测性 | build tag 只影响桌面产物；集群镜像带 tag；U1 验收集群 tracing 不回归 |
