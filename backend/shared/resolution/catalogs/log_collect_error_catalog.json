@@ -207,6 +207,17 @@
       "ops_hint": "同一 caseID@nodeIP 单飞互斥，见 acli_sync.busy 日志。"
     },
     {
+      "code": "LC-INSTALL-010",
+      "layer": "INSTALL",
+      "stage": "verify",
+      "title_zh": "安装后内置插件不完整",
+      "owner": "customer",
+      "retryable": "manual",
+      "http_status": 503,
+      "user_hint": "acli 已安装，但节点上 log_collect 等内置插件缺少可执行文件或 manifest，继续采集必然失败。",
+      "ops_hint": "安装器 exit 0 不代表集群分发完整；逐节点校验 plugin/manifest 落盘，缺失即判安装失败。证据看 detail.failure_snapshot 与 acli.log。"
+    },
+    {
       "code": "LC-EXEC-001",
       "layer": "EXEC",
       "stage": "exec",

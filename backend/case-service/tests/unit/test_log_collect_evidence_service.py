@@ -182,6 +182,53 @@ class TestEvidenceRoutes:
         detail_updates = [params for sql, params in session.calls if "artifact_quality" in sql]
         assert detail_updates and detail_updates[0]["quality"] == "invalid"
 
+    def test_artifact_manifest_flags_missing_hosts(self, client):
+        """目标节点与 sp_<ip>.tgz 对账：缺台必须降到 incomplete，不能继续 ok。
+
+        Q2026112300134 现场 6 台只生成 3 个 tgz，中央目录依旧可读；只靠
+        readable/size 判定就永远发现不了「acli 报 100%、实际少一半」。
+        """
+        test_client, session = client
+        response = test_client.post(
+            f"/api/direct/log-collect/tasks/{TASK_ID}/artifact-manifest",
+            json={
+                "source": "node_zip",
+                "archive_size": 488027010,
+                "entry_count": 7,
+                "entry_total_bytes": 499000000,
+                "expected_hosts": ["192.168.8.11", "192.168.8.12", "192.168.8.13"],
+                "entries": [
+                    {"name": "sp_192.168.8.12.tgz"},
+                    {"name": "sp_192.168.8.13.tgz"},
+                    {"name": "collect_record.txt"},
+                ],
+            },
+            headers={"X-Evidence-Ticket": routes.tickets.issue(TASK_ID)},
+        )
+        assert response.status_code == 200
+        inserts = [params for sql, params in session.calls if "INSERT INTO log_collect_artifact_manifest" in sql]
+        assert inserts and inserts[0]["quality"] == "incomplete"
+        assert inserts[0]["reason"] == "missing_hosts"
+
+    def test_failure_snapshot_writes_detail(self, client):
+        """失败现场快照只写 detail，不碰任务状态；这是「组件坏了也能闭环」的证据入口。"""
+        test_client, session = client
+        response = test_client.post(
+            f"/api/direct/log-collect/tasks/{TASK_ID}/failure-snapshot",
+            json={
+                "reason": "plugin_incomplete",
+                "host": "192.168.8.10",
+                "files": [
+                    {"path": "/sf/data/local/acli/plugins/log_collect/plugin", "exists": False, "size": 0},
+                ],
+                "disk": {"raw": "/dev/sda1 100 100 0 100% /sf"},
+            },
+            headers={"X-Evidence-Ticket": routes.tickets.issue(TASK_ID)},
+        )
+        assert response.status_code == 200, response.text
+        updates = [params for sql, params in session.calls if "failure_snapshot" in sql]
+        assert updates and "plugin_incomplete" in updates[0]["snapshot"]
+
     def test_network_probe_accepts_bridge_rtt_samples(self, client):
         """bridge 发整型 RTT（失败为 -1），不能再被 dict 契约 422 掉。"""
         test_client, session = client

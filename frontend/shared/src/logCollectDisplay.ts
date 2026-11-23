@@ -1255,6 +1255,35 @@ export const FAULT_CATALOG = {
     "title_zh": "安装包传输进行中",
     "tone": "warning"
   },
+  "LC-INSTALL-010": {
+    "action": "acli 已安装，但节点上 log_collect 等内置插件缺少可执行文件或 manifest，继续采集必然失败。",
+    "admin_detail": "安装器 exit 0 不代表集群分发完整；逐节点校验 plugin/manifest 落盘，缺失即判安装失败。证据看 detail.failure_snapshot 与 acli.log。",
+    "business_stage": "verify",
+    "check": [
+      "确认节点 /sf/data/local/acli/plugins/log_collect/ 下 plugin 与 manifest.json 都存在且非空。",
+      "查看 acli.log 中 built_in_plugin 初始化是否报 rsync/unlinkat 失败。"
+    ],
+    "component": "acli",
+    "evidence": "detail.failure_snapshot / bridge_execution_logs（INSTALL 层原始输出）",
+    "fix": [
+      "重新安装 acli（安装完成后单独执行一次 acli --version 让其完成内置插件初始化），再重试。",
+      "多次重装仍缺插件，按 acli 内置插件安装缺陷反馈厂商。"
+    ],
+    "http_status": 503,
+    "kind": "runtime",
+    "layer": "INSTALL",
+    "match_keywords": [
+      "内置插件不完整",
+      "插件缺失"
+    ],
+    "owner": "customer",
+    "problem": "acli 安装器返回成功，但节点上的内置插件目录不完整",
+    "retryable": "manual",
+    "scope": "intranet",
+    "stage": "S6",
+    "title_zh": "安装后内置插件不完整",
+    "tone": "error"
+  },
   "LC-PLATFORM-001": {
     "action": "登录状态失效，请重新登录。",
     "admin_detail": "网关签名 X-Client-ID 缺失或无效。",

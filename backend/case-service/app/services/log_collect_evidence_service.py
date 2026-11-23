@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
 from typing import Any
 
@@ -82,6 +83,32 @@ def derive_manifest_quality(
     if entry_count < 3:
         return "suspect", "entry_count_low"
     return "ok", "ok"
+
+
+_SP_HOST_ENTRY = re.compile(r"^sp_(\d{1,3}(?:\.\d{1,3}){3})\.(?:tgz|tar\.gz|zip)$")
+
+
+def reconcile_manifest_hosts(
+    expected_hosts: list[str] | None,
+    entry_names: list[str],
+) -> tuple[list[str], list[str]]:
+    """把「目标节点集合」与产物条目对账，返回 ``(missing, unexpected)``。
+
+    第一性原理：acli 的 100% 只代表它自己跑完了，不代表每台都产出了 tgz。
+    Q2026112300134 现场 6 台只生成 3 个 ``sp_<ip>.tgz``，中央目录质量仍是 ok。
+    只有把创建时的目标快照与条目名做差集，才能把「假完成」变成可见事实。
+
+    只用创建时快照，不用当前节点列表：采集中被移出目标的节点不应算缺失。
+    """
+    if not expected_hosts:
+        return [], []
+    expected = {str(host).strip() for host in expected_hosts if str(host).strip()}
+    present: set[str] = set()
+    for name in entry_names:
+        match = _SP_HOST_ENTRY.match(str(name or "").strip())
+        if match:
+            present.add(match.group(1))
+    return sorted(expected - present), sorted(present - expected)
 
 
 def probe_grade(*, reachable: bool, loss_rate: Any, rtt_avg_ms: Any, jitter_ms: Any) -> str:

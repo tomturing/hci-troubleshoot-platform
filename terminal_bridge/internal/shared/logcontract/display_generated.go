@@ -190,6 +190,14 @@ var contractErrors = map[string]contractError{
 		Component: "acli",
 		Stage:     "S2",
 	},
+	"LC-INSTALL-010": {
+		Title:     "安装后内置插件不完整",
+		Problem:   "acli 安装器返回成功，但节点上的内置插件目录不完整",
+		Action:    "acli 已安装，但节点上 log_collect 等内置插件缺少可执行文件或 manifest，继续采集必然失败。",
+		Layer:     "INSTALL",
+		Component: "acli",
+		Stage:     "S6",
+	},
 	"LC-PLATFORM-001": {
 		Title:     "身份校验失败",
 		Problem:   "身份校验失败",
