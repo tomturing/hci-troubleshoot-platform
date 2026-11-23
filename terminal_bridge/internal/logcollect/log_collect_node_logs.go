@@ -128,15 +128,34 @@ type processLogPayload struct {
 	Status       string `json:"status"`
 	Error        string `json:"error,omitempty"`
 	CollectedAt  string `json:"collected_at,omitempty"`
+	// Phase 标记采集轮次：init=下发后初始化轮，terminal=成功终态轮，
+	// terminal_failed=失败/取消终态轮。缺省视为 terminal，兼容旧桥。
+	Phase string `json:"phase,omitempty"`
+}
+
+const (
+	processLogPhaseInit         = "init"
+	processLogPhaseTerminal     = "terminal"
+	processLogPhaseTerminalFail = "terminal_failed"
+)
+
+// processLogDedupKey 按任务与轮次生成去重键：三轮证据互不吞掉。
+func processLogDedupKey(taskID, phase string) string {
+	return "process-logs:" + taskID + ":" + phase
 }
 
 // collectNodeLogs 读取节点上 acli 目录下的全部 .log 并上报。
 // 语义仍是「尽力而为的证据」：任何失败只留事件，绝不影响采集与交付主流程。
-func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig) {
+func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig, phase string) {
 	if s == nil {
 		return
 	}
-	key := "process-logs:" + cfg.TaskID
+	if strings.TrimSpace(phase) == "" {
+		phase = processLogPhaseTerminal
+	}
+	// 去重键按轮次隔离：init 轮采到的安装日志不能被终态轮吞掉，
+	// 失败终态与成功终态也是两轮独立证据（2026-11-23 全终态采集方案）。
+	key := processLogDedupKey(cfg.TaskID, phase)
 	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
 		return
 	}
@@ -152,6 +171,19 @@ func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig
 		evidence.Emit("INFO", "log_collect.process_logs_empty", "节点日志目录下没有可上报的 .log", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 			"task_id": cfg.TaskID, "root": nodeLogRoot,
 		})
+		// 需求第 78 行：目录为空也要落一条 empty 记录，区分「没日志」与「没回传」。
+		// path 用目录哨兵（不做删除/写入），平台侧对 status=empty 放宽 .log 后缀校验。
+		postCtx, cancelPost := context.WithTimeout(ctx, 10*time.Second)
+		_, postErr := cfg.PostEvidence(postCtx, cfg.TaskPath("process-logs"), processLogPayload{
+			Host: cfg.NodeIP, Path: nodeLogRoot + "/", Size: 0,
+			Status: "empty", CollectedAt: time.Now().UTC().Format(time.RFC3339), Phase: phase,
+		}, "")
+		cancelPost()
+		if postErr != nil {
+			evidence.Emit("WARN", "log_collect.process_log_failed", "空目录标记上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+				"task_id": cfg.TaskID, "path": nodeLogRoot, "phase": phase, "error": postErr.Error(),
+			})
+		}
 		return
 	}
 	var used int64
@@ -167,6 +199,7 @@ func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig
 		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(nodeLogFileBytes)+" "+remote.ShellQuote(path))
 		payload := processLogPayload{
 			Host: cfg.NodeIP, Path: path, CollectedAt: time.Now().UTC().Format(time.RFC3339),
+			Phase: phase,
 		}
 		switch {
 		case contentErr != nil || contentCode != 0:
@@ -203,6 +236,6 @@ func collectNodeLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig
 	}
 	evidence.Emit("INFO", "log_collect.process_logs_collected", "节点日志上报完成", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"task_id": cfg.TaskID, "root": nodeLogRoot, "found": len(paths), "collected": count,
-		"skipped": skipped, "bytes": used,
+		"skipped": skipped, "bytes": used, "phase": phase,
 	})
 }

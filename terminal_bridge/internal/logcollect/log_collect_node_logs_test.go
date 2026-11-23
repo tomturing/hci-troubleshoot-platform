@@ -81,3 +81,21 @@ func TestNodeLogPriorityRanking(t *testing.T) {
 		}
 	}
 }
+
+// 三轮采集必须各自独立去重：init 轮的安装日志不能被终态轮吞掉。
+func TestProcessLogDedupKeyPerPhase(t *testing.T) {
+	const taskID = "task-phase-dedup"
+	keys := map[string]bool{}
+	for _, phase := range []string{
+		processLogPhaseInit, processLogPhaseTerminal, processLogPhaseTerminalFail,
+	} {
+		key := processLogDedupKey(taskID, phase)
+		if keys[key] {
+			t.Fatalf("phase=%s 去重键与另一轮重复：%s", phase, key)
+		}
+		keys[key] = true
+	}
+	if processLogDedupKey(taskID, processLogPhaseInit) == processLogDedupKey("other-task", processLogPhaseInit) {
+		t.Fatal("不同任务的去重键不应相同")
+	}
+}

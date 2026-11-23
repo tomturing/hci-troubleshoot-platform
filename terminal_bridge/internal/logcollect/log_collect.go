@@ -100,12 +100,40 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 	action := strings.TrimSpace(msg.LogAction)
 	startedAt := time.Now()
 	outcome := "error"
+	// 终态证据采集轮次：由各分支设置，defer 统一触发。
+	// 2026-11-23 全终态方案：成功/失败/取消都必须留下进程日志，不能只在成功终态采。
+	collectPhase := ""
 	// 统一收尾日志：任何分支（含提前 return）都会留下耗时与结果，便于远端定位。
 	defer func() {
 		evidence.Emit("INFO", "log_collect.done", "日志收集动作结束", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"log_action": action, "task_id": msg.ExecID, "outcome": outcome,
 			"duration_ms": time.Since(startedAt).Milliseconds(),
 		})
+		// 终态补采：证据链路异步 + 独立超时，任何失败都不拖慢/改变主流程结果。
+		// 分支未显式设置时按 action+outcome 兜底：create 成功=init、失败=terminal_failed，
+		// cancel=terminal_failed；progress 只在 completed（显式设 terminal）时采。
+		if collectPhase == "" {
+			switch action {
+			case "create":
+				if outcome == "ok" {
+					collectPhase = processLogPhaseInit
+				} else {
+					collectPhase = processLogPhaseTerminalFail
+				}
+			case "cancel":
+				collectPhase = processLogPhaseTerminalFail
+			}
+		}
+		if collectPhase != "" {
+			if cfg, ok := EvidenceForByCase(msg.ExecID, msg.CaseID); ok {
+				phase := collectPhase
+				go func() {
+					evidenceCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+					defer cancel()
+					collectNodeLogs(evidenceCtx, s, cfg, phase)
+				}()
+			}
+		}
 	}()
 	evidence.Emit("INFO", "log_collect.start", "日志收集动作开始", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 		"log_action": action, "task_id": msg.ExecID, "ticket_no": msg.TicketNo,
@@ -517,15 +545,17 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 				logCollectHostResultExtra(progress.Hosts))
 		}
 		if progress.NodeState == "completed" {
+			// 终态 zip 中央目录探测仍在此处（有 probePath/ArchiveSize 局部变量）；
+			// 进程日志采集统一移到 defer 终态钩子，避免只在成功门触发、失败路径零证据。
 			if evidenceCfg, ok := EvidenceForByCase(msg.ExecID, msg.CaseID); ok {
 				session, evidencePath, evidenceSize := s, probePath, progress.ArchiveSize
 				go func() {
 					evidenceCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 					defer cancel()
 					inspectNodeArchive(evidenceCtx, session, evidenceCfg, evidencePath, evidenceSize)
-					collectNodeLogs(evidenceCtx, session, evidenceCfg)
 				}()
 			}
+			collectPhase = processLogPhaseTerminal
 		}
 		status := "ok"
 		code := ""

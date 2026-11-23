@@ -4285,6 +4285,8 @@ CREATE TABLE IF NOT EXISTS log_collect_process_log (
     error text,
     collected_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- 采集轮次：init=下发后初始化轮，terminal=成功终态，terminal_failed=失败/取消终态
+    phase varchar(20) NOT NULL DEFAULT 'terminal',
     CONSTRAINT log_collect_process_log_pkey PRIMARY KEY (log_id),
     CONSTRAINT fk_lcpl_task FOREIGN KEY (task_id) REFERENCES log_collect_task (task_id) ON DELETE CASCADE,
     CONSTRAINT ck_lcpl_status CHECK ((status)::text = ANY ((ARRAY['ok'::character varying, 'empty'::character varying, 'error'::character varying])::text[])),
@@ -4297,8 +4299,10 @@ COMMENT ON COLUMN log_collect_process_log.content_gz IS 'gzip 压缩内容；emp
 COMMENT ON COLUMN log_collect_process_log.truncated IS '是否因单文件/单任务上限被截断';
 COMMENT ON COLUMN log_collect_process_log.status IS 'ok=有内容；empty=目录或文件为空；error=读取失败（error 列给原因）';
 
+-- 唯一键带 phase：同一文件不同轮次内容不同/相同都要各自保留，
+-- 否则 init 轮的安装日志会被终态轮的同名文件 ON CONFLICT DO NOTHING 吞掉。
 CREATE UNIQUE INDEX IF NOT EXISTS uq_lcpl_task_host_path_digest
-    ON log_collect_process_log (task_id, host, path, COALESCE(sha256, ''::bpchar));
+    ON log_collect_process_log (task_id, host, path, COALESCE(sha256, ''::bpchar), phase);
 
 CREATE INDEX IF NOT EXISTS idx_lcpl_task
     ON log_collect_process_log (task_id, created_at DESC);
