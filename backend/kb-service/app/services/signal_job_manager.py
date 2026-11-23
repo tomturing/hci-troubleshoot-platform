@@ -30,6 +30,8 @@ from typing import Any
 
 from shared.observability.logger import get_logger
 
+from app.services.job_task_registry import track_job_task
+
 logger = get_logger("kb-service-signal-job-manager")
 
 
@@ -41,6 +43,8 @@ class SignalJobManager:
         self._lock = asyncio.Lock()
         self._sem = asyncio.Semaphore(max_concurrent)
         self.max_concurrent = max_concurrent
+        # 在跑 job 的句柄：退出时 join 它们，避免"Pod 一换、job 就 404"。
+        self._job_tasks: set[asyncio.Task[Any]] = set()
 
     async def submit(self, kbd_id: int, runner, trace_id: str | None = None) -> str:
         """提交 Job，返回 job_id。
@@ -79,8 +83,8 @@ class SignalJobManager:
                 "started_at": None,
                 "finished_at": None,
             }
-        # 后台执行（不阻塞 submit）
-        asyncio.create_task(self._run(job_id, kbd_id, runner))
+        # 后台执行（不阻塞 submit）；登记句柄以便退出时 join，而不是被 SIGKILL 砍断。
+        track_job_task(self, self._run(job_id, kbd_id, runner), name=f"signal_job:{job_id}")
         logger.info(event="signal_job_submitted", job_id=job_id, kbd_id=kbd_id)
         return job_id
 
@@ -163,6 +167,11 @@ class SignalJobManager:
 
 # 全局单例（在 app.main 生命周期内复用）
 _job_manager: SignalJobManager | None = None
+
+
+def peek_signal_job_manager() -> SignalJobManager | None:
+    """返回已初始化的单例；未使用过则返回 None（见 vision_job_manager.peek_job_manager）。"""
+    return _job_manager
 
 
 def get_signal_job_manager() -> SignalJobManager:

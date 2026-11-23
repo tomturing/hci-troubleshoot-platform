@@ -101,6 +101,15 @@ CONSUMER = "kb-service.extract_root_signal.kbd"
 _root_signal_jobs = SignalJobManager(max_concurrent=4)
 
 
+def get_root_signal_job_manager() -> SignalJobManager:
+    """暴露根因信号 Job 管理器实例，供应用退出时 join 在跑 job。
+
+    与关键信号管理器物理隔离（见上方注释），因此必须在 main 的 shutdown 流程里
+    单独 drain 一次，否则根因抽取任务仍会在 Pod 替换时整段消失。
+    """
+    return _root_signal_jobs
+
+
 def set_dependencies(db_manager: DatabaseManager) -> None:
     global _db_manager
     _db_manager = db_manager

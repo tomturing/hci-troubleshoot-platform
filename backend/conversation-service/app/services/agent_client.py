@@ -11,6 +11,13 @@ conversation-service 通过此客户端将推理请求委托给 agent-service，
     {"type": "escalation", "reason": "...", "context": {}}
     {"type": "done"}
     {"type": "error", "message": "..."}
+    {"type": "server_restart", "reason": "..."}
+
+``server_restart`` 不由 agent-service 产生，而是本客户端在「上游连接被异常中断」时补发的：
+agent-service 滚动发布时 uvicorn 会等在手请求跑完（grace 300s），正常不会断流；一旦断流，
+说明对端进程消失（SIGKILL/OOM/网络），推理上下文已无法转移。此时把它报成普通
+``error`` 会让用户看到「推理异常」这种错误归因，改为 ``server_restart`` 让调用方
+按「换副本重连」处理，日志里保留真实异常类型。
 """
 
 from __future__ import annotations
@@ -139,13 +146,27 @@ class AgentClient:
                         break
 
         except httpx.ConnectError as exc:
-            logger.error(
-                event="agent_client_connect_error",
-                message=f"无法连接 agent-service: {exc}",
+            # 连不上说明对端副本不存在（发布窗口/实例全退）。按「换副本重连」处理，
+            # 由调用方决定是否重试；连续失败则由调用方收敛成错误提示。
+            logger.warning(
+                event="agent_client_connect_interrupted",
+                message=f"无法连接 agent-service，按重启处理: {exc}",
+                base_url=self._base_url,
+                error_type=type(exc).__name__,
+            )
+            yield {"type": "server_restart", "reason": type(exc).__name__}
+        except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            # 流式响应中途被对端掐断（进程消失/连接重置）：未收到 done，
+            # 已产出的片段仍由调用方落库，前端重连后继续收剩余事件。
+            logger.warning(
+                event="agent_client_stream_interrupted",
+                message="agent-service 流失常中断，按重启处理",
+                error_type=type(exc).__name__,
                 base_url=self._base_url,
             )
-            yield {"type": "error", "message": f"无法连接 agent-service: {exc}"}
+            yield {"type": "server_restart", "reason": type(exc).__name__}
         except Exception as exc:
+            # 其余异常是真实错误（鉴权、解析、下游报错），不能伪装成重启。
             logger.error(
                 event="agent_client_error",
                 message=f"AgentClient 异常: {exc}",
@@ -216,6 +237,16 @@ class AgentClient:
                     yield event
                     if event.get("type") == "done":
                         break
+        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            # 续写流本是长挂起连接（active_prompt=True），Pod 被换时必然中断；
+            # 报成 error 会让前端把还在跑的工具调用标成失败，改为让前端退避重连。
+            logger.warning(
+                event="agent_client_resume_interrupted",
+                message="resume_stream 连接中断，按重启处理",
+                error_type=type(exc).__name__,
+                session_id=session_id,
+            )
+            yield {"type": "server_restart", "reason": type(exc).__name__}
         except Exception as exc:
             logger.error(
                 event="agent_client_resume_exception",

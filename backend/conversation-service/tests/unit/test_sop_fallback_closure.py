@@ -323,9 +323,22 @@ async def test_route_persists_reply_before_sop_fallback_card():
     service = MagicMock()
     service.send_message_stream_only = stream
     service.release_request_transaction_before_stream = AsyncMock()
+    order: list[str] = []
+
+    async def _save_assistant(*_args, **_kwargs):
+        order.append("assistant")
+
+    async def _save_interactive(*_args, **_kwargs):
+        order.append("interactive")
+
+    service.save_assistant_message = AsyncMock(side_effect=_save_assistant)
+    service.save_interactive_request_message = AsyncMock(side_effect=_save_interactive)
     request = MagicMock()
     request.headers = {}
     request.app.state.sse_pusher = None
+    # 显式置 None：这里是「没有 ShutdownCoordinator」的回退路径（旧行为必须仍然可用）。
+    # 不能省——MagicMock 的 getattr 什么都取得到，会静默走成协调器分支。
+    request.app.state.shutdown = None
     background_tasks = BackgroundTasks()
     message = MessageCreate(
         case_id="Q2026083113575",
@@ -347,15 +360,89 @@ async def test_route_persists_reply_before_sop_fallback_card():
         )
         chunks = [chunk async for chunk in response.body_iterator]
 
-    assert [task.func for task in background_tasks.tasks] == [
-        service.save_assistant_message,
-        service.save_interactive_request_message,
-    ]
+    # 落库合并成单个任务（_persist_all），内部保证"主回复先于交互卡"的顺序契约
+    assert len(background_tasks.tasks) == 1
+    await background_tasks()
+    assert order == ["assistant", "interactive"]
     service.release_request_transaction_before_stream.assert_awaited_once()
-    assert background_tasks.tasks[1].kwargs["event"] == fallback_event
+    assert service.save_interactive_request_message.await_args.kwargs["event"] == fallback_event
     stream_body = "".join(chunks)
     assert (
         'event: diagnostic_outcome\ndata: {"is_definitive":true,'
         '"supported_support_ids":["SAMPLE-1"]}\n\n'
     ) in stream_body
     assert 'event: diagnostic_outcome\ndata: {"to":' not in stream_body
+
+
+@pytest.mark.asyncio
+async def test_route_tracks_persistence_into_shutdown_coordinator():
+    """生产路径：落库任务必须登记进协调器，Pod 替换时能被 join 到。
+
+    背景：原来用 BackgroundTasks，Starlette 不暴露任务句柄，SIGTERM 时整段丢——
+    用户看得到回复、库里没有。这里锁定顺序（assistant 先于 interactive），
+    否则交互卡会先落库、主回复缺失。
+    """
+    from app.services.shutdown_coordinator import ShutdownCoordinator
+
+    conversation_id = uuid.uuid4()
+    fallback_event = {
+        "requestId": "sop-fallback-order-2",
+        "acpSessionId": str(conversation_id),
+        "kind": "sop_fallback",
+        "title": "选择后续排查方式",
+        "prompt": "请选择",
+        "options": [],
+        "customInput": False,
+        "metadata": {},
+    }
+
+    async def stream(**_kwargs):
+        yield "SOP 本轮说明"
+        yield f"\x00event:interactive_request:{json.dumps(fallback_event, ensure_ascii=False)}\x00"
+
+    order: list[str] = []
+
+    async def _save_assistant(*_args, **_kwargs):
+        order.append("assistant")
+
+    async def _save_interactive(*_args, **_kwargs):
+        order.append("interactive")
+
+    service = MagicMock()
+    service.send_message_stream_only = stream
+    service.release_request_transaction_before_stream = AsyncMock()
+    service.save_assistant_message = AsyncMock(side_effect=_save_assistant)
+    service.save_interactive_request_message = AsyncMock(side_effect=_save_interactive)
+
+    coordinator = ShutdownCoordinator()
+    request = MagicMock()
+    request.headers = {}
+    request.app.state.sse_pusher = None
+    request.app.state.shutdown = coordinator
+    background_tasks = BackgroundTasks()
+    message = MessageCreate(
+        case_id="Q2026083113575",
+        role="user",
+        content="继续排查",
+        assistant_type="htp-agent",
+    )
+
+    with patch(
+        "app.routes.conversations.verify_conversation_ownership",
+        new=AsyncMock(),
+    ):
+        response = await conversation_routes.send_message(
+            conversation_id=conversation_id,
+            message=message,
+            background_tasks=background_tasks,
+            request=request,
+            service=service,
+        )
+        _ = [chunk async for chunk in response.body_iterator]
+
+    # 有协调器时不再走 BackgroundTasks，而是登记成可 join 的任务
+    assert background_tasks.tasks == []
+
+    abandoned, _ = await coordinator.drain(timeout=5.0)
+    assert abandoned == 0
+    assert order == ["assistant", "interactive"]

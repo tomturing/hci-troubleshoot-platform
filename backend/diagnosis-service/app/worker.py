@@ -1,7 +1,15 @@
-"""Diagnosis Worker（诊断工作进程）入口。"""
+"""Diagnosis Worker（诊断工作进程）入口。
+
+退出语义（滚动发布的关键）：
+收到 SIGTERM 后**不再取新任务**，把正在跑的任务再给一小段时间收尾；
+收不完就把任务放回 pending（清锁 + available_at 立即），新副本立刻接手。
+这样发布既不丢任务，也不用等 stale 租约超时（默认 900s）才恢复。
+"""
 
 import asyncio
+import contextlib
 import os
+import signal
 import socket
 import time
 import uuid
@@ -62,6 +70,43 @@ async def clean_orphan_work_directories() -> int:
         await asyncio.to_thread(_clear_directory, path)
         removed += 1
     return removed
+
+
+async def release_task(database: DatabaseManager, task_id: str, worker_id: str, reason: str) -> bool:
+    """把本 worker 正在跑的任务放回队列，让新副本立刻接手。
+
+    只改自己锁住的行（locked_by 条件）：滚动发布时可能有多个 worker 同时退出，
+    没有这个条件就会把别人正在跑的任务抢回 pending，造成同任务并行执行。
+    """
+    async for session in database.get_session():
+        result = await session.execute(
+            text(
+                """
+                UPDATE diagnosis_processing_job
+                SET status = 'pending', locked_by = NULL, locked_at = NULL,
+                    available_at = CURRENT_TIMESTAMP,
+                    failure_code = :reason,
+                    failure_message = 'Worker 收到退出信号，任务已交还给队列',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE task_id = :task_id
+                  AND status = 'running'
+                  AND locked_by = :worker_id
+                RETURNING task_id
+                """
+            ),
+            {"task_id": task_id, "worker_id": worker_id, "reason": reason},
+        )
+        released = len(result.all()) > 0
+        TASKS_TOTAL.labels(status="released" if released else "release_missed").inc()
+        logger.info(
+            event="diagnosis_worker_task_released",
+            message="退出前把在跑任务交还队列",
+            task_id=task_id,
+            worker_id=worker_id,
+            released=released,
+        )
+        return released
+    return False
 
 
 async def next_task(database: DatabaseManager) -> str | None:
@@ -188,6 +233,26 @@ async def run_lifecycle_maintenance(database: DatabaseManager) -> None:
             MAINTENANCE_TOTAL.labels(operation="retention_delete").inc()
 
 
+# 收到退出信号后留给在跑任务收尾的时间。必须明显小于 helm 的 grace
+# （diagnosis-worker=180s），还要挤出交还队列与关闭连接池的余量。
+SHUTDOWN_DRAIN_SECONDS = 60.0
+
+
+def install_shutdown_signal_handlers(stop: asyncio.Event) -> None:
+    """SIGTERM/SIGINT → 置停止标志，让主循环收口。
+
+    worker 是独立进程（不经 uvicorn），没有这个处理就只能等 kubelet 到点 SIGKILL：
+    在跑的任务被直接丢弃，要等 stale 租约（默认 900s）才被捡回，用户看到的是
+    「任务一直 running 然后失败」。
+    """
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:  # Windows 事件循环不支持
+            signal.signal(sig, lambda *_: stop.set())
+
+
 async def run() -> None:
     """持续轮询持久化任务队列。"""
 
@@ -198,6 +263,8 @@ async def run() -> None:
     worker_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
     recovered = await recover_stuck_tasks(database)
     cleaned_work_directories = await clean_orphan_work_directories()
+    stop = asyncio.Event()
+    install_shutdown_signal_handlers(stop)
     logger.info(
         event="diagnosis_worker_started",
         worker_id=worker_id,
@@ -206,7 +273,7 @@ async def run() -> None:
     )
     try:
         next_maintenance_at = 0.0
-        while True:
+        while not stop.is_set():
             if time.monotonic() >= next_maintenance_at:
                 try:
                     await run_lifecycle_maintenance(database)
@@ -214,12 +281,48 @@ async def run() -> None:
                     logger.exception(event="diagnosis_worker_maintenance_failed", error=exc)
                     MAINTENANCE_TOTAL.labels(operation="failed").inc()
                 next_maintenance_at = time.monotonic() + settings.DIAGNOSIS_WORKER_MAINTENANCE_SECONDS
+            if stop.is_set():
+                break
             task_id = await next_task(database)
             if task_id is None:
-                await asyncio.sleep(settings.DIAGNOSIS_WORKER_POLL_SECONDS)
+                # 用 wait_for 而不是 sleep：否则发布时要白等一个完整轮询周期才响应退出。
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=settings.DIAGNOSIS_WORKER_POLL_SECONDS)
                 continue
+            task = asyncio.create_task(process_task(database, task_id, worker_id))
+            stop_wait = asyncio.create_task(stop.wait())
             try:
-                await process_task(database, task_id, worker_id)
+                done, _ = await asyncio.wait({task, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
+                if task in done:
+                    # 正常跑完：异常在这里就地记录，和原逻辑一致。
+                    exc = task.exception()
+                    if exc is not None:
+                        logger.exception(
+                            event="diagnosis_worker_task_failed",
+                            task_id=task_id,
+                            worker_id=worker_id,
+                            error=exc,
+                        )
+                    continue
+                # 收到退出信号但任务还在跑：先给它一段收尾时间
+                logger.info(
+                    event="diagnosis_worker_draining_task",
+                    message="收到退出信号，等待在跑任务收尾",
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    drain_seconds=SHUTDOWN_DRAIN_SECONDS,
+                )
+                drained = False
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=SHUTDOWN_DRAIN_SECONDS)
+                    drained = True
+                except TimeoutError:
+                    drained = False
+                if not drained:
+                    # 收不完就交还队列：新副本立刻接手，不必等 900s 租约超时。
+                    await release_task(database, task_id, worker_id, "worker_graceful_shutdown")
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
             except Exception as exc:
                 logger.exception(
                     event="diagnosis_worker_task_failed",
@@ -227,7 +330,10 @@ async def run() -> None:
                     worker_id=worker_id,
                     error=exc,
                 )
+            finally:
+                stop_wait.cancel()
     finally:
+        logger.info(event="diagnosis_worker_stopped", worker_id=worker_id)
         await database.close()
 
 

@@ -94,6 +94,39 @@ observabilityLayer:
   manage: false
 
 workloadDefaults:
+  # ==================== 优雅退出窗口（terminationGracePeriodSeconds）==========
+  # 收到 SIGTERM 后等多久才 SIGKILL，由 _helpers.tpl 的 hci.gracePeriod 统一渲染，
+  # 所有 Deployment/worker 都从这里取——不再由各服务自己写一行（写漏就退回 30s）。
+  #
+  # 第一性原理：这个数字必须覆盖「最长的那次在途工作」，而不是取习惯值 30s。
+  # 超出窗口的部分被 SIGKILL 直接砍断：半成品文件、未交还的租约、没落库的
+  # AI 回复都在这一刀里。uvicorn/进程收到 SIGTERM 会先停止接新连接再等在途
+  # 结束，所以放大它只会在"真的还有活"时多等，不会拖慢正常发布。
+  #
+  # 定值依据（代码级）：
+  #   case-service         分片 300s / 20GiB 合并 / 归档确认 —— 300
+  #   agent-service        SSE 主链路，上游 read timeout 300s、人工确认等待 120s —— 300
+  #   conversation-service 同一条用户链路的 SSE，且 AI 回复靠 BackgroundTasks 落库 —— 300
+  #   diagnosis-worker     单任务 900s，靠租约回收而非等满，只给收尾放回 pending 的时间 —— 180
+  #   kb-service           vision/signal 单次 30~60s，批量任务靠 DB interrupted 兜底 —— 120
+  #   diagnosis-service    API 侧分片合并、离线资源同步 preview —— 120
+  #   api-gateway          WebSocket 长连接无法靠 grace，只给 SSE 透传自然收尾 —— 60
+  #   scheduler-service    仅启动期批量补池，勿与发布竞争即可 —— 45
+  #   terminal-bridge      客户机桥的 WS 会话，掉线由客户端重连兜底 —— 60
+  #   ops-agent-service    单次诊断请求 —— 60
+  # 无长任务的（auth/admin-ui/customer-ui/observability）沿用 k8s 默认 30。
+  gracePeriods:
+    default: 30
+    case-service: 300
+    agent-service: 300
+    conversation-service: 300
+    diagnosis-worker: 180
+    kb-service: 120
+    diagnosis-service: 120
+    api-gateway: 60
+    terminal-bridge: 60
+    ops-agent-service: 60
+    scheduler-service: 45
   securityContext:
     enabled: true
     # J-3 Pod 安全上下文基线（OWASP K8s Top 10：避免以 root 运行）
@@ -238,14 +271,9 @@ caseService:
   # helm-unittest 单文件渲染时需要关掉：checksum 是跨文件 include，
   # 测试只加载 case-service/deployment.yaml 会因找不到 configmap.yaml 而失败。
   checksumAnnotations: true
-  # 收到 SIGTERM 后等多久才 SIGKILL。
-  #
-  # 这个值要覆盖「最长的一次在途请求」，而不是取习惯值 30s：合并 20GiB 包需要
-  # 几分钟，单个 8 MiB 分片在 0.05 MB/s 的上行上也要数十秒。合并写一半被
-  # SIGKILL，留下的是半成品临时文件 + 未交还的代传租约（还要再等 120s 才被
-  # 接管），比多等几百秒更贵。uvicorn 收到 SIGTERM 会先停接新连接、再等在途
-  # 请求结束，所以 300s 只是上限，不会拖慢正常发布。
-  terminationGracePeriodSeconds: 300
+  # 优雅期（原 terminationGracePeriodSeconds: 300）已统一迁到
+  # workloadDefaults.gracePeriods.case-service：合并 20GiB 包需要几分钟，
+  # 合并写一半被 SIGKILL 会留下半成品临时文件 + 未交还的代传租约。
   image:
     repository: hci-case-service
     tag: latest
