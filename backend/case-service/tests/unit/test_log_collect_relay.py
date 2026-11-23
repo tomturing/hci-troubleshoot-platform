@@ -15,8 +15,12 @@ import httpx
 import pytest
 from app.services.log_collect_relay_service import (
     LogCollectRelayService,
+    RelayDrainingError,
     SangforRelayClient,
     SangforRelayError,
+    begin_drain,
+    drain_requested,
+    reset_drain,
 )
 
 CHUNK = 8
@@ -65,6 +69,15 @@ def storage(tmp_path):
     from app.services.log_collect_storage import LocalLogCollectStorage
 
     return LocalLogCollectStorage(str(tmp_path / "lc"))
+
+
+@pytest.fixture(autouse=True)
+def _clean_drain_flag():
+    """drain 是进程级信号：每个用例前后都必须复位，否则会把后续用例全带成"退出中"。"""
+
+    reset_drain()
+    yield
+    reset_drain()
 
 
 # ── 协议客户端 ──────────────────────────────────────────────────────────────
@@ -555,17 +568,29 @@ async def test_finish_failure_cannot_rollback_delivered(storage):
     assert "delivery_status" in where and "!=" in where
 
 
-async def test_claim_stale_skips_delivered(storage):
-    """已交付是终态：即使 relay_status 写错也不能再拉起一次整包上传。"""
+async def test_claim_stale_allows_delivered_but_unsettled(storage):
+    """已交付只代表「产物到了平台」，代传没成功必须仍可被接管续传。
+
+    2026-11-23 Q2026112300730：P2 任务在平台对象落库那一刻就是 delivered，
+    旧条件 `delivery_status != 'delivered'` 对所有 P2 任务恒假，优雅退出交还的
+    pending 永远不会被重新接管，785 片只传了 168 片却无人补传，5888 上连工单
+    目录都不存在。判据只能是 relay 自身的终态。
+    """
     sink: list = []
     service = _lease_service(storage, _FakeResult(rows=[]), sink, stale_after=60)
 
     await service.claim_stale()
-    assert "delivery_status" in _sql(sink[0])
+    sql = _sql(sink[0])
+    assert "delivery_status" not in sql
+    assert "relay_status" in sql
 
 
-async def test_settle_delivered_relays_converges_stale_status(storage):
-    """存量订正：把 (delivered, running/pending) 一次性收敛为 success。"""
+async def test_settle_delivered_relays_requires_verification(storage):
+    """存量订正只能认链尾核验：没有 archive_confirmation.verified 不得写 success。
+
+    否则滚动发布时新 Pod 会把「正在代传」的 delivered+running 判成完成——
+    这正是 Q2026112300730 平台显示已交付、5888 上却没有包的直接原因。
+    """
     statements: list = []
     service = LogCollectRelayService(
         lambda: _RecordingSession(_FakeResult(rowcount=2), statements),
@@ -579,6 +604,11 @@ async def test_settle_delivered_relays_converges_stale_status(storage):
     assert values["status"] == "completed"
     where = _sql(statements[-1]).split("WHERE", 1)[1]
     assert "delivery_status" in where
+    # JSONB 路径的两个键是绑定参数，必须查参数值而不是 SQL 字面量
+    params = [str(value) for value in statements[-1].compile().params.values()]
+    assert "archive_confirmation" in params
+    assert "verified" in params
+    assert "true" in params
 
 
 async def test_finish_preserves_original_error_code(storage):
@@ -1117,10 +1147,46 @@ async def test_shutdown_hands_back_running_relays(monkeypatch):
     monkeypatch.setattr(routes, "_build_relay_service", lambda: _FakeRelay())
     routes._running_relays[task] = task_id
 
-    await routes.shutdown_relays()
+    # 强制等待压到毫秒：生产的 120s 是为分片边界留的，单测不需要真等
+    await routes.shutdown_relays(wait_seconds=0.01)
 
     assert released == [[task_id]]
     assert task.cancelled() is True
+    assert task_id not in routes._running_relays.values()
+
+
+async def test_shutdown_lets_drained_task_finish_without_cancel(monkeypatch):
+    """收到退出信号后自行收尾的任务不应被 cancel：cancel 是最后手段，不是首选。
+
+    Q2026112300730 的 400 就是因为取消打在在途 /upload_chunk 上；修复后
+    shutdown 必须先等 drain 生效，只有超时才强制取消。
+    """
+
+    from app.routes import log_collect as routes
+
+    async def _cooperative() -> None:
+        while not drain_requested():
+            await asyncio.sleep(0.005)
+
+    task = asyncio.create_task(_cooperative())
+    task_id = uuid4()
+    released: list = []
+
+    class _FakeRelay:
+        async def release(self, ids):
+            released.append(ids)
+            return len(ids)
+
+    monkeypatch.setattr(routes, "database_manager", SimpleNamespace(async_session_factory=lambda: None))
+    monkeypatch.setattr(routes, "_build_relay_service", lambda: _FakeRelay())
+    routes._running_relays[task] = task_id
+
+    await routes.shutdown_relays(wait_seconds=2.0)
+
+    assert task.cancelled() is False
+    assert task.done()
+    # 任务自己已交还，shutdown 仍会兜底 release 一次（幂等，rowcount 由 SQL 条件保证）
+    assert released == [[task_id]]
     assert task_id not in routes._running_relays.values()
 
 
@@ -1391,3 +1457,92 @@ async def test_finish_unconfirmed_marks_queued_and_merges_detail(monkeypatch):
     assert "archive_missing" in captured["delivery_error"]
     assert captured["detail"]["baseline_report_hash"] == "abc"
     assert captured["detail"]["archive_confirmation"] == confirmation
+
+
+# ── 滚动发布：在分片边界让位，不切断在途请求 ──────────────────────────────
+
+
+async def test_run_drains_at_chunk_boundary_without_sending_request(storage, monkeypatch):
+    """drain 命中时必须「不发请求」：切断在途分片会让 5888 返回 400。
+
+    Q2026112300730 现场 13:34:04 的 `400 No form data in chunk upload` 就是
+    进程被 SIGTERM 后 cancel 掉在途 multipart 造成的，分片 168 之后再无一片成功。
+    """
+    task, _ = _make_task(storage, "Q2026112300001", b"01234567")
+    calls = {"chunk": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/init_upload":
+            return httpx.Response(200, json={"upload_id": "u-1", "chunk_size": CHUNK})
+        if request.url.path == "/upload_chunk":
+            calls["chunk"] += 1
+            return httpx.Response(200, json={"status": "uploading"})
+        return httpx.Response(404)
+
+    _patch_http_transport(monkeypatch, handler)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+
+    begin_drain()
+    with pytest.raises(RelayDrainingError):
+        await service._run(task.task_id)
+
+    # 关键否定断言：让位发生在发请求之前，5888 不应收到任何半截分片
+    assert calls["chunk"] == 0
+
+
+async def test_run_hands_lease_back_on_drain(storage):
+    """drain 不是失败：交还 pending，既不写 failed 也不记 last_error。"""
+
+    task, _ = _make_task(storage, "Q2026112300002", b"01234567")
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    service._run = AsyncMock(side_effect=RelayDrainingError())
+    released: list = []
+    service.release = AsyncMock(side_effect=lambda ids: released.extend(ids) or len(ids))
+    finished = AsyncMock()
+    service._finish = finished
+
+    await service.run(task.task_id)
+
+    assert released == [task.task_id]
+    finished.assert_not_awaited()
+
+
+async def test_run_skips_upload_when_server_already_done(storage, monkeypatch):
+    """上次已收齐、只是没写终态：重跑不能再传分片（5888 对终态会话返回 409）。
+
+    发布窗口里进程可能在 `_finish` 前退出，会话已 done 但 relay_status 仍是
+    running/pending。修复后的 reconcile 会重新接管，此时必须直接做链尾确认。
+    """
+    task, _ = _make_task(storage, "Q2026112300003", b"01234567")
+    task.relay_upload_id = "u-done"
+    task.relay_chunk_size = CHUNK
+    task.relay_chunk_total = 1
+    task.relay_chunk_index = 0
+    calls = {"chunk": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/upload_status/"):
+            return httpx.Response(200, json={"status": "done"})
+        if request.url.path == "/upload_chunk":
+            calls["chunk"] += 1
+            return httpx.Response(409, json={"error": "Upload already done"})
+        return httpx.Response(500)
+
+    _patch_http_transport(monkeypatch, handler)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    service._confirm_archive = AsyncMock(return_value={"verified": True})
+    finished: dict = {}
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, archive_confirmation=None: finished.update(status=status)
+    )
+
+    await service.run(task.task_id)
+
+    assert calls["chunk"] == 0
+    assert finished["status"] == "success"

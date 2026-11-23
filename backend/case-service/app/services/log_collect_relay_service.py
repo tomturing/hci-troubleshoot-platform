@@ -46,6 +46,38 @@ SANGFOR_ARCHIVE_NAME_RE = re.compile(r"Q\d{13}")
 # archive_missing 可能是 5888 异步合片的短暂竞态，给 3 次退避；其余否定是确定性结论。
 ARCHIVE_CONFIRM_DELAYS = (0.0, 2.0, 6.0)
 
+# ── 进程级 drain（退出）信号 ─────────────────────────────────────────────────
+# 滚动发布/缩容时 kubelet 发 SIGTERM，uvicorn 只等「HTTP 在途请求」，
+# 进程内 asyncio 后台任务不在它的保护范围内。历史实现直接 cancel()，
+# 会把正在发送的 /upload_chunk 从中间切断：5888 收到残缺 multipart 后返回
+# 400「No form data in chunk upload」（2026-11-23 Q2026112300730：785 片只
+# 传了 168 片，5888 上根本没有包）。
+#
+# 正确做法是「分片边界让位」：每片开始前检查 drain 标志，命中就交还 pending，
+# 由下一个实例从 relay_chunk_index+1 续传（5888 会话 24h 内有效）。这样退出
+# 永远不会产生残缺请求，也不会把任务打成 failed。
+_DRAIN_REQUESTED = asyncio.Event()
+
+
+class RelayDrainingError(Exception):
+    """进程正在退出：在分片边界主动让位。它不是失败，不能写 failed/错误码。"""
+
+
+def begin_drain() -> None:
+    """进程进入退出流程：停止接单，并让在飞任务在下一个分片边界让位。"""
+
+    _DRAIN_REQUESTED.set()
+
+
+def drain_requested() -> bool:
+    return _DRAIN_REQUESTED.is_set()
+
+
+def reset_drain() -> None:
+    """仅测试与同进程内重新启用代传时使用（生产进程退出即销毁，无需复位）。"""
+
+    _DRAIN_REQUESTED.clear()
+
 
 class SangforRelayError(Exception):
     """代传类异常（错误码与传输层一致）。"""
@@ -282,17 +314,25 @@ class LogCollectRelayService:
                 logger.warning("日志包代传心跳失败 task=%s", task_id, exc_info=True)
 
     async def settle_delivered_relays(self) -> int:
-        """收敛已交付但仍占着 running/pending 的存量任务。
+        """收敛「链尾核验已通过、只是状态没写回」的存量任务。
 
-        旧版 _finish 把 CAS 加在成功分支，二次收敛被 WHERE 过滤，
-        relay_status 永远停在 running 并被 reconcile 反复捞起。
+        第一性原理：``delivery_status=delivered`` 的语义是「产物到了平台对象存储」
+        （见 log_collect_upload_service 的落库注释），与「已归档到 5888」是两跳。
+        旧实现只看 delivered + running/pending 就写 success，会在滚动发布窗口把
+        正在代传的任务判成完成：2026-11-23 Q2026112300730 的 785 片中只传了 168 片，
+        5888 上连工单目录都不存在，平台却显示已交付。
+
+        因此这里只认唯一权威证据 detail.archive_confirmation.verified=true：
+        没有它说明链尾从未核验过，任务必须回到 pending 让代传真正跑完。
         """
+        verified = LogCollectTask.detail["archive_confirmation"]["verified"].astext == "true"
         async with self.session_factory() as session:
             result = await session.execute(
                 update(LogCollectTask)
                 .where(
                     LogCollectTask.delivery_status == "delivered",
                     LogCollectTask.relay_status.in_(["running", "pending"]),
+                    verified,
                 )
                 .values(
                     relay_status="success",
@@ -309,8 +349,12 @@ class LogCollectRelayService:
         """接管「待跑」与「租约失效」的代传任务，返回本次真正归本方执行的 task_id。
 
         只看有制品的任务：没有 archive_path 的中间态抢过来只会以 LC-TRANSFER-001
-        立即落 failed，那不是自愈而是自毁。已交付属于终态，
-        无论 relay_status 写没写对，都不能再拉起一次整包重复上传。
+        立即落 failed，那不是自愈而是自毁。
+
+        判据只能是 relay 自身的终态（success 才算完成）。历史实现用
+        ``delivery_status != 'delivered'`` 排除，而 P2 任务在平台对象落库那一刻
+        就已是 delivered —— 这条条件对所有 P2 任务恒假，优雅退出交还的 pending
+        永远不会被重新接管，代传失去了「接力」能力。
         """
 
         async with self.session_factory() as session:
@@ -318,7 +362,7 @@ class LogCollectRelayService:
                 select(LogCollectTask.task_id)
                 .where(
                     LogCollectTask.archive_path.isnot(None),
-                    LogCollectTask.delivery_status != "delivered",
+                    LogCollectTask.relay_status != "success",
                     or_(
                         LogCollectTask.relay_status == "pending",
                         and_(
@@ -417,6 +461,13 @@ class LogCollectRelayService:
             try:
                 await self._run(task_id)
                 return
+            except RelayDrainingError:
+                # 发布/缩容：已经在一个分片边界上，交还租约即可。
+                # 不写 last_error、不写 failed、不计 attempt——这不是失败，
+                # 下一个实例会从 relay_chunk_index+1 继续续传。
+                logger.info("日志包代传收到退出信号，在分片边界交还租约 task=%s", task_id)
+                await self.release([task_id])
+                return
             except Exception as exc:  # noqa: BLE001 - 异常要么落终态要么退避重试
                 last_exc = exc
                 # 原因先落库再决定要不要重试：瞬时失败随后成功后，用户仍需要知道
@@ -509,6 +560,7 @@ class LogCollectRelayService:
             restarts = int(task.relay_restarts or 0)
 
             # 尝试复用旧会话：只有服务端仍持有时才能续传。
+            already_done = False
             if upload_id and chunk_size > 0 and chunk_total > 0:
                 status = await self.client.upload_status(client, upload_id)
                 if status is None:
@@ -520,6 +572,10 @@ class LogCollectRelayService:
                     reason = str(status.get("error") or "").strip() or "服务端未记录原因"
                     await self._save(task_id, last_error=f"服务端判定失败，重建会话重传：{reason}"[:2000])
                     upload_id = ""
+                elif str(status.get("status") or "") == "done":
+                    # 上一次已经收齐并合片，只是进程在写终态前退出：不能再传任何
+                    # 分片（5888 对终态会话返回 409），直接做链尾确认完成收尾。
+                    already_done = True
                 else:
                     start_index = int(task.relay_chunk_index or -1) + 1
 
@@ -537,22 +593,29 @@ class LogCollectRelayService:
                     restarts=restarts,
                 )
 
-            for index in range(start_index, chunk_total):
-                payload = await asyncio.to_thread(self._read_chunk, path, index, chunk_size, size)
-                if not payload:
-                    raise SangforRelayError(f"分片 {index} 读取为空")
-                status = await self.client.upload_chunk(
-                    client,
-                    upload_id=upload_id,
-                    chunk_index=index,
-                    chunk_total=chunk_total,
-                    filename=archive_name,
-                    payload=payload,
-                )
-                # 每块成功后立即持久化：进程崩溃时从这里继续，不重传已完成分片。
-                await self._save(task_id, upload_id=upload_id, chunk_index=index)
-                if status == "complete":
-                    break
+            if already_done:
+                logger.info("代传会话已在服务端收齐，跳过上传直接做链尾确认 task=%s", task_id)
+            else:
+                for index in range(start_index, chunk_total):
+                    # 退出信号只在分片边界生效：绝不打断正在发送的请求，
+                    # 否则 5888 会收到残缺 multipart 并返回 400。
+                    if drain_requested():
+                        raise RelayDrainingError(f"进程准备退出，分片 {index} 之前让位")
+                    payload = await asyncio.to_thread(self._read_chunk, path, index, chunk_size, size)
+                    if not payload:
+                        raise SangforRelayError(f"分片 {index} 读取为空")
+                    status = await self.client.upload_chunk(
+                        client,
+                        upload_id=upload_id,
+                        chunk_index=index,
+                        chunk_total=chunk_total,
+                        filename=archive_name,
+                        payload=payload,
+                    )
+                    # 每块成功后立即持久化：进程崩溃时从这里继续，不重传已完成分片。
+                    await self._save(task_id, upload_id=upload_id, chunk_index=index)
+                    if status == "complete":
+                        break
 
             await self._await_archive(client, upload_id, expected_digest)
             # 链尾判据必须是 5888 的落盘事实，不能只信 relay success / 会话 done。
