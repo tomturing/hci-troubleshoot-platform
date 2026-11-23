@@ -517,7 +517,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 				logCollectHostResultExtra(progress.Hosts))
 		}
 		if progress.NodeState == "completed" {
-			if evidenceCfg, ok := EvidenceFor(msg.ExecID); ok {
+			if evidenceCfg, ok := EvidenceForByCase(msg.ExecID, msg.CaseID); ok {
 				session, evidencePath, evidenceSize := s, probePath, progress.ArchiveSize
 				go func() {
 					evidenceCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
