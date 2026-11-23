@@ -1,6 +1,6 @@
 name: WeKnora 上游镜像同步
 
-# 把一个版本的 WeKnora 上游镜像同步进 ghcr。
+# 把一个版本的 WeKnora 上游镜像及 full 形态依赖同步进 ghcr。
 #
 # 为什么不并入 ci.yml 的构建矩阵：app/docreader/postgres/redis 不是我们的代码，
 # 每次 PR 都搬运 GB 级镜像既慢又无意义；而离线/私有客户环境又必须能拿到副本。
@@ -75,7 +75,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   mirror:
-    name: 同步上游四个镜像
+    name: 同步上游六个镜像
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -106,4 +106,6 @@ jobs:
             echo "- app / docreader：\`${{ inputs.version }}\`"
             echo "- postgres：\`v0.25.11-pg17\`"
             echo "- redis：\`7.0-alpine\`"
+            echo "- neo4j：\`2025.10.1\`"
+            echo "- minio：\`RELEASE.2026-08-04T00-00-00Z\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -165,6 +165,13 @@ Return the Neo4j image with tag.
 {{- end }}
 
 {{/*
+返回带固定 tag 的 MinIO 镜像地址。
+*/}}
+{{- define "weknora.minio.image" -}}
+{{- printf "%s%s:%s" .Values.global.imageRegistry .Values.minio.image.repository .Values.minio.image.tag }}
+{{- end }}
+
+{{/*
 Create image pull secrets list.
 */}}
 {{- define "weknora.imagePullSecrets" -}}

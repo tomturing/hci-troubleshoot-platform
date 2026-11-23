@@ -1,0 +1,239 @@
+# WeKnora full 本地部署：核心服务 + Neo4j + MinIO。
+#
+# 该文件与主平台 Compose 分离，避免 `make dev-up` 无条件拉起一组高内存服务；
+# 两者通过既有 external network 互通，admin-ui 可直接解析服务名 `weknora`。
+#
+# 启动：make weknora-up
+# 等价：docker compose --env-file deploy/env/weknora.env \
+#         -f deploy/docker/docker-compose.weknora.yml \
+#         --profile full --profile neo4j --profile minio up -d
+#
+# 两处仅本地生效的适配（Helm 部署不涉及）：
+#   - 自建 UI 镜像只有 linux/amd64，用 WEKNORA_UI_PLATFORM 钉平台（默认 linux/amd64）；
+#   - UI 的 /weknora/ 前缀由 weknora-ui-local-prefix.conf 剥离后反代，
+#     等价于线上 admin-ui nginx 那一层，避免直连 18080 白屏。
+
+name: hci-weknora
+
+services:
+  weknora:
+    image: ${WEKNORA_UI_IMAGE:-ghcr.io/tomturing/hci-troubleshoot-platform/weknora-ui:v0.9.0}
+    # 自建前缀版 UI 镜像由 CI 单平台构建，manifest 里只有 linux/amd64。
+    # Apple Silicon（arm64）宿主机上若不显式指定平台，Compose 在 manifest 解析阶段就失败：
+    #   no matching manifest for linux/arm64/v8 in the manifest list entries
+    # 该镜像只是 nginx 托管静态 dist，跑 amd64 模拟没有功能风险（Rosetta/qemu）。
+    # 若已本地构建原生 arm64 镜像（见 weknora/README.md「本地 Docker Compose」），
+    # 设 WEKNORA_UI_PLATFORM=linux/arm64 即可去掉模拟层。
+    platform: ${WEKNORA_UI_PLATFORM:-linux/amd64}
+    container_name: hci-weknora-frontend
+    # 本地直连兜底：镜像里的 SPA 以 VITE_BASE_PATH=/weknora/ 构建，静态资源引用与
+    # axios baseURL 都带前缀；集群里这层前缀由 admin-ui nginx 剥掉，本地没有那一层。
+    # 这里挂一个与 admin-ui 同语义的 strip 前缀 server（监听 8081），对外仍发布 18080。
+    # 详见 deploy/docker/weknora-ui-local-prefix.conf。
+    volumes:
+      - ./weknora-ui-local-prefix.conf:/etc/nginx/conf.d/10-local-prefix.conf:ro
+    environment:
+      APP_HOST: weknora-app
+      APP_PORT: 8080
+      APP_SCHEME: http
+      MAX_FILE_SIZE_MB: ${WEKNORA_MAX_FILE_SIZE_MB:-50}
+    ports:
+      # 发布本地 strip 前缀 server（8081），容器自带的 80 只给集群/admin-ui 链路用。
+      - "${WEKNORA_FRONTEND_PORT:-18080}:8081"
+    depends_on:
+      weknora-app:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - hci-troubleshoot-platform_default
+
+  weknora-app:
+    image: ${WEKNORA_APP_IMAGE:-wechatopenai/weknora-app:v0.9.0}
+    container_name: hci-weknora-app
+    environment:
+      GIN_MODE: release
+      TZ: Asia/Shanghai
+      DB_DRIVER: postgres
+      DB_HOST: weknora-postgres
+      DB_PORT: 5432
+      DB_USER: ${WEKNORA_DB_USER:-postgres}
+      DB_PASSWORD: ${WEKNORA_DB_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_DB_PASSWORD}
+      DB_NAME: ${WEKNORA_DB_NAME:-weknora}
+      STREAM_MANAGER_TYPE: redis
+      REDIS_ADDR: weknora-redis:6379
+      REDIS_PASSWORD: ${WEKNORA_REDIS_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_REDIS_PASSWORD}
+      REDIS_DB: 0
+      REDIS_PREFIX: "stream:"
+      JWT_SECRET: ${WEKNORA_JWT_SECRET:?请在 deploy/env/weknora.env 中配置 WEKNORA_JWT_SECRET}
+      SYSTEM_AES_KEY: ${WEKNORA_SYSTEM_AES_KEY:?请在 deploy/env/weknora.env 中配置 32 字节 WEKNORA_SYSTEM_AES_KEY}
+      RETRIEVE_DRIVER: postgres
+      STORAGE_TYPE: minio
+      LOCAL_STORAGE_BASE_DIR: /data/files
+      MINIO_ENDPOINT: weknora-minio:9000
+      MINIO_ACCESS_KEY_ID: ${WEKNORA_MINIO_ACCESS_KEY_ID:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${WEKNORA_MINIO_SECRET_ACCESS_KEY:?请在 deploy/env/weknora.env 中配置 WEKNORA_MINIO_SECRET_ACCESS_KEY}
+      MINIO_BUCKET_NAME: ${WEKNORA_MINIO_BUCKET_NAME:-weknora}
+      MINIO_PATH_PREFIX: ${WEKNORA_MINIO_PATH_PREFIX:-}
+      MINIO_USE_SSL: "false"
+      DOCREADER_ADDR: weknora-docreader:50051
+      AUTO_RECOVER_DIRTY: "true"
+      CONCURRENCY_POOL_SIZE: "5"
+      NEO4J_ENABLE: "true"
+      NEO4J_URI: bolt://weknora-neo4j:7687
+      NEO4J_USERNAME: ${WEKNORA_NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${WEKNORA_NEO4J_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_NEO4J_PASSWORD}
+      MAX_FILE_SIZE_MB: ${WEKNORA_MAX_FILE_SIZE_MB:-50}
+      WEKNORA_SANDBOX_DOCKER_ENABLED: "false"
+      SSRF_WHITELIST_EXTRA: weknora-minio,weknora-neo4j
+    ports:
+      - "${WEKNORA_APP_PORT:-18081}:8080"
+    volumes:
+      - weknora_data_files:/data/files
+      - weknora_docreader_tmp:/tmp/docreader:ro
+    depends_on:
+      weknora-postgres:
+        condition: service_healthy
+      weknora-redis:
+        condition: service_healthy
+      weknora-docreader:
+        condition: service_started
+      weknora-minio:
+        condition: service_healthy
+      weknora-neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - hci-troubleshoot-platform_default
+
+  weknora-docreader:
+    image: ${WEKNORA_DOCREADER_IMAGE:-wechatopenai/weknora-docreader:v0.9.0}
+    container_name: hci-weknora-docreader
+    environment:
+      MAX_FILE_SIZE_MB: ${WEKNORA_MAX_FILE_SIZE_MB:-50}
+      STORAGE_TYPE: local
+    volumes:
+      - weknora_docreader_tmp:/tmp/docreader
+    restart: unless-stopped
+    networks:
+      - hci-troubleshoot-platform_default
+
+  weknora-postgres:
+    image: ${WEKNORA_POSTGRES_IMAGE:-paradedb/paradedb:v0.25.11-pg17}
+    container_name: hci-weknora-postgres
+    environment:
+      POSTGRES_USER: ${WEKNORA_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${WEKNORA_DB_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_DB_PASSWORD}
+      POSTGRES_DB: ${WEKNORA_DB_NAME:-weknora}
+    volumes:
+      - weknora_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    stop_grace_period: 1m
+    restart: unless-stopped
+    networks:
+      - hci-troubleshoot-platform_default
+
+  weknora-redis:
+    image: ${WEKNORA_REDIS_IMAGE:-redis:7.0-alpine}
+    container_name: hci-weknora-redis
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${WEKNORA_REDIS_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_REDIS_PASSWORD}
+    volumes:
+      - weknora_redis_data:/data
+    healthcheck:
+      # 必须用双引号包住变量：CMD-SHELL 交给 sh -c 后，单引号会禁止展开，
+      # redis-cli 实际发出的是字面量 ${REDIS_PASSWORD}，健康检查恒定 WRONGPASS。
+      # --no-auth-warning 只压掉“password on command line”告警，不影响判据。
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    environment:
+      REDIS_PASSWORD: ${WEKNORA_REDIS_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_REDIS_PASSWORD}
+    restart: unless-stopped
+    networks:
+      - hci-troubleshoot-platform_default
+
+  weknora-minio:
+    image: ${WEKNORA_MINIO_IMAGE:-pgsty/minio:RELEASE.2026-08-04T00-00-00Z}
+    container_name: hci-weknora-minio
+    profiles: [minio, full]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        mkdir -p "/data/$${MINIO_BUCKET_NAME}";
+        exec minio server --address ":9000" --console-address ":9001" /data
+    environment:
+      MINIO_ROOT_USER: ${WEKNORA_MINIO_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${WEKNORA_MINIO_SECRET_ACCESS_KEY:?请在 deploy/env/weknora.env 中配置 WEKNORA_MINIO_SECRET_ACCESS_KEY}
+      MINIO_BUCKET_NAME: ${WEKNORA_MINIO_BUCKET_NAME:-weknora}
+    ports:
+      - "${WEKNORA_MINIO_PORT:-19000}:9000"
+      - "${WEKNORA_MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - weknora_minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - hci-troubleshoot-platform_default
+
+  weknora-neo4j:
+    image: ${WEKNORA_NEO4J_IMAGE:-neo4j:2025.10.1}
+    container_name: hci-weknora-neo4j
+    profiles: [neo4j, full]
+    environment:
+      NEO4J_AUTH: ${WEKNORA_NEO4J_USERNAME:-neo4j}/${WEKNORA_NEO4J_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_NEO4J_PASSWORD}
+      NEO4J_PASSWORD: ${WEKNORA_NEO4J_PASSWORD:?请在 deploy/env/weknora.env 中配置 WEKNORA_NEO4J_PASSWORD}
+      NEO4J_server_config_strict__validation_enabled: "false"
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_PLUGINS: '["apoc"]'
+    ports:
+      - "${WEKNORA_NEO4J_HTTP_PORT:-17474}:7474"
+      - "${WEKNORA_NEO4J_BOLT_PORT:-17687}:7687"
+    volumes:
+      - weknora_neo4j_data:/data
+    healthcheck:
+      # 同 redis：-p 的参数不能加单引号（sh -c 下不展开），否则恒定认证失败。
+      # 用户名固定 neo4j（Neo4j 5+ 管理员用户名不可改），密码取容器环境变量。
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u neo4j -p \"$${NEO4J_PASSWORD}\" 'RETURN 1' >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - hci-troubleshoot-platform_default
+
+volumes:
+  weknora_data_files:
+  weknora_docreader_tmp:
+  weknora_postgres_data:
+  weknora_redis_data:
+  weknora_minio_data:
+  weknora_neo4j_data:
+
+networks:
+  hci-troubleshoot-platform_default:
+    name: hci-troubleshoot-platform_default
+    external: true

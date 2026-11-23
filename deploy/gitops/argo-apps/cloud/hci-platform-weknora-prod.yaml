@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hci-platform-weknora-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/description: "prod WeKnora full — Neo4j + MinIO（namespace: hci-weknora，手动同步）"
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  destination:
+    # 与 hci-platform-prod 一致，部署到独立 prod 集群。
+    server: https://192.168.0.3:6443
+    namespace: hci-weknora
+  sources:
+    - repoURL: https://github.com/tomturing/hci-troubleshoot-platform.git
+      targetRevision: main
+      path: deploy/helm/hci-platform-weknora
+      helm:
+        releaseName: hci-platform-weknora
+        valueFiles:
+          - $values/environments/prod/weknora-values.yaml
+    - repoURL: https://github.com/tomturing/hci-platform-env.git
+      targetRevision: main
+      ref: values
+  # 生产与主平台一致：必须人工审批后同步，且不自动 prune 有状态资源。
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

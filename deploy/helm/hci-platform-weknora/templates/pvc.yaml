@@ -43,6 +43,25 @@ spec:
 ---
 {{- end }}
 
+{{/* MinIO 持久卷 */}}
+{{- if and .Values.minio.enabled .Values.minio.persistence.enabled (not .Values.minio.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "weknora.fullname" . }}-minio
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "weknora.componentLabels" (dict "component" "object-storage" "context" .) | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.minio.persistence.size }}
+  {{- include "weknora.storageClass" . | nindent 2 }}
+---
+{{- end }}
+
 {{/* Neo4j PVC */}}
 {{- if and .Values.neo4j.enabled .Values.neo4j.persistence.enabled (not .Values.neo4j.persistence.existingClaim) }}
 apiVersion: v1
