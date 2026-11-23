@@ -1,6 +1,7 @@
 package logcollect
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -79,5 +80,56 @@ func TestNodeLogPriorityRanking(t *testing.T) {
 		if got := nodeLogPriority(path); got != want {
 			t.Fatalf("nodeLogPriority(%q) = %d, want %d", path, got, want)
 		}
+	}
+}
+
+// 三轮采集必须各自独立去重：init 轮的安装日志不能被终态轮吞掉。
+func TestProcessLogDedupKeyPerPhase(t *testing.T) {
+	const taskID = "task-phase-dedup"
+	keys := map[string]bool{}
+	for _, phase := range []string{
+		processLogPhaseInit, processLogPhaseTerminal, processLogPhaseTerminalFail,
+	} {
+		key := processLogDedupKey(taskID, phase)
+		if keys[key] {
+			t.Fatalf("phase=%s 去重键与另一轮重复：%s", phase, key)
+		}
+		keys[key] = true
+	}
+	if processLogDedupKey(taskID, processLogPhaseInit) == processLogDedupKey("other-task", processLogPhaseInit) {
+		t.Fatal("不同任务的去重键不应相同")
+	}
+}
+
+// 进程日志必须覆盖所有目标主机，且发起节点始终在内（需求第 76 行）。
+func TestResolveProcessLogHostsUsesExpectedSnapshot(t *testing.T) {
+	cfg := EvidenceConfig{
+		NodeIP:        "10.0.0.1",
+		ExpectedHosts: []string{"10.0.0.2", "10.0.0.3", "bad-ip", "10.0.0.2"},
+	}
+	// nil 会话：只应返回 NodeIP + ExpectedHosts 中的合法项，不去探测 acli 节点清单。
+	hosts := resolveProcessLogHosts(context.Background(), nil, cfg)
+	want := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
+	if len(hosts) != len(want) {
+		t.Fatalf("主机数=%d want %d: %v", len(hosts), len(want), hosts)
+	}
+	for i := range want {
+		if hosts[i] != want[i] {
+			t.Fatalf("第 %d 台=%s want %s", i, hosts[i], want[i])
+		}
+	}
+}
+
+// 共享预算不能超发：多主机合计不得超过单任务上限。
+func TestProcessLogBudgetShared(t *testing.T) {
+	b := &processLogBudget{remaining: 100}
+	if got := b.takeUpTo(60); got != 60 {
+		t.Fatalf("首次额度=%d want 60", got)
+	}
+	if got := b.takeUpTo(60); got != 40 {
+		t.Fatalf("第二次应被截断到剩余 40，实际 %d", got)
+	}
+	if got := b.takeUpTo(10); got != 0 {
+		t.Fatalf("预算耗尽应为 0，实际 %d", got)
 	}
 }

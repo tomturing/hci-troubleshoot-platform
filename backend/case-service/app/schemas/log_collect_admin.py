@@ -158,6 +158,8 @@ class ProcessLogItem(BaseModel):
     status: str = Field(default="ok", description="ok / empty / error")
     error: str | None = None
     collected_at: datetime | None = None
+    # 采集轮次（存量行默认 terminal）：init=初始化轮，terminal=成功终态，terminal_failed=失败/取消终态
+    phase: str = "terminal"
 
 
 class ProcessLogListResponse(BaseModel):

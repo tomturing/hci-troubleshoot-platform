@@ -272,6 +272,8 @@ export interface ProcessLogItem {
   status: string
   error: string | null
   collected_at: string | null
+  /** 采集轮次：init=初始化轮，terminal=成功终态，terminal_failed=失败/取消终态 */
+  phase: string
 }
 
 export interface ProcessLogsResponse {
