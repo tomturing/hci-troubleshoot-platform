@@ -53,6 +53,13 @@ type Hub struct {
 	// 会话在 TTL 内仍可被复用（日志面板借用、刷新页面重连都不应被连坐清理）。
 	refs   map[string]int
 	idleAt map[string]time.Time
+	// pins 是业务钉住到期时刻：日志收集/交付这类长流程期间，即使无人持有、
+	// 也不在 MarkBusy 窗口内，会话也不能被回收。
+	//
+	// 为什么不用 refs：refs 是 0/1 状态位，没有对称递减点（见 holdLocked 注释），
+	// 一旦为业务场景累加就永远归不了零，会话会永久泄漏。pin 是租约式时间戳，
+	// 到期自动失效，最坏情况只是多留一会儿。
+	pins map[string]time.Time
 }
 
 func NewHub() *Hub {
@@ -61,6 +68,7 @@ func NewHub() *Hub {
 		lastAuth: make(map[string]models.InMessage),
 		refs:     make(map[string]int),
 		idleAt:   make(map[string]time.Time),
+		pins:     make(map[string]time.Time),
 	}
 }
 
@@ -410,6 +418,43 @@ func (h *Hub) ForgetLease(key string) {
 	defer h.mu.Unlock()
 	delete(h.refs, key)
 	delete(h.idleAt, key)
+	delete(h.pins, key)
+}
+
+// Pin 把会话钉住到 now+ttl，返回实际生效的到期时刻；ttl<=0 或会话不存在时返回零值。
+//
+// 只延长不缩短：重复调用取更晚的那个到期时刻，避免短任务把长任务的保护窗口压回去。
+func (h *Hub) Pin(key string, ttl time.Duration) time.Time {
+	if ttl <= 0 || key == "" {
+		return time.Time{}
+	}
+	until := time.Now().Add(ttl)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// 会话不存在时不写：否则 pins 里会残留永远遍历不到的键。
+	if h.sessions[key] == nil {
+		return time.Time{}
+	}
+	if current, ok := h.pins[key]; ok && current.After(until) {
+		return current
+	}
+	h.pins[key] = until
+	return until
+}
+
+// Unpin 立即解除钉住（任务提前结束且不希望保留回看窗口时使用）。
+func (h *Hub) Unpin(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.pins, key)
+}
+
+// PinExpiry 返回钉住到期时刻；未钉住时 ok=false。
+func (h *Hub) PinExpiry(key string) (time.Time, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	until, ok := h.pins[key]
+	return until, ok
 }
 
 // ReapCandidates 返回空闲超时、可回收的会话键。
@@ -429,6 +474,16 @@ func (h *Hub) ReapCandidates(ttl time.Duration) []string {
 	for key, idleAt := range h.idleAt {
 		if h.refs[key] > 0 {
 			continue
+		}
+		// 业务钉住优先于一切：日志收集任务可能几十分钟无人操作，
+		// 这段时间被回收就等于任务中途断链（2026-11-23 Q2026112300730 的形态）。
+		if until, ok := h.pins[key]; ok {
+			if now.Before(until) {
+				h.idleAt[key] = now
+				continue
+			}
+			// 到期即失效：不能把过期的 pin 当永久保护。
+			delete(h.pins, key)
 		}
 		if sess := h.sessions[key]; sess != nil && (sess.HasLongTask() || sess.IsBusy()) {
 			h.idleAt[key] = now

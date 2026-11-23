@@ -24,8 +24,11 @@ import (
 	"time"
 )
 
+// ReconnectFunc 用已保存的认证重建到节点的 SSH 会话；nil 表示不启用自愈。
+type ReconnectFunc func(caseID, nodeIP, connID string) (*sshx.SSHSession, error)
+
 // HandleLogCollect 处理 log_collect 消息族。
-func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cui string) {
+func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cui string, reconnect ReconnectFunc) {
 	// 链路 ID 先算：会话缺失这类失败同样要能按链路检索与聚合。
 	traceID := strings.TrimSpace(msg.TraceID)
 	if traceID == "" {
@@ -34,11 +37,40 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 	msg.TraceID = traceID
 
 	s, key, match := b.ResolveForNode(msg)
-	// 业务活跃打戳：交互 shell 有 TMOUT=600，一次采集常常跑十几分钟且期间零键盘输入，
-	// shell 必然在 600s 被踢。没有这个戳，EOF 会被当成整条连接失效并 destroySession，
-	// 之后每次 progress 都是 session_missing——前端只能干等到 60s 超时，
-	// 报成"progress 超时（60s）"（2026-10-28 现场）。连接与 exec 通道其实都还活着。
-	s.MarkBusy()
+	// 会话自愈：采集可能持续几十分钟，期间节点 sshd 重启、网络闪断、bridge 重启
+	// 都会让会话消失。bridge 早已持有 lastAuth，正确做法是自己重连一次，
+	// 而不是把"SSH 会话未连接"甩给用户（2026-11-23 Q2026112300730 的观感问题）。
+	if s == nil && reconnect != nil && msg.CaseID != "" && msg.NodeIP != "" {
+		reconnected, err := reconnect(msg.CaseID, msg.NodeIP, "log-collect-auto")
+		if err == nil && reconnected != nil {
+			s, key, match = reconnected, session.SessionKey(msg.CaseID, msg.NodeIP), "auto_reconnect"
+			evidence.Emit("INFO", "log_collect.session_auto_reconnect", "会话已消失，已用已存认证自动重建", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"log_action": msg.LogAction, "session_key": key,
+			})
+		} else if err != nil {
+			evidence.Emit("WARN", "log_collect.session_auto_reconnect_failed", "会话自愈失败，需人工重连", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+				"log_action": msg.LogAction, "error": err.Error(),
+			})
+		}
+	}
+	if s != nil {
+		// 业务活跃打戳：交互 shell 有 TMOUT=600，一次采集常常跑十几分钟且期间零键盘输入，
+		// shell 必然在 600s 被踢。没有这个戳，EOF 会被当成整条连接失效并 destroySession，
+		// 之后每次 progress 都是 session_missing——前端只能干等到 60s 超时，
+		// 报成"progress 超时（60s）"（2026-10-28 现场）。连接与 exec 通道其实都还活着。
+		s.MarkBusy()
+		// 钉住会话：采集/交付期间无人持有也绝不回收；任务结束后仍保留 2 小时，
+		// 覆盖"用户关页面去查资料/开会，回来再看结果"这一常态。
+		if _, pinned := b.PinExpiry(key); !pinned {
+			if until := b.Pin(key, session.SessionPinTTL()); !until.IsZero() {
+				evidence.Emit("INFO", "session.pinned", "会话已按日志收集任务钉住", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"session_key": key, "until": until.UTC().Format(time.RFC3339),
+				})
+			}
+		} else {
+			b.Pin(key, session.SessionPinTTL())
+		}
+	}
 	// 精确命中是常态，只有回退才留痕：日志要能回答"这条命令为什么落到了这台机器"。
 	if s != nil && match != "exact" {
 		evidence.Emit("INFO", "log_collect.session_fallback", "日志收集回退复用 SSH 会话", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{

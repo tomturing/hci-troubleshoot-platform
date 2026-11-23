@@ -760,12 +760,26 @@ const NODE_MISSING_MESSAGE = 'SSH 会话未连接：请点击面板底部「连�
  * 其余（超时、通道断开、未知桥侧异常）一律按瞬态处理——未知错误重试一次的代价，
  * 远小于让用户自己发现「其实再点一次就好了」。
  */
-function isRetryableProbeError(error: unknown): boolean {
+function isSessionMissingError(error: unknown): boolean {
   const text = String((error as any)?.message || error || '')
-  if (text.includes('SSH 会话未连接')) return false
-  if (text.includes('LC-ENV-006') || text.includes('session_missing')) return false
-  if (text.includes('会话不存在')) return false
-  return true
+  return (
+    text.includes('SSH 会话未连接')
+    || text.includes('LC-ENV-006')
+    || text.includes('session_missing')
+    || text.includes('会话不存在')
+  )
+}
+
+/**
+ * 该失败是否值得重试。
+ *
+ * 会话缺失不走这条路径：单纯重试探测没有任何意义（桥上会话不会自己长出来），
+ * 必须先静默重建会话，见 prepare 循环里的 reconnectSSHSilent 分支。
+ * 其余（超时、通道断开、未知桥侧异常）一律按瞬态处理——未知错误重试一次的代价，
+ * 远小于让用户自己发现「其实再点一次就好了」。
+ */
+function isRetryableProbeError(error: unknown): boolean {
+  return !isSessionMissingError(error)
 }
 
 function probeErrorText(error: unknown): string {
@@ -1821,6 +1835,8 @@ async function prepare(
   if (options.resetRecheck !== false) probeRecheckCount.value = 0
 
   const maxRetries = options.retries === false ? 0 : PROBE_RETRY_DELAYS.length
+  // 整轮探测只允许一次"凭据重建会话"：反复重建会掩盖真正的认证失败（密码错、账号被锁）。
+  let sessionReconnected = false
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     if (attempt > 0) {
       const delayMs = probeRetryDelay(attempt - 1)
@@ -1851,6 +1867,12 @@ async function prepare(
     } catch (error: any) {
       if (token !== prepareToken) return false
       prepareError.value = probeErrorText(error)
+      // 会话缺失：先用内存凭据静默重建，成功就当场重试——
+      // 用户不该为了"桥侧会话过期"重新输一遍密码。
+      if (isSessionMissingError(error) && !sessionReconnected && attempt < maxRetries) {
+        sessionReconnected = true
+        if (await chatStore.reconnectSSHSilent(props.caseId)) continue
+      }
       if (isRetryableProbeError(error) && attempt < maxRetries) continue
       probeRetry.value = null
       prepareState.value = 'failed'

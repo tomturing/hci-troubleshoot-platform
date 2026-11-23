@@ -14,6 +14,9 @@ func Routes() []wsctx.Route {
 }
 
 // handleCollectRoute 是协议边缘：采集可能持续数十分钟，必须离开派发循环。
+//
+// 会话自愈回调必须传进去：采集期间 SSH 会话可能因 TMOUT/网络/节点重启消失，
+// 现场表现就是一次"SSH 会话未连接"；bridge 已持有 lastAuth，能自己重建。
 func handleCollectRoute(ctx *wsctx.Context, msg models.InMessage) {
-	go HandleLogCollect(ctx.Hub, ctx.WS, msg, ctx.CUI)
+	go HandleLogCollect(ctx.Hub, ctx.WS, msg, ctx.CUI, ctx.Life.ReconnectSession)
 }

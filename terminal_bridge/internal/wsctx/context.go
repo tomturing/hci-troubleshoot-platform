@@ -44,6 +44,9 @@ type Lifecycle interface {
 	DestroyOrDetachSession(key, reason, byConn string) bool
 	// AutoConnectNode 在指定节点上按消息里的凭据自动建链。
 	AutoConnectNode(ws *websocket.Conn, msg models.InMessage, owned *session.OwnedTracker, connID, role string) *sshx.SSHSession
+	// ReconnectSession 用已保存的认证在后台重建到节点的会话（无 WS 依赖）。
+	// 供日志收集这类长流程在"键对不上"时自愈，而不是把重新登录甩给用户。
+	ReconnectSession(caseID, nodeIP, connID string) (*sshx.SSHSession, error)
 }
 
 // Context 承载单条 WebSocket 连接的派发上下文：连接级状态由 handle() 信封

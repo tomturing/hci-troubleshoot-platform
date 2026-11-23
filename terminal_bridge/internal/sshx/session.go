@@ -157,6 +157,17 @@ type SSHSession struct {
 	// 事实是：RunCommandPty 每次都 client.NewSession() 开新 channel，
 	// shell 退出只是少了一个终端回显通道，连接与 exec 通道都还能用。
 	LastBusyAt atomic.Int64
+	// LastInputAt 记录最近一次用户输入（UnixNano），心跳据此跳过"用户正在操作"的窗口。
+	//
+	// 与 LastBusyAt 的区别：后者由业务动作打戳（采集命令），前者只由键盘输入打戳。
+	// 心跳必须能区分"业务在跑但人不在"与"人正在 vi 里敲字"——前者要注入保活，
+	// 后者注入 NUL 会干扰前台程序。
+	LastInputAt atomic.Int64
+	// shellHeartbeatOnce 保证心跳协程全生命周期只启动一个：
+	// Start 会因 RespawnShell 被反复调用，重复启动等于在 shell 里叠加多路 NUL。
+	shellHeartbeatOnce sync.Once
+	// heartbeatWarned 保证"心跳写失败"每个会话只报一次，避免每 120s 刷一条日志。
+	heartbeatWarned atomic.Bool
 	// orphaned 表示会话已被摘出路由表（重连覆盖），但底层连接要留给进行中的长任务。
 	orphaned atomic.Bool
 	// shellRespawns 统计本会话自动重建交互 shell 的次数（上限 MaxShellRespawns）。
@@ -281,26 +292,65 @@ func (s *SSHSession) MarkOrphaned() { s.orphaned.Store(true) }
 // 不产生输出、不改变命令历史，仅用于证明"有人在敲键盘"。
 // 返回的 stop 必须由调用方 defer，避免拉取结束后仍持续注入。
 func (s *SSHSession) StartShellHeartbeat(caseID string) func() {
-	done := make(chan struct{})
-	var once sync.Once
-	go func() {
-		ticker := time.NewTicker(shellHeartbeatInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-s.Done:
-				return
-			case <-ticker.C:
-				s.sendSilent("\x00")
+	s.startShellHeartbeat()
+	// 返回空操作而不是"停止"：心跳的生命周期现在绑定会话本身。
+	// 若仍允许某个业务域提前关闭，交付结束时就会把采集期间的保活一起带走
+	// ——这正是 2026-11-23 Q2026112300730 采集阶段裸奔（4 次 TMOUT 自登出）的成因。
+	// 保留返回值只为兼容既有调用点的 `defer stop()` 写法。
+	_ = caseID
+	return func() {}
+}
+
+// startShellHeartbeat 启动会话级 shell 保活，全生命周期只启动一次。
+//
+// 三道约束缺一不可：
+//  1. 必须早于任何业务动作：TMOUT 从 shell 启动即开始计时，晚 10 秒启动就可能
+//     第一次注入就撞上超时判定（2026-11-23 现场 12:45:41 启动、12:46:05 仍被踢）。
+//  2. 必须跳过用户输入窗口：NUL 在 bash 里等价 set-mark，但落进前台程序会干扰界面。
+//  3. 必须随会话销毁而退出：否则孤儿 goroutine 会一直往已关闭的 stdin 写。
+//
+// shouldSkipHeartbeat 判断本轮心跳是否该让路给用户输入。
+//
+// 打戳为 0 表示"这条会话从没人敲过键"，没有让路的必要；
+// 时钟回拨导致差值为负时同样按"刚输入过"处理——宁可少注入一次，也不要在
+// 前台程序里多塞一个 NUL。
+func shouldSkipHeartbeat(lastInputNano, nowNano int64) bool {
+	if lastInputNano <= 0 {
+		return false
+	}
+	return time.Duration(nowNano-lastInputNano) < shellHeartbeatQuietWindow
+}
+
+func (s *SSHSession) startShellHeartbeat() {
+	s.shellHeartbeatOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(shellHeartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-s.Done:
+					return
+				case <-ticker.C:
+					if shouldSkipHeartbeat(s.LastInputAt.Load(), time.Now().UnixNano()) {
+						continue
+					}
+					if err := s.sendSilent("\x00"); err != nil {
+						// shell 已被 TMOUT 登出（stdin 关闭）。重建交给读取侧的 EOF 处理，
+						// 这里只留一条可检索痕迹，且每个会话只报一次，避免每 120s 刷日志。
+						if s.heartbeatWarned.CompareAndSwap(false, true) {
+							evidence.Emit("WARN", "ssh.shell_heartbeat_failed", "shell 保活写入失败，shell 可能已退出", "", s.CaseID, "", "", map[string]any{
+								"error": err.Error(),
+							})
+						}
+					}
+				}
 			}
-		}
-	}()
-	evidence.Emit("INFO", "delivery.shell_heartbeat", "拉取期间向交互式 shell 注入保活输入，避免 TMOUT 退出", "", caseID, "", "", map[string]any{
-		"interval_seconds": int(shellHeartbeatInterval.Seconds()),
+		}()
+		evidence.Emit("INFO", "ssh.shell_heartbeat", "会话级 shell 保活已启动（全程注入 NUL，避免 TMOUT 退出）", "", s.CaseID, "", "", map[string]any{
+			"interval_seconds":     int(shellHeartbeatInterval.Seconds()),
+			"quiet_window_seconds": int(shellHeartbeatQuietWindow.Seconds()),
+		})
 	})
-	return func() { once.Do(func() { close(done) }) }
 }
 
 func IsSimulationLeaseCredential(msg models.InMessage) bool {
@@ -539,10 +589,19 @@ func (s *SSHSession) Start() (io.ReadCloser, error) {
 		_ = pipeWriter.Close()
 	}()
 
+	// 心跳必须从 shell 建立的那一刻开始，而不是等到交付拉取才启动：
+	// TMOUT=600 从 shell 启动即计时，晚启动的那段时间就是裸露窗口
+	// （2026-11-23 Q2026112300730 的采集阶段正是这样被踢了 4 次）。
+	// 幂等：RespawnShell 也会走到这里，不会叠加协程。
+	s.startShellHeartbeat()
+
 	return pipeReader, nil
 }
 
 func (s *SSHSession) Send(data string) {
+	// 任何走 stdin 的用户输入都要打戳：心跳据此判断"人刚敲过键"，跳过本轮注入，
+	// 避免 NUL 落进 vi/less/top 这类前台程序。注意 sendSilent 不调用本方法。
+	s.LastInputAt.Store(time.Now().UnixNano())
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
 	if s.stdin != nil {
@@ -552,16 +611,20 @@ func (s *SSHSession) Send(data string) {
 	}
 }
 
-// sendSilent 与 send 相同，但不写日志。
+// sendSilent 与 send 相同，但不写日志；返回写入结果。
 //
 // 用于后台心跳：shell 可能已经 TMOUT 退出（此时 stdin 已关闭），
-// 而心跳的正常使命就是"在 shell 还活着时别让它退出"，失败不是异常。
-func (s *SSHSession) sendSilent(data string) {
+// 而心跳的正常使命就是"在 shell 还活着时别让它退出"。
+// 返回 error 是为了让调用方能区分"注入成功"与"shell 已经没了"——
+// 后者若被静默吞掉，心跳会每 120s 空转，会话看起来在、实际已不可用。
+func (s *SSHSession) sendSilent(data string) error {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
-	if s.stdin != nil {
-		_, _ = io.WriteString(s.stdin, data)
+	if s.stdin == nil {
+		return errors.New("stdin 不可用")
 	}
+	_, err := io.WriteString(s.stdin, data)
+	return err
 }
 
 // injectCommand 填入命令行但不加换行，等客户回车确认
