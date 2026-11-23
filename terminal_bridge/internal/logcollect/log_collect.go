@@ -62,13 +62,13 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		// 钉住会话：采集/交付期间无人持有也绝不回收；任务结束后仍保留 2 小时，
 		// 覆盖"用户关页面去查资料/开会，回来再看结果"这一常态。
 		if _, pinned := b.PinExpiry(key); !pinned {
-			if until := b.Pin(key, sshx.SessionPinTTL()); !until.IsZero() {
+			if until := b.Pin(key, session.SessionPinTTL()); !until.IsZero() {
 				evidence.Emit("INFO", "session.pinned", "会话已按日志收集任务钉住", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 					"session_key": key, "until": until.UTC().Format(time.RFC3339),
 				})
 			}
 		} else {
-			b.Pin(key, sshx.SessionPinTTL())
+			b.Pin(key, session.SessionPinTTL())
 		}
 	}
 	// 精确命中是常态，只有回退才留痕：日志要能回答"这条命令为什么落到了这台机器"。
