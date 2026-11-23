@@ -53,7 +53,9 @@ logger = get_logger("log-collect-evidence")
 router = APIRouter(prefix="/api/direct/log-collect", tags=["log-collect-evidence"])
 tickets = LogCollectEvidenceTicket()
 
-PROCESS_LOG_DIR = "/sf/log/today/acli/plugins/log_collect/"
+# 节点日志白名单根目录：acli 把运行日志统一写在 today/acli 下（acli.log、
+# cmd_output/*.log、plugins/<name>/*.log）。只收 .log，且必须是该根目录的绝对子路径。
+PROCESS_LOG_DIR = "/sf/log/today/acli/"
 MAX_PROCESS_LOG_FILE_BYTES = int(THRESHOLDS["max_process_log_file_bytes"])
 MAX_PROCESS_LOG_TASK_BYTES = int(THRESHOLDS["max_process_log_task_bytes"])
 
@@ -233,8 +235,13 @@ async def put_process_log(
     if not tickets.verify(str(task_id), x_evidence_ticket):
         raise _unauthorized()
     path = payload.path
-    if not path.startswith(PROCESS_LOG_DIR) or ".." in path or "\x00" in path:
-        raise HTTPException(status_code=400, detail="进程日志路径不在白名单目录内")
+    if (
+        not path.startswith(PROCESS_LOG_DIR)
+        or not path.endswith(".log")
+        or ".." in path
+        or "\x00" in path
+    ):
+        raise HTTPException(status_code=400, detail="进程日志路径不在白名单目录内（仅限 today/acli 下的 .log）")
     if payload.size > MAX_PROCESS_LOG_FILE_BYTES:
         raise HTTPException(status_code=413, detail="单个进程日志超过上限")
 

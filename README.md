@@ -82,8 +82,8 @@ HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态
   未交付的终态任务不合成 100% 进度（显示「—」），避免「已完成 100% / 交付未开始」再次同屏。
 - **四类新证据**：下发前分目标网络探测（稳定性/带宽/分级与客户提示）、P2 拉取/上传/代传
   逐阶段速率与 ETA、zip 中央目录内容探测（608 字节空壳包不再判成功）、采集进程日志
-  `/sf/log/today/acli/plugins/log_collect/` 回传云端。四类证据表均带 `trace_id` 唯一调用链，
-  管理端四页签只读查看并审计读取。
+  `/sf/log/today/acli/` 全目录 `.log`（`acli.log`、`cmd_output/`、`plugins/<name>/`）回传云端。
+  四类证据表均带 `trace_id` 唯一调用链，管理端四页签只读查看并审计读取。
 - **写入权威收回**：客户端只提交 `node_observed` 事实，结论键为服务端保留键；历史
   零产物/过小包由 `database/data-migrations/065_log_collect_artifact_evidence_backfill.sql`
   写行内快照标注，不改 `status`，迁移内置不变量校验且可重跑。

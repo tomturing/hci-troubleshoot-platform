@@ -12,11 +12,7 @@ package logcollect
 import (
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,10 +38,6 @@ const (
 	EvidenceStallSeconds       = 60
 	evidenceBandwidthBytes     = 1024 * 1024
 	evidenceProbeSamples       = 5
-	processLogDir              = "/sf/log/today/acli/plugins/log_collect/"
-	maxProcessLogFileBytes     = 2 * 1024 * 1024
-	maxProcessLogTaskBytes     = 20 * 1024 * 1024
-	maxProcessLogFiles         = 5
 	maxManifestEntries         = 500
 	minArchiveBytesForEvidence = 1024 * 1024
 )
@@ -632,83 +624,4 @@ func (e EvidenceConfig) reportEvidenceError(ctx context.Context, kind string, ca
 		return
 	}
 	_ = resp.Body.Close()
-}
-
-// ── 采集进程日志 ──────────────────────────────────────────────────────────
-
-type processLogPayload struct {
-	Host         string `json:"host"`
-	Path         string `json:"path"`
-	Size         int    `json:"size"`
-	SHA256       string `json:"sha256,omitempty"`
-	ContentGzB64 string `json:"content_gz_b64,omitempty"`
-	Truncated    bool   `json:"truncated"`
-	Status       string `json:"status"`
-	Error        string `json:"error,omitempty"`
-	CollectedAt  string `json:"collected_at,omitempty"`
-}
-
-func collectNodeProcessLogs(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig) {
-	if s == nil {
-		return
-	}
-	key := "process-logs:" + cfg.TaskID
-	if _, loaded := evidenceOnce.LoadOrStore(key, struct{}{}); loaded {
-		return
-	}
-	listOut, _, code, err := s.RunQuickCommandStreams(ctx, "ls -1 "+remote.ShellQuote(processLogDir))
-	if err != nil || code != 0 {
-		evidence.Emit("WARN", "log_collect.process_logs_unavailable", "采集进程日志目录不可读", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-			"task_id": cfg.TaskID, "error": errString(err), "exit_code": code,
-		})
-		return
-	}
-	var used int64
-	count := 0
-	for _, name := range strings.Split(strings.TrimSpace(listOut), "\n") {
-		name = strings.TrimSpace(name)
-		if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
-			continue
-		}
-		if count >= maxProcessLogFiles || used >= maxProcessLogTaskBytes {
-			break
-		}
-		path := processLogDir + name
-		content, _, contentCode, contentErr := s.RunQuickCommandStreams(ctx, "tail -c "+strconv.Itoa(maxProcessLogFileBytes)+" "+remote.ShellQuote(path))
-		payload := processLogPayload{
-			Host: cfg.NodeIP, Path: path, CollectedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-		switch {
-		case contentErr != nil || contentCode != 0:
-			payload.Status = "error"
-			payload.Error = firstNonEmpty(errString(contentErr), "节点侧读取失败")
-		case strings.TrimSpace(content) == "":
-			payload.Status = "empty"
-		default:
-			raw := []byte(content)
-			if len(raw) > maxProcessLogFileBytes {
-				raw = raw[:maxProcessLogFileBytes]
-				payload.Truncated = true
-			}
-			var compressed bytes.Buffer
-			writer := gzip.NewWriter(&compressed)
-			_, _ = writer.Write(raw)
-			_ = writer.Close()
-			sum := sha256.Sum256(raw)
-			payload.Status = "ok"
-			payload.Size = len(raw)
-			payload.SHA256 = hex.EncodeToString(sum[:])
-			payload.ContentGzB64 = base64.StdEncoding.EncodeToString(compressed.Bytes())
-			used += int64(len(raw))
-		}
-		postCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_, postErr := cfg.PostEvidence(postCtx, cfg.TaskPath("process-logs"), payload, "")
-		cancel()
-		if postErr != nil {
-			evidence.Emit("WARN", "log_collect.process_log_failed", "采集进程日志上报失败", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
-				"task_id": cfg.TaskID, "path": path, "error": postErr.Error(),
-			})
-		}
-		count++
-	}
 }
