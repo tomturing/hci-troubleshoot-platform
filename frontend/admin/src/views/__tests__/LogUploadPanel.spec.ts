@@ -508,3 +508,44 @@ describe('LogUploadPanel', () => {
     wrapper.unmount()
   })
 })
+
+it('进程日志页签显示采集轮次与真实来源主机，三轮证据不隐藏', async () => {
+  api.getProcessLogs.mockResolvedValue({
+    task_id: 'task-active',
+    items: [
+      {
+        log_id: 'log-init', host: '10.0.0.1', path: '/sf/log/today/acli/acli.log',
+        size_bytes: 100, size_text: '100 B', sha256: null, truncated: false,
+        status: 'ok', error: null, collected_at: null, phase: 'init',
+      },
+      {
+        log_id: 'log-term', host: '10.0.0.2', path: '/sf/log/today/acli/plugins/log_collect/log_collect.log',
+        size_bytes: 200, size_text: '200 B', sha256: null, truncated: false,
+        status: 'ok', error: null, collected_at: null, phase: 'terminal',
+      },
+      {
+        log_id: 'log-fail', host: '10.0.0.3', path: '/sf/log/today/acli/',
+        size_bytes: 0, size_text: '0 B', sha256: null, truncated: false,
+        status: 'empty', error: null, collected_at: null, phase: 'terminal_failed',
+      },
+    ],
+  })
+  const wrapper = await mountPanel()
+  const detail = wrapper.findAll('button').find((item) => item.text() === '详情')
+  await detail!.trigger('click')
+  await flushPromises()
+  await flushPromises()
+  const tabs = wrapper.findAll('.el-tabs__item')
+  const processTab = tabs.find((item) => item.text() === '进程日志')
+  expect(processTab).toBeDefined()
+  await processTab!.trigger('click')
+  await flushPromises()
+  const text = wrapper.text()
+  expect(text).toContain('初始化轮')
+  expect(text).toContain('终态轮')
+  expect(text).toContain('失败终态轮')
+  expect(text).toContain('10.0.0.1')
+  expect(text).toContain('10.0.0.2')
+  expect(text).toContain('10.0.0.3')
+  wrapper.unmount()
+})
