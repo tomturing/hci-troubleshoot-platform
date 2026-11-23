@@ -28,7 +28,10 @@ func kindsDescriptors() []kinds.Descriptor {
 			Mode:    kinds.ModeCompareOnly,
 			Owner:   "acli",
 			Explain: "期望态=官方源探测到的版本/日期；与节点 `acli --version` 比对后决定是否重装（无账本）",
-			Note:    "不落账本：节点被第三方清空后必须重新探测，靠账本 Skip 会永久跳过；另声明了 InstallSpec{acli_install} 与 acli 域内渲染器，但编排未走 Run（见事件文档 2026-11-22）",
+			Note: "不落账本：节点被第三方清空后必须重新探测，靠账本 Skip 会永久跳过；" +
+				"另声明了 InstallSpec{acli_install} 与 acli 域内渲染器，但编排未走 Run（见事件文档 2026-11-22）。" +
+				"包复用/断点由 acli 域内实现（findRemoteAcliPackage/verifyReusedRemotePackage），" +
+				"骨架不承担——扩骨架的决策门见 docs/plans/2026-11-23-S4-W4骨架契约反推清单.md",
 		},
 		// 配置下发：走 Provider → DesiredState → Plan → Run → Verify 全流程。
 		{

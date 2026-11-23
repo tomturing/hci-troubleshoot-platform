@@ -42,7 +42,6 @@ import (
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
-	"terminal_bridge/internal/sshx/session"
 	"time"
 )
 
@@ -507,7 +506,10 @@ type nodePluginState struct {
 // S4b：探测目标改由 acliLandingDescriptor 声明（B8），不再只验 log_collect。
 // HostTimeout 取负禁用主机级超时，单条命令的 30s 预算已在
 // cluster.RunOnHostStreams 内部强制（与旧实现一致）。
-func verifyClusterPluginLanding(b *session.Hub, ctx context.Context, s *sshx.SSHSession) []nodePluginState {
+// 不需要 *session.Hub：逐节点执行只需发起节点的 SSHSession——`cluster.NodeList` 与
+// `cluster.RunOnHostStreams` 都从 s 取目标与本地地址。Hub 是 S4a 改走 Fanout 前留下的
+// 死参数（函数体内零引用），删掉以免后人以为这里依赖连接簿记。
+func verifyClusterPluginLanding(ctx context.Context, s *sshx.SSHSession) []nodePluginState {
 	hosts := cluster.NodeList(s, ctx)
 	if len(hosts) == 0 {
 		return nil
