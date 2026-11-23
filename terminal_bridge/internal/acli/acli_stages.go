@@ -9,6 +9,7 @@ package acli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"terminal_bridge/internal/shared/logcontract"
 )
@@ -84,6 +85,46 @@ func decideAcliReuse(retryStage string, probe acliRemoteProbe, baseline *acliPac
 		return acliReuseDecision{Reason: "rejected", Detail: errString(err)}
 	}
 	return acliReuseDecision{Ready: true, Reason: "verified"}
+}
+
+// acliPackageAction 决定本轮重试从哪里拿包。
+type acliPackageAction int
+
+const (
+	// packageRefetch 重新从官方源下载：缓存不可信，或本轮本来就不该用缓存。
+	packageRefetch acliPackageAction = iota
+	// packageFromCache 复用本进程已校验过的完整字节（仅「只重传」且缓存有 Data）。
+	packageFromCache
+)
+
+// planAcliPackage 决定本轮用什么包。
+//
+// 只有「只重传」且缓存里确实有完整字节时才复用缓存：
+//   - retryStage=install 时用户要的是「重装」而非「重传」，内存里的字节没有意义，
+//     真正的复用发生在阶段 8（节点上那份包与基线比对）；
+//   - 缓存里 Data 为空的条目是「基线包」（来自账本恢复），只能当校验基线，
+//     拿去当上传字节会传上去 0 字节——对外表现是"上传成功但节点上是空文件"。
+func planAcliPackage(retryStage string, cached *acliPackage) acliPackageAction {
+	if retryStage == "upload" && cached != nil && cached.Data != nil {
+		return packageFromCache
+	}
+	return packageRefetch
+}
+
+// acliRetryBackoff 是第 attempt 次失败后的等待时长（线性，attempt × 2s）。
+//
+// 为什么不用指数退避：只有 3 次尝试，指数退避省不下几秒，却会把
+// 「用户点了按钮在等」的观感变成假死；线性 2s/4s 足够让瞬时抖动过去。
+func acliRetryBackoff(attempt int) time.Duration {
+	return time.Duration(attempt) * 2 * time.Second
+}
+
+// acliShouldRetry 报告第 attempt 次失败后是否还有下一轮。
+//
+// 单独成函数是为了让「上限」只有一处：硬编码在循环条件与退避判断两处时，
+// 改上限会漏掉一处，表现为"最后一次失败后还会再等一轮再放弃"。
+func acliShouldRetry(attempt int) bool {
+	return attempt < acliMaxAttempts
 }
 
 // acliInstallVerdict 是安装命令结束后的结论：成功，或失败时的错误码与可读说明。

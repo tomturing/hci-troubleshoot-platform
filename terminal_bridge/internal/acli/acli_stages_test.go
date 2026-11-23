@@ -12,6 +12,7 @@ import (
 	"strings"
 	"terminal_bridge/internal/shared/logcontract"
 	"testing"
+	"time"
 )
 
 func TestNormalizeAcliRetryStage(t *testing.T) {
@@ -94,6 +95,62 @@ func TestDecideAcliReuse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// 拿包策略：只有「只重传」+ 缓存有真实字节才复用。
+//
+// 判错的两种后果都不报错：
+//   - 用基线包（Data 为空）上传 → 节点上出现 0 字节文件，还"上传成功"；
+//   - install 阶段复用内存缓存 → 用户以为在重装，实际重传了一份可能过期的字节。
+func TestPlanAcliPackage(t *testing.T) {
+	full := testAcliPackage()
+	// 账本恢复出来的基线包：只有摘要与大小，没有字节。
+	baselineOnly := &acliPackage{Size: full.Size, SHA256: full.SHA256, MD5: full.MD5}
+
+	cases := []struct {
+		name   string
+		retry  string
+		cached *acliPackage
+		want   acliPackageAction
+	}{
+		{"只重传且缓存完整", "upload", full, packageFromCache},
+		{"只重传但缓存为空", "upload", nil, packageRefetch},
+		{"只重传但只有基线包", "upload", baselineOnly, packageRefetch},
+		{"只重装不复用内存缓存", "install", full, packageRefetch},
+		{"完整流程不复用缓存", "all", full, packageRefetch},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := planAcliPackage(tc.retry, tc.cached); got != tc.want {
+				t.Fatalf("planAcliPackage(%q)=%v，期望 %v", tc.retry, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAcliRetryBackoff(t *testing.T) {
+	want := map[int]time.Duration{
+		1: 2 * time.Second,
+		2: 4 * time.Second,
+		3: 6 * time.Second,
+	}
+	for attempt, d := range want {
+		if got := acliRetryBackoff(attempt); got != d {
+			t.Fatalf("第 %d 次退避 %s，期望 %s", attempt, got, d)
+		}
+	}
+}
+
+// 第 acliMaxAttempts 次失败后不得再等一轮：否则最后一次重试后还要空等 6s 才报错。
+func TestAcliShouldRetry(t *testing.T) {
+	for attempt := 1; attempt <= acliMaxAttempts; attempt++ {
+		want := attempt < acliMaxAttempts
+		if got := acliShouldRetry(attempt); got != want {
+			t.Fatalf("acliShouldRetry(%d)=%v，期望 %v", attempt, got, want)
+		}
+	}
+	// 调用方从 attempt=1 起算；attempt=0 不在契约内，不做断言。
 }
 
 // 安装结论：三种失败必须给出不同文案，否则现场只能看到「安装失败」。
