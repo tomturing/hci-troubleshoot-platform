@@ -631,7 +631,7 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 		// 集群分发可能静默留下空目录（Q2026111700614）。缺失只如实警示，
 		// 不把本地已成功的安装整体判失败，保留「重试安装」入口。
 		pluginCtx, cancelPlugin := context.WithTimeout(ctx, 2*time.Minute)
-		pluginStates := verifyClusterPluginLanding(b, pluginCtx, s)
+		pluginStates := verifyClusterPluginLanding(pluginCtx, s)
 		cancelPlugin()
 		installedMessage := "acli 工具安装并集群分发成功！"
 		if !diskProbed {
