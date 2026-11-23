@@ -52,7 +52,12 @@ from ..services.log_collect_date_placeholders import validate_item_placeholders
 from ..services.log_collect_default_scenario_service import LogCollectDefaultScenarioService
 from ..services.log_collect_evidence_service import LogCollectEvidenceTicket
 from ..services.log_collect_node_path import expected_node_archive_path
-from ..services.log_collect_relay_service import LogCollectRelayService, SangforRelayClient
+from ..services.log_collect_relay_service import (
+    LogCollectRelayService,
+    SangforRelayClient,
+    begin_drain,
+    drain_requested,
+)
 from ..services.log_collect_script_service import LogCollectScriptService, ScriptError
 from ..services.log_collect_service import (
     InvalidTransitionError,
@@ -236,6 +241,11 @@ async def _run_relay_gated(
         await relay_service.release([task_id])
         return
     try:
+        # 排队期间进程可能已经进入退出流程：此时再跑只会被 drain 立刻打断，
+        # 不如直接交还，让下一个实例从零排队开始。
+        if drain_requested():
+            await relay_service.release([task_id])
+            return
         await relay_service.run(task_id)
     finally:
         semaphore.release()
@@ -254,6 +264,9 @@ async def reconcile_relays_once() -> int:
     测试也能只跑一轮而不必等真实 sleep。
     """
     if database_manager is None or not settings.LOG_COLLECT_RELAY_ENABLED:
+        return 0
+    if drain_requested():
+        # 进程正在退出：不再抢新任务，未完成的留给下一个实例。
         return 0
     try:
         relay_service = _build_relay_service()
@@ -297,14 +310,26 @@ async def reconcile_relays_loop(*, interval: float = 60.0) -> None:
         await asyncio.sleep(interval)
 
 
-async def shutdown_relays() -> None:
-    """优雅退出：取消在飞代传并把租约交还成 pending（必须在关闭 DB 之前调用）。"""
+async def shutdown_relays(*, wait_seconds: float = 120.0) -> None:
+    """优雅退出：先让在飞代传在分片边界让位，再交还租约（必须在关闭 DB 之前调用）。
+
+    不能直接 cancel：cancel 会打断正在发送的 /upload_chunk，5888 收到残缺
+    multipart 后返回 400，这一次的分片写入也就废了（2026-11-23 Q2026112300730
+    的 `400 No form data in chunk upload` 正是这样产生的）。
+    drain 让任务在下一个分片边界自行 release(pending)；最多等 wait_seconds
+    （必须小于 terminationGracePeriodSeconds 减去 preStop），仍未结束才强制取消。
+    """
+    begin_drain()
     pairs = list(_running_relays.items())
     if not pairs:
         return
-    for task, _task_id in pairs:
-        task.cancel()
-    await asyncio.gather(*[task for task, _ in pairs], return_exceptions=True)
+    tasks = [task for task, _task_id in pairs]
+    _done, pending = await asyncio.wait(tasks, timeout=wait_seconds)
+    if pending:
+        logger.info("日志包代传优雅退出超时，强制取消 count=%s", len(pending))
+        for task in pending:
+            task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
     # 不依赖 done-callback 的时机：退出路径必须自己把登记表清干净，
     # 否则下一次 shutdown 会重复交还已经不属于本进程的任务。
     for task, _task_id in pairs:
