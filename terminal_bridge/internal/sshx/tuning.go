@@ -25,6 +25,12 @@ const (
 	// （每次注入都是一次 stdin 写，密集到秒级会干扰用户正在输入的命令）。
 	// 取 120s 表示"即使连续丢两次心跳，第 6 分钟仍会补上"。
 	shellHeartbeatInterval = 120 * time.Second
+	// shellHeartbeatQuietWindow 是"用户刚敲过键"的静默窗口：窗口内跳过本轮心跳。
+	//
+	// 为什么需要：心跳注入的是 NUL，bash 里等于 set-mark 无害，但用户若正在
+	// vi/less/top 等前台程序里操作，多出来的字节会干扰界面。跳过 30s 后
+	// 下一次 tick 在 120s 后，距上次输入最多 150s，仍远小于 TMOUT=600。
+	shellHeartbeatQuietWindow = 30 * time.Second
 )
 
 // DefaultSessionBusyGrace 是"业务活跃"保护窗口。
@@ -37,5 +43,18 @@ const DefaultSessionBusyGrace = 15 * time.Minute
 // SessionBusyGrace 返回业务活跃窗口；<=0 表示关闭该保护（退回只看长任务计数）。
 func SessionBusyGrace() time.Duration {
 	seconds := bruntime.EnvIntOrDefault("HCI_BRIDGE_SESSION_BUSY_GRACE_SECONDS", int(DefaultSessionBusyGrace/time.Second))
+	return time.Duration(seconds) * time.Second
+}
+
+// DefaultSessionPinTTL 是业务钉住的默认保留窗口：任务结束后仍保留 2 小时。
+//
+// 为什么是"任务结束后 2 小时"而不是"一直保留"：日志收集常常几十分钟，用户中途
+// 关页面/切工单是常态，5 分钟的 idle TTL 必然让回来的人撞上"SSH 会话未连接"。
+// 但也不能永不回收——节点上的 SSH 会话数有上限，孤儿会话会挤占别人的名额。
+const DefaultSessionPinTTL = 2 * time.Hour
+
+// SessionPinTTL 返回业务钉住时长；<=0 表示关闭钉住。
+func SessionPinTTL() time.Duration {
+	seconds := bruntime.EnvIntOrDefault("HCI_BRIDGE_SESSION_PIN_TTL_SECONDS", int(DefaultSessionPinTTL/time.Second))
 	return time.Duration(seconds) * time.Second
 }

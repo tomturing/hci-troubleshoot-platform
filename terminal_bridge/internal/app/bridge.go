@@ -10,6 +10,7 @@ package app
 import (
 	"fmt"
 	"golang.org/x/net/websocket"
+	"sync"
 	"sync/atomic"
 	"terminal_bridge/internal/shared/metrics"
 	"terminal_bridge/internal/shared/models"
@@ -22,6 +23,9 @@ import (
 type Bridge struct {
 	// *session.Hub 提供 Get/Set/Remove/ResolveSession 等会话能力（方法提升）。
 	*session.Hub
+	// reconnectMu 串行化"会话缺失 → 自动重连"，避免多条消息同时触发建连：
+	// 采集轮询与交付续传可能在同一瞬间都发现会话没了，并发重连会开出多条 SSH。
+	reconnectMu sync.Mutex
 }
 
 func NewBridge() *Bridge {
@@ -121,6 +125,30 @@ func (b *Bridge) AutoConnectNode(ws *websocket.Conn, msg models.InMessage, owned
 // 交付是后台作业，没有也不该绑定某个浏览器连接，所以输出监控走 nil ws
 // （terminal.On_output_start 已对 nil ws 做保护，只保留 exec 结果回环与 EOF 销毁）。
 func (b *Bridge) ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSHSession, error) {
+	return b.reconnectNode(caseID, nodeIP, connID, "delivery", "delivery_auto_reconnect")
+}
+
+// ReconnectSession 是会话自愈的统一入口：任何业务发现"键对不上"时都可能用它。
+//
+// 第一性原理：长连接必然失效（节点 sshd 重启、网络闪断、bridge 进程重启都会让会话消失），
+// 靠"永远不掉"是不成立的。桥已经持有 lastAuth，唯一正确的做法是掉了就用它重建一次，
+// 而不是把"请重新登录"甩给用户——日志收集一跑几十分钟，中途关页面是常态。
+func (b *Bridge) ReconnectSession(caseID, nodeIP, connID string) (*sshx.SSHSession, error) {
+	if caseID == "" || nodeIP == "" {
+		return nil, fmt.Errorf("缺少工单号或节点 IP，无法自动重连")
+	}
+	key := SessionKey(caseID, nodeIP)
+	// 双检：等锁期间可能已经有人重连成功，直接复用，不再开第二条 SSH。
+	b.reconnectMu.Lock()
+	defer b.reconnectMu.Unlock()
+	if s := b.Get(key); s != nil {
+		return s, nil
+	}
+	return b.reconnectNode(caseID, nodeIP, connID, "log_collect", "session_auto_reconnect")
+}
+
+// reconnectNode 是交付与日志收集共用的重连实现（差异只在归因字段）。
+func (b *Bridge) reconnectNode(caseID, nodeIP, connID, role, source string) (*sshx.SSHSession, error) {
 	if nodeIP == "" {
 		return nil, fmt.Errorf("nodeIP 为空，无法自动重连")
 	}
@@ -149,10 +177,9 @@ func (b *Bridge) ReconnectDeliveryNode(caseID, nodeIP, connID string) (*sshx.SSH
 	atomic.AddUint64(&metrics.PromMetrics.SshConnectionsTotal, 1)
 	// 后台重连的会话同样要保活：它最容易在长跑期间撞上半开连接。
 	session.StartKeepAlive(sshx.SshKeepAliveInterval())
-	LogSessionCreated(session, key, connID, "delivery", "delivery_auto_reconnect")
-	obslog.Emit("WARN", "delivery.session_reconnected", "交付期间节点会话掉线，已用已存认证自动重连", "", caseID, nodeIP, "", map[string]any{
-		"key":     key,
-		"conn_id": connID,
+	LogSessionCreated(session, key, connID, role, source)
+	obslog.Emit("WARN", "ssh.session_reconnected", "节点会话掉线，已用已存认证自动重连", "", caseID, nodeIP, "", map[string]any{
+		"key": key, "conn_id": connID, "role": role, "source": source,
 	})
 	// 与 AutoConnectNode 同构：远端 EOF 时销毁会话（下一轮 advance 会再次自动重连），
 	// 其余原因只摘键不销毁。

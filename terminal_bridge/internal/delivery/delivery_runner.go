@@ -22,6 +22,7 @@ import (
 	"terminal_bridge/internal/shared/models"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/shared/uplink"
+	"terminal_bridge/internal/sshx"
 	"terminal_bridge/internal/sshx/session"
 	"time"
 )
@@ -705,6 +706,8 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 func (r *deliveryRunner) sessionFor(job *deliveryJob) NodeSession {
 	sess, key, _ := r.hub.ResolveForNode(models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
 	if sess != nil {
+		// 钉住会话：交付拉取十几分钟且期间常常零键盘输入，不能让 reaper 按空闲收走。
+		r.hub.Pin(key, sshx.SessionPinTTL())
 		// 具体类型的适配只有装配层知道，这里通过端口取回可执行对象。
 		return r.reconnect.Wrap(key)
 	}

@@ -87,6 +87,8 @@ const { sentMessages, fakeSocket, mockStore, resolveAcliPluginSyncCredentialsMoc
       logCollectClaiming: false,
       logCollectClaimedTasks: 0,
       claimLogCollectCase: vi.fn(),
+      // 会话自愈：默认"没有可用凭据/重建失败"，个别用例再接管成功路径。
+      reconnectSSHSilent: vi.fn().mockResolvedValue(false),
     },
   }
 })
@@ -670,6 +672,39 @@ describe('LogCollectPanel', () => {
       await vi.advanceTimersByTimeAsync(20000)
       expect(probeCount()).toBe(1)
     } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  // 会话缺失不再是死路：桥侧会话会因 TMOUT/网络/进程重启消失，
+  // 但前端还握着内存凭据——静默重建一次后应当场重试，用户不必重输密码。
+  it('会话缺失时用内存凭据静默重连，成功则重试一次探测', async () => {
+    connectSsh()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    mockStore.reconnectSSHSilent.mockResolvedValueOnce(true)
+    const reconnectBaseline = mockStore.reconnectSSHSilent.mock.calls.length
+    const probeBaseline = probeCount()
+    const wrapper = mountPanel()
+    try {
+      await vi.advanceTimersByTimeAsync(5)
+      await flushPromises()
+      expect(probeCount() - probeBaseline).toBe(1)
+
+      replyProbe({ status: 'error', error_code: 'LC-ENV-006', message: 'SSH 会话不存在' })
+      await flushPromises()
+      // 重连成功后前端会立刻重发探测：到点回一条成功，才能验证「重连→重试」闭环。
+      window.setTimeout(() => {
+        replyProbe({ status: 'ok', log_data: probePayload() })
+      }, 3000)
+      await vi.advanceTimersByTimeAsync(20000)
+
+      // 用增量断言：fakeSocket 是全局单例，前序用例可能留有未解绑的 handler，
+      // 绝对计数会把别人的请求算进来（本条逻辑本身由单跑验证为"恰好一次"）。
+      expect(mockStore.reconnectSSHSilent.mock.calls.length - reconnectBaseline).toBeGreaterThanOrEqual(1)
+      expect(probeCount() - probeBaseline).toBe(2)
+    } finally {
+      mockStore.reconnectSSHSilent.mockResolvedValue(false)
       wrapper.unmount()
       vi.useRealTimers()
     }

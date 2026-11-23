@@ -642,6 +642,24 @@ export const useChatStore = defineStore('chat', () => {
     authType: 'password' | 'key'
     caseId: string
   } | null>(null)
+  /**
+   * 最近一次 SSH 连接凭据（含密码），**只存在内存**。
+   *
+   * 为什么必须留：会话会因 TMOUT、节点 sshd 重启、桥进程重启而消失，而日志收集
+   * 一跑就是几十分钟。用户刷新页面后若还要重新输密码，"整体保活"就是空话。
+   * 这里刻意不写 localStorage/sessionStorage：凭据不落盘，页面刷新即失——
+   * 牺牲一点便利，换掉"密码持久化到磁盘"的风险。
+   */
+  const sshLastCredential = ref<{
+    host: string
+    port: number
+    username: string
+    authType: 'password' | 'key'
+    password?: string
+    privateKey?: string
+    passphrase?: string
+    caseId: string
+  } | null>(null)
   const sshErrorMessage = ref('')
   const sshOutputBuffer = ref<string>('')
   const sshCommandConsumer = ref<'terminal' | 'collection' | null>(null)
@@ -2988,6 +3006,9 @@ export const useChatStore = defineStore('chat', () => {
         authType: config.authType,
         caseId: config.caseId,
       }
+      // 同步留一份含凭据的内存副本：只有真正发起连接时才覆盖，
+      // 失败的重试不会把"上一次可用的凭据"擦掉。
+      sshLastCredential.value = { ...config }
 
       // 创建 WebSocket
       socket = createBridgeSocket()
@@ -3187,6 +3208,9 @@ export const useChatStore = defineStore('chat', () => {
     cleanupSshWebSocket()
     sshConnectionState.value = 'disconnected'
     sshCurrentConfig.value = null
+    // 用户主动断开即视为"这次会话结束"，内存凭据一并清掉：
+    // 保留它会让下一次进入面板自动用旧密码去连一台他并不想连的机器。
+    sshLastCredential.value = null
     sshOutputBuffer.value = ''
     sshCommandConsumer.value = null
     // 清理所有待处理的 exec_result 回调
@@ -3197,6 +3221,27 @@ export const useChatStore = defineStore('chat', () => {
     pendingExecCallbacks.clear()
     execBuffers.clear()
     execOutputFilters.clear()
+  }
+
+  /**
+   * 用内存里的最近凭据静默重建 SSH 会话。
+   *
+   * 返回 true 表示"已重新连上"，调用方可以重试原动作；false 表示没有可用凭据或
+   * 重建失败——此时必须让用户看到"请重新连接"，不能假装还能恢复。
+   * 刻意复用 connectSSH：协议、事件、直传令牌换取都不该有第二套实现。
+   */
+  async function reconnectSSHSilent(caseId?: string): Promise<boolean> {
+    const credential = sshLastCredential.value
+    if (!credential) return false
+    // 工单不匹配时不能拿旧工单的凭据去连：连上也只会落到错误的节点上。
+    if (caseId && credential.caseId && credential.caseId !== caseId) return false
+    if (sshConnectionState.value === 'connecting') return false
+    try {
+      await connectSSH(credential)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -4781,6 +4826,7 @@ export const useChatStore = defineStore('chat', () => {
     sshCommandConsumer,
     connectSSH,
     disconnectSSH,
+    reconnectSSHSilent,
     checkAndSyncAcli,
     forwardBridgeLog,
     importBridgeLogsToCase,
