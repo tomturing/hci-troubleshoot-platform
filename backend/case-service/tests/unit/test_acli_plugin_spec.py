@@ -19,6 +19,7 @@ from app.domain.acli_plugin_spec import (
     BUILTIN_PLUGINS,
     FORBIDDEN_SPEC_FIELDS,
     MANIFEST_REQUIRED_FIELDS,
+    MAX_PLUGIN_FILE_BYTES,
     REGISTER_REQUIRED_FIELDS,
     TEMPLATE_SPEC,
     SpecValidationError,
@@ -117,6 +118,18 @@ def test_hard_contract_violations_are_rejected(overrides, expected):
     result = validate_spec(_spec(**overrides))
     assert not result["ok"]
     assert any(expected in error for error in result["errors"]), result["errors"]
+
+
+def test_script_over_max_file_bytes_is_rejected_on_save():
+    """单文件超限必须在保存时就拒绝，不能等客户侧 manifest_file_too_large 才发现。"""
+    result = validate_spec(_spec(script_content="x" * (MAX_PLUGIN_FILE_BYTES + 1)))
+    assert not result["ok"]
+    assert any("script_content" in e and "1MiB" in e for e in result["errors"]), result["errors"]
+
+
+def test_script_at_max_file_bytes_is_accepted():
+    result = validate_spec(_spec(script_content="x" * MAX_PLUGIN_FILE_BYTES))
+    assert result["ok"], result["errors"]
 
 
 def test_new_plugin_cannot_collide_with_builtin():

@@ -155,6 +155,14 @@ export function formatApiProblem(problem: ApiProblem): string {
   return text
 }
 
+/** 管理端登录失效/无权限信号（由 createApiClient 统一识别后上抛）。 */
+export interface AuthErrorDetail {
+  status: number
+  /** 服务端 detail 文案，如「需要管理员凭证」；用于区分登录失效与普通权限不足。 */
+  detail: string
+  url: string
+}
+
 /**
  * 创建带通用拦截器的 Axios 实例
  *
@@ -162,11 +170,14 @@ export function formatApiProblem(problem: ApiProblem): string {
  * @param clientId 客户端标识（注入 X-Client-ID，客户侧使用）
  * @param getToken 同源身份令牌读取器（注入 Authorization: Bearer）。axios 不经 window.fetch
  *                 全局拦截器，管理端须显式传入以携带登录 JWT；客户侧不传则继续走 Cookie 身份。
+ * @param onAuthError 管理端 401/403 的统一处置回调。不传时派发 `hci:auth-error` 全局事件，
+ *                    由应用入口集中清 token 并跳登录——避免每个页面各自把 403 吞成「保存失败」。
  */
 export function createApiClient(
   baseURL: string,
   clientId?: string,
   getToken?: () => string | null | undefined,
+  onAuthError?: (info: AuthErrorDetail) => void,
 ): AxiosInstance {
   const client = axios.create({
     baseURL,
@@ -201,6 +212,22 @@ export function createApiClient(
         if (text) {
           error.problem = problem
           error.message = text
+        }
+      }
+      // 管理端（传了 getToken）的 401/403 是「登录失效 / 无管理权限」信号：
+      // 统一上抛，由入口清 token 并跳登录。否则页面只能把 403 显示成
+      // 「保存失败」这类通用文案，用户会误以为是自己填的内容有错（2026-11-24 现场）。
+      const status = error.response?.status
+      if (getToken && (status === 401 || status === 403)) {
+        const info: AuthErrorDetail = {
+          status,
+          detail: problem?.detail || '',
+          url: String(error.config?.url || ''),
+        }
+        if (onAuthError) {
+          onAuthError(info)
+        } else if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent<AuthErrorDetail>('hci:auth-error', { detail: info }))
         }
       }
       console.error('[API Error]', error.response?.status, error.response?.data)
