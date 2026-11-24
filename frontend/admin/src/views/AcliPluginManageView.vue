@@ -151,6 +151,13 @@ function validateBeforeSave(): boolean {
     activeTab.value = 'script'
     return false
   }
+  // 与后端 MAX_PLUGIN_FILE_BYTES / 桥侧 acliPluginMaxFileBytes 同口径（UTF-8 字节数）。
+  // 提前拦截，避免保存成功但客户侧整单拒收（manifest_file_too_large）的误导。
+  if (new TextEncoder().encode(spec.script_content).length > 1024 * 1024) {
+    ElMessage.warning('原始脚本超过 1MiB 单文件上限，请精简后再保存')
+    activeTab.value = 'script'
+    return false
+  }
   if (!spec.smoke_args.trim() || spec.smoke_args.trim() === '--help') {
     ElMessage.warning('请填写可真实跑通的生效冒烟参数（不能只填 --help）')
     activeTab.value = 'options'
@@ -188,8 +195,18 @@ async function handleSave() {
     formVisible.value = false
     await loadPlugins()
   } catch (error: any) {
+    const status = error?.response?.status
     const errors = error?.response?.data?.detail?.errors
-    ElMessage.error(Array.isArray(errors) ? errors.join('；') : '保存规格失败')
+    if (Array.isArray(errors) && errors.length) {
+      // 规格校验失败：逐条展示具体字段原因（如「script_content 不能为空」）。
+      ElMessage.error(errors.join('；'))
+    } else if (status === 401 || status === 403) {
+      // 鉴权失效不是内容错误：入口的 hci:auth-error 监听会清令牌并跳登录，
+      // 这里补一句明确文案，避免再次显示成「保存规格失败」把用户带偏。
+      ElMessage.error('登录已过期或无管理权限，请重新登录后再保存')
+    } else {
+      ElMessage.error('保存规格失败')
+    }
   } finally {
     saving.value = false
   }

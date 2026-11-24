@@ -40,6 +40,12 @@ FLAG_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*$")
 SMOKE_ARGS_RE = re.compile(r"^[A-Za-z0-9_.=:/@, -]*$")
 SAFE_RELATIVE_PATH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,255}$")
 
+# 单文件内容上限，与桥侧 acliPluginMaxFileBytes
+# （terminal_bridge/internal/acli/acli_plugin_manifest.go）同口径。
+# 桥侧超限会整单拒收 manifest（manifest_file_too_large）；若平台侧不校验，
+# 会出现「admin-ui 保存成功、客户侧永远下发失败」的误导（2026-11-24 现场）。
+MAX_PLUGIN_FILE_BYTES = 1 << 20
+
 MANIFEST_REQUIRED_FIELDS = frozenset(
     {
         "id",
@@ -339,6 +345,20 @@ def validate_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
             errors.append(f"附加文件路径非法: {path!r}")
         if str(item.get("mode") or "") not in ("0644", "0755"):
             errors.append(f"附加文件 mode 只允许 0644/0755: {path!r}")
+
+    # 单文件大小：按 UTF-8 字节数校验（脚本常含中文注释，字符数会低估约 3 倍）。
+    # 与桥侧 MAX_FILE_BYTES 同口径，避免保存成功、客户侧却整单拒收。
+    script_bytes = len(str(spec.get("script_content") or "").encode("utf-8"))
+    if script_bytes > MAX_PLUGIN_FILE_BYTES:
+        errors.append(
+            f"script_content 超过单文件上限 1MiB（当前 {script_bytes} 字节），请精简脚本后再保存"
+        )
+    for index, item in enumerate(spec.get("extra_files") or []):
+        content_bytes = len(str(item.get("content") or "").encode("utf-8"))
+        if content_bytes > MAX_PLUGIN_FILE_BYTES:
+            errors.append(
+                f"附加文件 extra_files[{index}] 超过单文件上限 1MiB（当前 {content_bytes} 字节）"
+            )
 
     if not str(spec.get("title_zh") or "").strip():
         warnings.append("title_zh 为空，manifest 将回退使用插件名")

@@ -80,15 +80,31 @@ function logAuthEvent(event: string, detail: Record<string, unknown> = {}): void
   })
 }
 
+// 登录页绝对路径：router base 是 /admin/，写死 /login 会跳到客户侧根路径（PIT-023 同类问题）。
+export const LOGIN_PATH = `${import.meta.env.BASE_URL}login`
+
 // 跳转登录页并携带回跳地址；防重入避免并发 401 触发多次整页跳转。
 let redirectingToLogin = false
 function redirectToLogin(): void {
   if (redirectingToLogin) return
-  if (window.location.pathname.startsWith('/login')) return
+  if (window.location.pathname.startsWith(LOGIN_PATH)) return
   redirectingToLogin = true
   const redirect = encodeURIComponent(window.location.pathname + window.location.search)
   logAuthEvent('redirect_to_login', { from: window.location.pathname })
-  window.location.assign(`/login?redirect=${redirect}`)
+  window.location.assign(`${LOGIN_PATH}?redirect=${redirect}`)
+}
+
+/**
+ * 登录态失效的统一处置：清令牌 + 跳登录页。
+ *
+ * 401（令牌过期/被吊销）与 403（管理端「需要管理员凭证」）都走这里。
+ * 由 `setupAuthFetch`（fetch 通道）与入口的 `hci:auth-error` 监听（axios 通道）共用，
+ * 避免两条请求通道各写一份跳转逻辑而漂移。
+ */
+export function handleAuthExpired(): void {
+  clearAccessToken()
+  logAuthEvent('auth_expired')
+  redirectToLogin()
 }
 
 export async function login(identifier: string, password: string): Promise<LoginResponse> {
@@ -151,8 +167,7 @@ export function setupAuthFetch(): void {
     // 登录端点自身的 401（账号或密码错误）不在此处理，避免重定向死循环。
     if (!isAuthEndpoint && response.status === 401) {
       logAuthEvent('unauthorized', { url, status: 401 })
-      clearAccessToken()
-      redirectToLogin()
+      handleAuthExpired()
     }
     return response
   }
