@@ -36,8 +36,15 @@ spec:
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "true"
+            # 2026-11-24 端口隔离加固：匿名角色从 Admin 降为 Viewer。
+            # 保留匿名是为了 admin-ui 的 iframe 嵌入（kiosk dashboard 无法携带
+            # 认证头，关匿名会让面板跳登录页）。但匿名 Admin 允许任意人改
+            # datasource / 建用户，且 datasource proxy 的 SSRF 面过大；
+            # Viewer 只保留 dashboard 只读与 Loki 查询，足以支撑嵌入。
+            # token 泄露的根治在前两层（DSH nginx 不记 query + Alloy 脱敏），
+            # 不依赖此处——因为 Grafana 的 datasource proxy 对 Viewer 也放行。
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
-              value: "Admin"
+              value: "Viewer"
             - name: GF_AUTH_ANONYMOUS_ORG_NAME
               value: "Main Org."
             # 禁用登录表单，防止匿名请求被重定向到 /login 页面
