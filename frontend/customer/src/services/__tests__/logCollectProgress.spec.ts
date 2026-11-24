@@ -4,6 +4,7 @@ import {
   DELIVERY_BAND_END,
   clampPercent,
   computeOverallPercent,
+  describeDirectUpload,
   formatByteCount,
 } from '../logCollectProgress'
 
@@ -74,6 +75,36 @@ describe('computeOverallPercent 分段映射', () => {
     expect(computeOverallPercent({ stage: 'collecting' })).toBe(0)
     expect(clampPercent('42')).toBe(42)
     expect(clampPercent(undefined)).toBe(0)
+  })
+})
+
+/**
+ * 回归背景（2026-11-24 Q2026091700436 / Q2026112400468）：
+ * 9.84 GiB 与 9.86 GiB 的 P1 直传包，节点侧 5888 分片核实已传 66%，
+ * 面板却恒显「发送中（85%）」——85% 是 acli 在采集+打包结束时的封顶值，
+ * 上传阶段根本不涨。用户据此判定"卡死"，走向重新采集。
+ */
+describe('describeDirectUpload 直传上传文案', () => {
+  it('绝不把节点封顶百分比伪装成上传进度', () => {
+    const text = describeDirectUpload({ upload_state: '发送中', archive_size: 10563438951 })
+    expect(text).not.toContain('85%')
+    expect(text).not.toContain('%')
+  })
+
+  it('只报节点自报阶段 + 可核对的包大小', () => {
+    const text = describeDirectUpload({ upload_state: '发送中', archive_size: 10563438951 })
+    expect(text).toBe('正在发送到日志服务器：发送中，包 9.8 GB')
+  })
+
+  it('节点没报阶段时用中性词，不凭空补百分比', () => {
+    expect(describeDirectUpload({})).toBe('正在发送到日志服务器：发送中')
+    expect(describeDirectUpload(null)).toBe('正在发送到日志服务器：发送中')
+  })
+
+  it('包大小未知时不显示「0 字节」这类假事实', () => {
+    expect(describeDirectUpload({ upload_state: 'Sending', archive_size: 0 })).toBe(
+      '正在发送到日志服务器：Sending',
+    )
   })
 })
 
