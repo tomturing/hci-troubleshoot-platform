@@ -100,6 +100,51 @@ export const CREATE_ACK_GRACE_MS = 90 * 1000
  */
 export const TOTAL_TIME_SLACK_SECONDS = 120
 
+/**
+ * 主流程观察预算（不是业务失败阈值）。
+ *
+ * 第一性原理：节点是采集事实的唯一真相源，前端"看了多久"不能决定任务失败。
+ * 预算耗尽只把主流程交给后台对账；只有节点异常/明确失败才允许写 failed。
+ *
+ * 采集阶段从主流程开始起算；上传阶段从首次观测到 `upload_state=发送中` 起算。
+ * 大包 P1 直传没有字节级进度，固定按采集阶段 60 分钟会重演 Q2026112400468
+ * 的 720 次轮询误判。
+ */
+export const COLLECT_OBSERVE_BUDGET_MS = 60 * 60 * 1000
+export const UPLOAD_OBSERVE_BUDGET_MS = 120 * 60 * 1000
+/** 无任何可识别进度时的硬止损，仅防止死循环；正常路径由阶段预算先交接。 */
+export const OBSERVATION_HARD_STOP_MS =
+  COLLECT_OBSERVE_BUDGET_MS + UPLOAD_OBSERVE_BUDGET_MS + 10 * 60 * 1000
+
+export type ObservationPhase = 'collect' | 'upload'
+export type ObservationWindowDecision = 'continue' | 'handoff'
+
+/** 观察窗口耗尽时携带的节点快照，用于交接审计与页面提示。 */
+export interface ObservationWindowSnapshot {
+  nodeState: NodeState
+  uploadState?: string | null
+  percent?: number | null
+  archiveSize?: number | null
+  traceId?: string | null
+}
+
+/**
+ * 专用交接错误。
+ *
+ * 它必须与普通失败区分：普通失败由 catch 写 `status=failed`；本错误只交接，
+ * 不写终态，因此不会产生"采集未完成"文案，也不会派生 LC-PLUGIN-010。
+ */
+export class ObservationWindowElapsedError extends Error {
+  constructor(
+    readonly elapsedMs: number,
+    readonly phase: ObservationPhase,
+    readonly snapshot: ObservationWindowSnapshot,
+  ) {
+    super('观察窗口耗尽，节点仍在运行')
+    this.name = 'ObservationWindowElapsedError'
+  }
+}
+
 /** 落盘侧核验结论（服务端按产物名回查日志服务器归档件），三态不接受布尔 */
 export type ArchiveVerification = 'delivered' | 'failed' | 'none'
 
@@ -821,6 +866,22 @@ export function classifyUploadState(raw?: string | null): UploadStatePhase {
     return 'uploading'
   }
   return 'unknown'
+}
+
+/**
+ * 观察窗口是否应该交接。
+ *
+ * 只对 `running` 生效：completed/abnormal/none 由 `decideNodeSync` 先处理，
+ * 这里不能替它们兜底，否则会把"真实异常"拖成长尾观察。
+ */
+export function decideObservationWindow(input: {
+  elapsedMs: number
+  phase: ObservationPhase
+  nodeState: NodeState
+}): ObservationWindowDecision {
+  if (input.nodeState !== 'running') return 'continue'
+  const budgetMs = input.phase === 'upload' ? UPLOAD_OBSERVE_BUDGET_MS : COLLECT_OBSERVE_BUDGET_MS
+  return input.elapsedMs >= budgetMs ? 'handoff' : 'continue'
 }
 
 /**

@@ -4,15 +4,19 @@ import {
   buildSyncNotice,
   decideNodeSync,
   classifyUploadState,
+  COLLECT_OBSERVE_BUDGET_MS,
   CREATE_ACK_GRACE_MS,
+  decideObservationWindow,
   DELIVERY_EVIDENCE_WAIT_MS,
   fallbackNodeState,
   hashReport,
   interpretArchiveProbe,
   isP1UploadDelivered,
+  ObservationWindowElapsedError,
   parseAcliTotalTime,
   resolveOwnership,
   SESSION_ADOPT_GRACE_MS,
+  UPLOAD_OBSERVE_BUDGET_MS,
 } from '../logCollectSync'
 
 const STALE_REPORT = '状态：收集任务已完成！\n总进度：100% - 2/2\n归档状态：发送成功'
@@ -818,5 +822,85 @@ describe('isP1UploadDelivered P1 收尾放行', () => {
     // 空 upload_state 在证据不足时进入有界等待（见「交付证据有界等待」）。
     expect(isP1UploadDelivered('')).toBe(true)
     expect(isP1UploadDelivered(undefined)).toBe(true)
+  })
+})
+
+/**
+ * 2026-11-24 Q2026112400468：大包上传长尾超过前端 720 次轮询，
+ * 节点仍 running，平台却被写成 failed + LC-PLUGIN-010。
+ * 这些用例把「观察窗口只交接、不判失败」钉成纯函数契约。
+ */
+describe('decideObservationWindow 观察窗口只交接不判失败', () => {
+  it('采集阶段 59 分钟：节点仍在跑继续观察', () => {
+    expect(
+      decideObservationWindow({
+        elapsedMs: COLLECT_OBSERVE_BUDGET_MS - 1000,
+        phase: 'collect',
+        nodeState: 'running',
+      }),
+    ).toBe('continue')
+  })
+
+  it('采集阶段 61 分钟：交接给后台对账，不产生失败', () => {
+    expect(
+      decideObservationWindow({
+        elapsedMs: COLLECT_OBSERVE_BUDGET_MS + 1000,
+        phase: 'collect',
+        nodeState: 'running',
+      }),
+    ).toBe('handoff')
+  })
+
+  it('上传阶段 119 分钟：大包仍在发送时继续观察', () => {
+    expect(
+      decideObservationWindow({
+        elapsedMs: UPLOAD_OBSERVE_BUDGET_MS - 1000,
+        phase: 'upload',
+        nodeState: 'running',
+      }),
+    ).toBe('continue')
+  })
+
+  it('上传阶段 121 分钟：交接给后台对账，不产生失败', () => {
+    expect(
+      decideObservationWindow({
+        elapsedMs: UPLOAD_OBSERVE_BUDGET_MS + 1000,
+        phase: 'upload',
+        nodeState: 'running',
+      }),
+    ).toBe('handoff')
+  })
+
+  it('节点已完成/异常/无任务时不走观察交接，交给 decideNodeSync 处理', () => {
+    for (const nodeState of ['completed', 'abnormal', 'none', 'unknown'] as const) {
+      expect(
+        decideObservationWindow({
+          elapsedMs: UPLOAD_OBSERVE_BUDGET_MS + 1000,
+          phase: 'upload',
+          nodeState,
+        }),
+      ).toBe('continue')
+    }
+  })
+})
+
+describe('ObservationWindowElapsedError 交接快照', () => {
+  it('保留阶段、耗时与节点现场，供 detail.observation_handoff 审计', () => {
+    const error = new ObservationWindowElapsedError(UPLOAD_OBSERVE_BUDGET_MS + 1000, 'upload', {
+      nodeState: 'running',
+      uploadState: '发送中',
+      percent: 85,
+      archiveSize: 10592819584,
+      traceId: 'lc-Q2026112400468-1795491016665',
+    })
+    expect(error.name).toBe('ObservationWindowElapsedError')
+    expect(error.phase).toBe('upload')
+    expect(error.elapsedMs).toBe(UPLOAD_OBSERVE_BUDGET_MS + 1000)
+    expect(error.snapshot).toMatchObject({
+      nodeState: 'running',
+      uploadState: '发送中',
+      percent: 85,
+      archiveSize: 10592819584,
+    })
   })
 })

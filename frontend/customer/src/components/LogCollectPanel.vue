@@ -87,15 +87,19 @@ import {
   blocksCreate as blocksCreateAction,
   buildSyncNotice,
   decideNodeSync,
+  decideObservationWindow,
   classifyUploadState,
   DELIVERY_EVIDENCE_WAIT_MS,
   fallbackNodeState,
   hashReport,
   interpretArchiveProbe,
   isP1UploadDelivered,
+  ObservationWindowElapsedError,
+  OBSERVATION_HARD_STOP_MS,
   parseAcliTotalTime,
   type ArchiveVerification,
   type NodeState,
+  type ObservationPhase,
   type SyncAction,
 } from '@/services/logCollectSync'
 import { useChatStore } from '@/stores/chat'
@@ -507,6 +511,13 @@ const requireSessionAdopt = ref(false)
 const uploadPhaseSeen = ref(false)
 // 对账提示：用于告诉用户"节点态与平台态不一致、下一步该做什么"
 const nodeSyncHint = ref('')
+/**
+ * 长尾观察模式：主流程已把任务交接给后台对账。
+ *
+ * 此时平台仍是 collecting，若继续沿用 5 秒间隔，会把一次数小时的大包上传
+ * 变成数万次 SSH 查询；降为终态低频间隔即可，节点完成仍会自动收尾。
+ */
+const longTailObservation = ref(false)
 // 对账时读到的节点压缩包路径：补交付必须用「节点实际报告的那一份」，
 // 不能用 task.archive_path（P2 补交付场景里平台侧可能压根没记过）。
 const nodeArchivePath = ref('')
@@ -2340,11 +2351,13 @@ async function resumeTask(taskId: string) {
     // 进面板即对账：平台快照可能停在旧投影上（节点仍在跑、或早已异常结束）
     if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
 
+    // 长尾交接过的任务在页面重开后仍要降频；否则一次数小时的上传会重新
+    // 退回 5 秒轮询，交接审计只剩记录价值、没有资源价值。
+    longTailObservation.value =
+      task.status === 'collecting' && Boolean((task.detail ?? {})['observation_handoff'])
     // 终态任务仍然对账，但降频：节点可能还在跑（需要「接管」），5s 空转没有意义。
     // 等证据窗口内例外：加密到 10s，证据一到就回落。
-    startAutoSync(
-      TERMINAL_TASK_STATUSES.includes(task.status) ? terminalSyncInterval(task) : POLL_INTERVAL,
-    )
+    resumeAutoSync(task)
   } catch (e: any) {
     ElMessage.error(
       e?.response?.status === 404
@@ -2485,9 +2498,14 @@ async function triggerAutoSync() {
 function resumeAutoSync(task?: LogCollectTask | null) {
   terminalPollTicks = 0
   lastTerminalSignature = ''
-  startAutoSync(
-    task && TERMINAL_TASK_STATUSES.includes(task.status) ? terminalSyncInterval(task) : POLL_INTERVAL,
-  )
+  // 终态优先：任务已经收尾，长尾标记必须作废，避免把终态对账也拖成 30 秒。
+  if (task && TERMINAL_TASK_STATUSES.includes(task.status)) longTailObservation.value = false
+  const interval = longTailObservation.value
+    ? TERMINAL_POLL_INTERVAL
+    : task && TERMINAL_TASK_STATUSES.includes(task.status)
+      ? terminalSyncInterval(task)
+      : POLL_INTERVAL
+  startAutoSync(interval)
 }
 
 /** 409 后点"查看任务状态"：把面板切到只读接管模式。 */
@@ -2660,6 +2678,8 @@ function showResult(task: LogCollectTask) {
   relayStatus.value = 'none'
   cleanupTip.value = ''
   errorMessage.value = ''
+  // 结果态是终态视图，不再需要长尾观察；防止上一单的标记污染下一单。
+  longTailObservation.value = false
 }
 
 /**
@@ -2714,6 +2734,8 @@ function startRecollect(last: LogCollectTask | null = resultTask.value) {
   uploadPhaseSeen.value = false
   requireSessionAdopt.value = false
   nodeSyncHint.value = ''
+  // 新一轮下发必须清掉上一轮的长尾交接，否则会继续按 30 秒稀疏轮询。
+  longTailObservation.value = false
   nodeAction.value = ''
   // 新一次下发 = 解除上一轮的写库熔断
   syncPatchBlocked = false
@@ -2839,6 +2861,63 @@ async function handlePrimaryAction(): Promise<void> {
   await handleStart()
 }
 
+/**
+ * 长尾交接提示：只描述事实与后续动作，不能说“失败”。
+ * 节点仍在跑，平台保持采集中；用户无需重新采集，也无需手动接管。
+ */
+function observationHandoffNotice(error: ObservationWindowElapsedError): string {
+  const minutes = Math.max(1, Math.round(error.elapsedMs / 60000))
+  if (error.phase === 'upload') {
+    const state = error.snapshot.uploadState || '发送中'
+    const percent = error.snapshot.percent ?? 0
+    return `已连续观察 ${minutes} 分钟，节点仍在发送（${state}，${percent}%）；平台保持采集中，后台继续对账，完成后自动更新`
+  }
+  return `已连续观察 ${minutes} 分钟，节点仍在采集；平台保持采集中，后台继续对账，完成后自动更新`
+}
+
+/**
+ * 交接审计：把“为什么从主流程退出”写进 detail。
+ *
+ * 只写 detail、不改 status，避免与主流程/自动对账抢写状态机。
+ * 审计失败是旁路故障，只留前端日志，不能反过来把可完成的任务判死。
+ */
+async function persistObservationHandoff(error: ObservationWindowElapsedError): Promise<void> {
+  const taskId = currentTask.value?.task_id
+  if (!taskId) return
+  const snapshot = {
+    at: new Date().toISOString(),
+    phase: error.phase,
+    elapsed_ms: error.elapsedMs,
+    node_state: error.snapshot.nodeState,
+    upload_state: error.snapshot.uploadState ?? null,
+    percent: error.snapshot.percent ?? null,
+    archive_size: error.snapshot.archiveSize ?? null,
+    trace_id: error.snapshot.traceId ?? null,
+  }
+  console.warn('[log-collect] observation-window-handoff', { task_id: taskId, ...snapshot })
+  try {
+    await logCollectApi.patchTask(taskId, { detail: { observation_handoff: snapshot } })
+  } catch (patchError: any) {
+    console.warn(
+      '[log-collect] observation_handoff 审计写入失败',
+      patchError?.message || patchError,
+    )
+  }
+}
+
+/** 交接错误统一处理：任何主流程入口命中它都必须“只交接、不写 failed”。 */
+async function handleObservationHandoff(error: unknown): Promise<boolean> {
+  if (!(error instanceof ObservationWindowElapsedError)) return false
+  errorMessage.value = ''
+  longTailObservation.value = true
+  nodeSyncHint.value = observationHandoffNotice(error)
+  await persistObservationHandoff(error)
+  // 接管/纠偏路径没有主流程 finally，必须在这里把自动对账接回来；
+  // handleStart 里的调用会因 mainFlowActive 被 startAutoSync 忽略，由 finally 接手。
+  resumeAutoSync(currentTask.value)
+  return true
+}
+
 async function handleStart() {
   if (!form.dateRange || form.dateRange.length !== 2) {
     ElMessage.warning('请选择时间范围')
@@ -2930,6 +3009,8 @@ async function handleStart() {
   const myFlow = ++mainFlowSeq
   mainFlowActive.value = true
   stopAutoSync()
+  // 主流程自己重新掌舵：先退出长尾模式，由本轮预算重新判定是否再次交接。
+  longTailObservation.value = false
 
   // 自定义模式固定 -m other：config 的 modules 永不生效，显式传 other 让
   // "专项日志照常收"成为可预期事实，而不是依赖 acli 的默认值。
@@ -3255,6 +3336,9 @@ async function handleStart() {
   } catch (error: any) {
     // 用户已取消：后台流程静默退出，不再覆盖任务状态
     if (token !== runToken) return
+    // 观察预算耗尽只交接，不落终态：节点仍 running 时写 failed 会把
+    // Q2026112400468 的误判原样重演（平台红、节点继续传、最后又成功）。
+    if (await handleObservationHandoff(error)) return
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     // 必须在改 stage 之前取：stepActive 一旦看到 failed 就会返回 failedStep 本身，
     // 顺序颠倒会让它永远停在第一步。放在这里可同时覆盖"结果未知"与普通失败两条分支。
@@ -3928,8 +4012,12 @@ async function syncNodeState(
           : action.action === 'warn_completed_conflict' && action.canCorrect
             ? 'correct'
             : ''
-    // patch_delivered 是后台补登、不需要用户做任何事：留一条常驻提示只会占用固定区
-    nodeSyncHint.value = action.action === 'patch_delivered' ? '' : buildSyncNotice(action)
+    // 长尾交接后的普通对账不应把"为什么降频"的提示冲掉；
+    // 只有真正需要用户决策/结论变化的动作才覆盖它。
+    if (!(longTailObservation.value && action.action === 'none')) {
+      // patch_delivered 是后台补登、不需要用户做任何事：留一条常驻提示只会占用固定区
+      nodeSyncHint.value = action.action === 'patch_delivered' ? '' : buildSyncNotice(action)
+    }
 
     // syncPatchBlocked：收到过确定性拒绝（4xx）后不再自动写库。
     // 状态机拒绝不会因为再等 30 秒而变好，继续重试只会把同一条错误刷成日志噪音。
@@ -4291,6 +4379,8 @@ async function adoptNodeTask() {
     await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
+    // 接管/纠偏同样可能命中观察预算：节点仍在跑时必须交接，不能把任务再判死。
+    if (await handleObservationHandoff(error)) return
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
@@ -4338,6 +4428,8 @@ async function correctFromNode() {
     await resumeTaskFlow(ws, currentTask.value ?? task, token, readProgressHash())
   } catch (error: any) {
     if (token !== runToken) return
+    // 接管/纠偏同样可能命中观察预算：节点仍在跑时必须交接，不能把任务再判死。
+    if (await handleObservationHandoff(error)) return
     errorMessage.value = normalizeErrorMessage(String(error?.message || error))
     failedStep.value = stepActive.value
     stage.value = 'failed'
@@ -4430,17 +4522,24 @@ async function pollUntilCollected(
   token: number,
   baseline = '',
 ): Promise<ProgressSnapshot | null> {
-  // 采集上限 1 小时（720 次 × 5s）：超时明确失败，避免面板无限转圈。
   pollingBridgeProgress = true
   // 基线缺失时退化为"首次看到的进行中报告"：之后出现不同的报告即可判定归属。
   let baselineHash = baseline
+  const startedAt = Date.now()
+  // 上传阶段的起点必须单独记：大包 P1 直传没有字节级进度，只能按墙钟给预算；
+  // 若继续从主流程起点算，会重演 Q2026112400468 的 720 次误判。
+  let uploadStartedAt: number | null = null
   try {
-    for (let attempt = 0; attempt < 720; attempt++) {
+    while (true) {
       if (token !== runToken) return null
       // 通道守卫：WS 已关闭时继续轮询只会空等到 60s 超时，必须立刻失败。
       // 这里刻意**不看** sshSessionLost / sshConnected：shell EOF 后 bridge 保留会话，
       // 进度查询仍可用，此时终止轮询等于把能跑完的采集判死。
       if (ws.readyState !== WebSocket.OPEN) throw new Error(BRIDGE_CHANNEL_LOST)
+      // 硬止损只防死循环：正常长尾会先由阶段预算交接，不会走到这里。
+      if (Date.now() - startedAt >= OBSERVATION_HARD_STOP_MS) {
+        throw new Error('节点侧长时间没有可识别的进度回报，已超过观察硬止损')
+      }
       const result = await sendAndWait(ws, 'progress', {}, 60000)
       // bridge 明确报错（如会话已断开）必须立刻上抛：
       // 早先这里只读 log_data，错误结果会被当成"还没有进度"，面板空转一小时仍显示 0%。
@@ -4462,12 +4561,13 @@ async function pollUntilCollected(
         // L1/L2 证据必须在这里累积：主流程是采集期间**唯一**的采样者，
         // 漏记就等于判定层永远看不到起点，真实完成会被挡在门外。
         noteNodeObservation(snapshot)
+        const nodeState = snapshot.node_state ?? fallbackNodeState(snapshot)
         // 与「刷新进度」共用同一个判定：归属 → 映射，不再另写一套完成逻辑。
         // 这里的平台态固定按"本次采集进行中"算——主流程本身就在 collecting 上跑，
         // 若读取 currentTask 的瞬时值，会在 patch 后把 completed 再判成"已归档"而空转。
         const action = decideNodeSync({
           platformStatus: 'collecting',
-          nodeState: snapshot.node_state ?? fallbackNodeState(snapshot),
+          nodeState,
           archivePath: snapshot.archive_path,
           progressTotal: snapshot.total,
           expectedHosts: expectedHostCount(),
@@ -4483,8 +4583,11 @@ async function pollUntilCollected(
           reportHosts: (snapshot.hosts ?? []).map((host) => host.ip),
           targetHosts: targetHostList(),
         })
+        const uploadPhase = classifyUploadState(snapshot.upload_state)
         // 旧报告同样不能当展示数据（否则会显示上一轮的 100%）
         if (action.action !== 'wait_refresh') {
+          // 上传起点只认本次任务的报告；旧报告的"发送中"不能污染预算。
+          if (uploadStartedAt == null && uploadPhase === 'uploading') uploadStartedAt = Date.now()
           progress.value = snapshot
           applyNodeStage(snapshot)
         }
@@ -4506,11 +4609,22 @@ async function pollUntilCollected(
           // 进行中：把当前报告记成基线（"首次进行中报告"退化路径）
           if (!baselineHash && snapshot.raw) baselineHash = hashReport(snapshot.raw)
           nodeSyncHint.value = ''
+          const phase: ObservationPhase = uploadStartedAt != null ? 'upload' : 'collect'
+          const elapsedMs = Date.now() - (uploadStartedAt ?? startedAt)
+          if (decideObservationWindow({ elapsedMs, phase, nodeState }) === 'handoff') {
+            // 交接不是失败：节点仍在 running，平台必须保持采集中。
+            throw new ObservationWindowElapsedError(elapsedMs, phase, {
+              nodeState,
+              uploadState: snapshot.upload_state ?? null,
+              percent: snapshot.percent ?? null,
+              archiveSize: snapshot.archive_size ?? null,
+              traceId: currentTask.value?.display?.trace_id ?? null,
+            })
+          }
         }
       }
       await sleep(POLL_INTERVAL)
     }
-    return null
   } finally {
     pollingBridgeProgress = false
   }
@@ -5135,6 +5249,8 @@ async function handleCancel() {
   const task = currentTask.value
   // 先让后台轮询退出，再改状态，避免轮询回写覆盖
   runToken++
+  // 取消是用户显式终止，长尾观察不再继续。
+  longTailObservation.value = false
 
   const result = await cancelLogCollectTask({
     // 必须走 sendAndWait：它会给消息注入 nodeIp，而会话键是 caseID@nodeIP。
