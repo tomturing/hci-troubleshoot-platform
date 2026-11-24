@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-
 from app.routes.log_collect_evidence import _sync_collect_alerts
 
 # 与生产路径一致：只有 collection_log.log 会触发告警派生
