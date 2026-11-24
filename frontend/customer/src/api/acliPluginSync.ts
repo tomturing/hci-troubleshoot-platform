@@ -12,6 +12,7 @@
  * 节点翻日志的问题（这正是本轮链路收口要消灭的那类现场）。
  */
 import { createApiClient } from '@hci/shared'
+import { platformCertTrusted } from '@/utils/logCollectDelivery'
 
 const client = createApiClient('/api')
 
@@ -25,6 +26,13 @@ export interface AcliPluginTicketResponse {
 export interface AcliPluginSyncCredentials {
   platformUrl?: string
   pluginTicket?: string
+  /**
+   * 自签证书授权位：与上方两项成对。
+   *
+   * 复用日志交付通道的会话级授权（同一 origin、同一 `sessionStorage` 键）：
+   * 用户只要为当前平台点过一次「信任证书」，插件同步就不再需要二次确认。
+   */
+  tlsInsecure?: boolean
 }
 
 /**
@@ -70,7 +78,12 @@ export async function resolveAcliPluginSyncCredentials(
   try {
     const issued = await requestAcliPluginTicket(wanted)
     return {
-      credentials: { platformUrl: platformRootUrl(), pluginTicket: issued.ticket },
+      credentials: {
+        platformUrl: platformRootUrl(),
+        pluginTicket: issued.ticket,
+        // 自签证书平台：用户在该 origin 上授权过就带上，避免每次连接都由桥报 x509。
+        tlsInsecure: platformCertTrusted(platformRootUrl()),
+      },
       error: '',
     }
   } catch (error) {

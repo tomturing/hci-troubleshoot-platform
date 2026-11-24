@@ -27,6 +27,34 @@ describe('acliManager', () => {
     expect(msg.acli_url).toBe('http://custom/url')
   })
 
+  // 正式环境平台为自签 HTTPS：桥拉插件清单必须能被授权放宽，否则 x509 必然失败。
+  // 授权位与 platform_url/plugin_ticket 成对，缺一不下发（桥当阶段二未启用）。
+  it('自签证书授权位与平台凭据成对下发', () => {
+    const trusted = JSON.parse(
+      buildAcliSyncMessage('case-tls', {
+        platformUrl: 'https://platform.example',
+        pluginTicket: 'tk-1',
+        tlsInsecure: true,
+      }),
+    )
+    expect(trusted.platform_url).toBe('https://platform.example')
+    expect(trusted.plugin_ticket).toBe('tk-1')
+    expect(trusted.tls_insecure).toBe(true)
+
+    // 未授权：不下发该字段，桥走严格校验
+    const strict = JSON.parse(
+      buildAcliSyncMessage('case-tls', {
+        platformUrl: 'https://platform.example',
+        pluginTicket: 'tk-1',
+      }),
+    )
+    expect(strict).not.toHaveProperty('tls_insecure')
+
+    // 没有平台凭据时也不单独下发授权位
+    const orphan = JSON.parse(buildAcliSyncMessage('case-tls', { tlsInsecure: true }))
+    expect(orphan).not.toHaveProperty('tls_insecure')
+  })
+
   // 回归：bridge 的会话键是 caseID@nodeIP，消息里缺 node_ip 时旧逻辑只找键为 caseID 的会话，
   // 结果恒定 session_missing —— 未装 acli 的环境从来没有下载/安装日志。
   it('带上 node_ip，避免 bridge 解析不到 caseID@nodeIP 会话', () => {

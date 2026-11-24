@@ -27,7 +27,8 @@ import {
 import { normalizeToolEvent } from '@/utils/toolEvent'
 import { navigateToOfflineDiagnosis } from '@/utils/offlineDiagnosis'
 import { ensureAcliReady, type AcliSyncResult } from '@/services/acliManager'
-import { resolveAcliPluginSyncCredentials } from '@/api/acliPluginSync'
+import { platformRootUrl, resolveAcliPluginSyncCredentials } from '@/api/acliPluginSync'
+import { isCertificateUntrusted, rememberPlatformCertTrust } from '@/utils/logCollectDelivery'
 
 // 开发环境专用日志（生产环境自动禁用）
 const isDev = import.meta.env.DEV
@@ -38,6 +39,34 @@ function devLog(tag: string, message: string, data?: unknown) {
     ? sanitizeSensitive(data as Record<string, unknown>)
     : data
   console.log(`[${tag}] ${message}`, sanitized ?? '')
+}
+
+/**
+ * 自签证书平台的一次性授权确认（插件同步专用）。
+ *
+ * 与日志交付的证书授权同一口径：说明为什么失败（客户机根证书库没有内网 CA）、
+ * 授权范围（仅当前浏览器会话 + 仅当前平台地址）与代价。动态引入 Element Plus，
+ * 避免 store 顶层耦合 UI 依赖；只有真正命中 x509 时才加载。
+ */
+async function confirmTrustPlatformCertificateForPlugins(origin: string): Promise<boolean> {
+  try {
+    const { ElMessageBox } = await import('element-plus')
+    await ElMessageBox.confirm(
+      `平台（${origin}）使用自签证书，插件同步需要回连平台拉取插件清单；`
+        + '客户机的系统根证书库不会预置这份内网 CA，因此会报 x509 证书不受信。\n'
+        + '确认这是你正在使用的平台地址后，本次插件同步将跳过证书校验；'
+        + '授权仅对当前浏览器会话生效，关闭页面即失效。',
+      '平台证书不受信',
+      {
+        confirmButtonText: '信任并重试',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    return true
+  } catch {
+    return false
+  }
 }
 
 // 脱敏敏感信息（password 完全隐藏，host 部分隐藏，output 截断）
@@ -3318,18 +3347,37 @@ export const useChatStore = defineStore('chat', () => {
     if (ticketError) {
       console.warn('[acli] 插件同步票据获取失败，本次只同步 acli 工具:', ticketError)
     }
+    const reportProgress: NonNullable<Parameters<typeof ensureAcliReady>[2]> = (p) => {
+      devLog('acli', p.text)
+      // 后台同步没有自己的日志面板：error 必须落到 console，否则“插件没收敛完”
+      // 在生产环境里只能登节点翻脚本才能知道（本轮收口要消灭的就是这类现场）。
+      if (p.type === 'error') console.warn(`[acli] ${p.text}`)
+    }
     try {
-      const result = await ensureAcliReady(
-        sshWebSocket.value,
-        caseId,
-        (p) => {
-          devLog('acli', p.text)
-          // 后台同步没有自己的日志面板：error 必须落到 console，否则“插件没收敛完”
-          // 在生产环境里只能登节点翻脚本才能知道（本轮收口要消灭的就是这类现场）。
-          if (p.type === 'error') console.warn(`[acli] ${p.text}`)
-        },
-        { ...options, nodeIp, ...credentials },
-      )
+      const syncOptions = { ...options, nodeIp, ...credentials }
+      let result = await ensureAcliReady(sshWebSocket.value, caseId, reportProgress, syncOptions)
+
+      // 自签证书：桥拉插件清单走的是严格 TLS，客户机的系统根证书库不可能预置内网自签 CA，
+      // 于是必然 `manifest_unreachable`（x509）。用户尚未授权时只问一次，授权后带
+      // `tls_insecure` 重试；授权随会话生效，下次连接由 resolveAcliPluginSyncCredentials 自动带上。
+      const receipt = result?.pluginSync
+      if (
+        receipt &&
+        !receipt.ok &&
+        receipt.reason === 'manifest_unreachable' &&
+        !credentials.tlsInsecure &&
+        isCertificateUntrusted(receipt.detail)
+      ) {
+        const origin = platformRootUrl()
+        if (await confirmTrustPlatformCertificateForPlugins(origin)) {
+          rememberPlatformCertTrust(origin)
+          result = await ensureAcliReady(sshWebSocket.value, caseId, reportProgress, {
+            ...syncOptions,
+            tlsInsecure: true,
+          })
+        }
+      }
+
       if (result?.status === 'installed') {
         // 第一性原理：bash 把解析过的命令路径缓存在 hash 表里。安装器替换（甚至挪走）
         // 可执行文件后，已存在的 shell 仍会 exec 旧路径，于是报
