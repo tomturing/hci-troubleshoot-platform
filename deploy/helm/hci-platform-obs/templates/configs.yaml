@@ -135,8 +135,12 @@ data:
       // 匹配 `token=` 或 `token: ` 后跟至少 10 位 base64url/JWT 字符；
       // 保留 `token=` 前缀便于排障时确认"这里曾有个 token"。
       stage.replace {
-        expression = "token([=:]\\s*)[A-Za-z0-9_\\-]{10,}"
-        replace    = "token$1<REDACTED>"
+        # 字符类必须含 `.`：DSH 的 launch token 是 JWT（三段点分隔），
+        # 初版只用 [A-Za-z0-9_-] 导致只替换第一段、后半段仍明文入 Loki。
+        # 替换串用 ${1} 而非 $1：Alloy/Go 的 Expand 语法要求花括号包裹捕获组编号，
+        # 否则 $1 会被当作字面量（初版实际输出 "...?tokentoken$1<REDACTED>xxx"）。
+        expression = "token([=:]\\s*)[A-Za-z0-9_.\\-]{10,}"
+        replace    = "token${1}<REDACTED>"
       }
       // trace_id / span_id 提为 structured metadata 是**必需的**：全局规则要求
       // 「所有请求日志使用唯一调用链，可追踪完整调用路径」，而 metadata 是唯一
