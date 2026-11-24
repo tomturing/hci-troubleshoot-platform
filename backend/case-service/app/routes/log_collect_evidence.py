@@ -265,6 +265,7 @@ async def put_network_probe(
                     COALESCE((SELECT jsonb_agg(to_jsonb(latest)) FROM latest), '[]'::jsonb)),
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_id = :task_id
+              AND (detail ->> 'artifact_quality' IS DISTINCT FROM 'ok' OR :quality = 'ok')
             """
         ),
         {"task_id": str(task_id)},
@@ -577,19 +578,31 @@ async def put_artifact_manifest(
             """
             UPDATE log_collect_task
             SET detail = (
-                    COALESCE(detail, '{}'::jsonb) || jsonb_build_object(
-                        'artifact_quality', CAST(:quality AS text),
-                        'artifact_reason', CAST(:reason AS text),
-                        -- 空包体检细分码：NULLIF 让「未探测/正常」不落空壳键，
-                        -- 读侧只用 `detail ->> 'artifact_code'` 就能判断有没有细分码。
-                        'artifact_code', NULLIF(CAST(:artifact_code AS text), ''),
-                        'artifact_evidence', CAST(:evidence AS jsonb),
+                    COALESCE(detail, '{}'::jsonb)
+                    -- 「证据是否到达」与「包内容好不好读」是两件事，必须分开写。
+                    -- 旧实现把两者塞进同一个 jsonb_build_object，再用
+                    -- `WHERE detail ->> 'artifact_quality' IS DISTINCT FROM 'ok' OR :quality = 'ok'`
+                    -- 整体挡住：一旦质量已被判过 ok，这次上报就连清单快照一起丢掉，
+                    -- 客户侧 S7 永远停在「未知」（2026-11-24 5 个任务命中）。
+                    -- 快照无条件写，质量保留"已 ok 不被更差结论覆盖"的语义。
+                    || jsonb_build_object(
                         'artifact_manifest', CAST(:manifest_snapshot AS jsonb))
+                    || CASE
+                           WHEN (detail ->> 'artifact_quality' IS DISTINCT FROM 'ok'
+                                 OR :quality = 'ok')
+                           THEN jsonb_build_object(
+                               'artifact_quality', CAST(:quality AS text),
+                               'artifact_reason', CAST(:reason AS text),
+                               -- 空包体检细分码：NULLIF 让「未探测/正常」不落空壳键，
+                               -- 读侧只用 `detail ->> 'artifact_code'` 就能判断有没有细分码。
+                               'artifact_code', NULLIF(CAST(:artifact_code AS text), ''),
+                               'artifact_evidence', CAST(:evidence AS jsonb))
+                           ELSE '{}'::jsonb
+                       END
                     -- 成功清单到达即作废旧的失败陈述：重试成功不该继续显示失败。
                 ) - 'evidence_error',
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_id = :task_id
-              AND (detail ->> 'artifact_quality' IS DISTINCT FROM 'ok' OR :quality = 'ok')
             """
         ),
         params,
