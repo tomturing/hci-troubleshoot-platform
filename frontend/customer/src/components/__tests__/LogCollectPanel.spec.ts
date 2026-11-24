@@ -1544,6 +1544,61 @@ describe('LogCollectPanel', () => {
     wrapper.unmount()
   })
 
+  /**
+   * 现场回归（2026-11-24 Q2026091700436）：
+   * 17:24 任务被判 failed，17:56 平台已核验为 completed/100/delivered 并落库归档件；
+   * 结果态的终态对账只有 30s × 4 ≈ 2 分钟预算，早已停跳；用户「重新登录」后重开面板，
+   * 旧实现直接复用内存快照，界面仍显示 17:24 的失败（case-service 侧 17:58 之后
+   * 对该任务没有任何 GET 请求，证明界面根本没再问过平台）。
+   *
+   * 契约：每次打开面板都必须重读平台快照，且不依赖 SSH 连接。
+   */
+  it('重开面板时重读平台快照：关闭期间被纠正的失败结论必须更新', async () => {
+    const failed = taskFixture({
+      task_id: 'task-stale',
+      status: 'failed',
+      progress: 85,
+      error_code: 'LC-PLUGIN-010',
+      error_message: '采集未完成',
+      finished_at: '2026-11-24T17:24:43+08:00',
+      upload_mode: 'acli_direct',
+      delivery_status: 'none',
+    } as Partial<LogCollectTask>)
+    const corrected = taskFixture({
+      task_id: 'task-stale',
+      status: 'completed',
+      progress: 100,
+      finished_at: '2026-11-24T17:56:19+08:00',
+      archive_size: 10563438951,
+      upload_mode: 'acli_direct',
+      delivery_status: 'delivered',
+    } as Partial<LogCollectTask>)
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [failed] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(corrected)
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await flushPromises()
+    // 首屏按 listTasks 的结论展示失败
+    expect(wrapper.find('.lc-result').text()).toContain('该工单上次采集失败')
+
+    // 收起面板（真实场景：用户去看别的页面/重连 SSH）后再打开
+    await wrapper.setProps({ modelValue: false })
+    await flushPromises()
+    vi.mocked(logCollectApi.getTask).mockClear()
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    await flushPromises()
+
+    // 必须真的问过平台，而不是复用内存快照
+    expect(vi.mocked(logCollectApi.getTask)).toHaveBeenCalledWith('task-stale')
+    const result = wrapper.find('.lc-result')
+    expect(result.text()).not.toContain('该工单上次采集失败')
+    // 展示的必须是纠正后的时间，用户据此判断"这条结论有多新"
+    expect(result.text()).toContain('17:56')
+    wrapper.unmount()
+  })
+
 /**
  * 现场回归（2026-11-06 Q2026110600112）：现场上行塌到 19 KB/s，1.81 GiB 的包
  * 233 片只传上去 19 片就再没动，但界面全程只说「交付已登记但未完成」。

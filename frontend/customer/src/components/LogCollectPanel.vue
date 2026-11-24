@@ -2618,6 +2618,12 @@ async function restoreTaskState(force = false) {
     // 同一会话内重开面板：任务与基线都还在，必须把自动刷新接回来。
     // 旧实现这里直接 return，于是「关抽屉 → 再打开」后自动刷新永久失效，
     // 只有手动点「刷新进度」才会动。
+    //
+    // 复用内存快照的另一面是**结论会过时**：关抽屉期间平台侧可能已经把 failed 纠正成
+    // completed（接管、verify 后置、P1 自愈都会这样），而重开时只复用旧快照，
+    // 用户会以为"重新登录也没用"（Q2026091700436：界面停在 17:24 的失败，实际 17:56 已成功）。
+    // 所以这里无条件重读一次平台快照——它与 SSH 无关，没有连接也必须能刷新。
+    void refreshPlatformSnapshot()
     if (currentTask.value) {
       // 终态任务同样要恢复对账：failed 的节点任务可能仍在跑，
       // 「接管」入口依赖这一次对账（同会话重开面板也走这里）。
@@ -2681,6 +2687,47 @@ function showResult(task: LogCollectTask) {
   relayStatus.value = 'none'
   cleanupTip.value = ''
   errorMessage.value = ''
+}
+
+/**
+ * 只读刷新平台快照（不写库）。
+ *
+ * 第一性原理：界面上的结论必须能被证明是「刚刚问过平台」的。结果态的数据源是
+ * `resultTask`，而它只在两处更新——「打开面板 → listTasks」与「结果态的 30s 对账」。
+ * 后者有两道闸：收起面板会 `stopAutoSync()`；终态对账预算只有 `TERMINAL_POLL_MAX_TICKS`
+ * （30s × 4 ≈ 2 分钟），耗尽后 `autoSyncStopped=true` 永久停跳。
+ * 于是「关掉抽屉期间平台侧发生的纠正」永远进不来。
+ *
+ * 2026-11-24 Q2026091700436：17:24 被判 failed，17:56 平台已核验为
+ * `completed / 100 / delivered`（归档件 10,563,438,951 B），17:58 自动刷新已停；
+ * 用户「重新登录」后重开面板，`restoreTaskState` 复用内存里的旧快照，界面仍显示 17:24 的失败。
+ * 硬证据：case-service 侧 17:58 之后对该任务**没有任何** GET 请求——界面根本没再问过平台。
+ *
+ * 所以「重开面板」必须自己重读一次，且不能依赖 SSH：接管、失败纠正、verify 后置
+ * 都是纯平台侧变化，用户没连 SSH 时也必须能看到。
+ * 只读、不 PATCH：状态机的写权限仍由主流程与对账链路独占。
+ */
+async function refreshPlatformSnapshot() {
+  const taskId = currentTask.value?.task_id || resultTask.value?.task_id
+  if (!taskId) return
+  const latest = await logCollectApi.getTask(taskId).catch(() => null)
+  if (!latest) return
+  // 等待期间面板可能已切到另一条任务或另一个工单：迟到的回包不得覆盖新上下文。
+  if ((currentTask.value?.task_id || resultTask.value?.task_id) !== taskId) return
+  const prev = currentTask.value
+  const changed =
+    !prev ||
+    latest.status !== prev.status ||
+    latest.progress !== prev.progress ||
+    latest.delivery_status !== prev.delivery_status ||
+    latest.finished_at !== prev.finished_at ||
+    (latest.error_code ?? '') !== (prev.error_code ?? '')
+  currentTask.value = latest
+  // 没有变化就不动 UI：每次开面板都重置一次表单/结果会闪，也会清掉用户正在看的现场。
+  if (!changed) return
+  // 终态变化必须走 showResult：结果卡与表单态的 stage 是两套渲染路径，
+  // 只换 currentTask 会让卡片仍停在旧结论上。
+  if (TERMINAL_TASK_STATUSES.includes(latest.status)) showResult(latest)
 }
 
 /**
@@ -6126,6 +6173,12 @@ onBeforeUnmount(() => {
           上次采集 {{ resultFinishedText }} · 本工单共 {{ historyTotal }} 条记录
           <!-- 对账还没回来时按钮先不出现，但必须说明"在等什么"，否则就是干等 -->
           <span v-if="nodeVerifyPending"> · 正在与节点核对包状态…</span>
+          <!--
+            终态对账有预算（30s × 4 ≈ 2 分钟），耗尽即停。不说这句，用户会把
+            「不再刷新」读成「这条结论永远有效」——2026-11-24 Q2026091700436 就是这样
+            在失败纠正后仍盯着 32 分钟前的判定。
+          -->
+          <span v-else-if="autoSyncStopped"> · 自动刷新已停止，点「刷新进度」获取最新</span>
         </template>
         <template v-else-if="!canCollect">
           采集依赖 SSH 会话：点「连接 SSH」登录后即可开始收集
