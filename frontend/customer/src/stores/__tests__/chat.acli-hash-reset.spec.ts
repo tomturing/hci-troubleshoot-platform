@@ -16,12 +16,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
-const { ensureAcliReadyMock, resolveCredentialsMock } = vi.hoisted(() => ({
+const { ensureAcliReadyMock, resolveCredentialsMock, confirmMock } = vi.hoisted(() => ({
   ensureAcliReadyMock: vi.fn(),
   resolveCredentialsMock: vi.fn(),
+  confirmMock: vi.fn(),
 }))
 
 vi.mock('@/services/acliManager', () => ({ ensureAcliReady: ensureAcliReadyMock }))
+
+// 自签证书授权弹窗：store 里是动态 import，这里同样用模块 mock 接管，
+// 否则会真的去挂载 Element Plus 的 MessageBox。
+vi.mock('element-plus', () => ({ ElMessageBox: { confirm: confirmMock } }))
 
 // 阶段二取票：在 store 边界上桩掉。“连接后总是要同步”现在多了一步 HTTP，
 // 不桩就会把用例挂在真实 axios 上。
@@ -97,6 +102,8 @@ async function setup() {
 describe('chat store - acli 安装后生效动作', () => {
   beforeEach(() => {
     localStorage.clear()
+    sessionStorage.clear()
+    confirmMock.mockReset()
     setActivePinia(createPinia())
     ensureAcliReadyMock.mockReset()
     // 默认“本次没有阶段二凭据”（等价于取票失败），让其余用例只关心 hash -r；
@@ -192,5 +199,78 @@ describe('chat store - acli 安装后生效动作', () => {
     const options = ensureAcliReadyMock.mock.calls[0][3]
     expect(options.platformUrl).toBeUndefined()
     expect(options.pluginTicket).toBeUndefined()
+  })
+
+  // 正式环境（staging/prod）是自签 HTTPS：桥拉插件清单必然 x509。
+  // 用户在本会话没授权时，必须问一次；授权后带 tls_insecure 重试，并记住该 origin。
+  it('插件同步命中自签证书：授权后带 tls_insecure 重试一次', async () => {
+    resolveCredentialsMock.mockResolvedValue({
+      credentials: {
+        platformUrl: 'https://platform.example',
+        pluginTicket: 'tk-1',
+        tlsInsecure: false,
+      },
+      error: '',
+    })
+    ensureAcliReadyMock
+      .mockResolvedValueOnce({
+        status: 'up_to_date',
+        version: '1.0.1',
+        pluginSync: {
+          stage: 'plugin',
+          ok: false,
+          reason: 'manifest_unreachable',
+          detail: 'x509: certificate signed by unknown authority',
+          desired_count: 0,
+          installed: 0,
+          overwritten: 0,
+          skipped: 0,
+          failed: 0,
+        },
+      })
+      .mockResolvedValueOnce({ status: 'up_to_date', version: '1.0.1', pluginSync: null })
+    confirmMock.mockResolvedValue(undefined)
+    const { store } = await setup()
+
+    await store.checkAndSyncAcli()
+
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(ensureAcliReadyMock).toHaveBeenCalledTimes(2)
+    expect(ensureAcliReadyMock.mock.calls[1][3].tlsInsecure).toBe(true)
+    expect(
+      sessionStorage.getItem('hci.logCollect.trustPlatformCert:https://platform.example'),
+    ).toBe('1')
+  })
+
+  it('用户取消信任则只跑一次，不重试也不记授权', async () => {
+    resolveCredentialsMock.mockResolvedValue({
+      credentials: { platformUrl: 'https://platform.example', pluginTicket: 'tk-1' },
+      error: '',
+    })
+    ensureAcliReadyMock.mockResolvedValue({
+      status: 'up_to_date',
+      version: '1.0.1',
+      pluginSync: {
+        stage: 'plugin',
+        ok: false,
+        reason: 'manifest_unreachable',
+        detail: 'x509: certificate signed by unknown authority',
+        desired_count: 0,
+        installed: 0,
+        overwritten: 0,
+        skipped: 0,
+        failed: 0,
+      },
+    })
+    confirmMock.mockRejectedValue(new Error('cancel'))
+    const { store } = await setup()
+
+    await store.checkAndSyncAcli()
+
+    expect(confirmMock).toHaveBeenCalledTimes(1)
+    expect(ensureAcliReadyMock).toHaveBeenCalledTimes(1)
+    expect(
+      sessionStorage.getItem('hci.logCollect.trustPlatformCert:https://platform.example'),
+    ).toBeNull()
   })
 })
