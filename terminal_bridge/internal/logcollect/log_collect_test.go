@@ -1101,6 +1101,50 @@ func TestParseLogCollectHelpModules(t *testing.T) {
 			t.Fatalf("重复枚举必须去重：%v", got)
 		}
 	})
+
+	t.Run("25 节点英文 help 长标签不漏匹配 slowdisk/other", func(t *testing.T) {
+		// 实机 25 节点英文 help：全角括号，other 说明 72 字符。
+		// 旧 40 字符上限会漏掉 slowdisk/other，前端误标「节点可能不支持」。
+		english := `enumerate:
+   vm_suspend（VM Suspend Issue）             vm_start（VM Start Failure Issue）
+   host_offline（Host Offline Issue）         network（Network Issue）
+   storage（Virtual Storage Issue）           slowdisk（Slow Disk Issue, approx. 4min collection time per day）
+   performance（Performance Issue）           system（Platform Issue）
+   core（Core Issue）                         other（Default Collection Issue, does not collect logs for the above n scenarios）
+Note:
+-s is required parameter
+`
+		want := []string{"vm_suspend", "vm_start", "host_offline", "network", "storage", "slowdisk", "performance", "core", "system", "other"}
+		if got := parseLogCollectHelpModules(english); !sameStrings(got, want) {
+			t.Fatalf("英文长标签 help 真实枚举 = %v，期望 %v", got, want)
+		}
+		if catalog := parseLogCollectModuleCatalog(english); len(catalog) != 10 {
+			t.Fatalf("展示目录应仍补全 10 项：%d", len(catalog))
+		}
+	})
+}
+
+func TestLogCollectHelpEnumBlockEnglishEnumerate(t *testing.T) {
+	raw := strings.Join([]string{
+		"Usage:",
+		"Description:",
+		"  create                              Create log collection task",
+		"                                     Available modules, default is other, enumerate:",
+		"                                        vm_suspend（VM Suspend Issue）           system（Platform Issue）",
+		"  -d|--date-range=STRING             Specify date range",
+		"Note:",
+		"-s is required parameter",
+	}, "\n")
+	block, scoped := logCollectHelpEnumBlock(raw)
+	if !scoped {
+		t.Fatal("英文 enumerate: 标题应被识别为枚举区")
+	}
+	if !strings.Contains(block, "vm_suspend（VM Suspend Issue）") {
+		t.Fatalf("枚举区应包含真实枚举行：%q", block)
+	}
+	if strings.Contains(block, "-s is required") {
+		t.Fatalf("枚举区不应越过 Note: 收尾：%q", block)
+	}
 }
 
 // ── create 接单确认 ─────────────────────────────────────────────────────────

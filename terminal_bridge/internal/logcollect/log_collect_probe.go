@@ -121,7 +121,10 @@ var (
 	// 因此必须全量扫描而不是逐行只取首个匹配。括号兼容全角与半角，
 	// 并允许标签前有空格：中文是 `host_offline（主机离线）`，
 	// 英文是 `host_offline (Host offline)`。只吃空格/制表符，不跨行。
-	logCollectModuleOptionRe = regexp.MustCompile(`([a-z][a-z_]+)[ \t]*[（(][ \t]*([^）)]{1,40})[）)]`)
+	// 标签上限 120：25 节点英文 help 的 other 说明长达 72 字符
+	// （Default Collection Issue, does not collect logs for the above n scenarios），
+	// 旧上限 40 会让 slowdisk/other 整条匹配失败，被误报为「节点可能不支持」。
+	logCollectModuleOptionRe = regexp.MustCompile(`([a-z][a-z_]+)[ \t]*[（(][ \t]*([^）)]{1,120})[）)]`)
 )
 
 // buildLogCollectCreateCommand 校验参数并返回 acli 之后的参数串（不含 acli 本体）。
@@ -523,19 +526,21 @@ func appendProbeNote(current, extra string) string {
 
 // logCollectHelpEnumBlock 从 help 文本圈定枚举区，返回目录解析与真实枚举统计共用。
 //
-// 中文 help 用「枚举值 … 说明」两段标题圈定枚举区。英文 help 的标题文案没有
-// 实机样本，不能凭猜测把某一种写法当唯一入口；找不到标题时改为全量扫描，
+// 中文 help 用「枚举值 … 说明」两段标题圈定枚举区；25 节点英文 help 的实机
+// 标题是「Available modules, default is other, enumerate:」，后面用「Note:」
+// 收尾（中间夹着 -d/-i 等参数行，但不会再出现白名单括号组合）。两者都按
+// 「命中任一标题即圈定、命中任一收尾即截断」处理，找不到标题时仍回退全量扫描，
 // 并把命中门槛提高到 2 条——示例命令里也可能出现括号，单条命中不足以定论。
 func logCollectHelpEnumBlock(raw string) (string, bool) {
 	block := raw
 	scoped := false
-	for _, head := range []string{"枚举值", "Enum values", "Valid values"} {
+	for _, head := range []string{"枚举值", "Enum values", "Valid values", "enumerate:"} {
 		idx := strings.Index(block, head)
 		if idx < 0 {
 			continue
 		}
 		block = block[idx+len(head):]
-		for _, tail := range []string{"说明", "Description"} {
+		for _, tail := range []string{"说明", "Description", "Note:"} {
 			if end := strings.Index(block, tail); end >= 0 {
 				block = block[:end]
 				break
