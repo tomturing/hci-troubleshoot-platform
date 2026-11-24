@@ -199,6 +199,11 @@ func (e EvidenceConfig) newEvidenceRequest(ctx context.Context, target string, b
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Evidence-Ticket", e.Ticket)
 	req.Header.Set("X-Trace-ID", e.TraceID)
+	// 上报方版本随每条证据一起走：平台据此回答"这条数据是哪个 bridge 发的"。
+	// 不带也不影响鉴权与业务语义——旧 exe 与未注入的测试环境会自然省略该头。
+	if version := evidence.BridgeVersion(); version != "" {
+		req.Header.Set("X-Bridge-Version", version)
+	}
 	if probeTicket != "" {
 		req.Header.Set("X-Probe-Ticket", probeTicket)
 	}
