@@ -2859,29 +2859,31 @@ export const FAULT_CATALOG = {
     "tone": "error"
   },
   "LC-TRANSFER-011": {
-    "action": "节点上的压缩包修改时间早于本次采集开始时间，平台拒绝把旧包当成本轮结果上传。请等本次采集真正结束、包大小不再变化后再点「上传到平台」；需要最新内容请重新采集。",
-    "admin_detail": "bridge 侧 delivery.job_finished 的 error 带节点包 mtime 与本次采集开始时间；不要按磁盘空间不足处置，无需清理 /sf/data/local。",
+    "action": "请先确认节点时间是否准确；如需交付已采集完成的包，请使用「上传到平台」补交付；需要本轮最新内容请重新采集。",
+    "admin_detail": "bridge 侧 delivery.archive_age_probe 给出 node_now/mtime/mtime_on_bridge/job_started_at/age_sec/threshold_sec/clock_offset_sec/verdict；只有节点内年龄超过 30 分钟且校正后仍早于作业创建时间 5 分钟以上才判旧包。不要按磁盘空间不足处置，无需清理 /sf/data/local。",
     "business_stage": "package",
     "check": [
-      "按页面提示里的节点 IP 与错误码，在任务详情中核对原始输出。"
+      "核对任务详情中的节点时间与包生成时间，确认节点时间是否准确。"
     ],
     "component": "bridge",
-    "evidence": "bridge_execution_logs（delivery.job_finished）",
+    "evidence": "bridge_execution_logs（delivery.archive_age_probe / delivery.job_finished）",
     "fix": [
-      "等本次采集真正结束、节点包大小稳定后重新点「上传到平台」；需要最新内容请重新采集。"
+      "若节点时间不准，先校准节点时间；然后重新采集本轮内容；如需交付已采集完成的包，请使用「上传到平台」补交付。"
     ],
     "http_status": 409,
     "kind": "runtime",
     "layer": "TRANSFER",
     "match_keywords": [
+      "按节点本地时间",
+      "超过允许的交付时效",
       "早于本次采集开始"
     ],
     "owner": "customer",
-    "problem": "节点压缩包是上一轮任务的旧产物",
+    "problem": "按节点本地时间，压缩包生成于较早时刻；校正节点时钟偏差后仍早于本次交付作业创建时间",
     "retryable": "manual",
     "scope": "local",
     "stage": "S4",
-    "title_zh": "节点产物早于本次采集",
+    "title_zh": "节点产物超出交付时效",
     "tone": "error"
   },
   "LC-TRANSFER-012": {
@@ -3288,6 +3290,8 @@ export const FAULT_MATCHERS = [
   {
     "code": "LC-TRANSFER-011",
     "keywords": [
+      "按节点本地时间",
+      "超过允许的交付时效",
       "早于本次采集开始",
       "上一次任务的产物",
       "节点上的压缩包"

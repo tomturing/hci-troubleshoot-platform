@@ -33,7 +33,10 @@ import (
 // （bridge_execution_logs 里 task_id 恒为空）。新任务 create 后它立刻返回上一次的
 // `done=1/total=1`，只看 Done>=Total 就会在 4 秒内把上一次的完成当成本次完成，
 // 然后去拉一个已被覆盖/不存在的包（2026-10-27 现场 48f890d5）。
-// 归属判据：磁盘上那个包的 mtime 不能早于本次任务开始时间。
+// 归属判据：用节点自己的 now - mtime 算年龄，并把这把时间尺按测得偏移校正到
+// bridge 时钟；节点内年龄与作业相对时间同时指向旧包才拒绝。
+// 不能用未校正的节点 mtime 与 bridge 墙钟比较——现场节点时钟慢 6 分钟就会
+// 把新包误杀（Q2026112400585，2026-11-24）。
 func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, job *deliveryJob) error {
 	deadline := time.Now().Add(deliveryCollectTimeout)
 	interval := 10 * time.Second
@@ -54,19 +57,11 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, j
 						"job_id": job.JobID, "total": progress.Total,
 					})
 				} else {
-					// 串味判定：包比任务还老 ⇒ 这是上一次采集的产物，不能当本次结果。
-					if startedAt, ok := job.startedAt(); ok {
-						if mtime, statErr := statArchiveMTime(ctx, session, sourcePath); statErr == nil {
-							if mtime.Before(startedAt.Add(-deliveryClockSkewTolerance)) {
-								return fmt.Errorf(
-									"节点上的压缩包（%s，修改于 %s）早于本次采集开始（%s），判定为上一次任务的产物；"+
-										"请等本次采集真正结束后再交付，或确认节点上确有本次的包",
-									sourcePath,
-									mtime.Local().Format("2006-01-02 15:04:05"),
-									startedAt.Local().Format("2006-01-02 15:04:05"),
-								)
-							}
-						}
+					// 包归属判定：只用节点自己的时钟算年龄，避免节点时钟偏差被当成旧包。
+					// 现场 Q2026112400585 的节点慢约 6 分钟，旧实现直接拿 mtime 与
+					// bridge 墙钟比较，把本轮刚打好的包判成上一轮产物。
+					if err := ensureArchiveNotStale(ctx, session, job, sourcePath); err != nil {
+						return err
 					}
 
 					// done>=total 只代表 acli 的采集任务结束，zip 仍在收尾追加。
@@ -338,21 +333,81 @@ func verifyArchiveComplete(ctx context.Context, session NodeSession, path string
 	return nil
 }
 
-// statArchiveMTime 读取节点上文件的修改时间，用于判断包归属。
-func statArchiveMTime(ctx context.Context, session NodeSession, path string) (time.Time, error) {
-	output, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%Y %s", remote.ShellQuote(path)))
-	if err != nil {
-		return time.Time{}, err
-	}
-	epoch, parseErr := strconv.ParseInt(strings.TrimSpace(output), 10, 64)
-	if parseErr != nil {
-		return time.Time{}, fmt.Errorf("解析 mtime 失败：%q", strings.TrimSpace(output))
-	}
-	return time.Unix(epoch, 0), nil
+// 包年龄判定的阈值。只用节点内相对时间，避免把用户侧时钟偏差当成旧包：
+//   - 30 分钟：包在节点上的最小“陈旧”年龄；上一轮残留包通常已是几十分钟/几小时。
+//   - 5 分钟：把节点 mtime 按测得偏移校正到 bridge 时钟后，允许早于交付作业创建时间的量；
+//     采集通常与交付提交并发，正常只会早几秒。
+//   - 2 分钟：mtime 晚于节点当前时间的容许量；超出视为时钟回拨/未来时间，按新鲜放行。
+const (
+	deliveryArchiveStaleAfter       = 30 * time.Minute
+	deliveryArchiveJobSkewTolerance = 5 * time.Minute
+	deliveryArchiveFutureTolerance  = 2 * time.Minute
+)
+
+// archiveAgeSample 是同一次节点命令读到的两个时间读数。
+// 两者必须来自同一条命令/同一时钟源，否则节点时钟偏差会重新混进判定。
+type archiveAgeSample struct {
+	NodeNow time.Time
+	MTime   time.Time
 }
 
-// startedAt 解析 job 的创建时间；解析不出来时返回 false（调用方跳过归属判定，
-// 宁可少判一次也不误杀正常交付）。
+type archiveAgeVerdict string
+
+const (
+	archiveAgeFresh         archiveAgeVerdict = "fresh"
+	archiveAgeStale         archiveAgeVerdict = "stale"
+	archiveAgeClockRollback archiveAgeVerdict = "clock_rollback"
+)
+
+// inspectArchiveAge 在节点上一次性取当前时间与包 mtime。
+//
+// 为什么必须同一条命令：分两次 SSH 调用之间节点时钟可能跳变，且两次读数
+// 若来自不同时钟源（一次节点、一次 bridge）就又回到“跨时钟比较”的老问题。
+func inspectArchiveAge(ctx context.Context, session NodeSession, path string) (archiveAgeSample, error) {
+	command := `printf '%s %s\n' "$(date +%s)" "$(stat -c %Y ` + remote.ShellQuote(path) + ` 2>/dev/null)"`
+	output, _, err := session.RunQuickCommand(ctx, command)
+	if err != nil {
+		return archiveAgeSample{}, err
+	}
+	fields := strings.Fields(output)
+	if len(fields) < 2 {
+		return archiveAgeSample{}, fmt.Errorf("解析节点时间失败：%q", strings.TrimSpace(output))
+	}
+	nodeNowEpoch, nowErr := strconv.ParseInt(fields[0], 10, 64)
+	mtimeEpoch, mtimeErr := strconv.ParseInt(fields[1], 10, 64)
+	if nowErr != nil || mtimeErr != nil {
+		return archiveAgeSample{}, fmt.Errorf("解析节点时间失败：%q", strings.TrimSpace(output))
+	}
+	return archiveAgeSample{
+		NodeNow: time.Unix(nodeNowEpoch, 0),
+		MTime:   time.Unix(mtimeEpoch, 0),
+	}, nil
+}
+
+// classifyArchiveAge 是纯判定函数：先算节点内年龄，再把 mtime 按测得偏移校正到
+// bridge 时钟，与交付作业创建时间比较。
+//
+// 为什么需要两个条件同时成立才判旧包：
+//   - 只看节点内年龄，会把“排队很久但确实是本轮新产出的包”误杀；
+//   - 只看 job 相对时间，容忍不了节点时钟跳变；
+//   - 两者都指向旧包才拒绝，任何一侧显示“新”都放行，优先保证功能可用。
+//
+// age 为负表示 mtime 在未来；超出容许量标记为 clock_rollback 并放行。
+func classifyArchiveAge(nodeNow, mtime, bridgeNow, jobStartedAt time.Time) (archiveAgeVerdict, time.Duration) {
+	age := nodeNow.Sub(mtime)
+	if mtime.After(nodeNow.Add(deliveryArchiveFutureTolerance)) {
+		return archiveAgeClockRollback, age
+	}
+	// 用同一次读数测得的偏移把 mtime 校正到 bridge 时钟；静态时钟偏差在此抵消。
+	mtimeOnBridge := mtime.Add(bridgeNow.Sub(nodeNow))
+	olderThanJob := mtimeOnBridge.Before(jobStartedAt.Add(-deliveryArchiveJobSkewTolerance))
+	if age > deliveryArchiveStaleAfter && olderThanJob {
+		return archiveAgeStale, age
+	}
+	return archiveAgeFresh, age
+}
+
+// startedAt 解析交付作业创建时间；解析失败时跳过归属判定，宁可少判一次也不误杀。
 func (j *deliveryJob) startedAt() (time.Time, bool) {
 	raw := strings.TrimSpace(j.CreatedAt)
 	if raw == "" {
@@ -365,6 +420,71 @@ func (j *deliveryJob) startedAt() (time.Time, bool) {
 		return t, true
 	}
 	return time.Time{}, false
+}
+
+// ensureArchiveNotStale 判断节点上的包是否属于本轮采集。
+//
+// 探测失败时跳过判定（宁可少判一次，也不把“读不到时间”当成旧包）；
+// 只有节点内相对年龄超过阈值才返回 LC-TRANSFER-011，并以 fatal 结束，
+// 避免对确定性的旧包做 5 次无意义重试。
+func ensureArchiveNotStale(ctx context.Context, session NodeSession, job *deliveryJob, path string) error {
+	startedAt, ok := job.startedAt()
+	if !ok {
+		evidence.Emit("WARN", "delivery.archive_age_probe", "交付作业缺少创建时间，跳过旧包判定", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "task_id": job.TaskID, "archive_path": path,
+		})
+		return nil
+	}
+	sample, err := inspectArchiveAge(ctx, session, path)
+	if err != nil {
+		evidence.Emit("WARN", "delivery.archive_age_probe", "无法读取节点包时间，跳过旧包判定", "", job.CaseID, job.NodeIP, "", map[string]any{
+			"job_id": job.JobID, "task_id": job.TaskID, "archive_path": path, "error": err.Error(),
+		})
+		return nil
+	}
+	bridgeNow := time.Now()
+	verdict, age := classifyArchiveAge(sample.NodeNow, sample.MTime, bridgeNow, startedAt)
+	level := "INFO"
+	if verdict != archiveAgeFresh {
+		level = "WARN"
+	}
+	evidence.Emit(level, "delivery.archive_age_probe", "按节点本地时间判定压缩包归属", "", job.CaseID, job.NodeIP, "", map[string]any{
+		"job_id":           job.JobID,
+		"task_id":          job.TaskID,
+		"archive_path":     path,
+		"node_now":         sample.NodeNow.UTC().Format(time.RFC3339),
+		"mtime":            sample.MTime.UTC().Format(time.RFC3339),
+		"mtime_on_bridge":  sample.MTime.Add(bridgeNow.Sub(sample.NodeNow)).UTC().Format(time.RFC3339),
+		"job_started_at":   startedAt.UTC().Format(time.RFC3339),
+		"age_sec":          int64(age / time.Second),
+		"threshold_sec":    int64(deliveryArchiveStaleAfter / time.Second),
+		"clock_offset_sec": int64(bridgeNow.Sub(sample.NodeNow) / time.Second),
+		"verdict":          string(verdict),
+	})
+	if verdict != archiveAgeStale {
+		return nil
+	}
+	return newFatal(logcontract.ErrTransferSourceStale,
+		"节点上的压缩包（%s）按节点本地时间生成于 %s 前，且校正节点时钟偏差后仍早于本次交付作业创建时间；"+
+			"判定为上一轮采集的产物。请先确认节点时间是否准确；如需交付已采集完成的包，请使用「上传到平台」补交付；需要本轮最新内容请重新采集",
+		path, formatArchiveAge(age))
+}
+
+// formatArchiveAge 把年龄转成客户可读的中文时长，避免文案里出现原始秒数。
+func formatArchiveAge(age time.Duration) string {
+	if age < time.Minute {
+		return "不足 1 分钟"
+	}
+	minutes := int(age / time.Minute)
+	if minutes < 60 {
+		return fmt.Sprintf("%d 分钟", minutes)
+	}
+	hours := minutes / 60
+	minutes %= 60
+	if minutes == 0 {
+		return fmt.Sprintf("%d 小时", hours)
+	}
+	return fmt.Sprintf("%d 小时 %d 分钟", hours, minutes)
 }
 
 // pull 把包从 HCI 拉到本地；断点依据是本地文件大小（tail -c +N）。

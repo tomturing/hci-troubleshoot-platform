@@ -481,6 +481,9 @@ func (r *deliveryRunner) runJob(job *deliveryJob) {
 			job.Attempt++
 		}
 		job.LastError = err.Error()
+		// 结构化错误码优先于文案匹配：文案会改，码是平台落库、前端分支与统计的锚点。
+		// 传空表示本轮错误没有专属码，同时清掉上一轮可能残留的旧码。
+		job.LastErrorCode = deliveryErrorCode(err)
 		// 停摆优先于"取消"判定：看门狗也是靠 cancel 收工的，但它的语义是
 		// "这一轮链路已经死了，换下一轮"，不是"这条作业废了"。
 		if stalled.Load() {

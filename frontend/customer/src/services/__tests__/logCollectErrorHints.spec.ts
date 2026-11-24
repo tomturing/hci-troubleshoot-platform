@@ -17,6 +17,7 @@ describe('logCollectErrorHint', () => {
     'LC-SPC-010',
     'LC-PLUGIN-015',
     'LC-PLUGIN-016',
+    'LC-TRANSFER-011',
   ])('%s 有标题、检查步骤与处理步骤', (code) => {
     const hint = logCollectErrorHint(code)
     expect(hint?.title).toBeTruthy()
@@ -32,5 +33,15 @@ describe('logCollectErrorHint', () => {
 
   it('大小写与空白可归一', () => {
     expect(logCollectErrorHint('  lc-spc-007 ')?.title).toBe('目标节点 SSH 认证失败')
+  })
+
+  // 旧文案把 bridge 墙钟写成“本次采集开始”，节点慢 6 分钟就会误导用户去查网络。
+  // 新文案只陈述节点本地时间与时效，处置第一步是校准节点时间。
+  it('LC-TRANSFER-011 的提示只陈述节点本地时间与交付时效', () => {
+    const hint = logCollectErrorHint('LC-TRANSFER-011')
+    expect(hint?.title).toBe('节点产物超出交付时效')
+    const text = [...(hint?.check ?? []), ...(hint?.fix ?? [])].join(' ')
+    expect(text).toContain('校准节点时间')
+    expect(text).not.toContain('早于本次采集开始')
   })
 })
