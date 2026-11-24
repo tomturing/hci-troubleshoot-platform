@@ -370,14 +370,24 @@ async def put_process_log(
     )
     inserted = result.first()
     await session.commit()
-    await _sync_collect_alerts(
-        service,
-        task_id=task_id,
-        path=path,
-        payload=payload,
-        content=content,
-        trace_id=_trace_of(task),
-    )
+    # 旁路派生：正文已在上面提交，派生失败绝不能再把回执打成 500。
+    # 2026-11-24 现场就是这里没有兜底：_sync_collect_alerts 内部一个 TypeError
+    # 直接把 /process-logs 变成 500，桥以为证据没上报成功，证据清单因此缺失
+    # （客户界面 S7 只能显示「未知」），而正文其实早就写进库了。
+    try:
+        await _sync_collect_alerts(
+            service,
+            task_id=task_id,
+            path=path,
+            payload=payload,
+            content=content,
+            trace_id=_trace_of(task),
+        )
+    except Exception:  # noqa: BLE001 - 契约要求：派生失败只记日志，不影响回执
+        logger.warning(
+            "collect_alerts.sync_failed task_id=%s trace_id=%s",
+            task_id, _trace_of(task), exc_info=True,
+        )
     return EvidenceAck(
         task_id=task_id,
         id=str(inserted[0]) if inserted else str(log_id),
@@ -402,7 +412,9 @@ async def _sync_collect_alerts(
     if not is_collect_alert_source(path) or not content:
         return
     try:
-        text = gzip.decompress(content).decode("utf-8", errors="replace")
+        # 变量名不能叫 text：那会遮蔽 sqlalchemy.text，下面第 421 行就会变成
+        # 「'str' object is not callable」，整个上报接口 500（2026-11-24 现场）。
+        log_text = gzip.decompress(content).decode("utf-8", errors="replace")
     except (OSError, EOFError, UnicodeError) as exc:
         logger.warning(
             "collect_alerts.decode_failed task_id=%s path=%s error=%s trace_id=%s",
@@ -411,7 +423,7 @@ async def _sync_collect_alerts(
         return
     fresh = extract_collect_alerts(
         path,
-        text,
+        log_text,
         collected_at=payload.collected_at.isoformat() if payload.collected_at else None,
         trace_id=trace_id,
         node_ip=payload.host,
