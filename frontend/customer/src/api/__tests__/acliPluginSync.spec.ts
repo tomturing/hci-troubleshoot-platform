@@ -20,6 +20,7 @@ import {
   requestAcliPluginTicket,
   resolveAcliPluginSyncCredentials,
 } from '../acliPluginSync'
+import { rememberPlatformCertTrust } from '@/utils/logCollectDelivery'
 
 describe('platformRootUrl', () => {
   it('取浏览器正在访问的 origin，并去掉末尾斜杠', () => {
@@ -75,5 +76,20 @@ describe('resolveAcliPluginSyncCredentials', () => {
     const resolved = await resolveAcliPluginSyncCredentials('Q2026111800002')
     expect(resolved.credentials).toEqual({})
     expect(resolved.error).toContain('Case Service unavailable')
+  })
+
+  // 正式环境（staging/prod）平台是自签 HTTPS：桥拉 manifest 走严格 TLS 必然 x509。
+  // 授权位必须随凭据一起下发，否则正式环境永远装不上插件（只有回环 http 能跑通）。
+  it('自签证书：会话内已授权才带 tls_insecure，未授权时保持严格校验', async () => {
+    sessionStorage.clear()
+    postMock.mockResolvedValue({ data: { ticket: 'tk-9', case_id: 'Q1' } })
+
+    const before = await resolveAcliPluginSyncCredentials('Q1')
+    expect(before.credentials.tlsInsecure).toBe(false)
+
+    rememberPlatformCertTrust(platformRootUrl())
+    const after = await resolveAcliPluginSyncCredentials('Q1')
+    expect(after.credentials.tlsInsecure).toBe(true)
+    sessionStorage.clear()
   })
 })
