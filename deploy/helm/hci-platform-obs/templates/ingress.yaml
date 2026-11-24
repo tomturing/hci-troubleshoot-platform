@@ -9,13 +9,10 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
-    # 根据是否启用 TLS 选择 entrypoint
-    # TLS 启用时同时响应 websecure（HTTPS，端口 4443/3443）和 web（HTTPS，端口 4888/3888，用于内网隔离管理口）
-    {{- if .Values.ingress.tls }}
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure,web
-    {{- else }}
+    # 端口隔离（2026-11-24）：Grafana 属于管理面，只允许从 web entrypoint（4888/3888）进入。
+    # 此前 TLS 启用时会同时绑定 websecure（4443/3443），使公网可匿名查询 Loki 日志，
+    # 进而拿到 DSH launch token（安全事件：4443 越权暴露管理面）。禁止改回双绑定。
     traefik.ingress.kubernetes.io/router.entrypoints: web
-    {{- end }}
     # /grafana 路由必须高于主 ingress 的 / 回退路由，否则会被 customer-ui 吞掉（PIT-020 回归）
     traefik.ingress.kubernetes.io/router.priority: {{ .Values.ingress.grafanaRouterPriority | quote }}
     {{- with .Values.ingress.annotations }}

@@ -1,0 +1,55 @@
+suite: "4443/4888 端口隔离与管理 API guard（2026-11-24）"
+templates:
+  - admin-api-guard.yaml
+tests:
+  - it: "guard Ingress 只绑 websecure：4888 管理入口不受影响"
+    template: admin-api-guard.yaml
+    set:
+      ingress.enabled: true
+      ingress.adminApiGuard.enabled: true
+    asserts:
+      - matchRegex:
+          path: metadata.name
+          pattern: "admin-api-guard$"
+        documentIndex: 1
+      - equal:
+          path: metadata.annotations["traefik.ingress.kubernetes.io/router.entrypoints"]
+          value: websecure
+        documentIndex: 1
+      - equal:
+          path: metadata.annotations["traefik.ingress.kubernetes.io/router.priority"]
+          value: "4000"
+        documentIndex: 1
+      - matchRegex:
+          path: metadata.annotations["traefik.ingress.kubernetes.io/router.middlewares"]
+          pattern: "admin-api-guard@kubernetescrd"
+        documentIndex: 1
+
+  - it: "guard 覆盖全部 27 条管理 API 前缀，后端统一 api-gateway"
+    template: admin-api-guard.yaml
+    set:
+      ingress.enabled: true
+      ingress.adminApiGuard.enabled: true
+    asserts:
+      - equal:
+          path: spec.rules[0].http.paths
+          value: []
+        not: true
+        documentIndex: 1
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.name
+          value: api-gateway
+        documentIndex: 1
+      - equal:
+          path: spec.rules[0].http.paths[0].path
+          value: /api/v1/acli-plugins
+        documentIndex: 1
+
+  - it: "关闭开关后 guard 不渲染"
+    template: admin-api-guard.yaml
+    set:
+      ingress.enabled: true
+      ingress.adminApiGuard.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

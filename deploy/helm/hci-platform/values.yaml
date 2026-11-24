@@ -723,6 +723,45 @@ ingress:
       - 10.0.0.0/8
       - 172.16.0.0/12
       - 192.168.0.0/16
+  # 2026-11-24 管理 API 公网隔离：主 ingress 的 /api 泛前缀会让所有管理端点
+  # 从 4443 网络可达。本 guard 在公网入口对下列路径做 ipAllowList，公网源 403。
+  # 注意：ipAllowList 读 Traefik 直连 remote IP；云 LB 若以私网 IP 回源会使本层
+  # 失效，因此它只是纵深第二层，主防线是管理面 Ingress 不再注册到 4443。
+  adminApiGuard:
+    enabled: true
+    sourceRange:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+    # 管理面 API 前缀；/api/internal 已有独立 guard，此处不重复注册。
+    paths:
+      - /api/v1/acli-plugins
+      - /api/cases/all
+      - /api/cases/stats
+      - /api/cases/clients
+      - /api/cases/admin
+      - /api/conversations/admin
+      - /api/v1/bundle-migration
+      - /api/dsh
+      - /api/dsh-offline
+      - /api/kb/categories
+      - /api/kb/catalogs
+      - /api/v1/vm-console/captures
+      - /api/v1/signal-assets
+      - /api/v1/kbd
+      - /api/v1/sop
+      - /api/v1/log-collect-scenarios
+      - /api/v1/log-collect-custom-scenarios
+      - /api/v1/log-collect-default-scenarios
+      - /api/v1/log-collect/admin
+      - /api/v1/log-collect-scripts
+      - /api/v1/tools
+      - /api/v1/prompts
+      - /api/v1/skills
+      - /api/v1/signals/dry-run
+      - /api/hci-sim
+      - /api/terminal/admin
+      - /api/weknora/launch
 
 # ======================== Phase 3: ReAct 引擎配置 ==============================
 # SCP 平台 API 地址（用于调用 SCP 工具获取 VM/存储/网络信息）

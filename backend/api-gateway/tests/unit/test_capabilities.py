@@ -22,6 +22,30 @@ if _expect != _actual:
     sys.path.insert(0, _svc)
 
 from app.main import app
+from app.security.gateway_auth import require_admin
+
+
+def setUpModule():
+    """2026-11-24：三条能力管理路由已挂 require_admin，测试统一注入管理员依赖。"""
+    app.dependency_overrides[require_admin] = lambda: None
+
+
+def tearDownModule():
+    app.dependency_overrides.pop(require_admin, None)
+
+
+class TestCapabilitiesAdminGuard(unittest.TestCase):
+    """回归：能力定义表不得被匿名读写（4443 端口隔离的应用层防线）。"""
+
+    def test_anonymous_capability_routes_rejected(self):
+        app.dependency_overrides.pop(require_admin, None)
+        try:
+            client = TestClient(app)
+            for path in ("/api/v1/tools", "/api/v1/prompts", "/api/v1/skills"):
+                with self.subTest(path=path):
+                    self.assertIn(client.get(path).status_code, (401, 403))
+        finally:
+            app.dependency_overrides[require_admin] = lambda: None
 
 
 class TestCapabilitiesProxy(unittest.TestCase):

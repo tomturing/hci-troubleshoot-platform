@@ -69,10 +69,11 @@ spec:
       - "--entryPoints.websecure.transport.respondingTimeouts.readTimeout=600"
       - "--entryPoints.websecure.transport.respondingTimeouts.writeTimeout=600"
       # 网关 5xx 是「发布是否真的打断用户请求」的唯一端到端证据。
-      # 只记 5xx：正常请求量级上百万，全量 accesslog 会淹掉 Loki 且无助于判定
-      # 可用性；5xx 每天寥寥数条，恰好对应要复盘的那几次窗口。
+      # 403 于 2026-11-24 加入：admin-api-guard / internal-guard 在公网入口
+      # 拒绝管理面请求时返回 403，这是隔离控制是否真的生效的唯一可追责证据。
+      # 正常请求量级上百万，全量 accesslog 会淹掉 Loki；403+5xx 每天寥寥数条。
       # 参数名已用 `traefik --help` 核对；addEntryPointsLabels / addServicesLabels
       # 默认就是 true，不必显式写（写了也不会错，但少一个可写错的地方）。
       - "--accesslog=true"
       - "--accesslog.format=json"
-      - "--accesslog.filters.statuscodes=500-599"
+      - "--accesslog.filters.statuscodes=403,500-599"

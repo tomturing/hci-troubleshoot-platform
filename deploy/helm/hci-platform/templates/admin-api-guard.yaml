@@ -1,0 +1,79 @@
+{{- /*
+管理 API 公网隔离（2026-11-24）。
+
+背景：主 ingress 的 /api 泛前缀直达 api-gateway，所有管理端点（admin JWT
+鉴权）在网络层都能从 4443 到达。结合 Grafana 匿名可读 Loki 拿到 DSH
+launch token 的事件，单靠应用层鉴权不足以守住管理面。
+
+设计（对抗性审查后定稿）：
+1. 主防线是路由层：管理 UI/工具 Ingress 不再注册到 websecure（4443），
+   公网请求连 backend 都到不了。本 guard 是纵深第二层。
+2. 独立 Ingress 承载 Host + 管理 API 路径前缀，比主 ingress 的 /api 更长，
+   Traefik 按规则长度优先命中；公网源 403，内网源继续到 api-gateway。
+3. ipAllowList 读 Traefik 直连 remote IP。云 LB 若以私网 IP 回源，本层会
+   被绕过——因此绝不能把它当成唯一防线，且现网必须验证 LB 是否透传
+   真实客户端 IP（见事件文档验收项）。
+4. 只绑定 websecure：4888 管理入口不受影响，管理员仍可正常使用管理 API。
+5. /api/internal 已有独立 internal-guard，此处不重复注册，避免同路径
+   两条 Middleware 规则互相覆盖。
+*/}}
+{{- if and
+      .Values.ingress.enabled
+      .Values.ingress.adminApiGuard.enabled
+      (ne (.Values.global.routingMode | default "path") "subdomain") }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "hci.fullname" . }}-admin-api-guard
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress-guard
+spec:
+  ipAllowList:
+    sourceRange:
+      {{- toYaml .Values.ingress.adminApiGuard.sourceRange | nindent 6 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "hci.fullname" . }}-admin-api-guard
+  namespace: {{ include "hci.namespace" . }}
+  labels:
+    {{- include "hci.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingress-guard
+  annotations:
+    # 只绑公网入口：4888 管理面不走本规则。
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    # 高于主 ingress 的 /api 与 internal-guard 的 /api/internal。
+    traefik.ingress.kubernetes.io/router.priority: "4000"
+    # Ingress annotation 引用格式为「<namespace>-<name>@kubernetescrd」。
+    traefik.ingress.kubernetes.io/router.middlewares: {{ include "hci.namespace" . }}-{{ include "hci.fullname" . }}-admin-api-guard@kubernetescrd
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  rules:
+    {{- $host := "" }}
+    {{- if .Values.global.publicUrl }}
+      {{- $host = .Values.global.publicUrl | trimPrefix "https://" | trimPrefix "http://" | regexFind "^[^/:]+" }}
+    {{- end }}
+    - {{- if $host }} host: {{ $host | quote }}
+      {{- end }}
+      http:
+        paths:
+          {{- range .Values.ingress.adminApiGuard.paths }}
+          - path: {{ . | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: {{ $.Values.apiGateway.port }}
+          {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+{{- end }}
