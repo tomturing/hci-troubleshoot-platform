@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildObserveHandoffAudit,
   COLLECT_FOREGROUND_BUDGET_MS,
+  hasObserveHandoff,
   OBSERVE_POLL_INTERVAL_MS,
   planCollectWaitExpiry,
 } from '../logCollectWait'
@@ -86,5 +88,47 @@ describe('planCollectWaitExpiry 预算耗尽后的结论', () => {
   it('后台观察间隔必须远小于前台预算（降频但不失联）', () => {
     expect(COLLECT_FOREGROUND_BUDGET_MS).toBe(60 * 60 * 1000)
     expect(OBSERVE_POLL_INTERVAL_MS).toBeLessThan(COLLECT_FOREGROUND_BUDGET_MS / 60)
+  })
+})
+
+describe('观察交接审计与页面重开恢复', () => {
+  it('只记录可核对事实，不把提示语写成失败结论', () => {
+    const audit = buildObserveHandoffAudit({
+      nodeState: 'running',
+      uploadState: '发送中',
+      done: 9,
+      total: 9,
+      archiveSize: 10592819584,
+      notice: '正在发送到日志服务器（已采集 9/9 台，日志包 9.9 GB）',
+      traceId: 'lc-Q2026112400468-1795491016665',
+      at: '2026-11-24T04:42:15Z',
+    })
+    expect(audit).toMatchObject({
+      at: '2026-11-24T04:42:15Z',
+      node_state: 'running',
+      upload_state: '发送中',
+      done: 9,
+      total: 9,
+      archive_size: 10592819584,
+      trace_id: 'lc-Q2026112400468-1795491016665',
+    })
+    expect(audit.notice).not.toContain('采集未完成')
+    expect(audit.notice).not.toContain('失败')
+  })
+
+  it('缺快照时写 unknown，不伪造 running 或失败', () => {
+    const audit = buildObserveHandoffAudit({ notice: '节点仍在采集' })
+    expect(audit.node_state).toBe('unknown')
+    expect(audit.upload_state).toBeNull()
+    expect(audit.done).toBeNull()
+    expect(audit.total).toBeNull()
+    expect(audit.archive_size).toBeNull()
+  })
+
+  it('页面重开只认 detail.observation_handoff 对象', () => {
+    expect(hasObserveHandoff({ observation_handoff: { at: 'x' } })).toBe(true)
+    expect(hasObserveHandoff({ observation_handoff: null })).toBe(false)
+    expect(hasObserveHandoff({})).toBe(false)
+    expect(hasObserveHandoff(null)).toBe(false)
   })
 })
