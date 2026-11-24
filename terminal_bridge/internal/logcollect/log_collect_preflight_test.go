@@ -1,6 +1,10 @@
 package logcollect
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,15 +49,82 @@ func TestParsePluginProbeOnlyAcceptsMissing(t *testing.T) {
 }
 
 // 插件探测必须用 [ -s ]：空目录/空文件同样无法执行，不能判为完整。
-func TestPluginProbeRequiresNonEmpty(t *testing.T) {
+// 但阻断清单只能含安装期产物：progress.json 由 sfd_main.py 在 create 之后生成，
+// 全新安装时必然不存在，把它算进来等于每次 create 都被误拦（2026-11-24 事故）。
+func TestPluginProbeOnlyChecksInstallArtifacts(t *testing.T) {
 	command := buildPluginProbeCommand()
 	if !strings.Contains(command, "[ -s ") {
 		t.Fatalf("插件探测必须要求文件非空：\n%s", command)
 	}
-	for _, path := range []string{logCollectPluginBinary, logCollectPluginManifest, logCollectPluginProgress} {
+	for _, path := range logCollectInstallArtifacts() {
 		if !strings.Contains(command, path) {
 			t.Fatalf("探测命令缺少 %s：\n%s", path, command)
 		}
+	}
+	if strings.Contains(command, logCollectRuntimeProgress) {
+		t.Fatalf("运行时进度文件不得进入 create 前的阻断清单：\n%s", command)
+	}
+}
+
+// 全新安装现场：plugin/manifest 都在、progress.json 尚未生成，create 必须放行；
+// 反向边界：真缺 plugin 时仍必须拒绝，不能因为放开运行时文件而丢掉 P0 的防护。
+func TestFreshInstallWithoutRuntimeProgressPasses(t *testing.T) {
+	fresh := strings.Join([]string{
+		"OK " + logCollectPluginBinary,
+		"OK " + logCollectPluginManifest,
+	}, "\n")
+	if missing := parsePluginProbe(fresh); len(missing) != 0 {
+		t.Fatalf("全新安装后 create 应放行，实际判缺失：%v", missing)
+	}
+	broken := strings.Join([]string{
+		"MISSING " + logCollectPluginBinary,
+		"OK " + logCollectPluginManifest,
+	}, "\n")
+	missing := parsePluginProbe(broken)
+	if len(missing) != 1 || missing[0] != logCollectPluginBinary {
+		t.Fatalf("plugin 缺失仍必须拒绝：%v", missing)
+	}
+}
+
+// 判定层端到端仿真：真实 shell 执行生成的探测命令，把「命令 → 输出 → 阻断决策」
+// 整条链跑通。全新安装现场只放 plugin/manifest，不建 tools 目录，进度文件必须缺席。
+func TestPluginProbeCommandEndToEndOnFreshInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("依赖 sh 的判定层仿真只在 POSIX 环境执行")
+	}
+	dir := t.TempDir()
+	command := strings.ReplaceAll(buildPluginProbeCommand(), "/sf/data/local/acli/plugins/log_collect", dir)
+	writeArtifact := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("准备安装期文件失败：%v", err)
+		}
+	}
+	writeArtifact("plugin", "binary")
+	writeArtifact("manifest.json", "{}")
+	run := func() []string {
+		out, err := exec.Command("sh", "-c", command).CombinedOutput()
+		if err != nil {
+			t.Fatalf("探测命令执行失败：%v\n%s", err, out)
+		}
+		return parsePluginProbe(string(out))
+	}
+	if missing := run(); len(missing) != 0 {
+		t.Fatalf("全新安装无 progress.json 时应放行，实际判缺失：%v", missing)
+	}
+	if err := os.Remove(filepath.Join(dir, "plugin")); err != nil {
+		t.Fatalf("移除 plugin 失败：%v", err)
+	}
+	missing := run()
+	if len(missing) != 1 || !strings.HasSuffix(missing[0], "/plugin") {
+		t.Fatalf("plugin 缺失时仍必须拒绝：%v", missing)
+	}
+}
+
+// 运行时进度文件仍保留在失败现场快照里，用于区分「采集没启动」与「进度没落盘」。
+func TestFailureSnapshotKeepsRuntimeProgressEvidence(t *testing.T) {
+	command := buildFailureSnapshotCommand()
+	if !strings.Contains(command, logCollectRuntimeProgress) {
+		t.Fatalf("失败快照应保留运行时进度文件作为观测证据：%s", command)
 	}
 }
 

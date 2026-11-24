@@ -27,19 +27,32 @@ import (
 )
 
 const (
-	// 三个路径就是 log_collect 插件的执行面：plugin 是入口；manifest.json
-	// 决定能否加载容器（缺了就是 running without container）；tools 下的
-	// progress.json 是采集进度的读取源（缺了 monitor 每轮都报 No such file）。
+	// 安装期事实：plugin 是入口；manifest.json 决定能否加载容器
+	//（缺了就是 running without container）。两者随 acli 安装包落盘，
+	// 因此 create 之前不存在即代表安装/集群分发不完整，必须阻断。
 	logCollectPluginBinary   = "/sf/data/local/acli/plugins/log_collect/plugin"
 	logCollectPluginManifest = "/sf/data/local/acli/plugins/log_collect/manifest.json"
-	logCollectPluginProgress = "/sf/data/local/acli/plugins/log_collect/tools/lmt_collect_info/progress.json"
+
+	// 运行时产物：progress.json 不是安装包自带的静态文件，而是节点
+	// sfd_main.py 在采集任务启动（create 之后）用 echo 覆盖写入的进度文件，
+	// 采集结束时再更新。create 之前不存在是正常状态，绝不能当安装缺陷。
+	// 2026-11-24 事故：#1617 把它列入前置阻断，导致全新安装后 3 个现场
+	// 4 单全部被 LC-INSTALL-010 误拦（Q2026112300987 等）。该文件只用于
+	// 失败现场快照取证，不参与任何阻断判定。
+	logCollectRuntimeProgress = "/sf/data/local/acli/plugins/log_collect/tools/lmt_collect_info/progress.json"
 )
 
-// buildPluginProbeCommand 只读探测：文件存在且非空才算完整。
+// logCollectInstallArtifacts 是 create 前唯一允许阻断的安装期清单。
+// 新增路径前必须先回答：它是否由 acli 安装器落盘？运行时生成的一律不许进。
+func logCollectInstallArtifacts() []string {
+	return []string{logCollectPluginBinary, logCollectPluginManifest}
+}
+
+// buildPluginProbeCommand 只读探测：安装期文件存在且非空才算完整。
 // 用 [ -s ] 而不是 [ -f ]：残留的空目录/空文件同样无法执行，必须判缺失。
 func buildPluginProbeCommand() string {
 	var builder strings.Builder
-	for _, path := range []string{logCollectPluginBinary, logCollectPluginManifest, logCollectPluginProgress} {
+	for _, path := range logCollectInstallArtifacts() {
 		quoted := remote.ShellQuote(path)
 		builder.WriteString("if [ -s " + quoted + " ]; then printf 'OK %s\\n' " + quoted +
 			"; else printf 'MISSING %s\\n' " + quoted + "; fi; ")
@@ -62,7 +75,7 @@ func parsePluginProbe(output string) []string {
 
 // preflightLogCollectPlugin 逐台检查 log_collect 插件是否完整。
 // 返回 (缺失项 "ip:path", 是否真的枚举到了节点)。
-func preflightLogCollectPlugin(ctx context.Context, s *sshx.SSHSession) ([]string, bool) {
+func preflightLogCollectPlugin(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig) ([]string, bool) {
 	command := buildPluginProbeCommand()
 	missing := make([]string, 0, 6)
 	// 发起节点必查：acli 命令本身在这里执行，插件坏了连 create 都会失败。
@@ -113,8 +126,15 @@ func preflightLogCollectPlugin(ctx context.Context, s *sshx.SSHSession) ([]strin
 		missing = append(missing, value.paths...)
 	}
 	sort.Strings(missing)
-	evidence.Emit("INFO", "log_collect.plugin_preflight", "发起采集前校验内置插件", "", "", "", "", map[string]any{
-		"hosts": len(targets), "missing": missing, "unreachable": unreachable,
+	// 事件里显式区分「阻断判据」与「仅观测项」：事后回答「为什么这次没查进度文件」
+	// 不需要再翻代码，也能防止有人把运行时路径重新塞回阻断清单。
+	evidence.Emit("INFO", "log_collect.plugin_preflight", "发起采集前校验内置插件", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
+		"hosts":                  len(targets),
+		"missing":                missing,
+		"unreachable":            unreachable,
+		"task_id":                cfg.TaskID,
+		"blocking_paths":         logCollectInstallArtifacts(),
+		"observation_only_paths": []string{logCollectRuntimeProgress},
 	})
 	return missing, true
 }
@@ -136,7 +156,9 @@ func pluginFailureDetail(missing []string) string {
 // buildFailureSnapshotCommand 一次性带回关键路径事实与磁盘余量。
 // 全部是只读命令，且带上 2>/dev/null：快照本身绝不能再制造第二类失败。
 func buildFailureSnapshotCommand() string {
-	paths := []string{logCollectPluginBinary, logCollectPluginManifest, logCollectPluginProgress}
+	// 快照是「失败时节点长什么样」的取证，不是判定：运行时进度文件保留在这里，
+	// 便于区分「采集从未启动」与「采集启动后进度没落盘」，但绝不参与阻断。
+	paths := append(logCollectInstallArtifacts(), logCollectRuntimeProgress)
 	var builder strings.Builder
 	for _, path := range paths {
 		quoted := remote.ShellQuote(path)

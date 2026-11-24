@@ -207,7 +207,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		// 带着缺插件的节点发起采集，只会把「安装不完整」包装成下游的
 		// LC-SPC-003 / LC-EXEC-xxx，把排查引向权限与磁盘。这里先查清楚。
 		preflightCfg, _ := EvidenceFor(msg.ExecID)
-		if missing, checked := preflightLogCollectPlugin(ctx, s); len(missing) > 0 {
+		if missing, checked := preflightLogCollectPlugin(ctx, s, preflightCfg); len(missing) > 0 {
 			reportFailureSnapshot(ctx, s, preflightCfg, "plugin_incomplete")
 			rejectConfigWithCode("plugin_incomplete", logcontract.ErrInstallPluginIncomplete,
 				"节点内置插件不完整，继续采集必然失败："+pluginFailureDetail(missing),
