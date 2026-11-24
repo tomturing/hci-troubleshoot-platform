@@ -254,11 +254,13 @@ adminUI:
 - [部署指南](部署指南.md)
 - [Traefik 配置脚本](../../scripts/ops/traefik-enable-web-tls.sh)
 - [避坑指南 - K8s](pitfalls/k8s.md)
+- [4443 公网端口管理面暴露隔离](../solution/events/2026-11-24-4443端口管理面暴露隔离.md)（2026-11-24：修复 Grafana/DSH/Langfuse 误绑 websecure 导致管理面公网暴露）
 
 ---
 
 ## 变更历史
 
+| **1.4** | **2026-11-24** | **4443 管理面暴露隔离**：Grafana / Langfuse / DSH 的 Ingress 不再因 `ingress.tls` 非空而双绑 `websecure,web`，统一只绑 `web`（4888/3888）；新增管理 API guard 对 27 条前缀做公网 ipAllowList；`capabilities.py` 补 `require_admin`；accesslog 纳入 403 |
 | **1.3** | **2026-07-09** | **PR #502 (修复可观测性内嵌控制台)**：回滚了 PR #499/500/501 引入的无效跨命名空间转发，采用标准 Traefik 多入口点绑定方式，直接将 `hci-observability` 命名空间的 `grafana-ingress` 和 `langfuse-ingress` 绑定至 `web` 入口点，解决 "no available server" 报错 |
 | **1.2** | **2026-07-09** | **PR #499/500/501**：尝试修复可观测性页面加载失败，因语法及 ExternalName/ArgoCD Endpoints 排除规则失效而被 PR #502 替代并回滚 |
 | **1.1** | **2026-07-02** | **PR #487**：补齐 admin-ui-ingress `/api` 和 `/ws` 路径转发至 api-gateway，解决 4888 端口下 admin-ui API 请求被错误转发至静态 Nginx 容器导致的 502/DNS 报错问题 |

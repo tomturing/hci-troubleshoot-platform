@@ -7,11 +7,10 @@ metadata:
   labels:
     {{- include "hci.labels" . | nindent 4 }}
   annotations:
-    {{- if .Values.ingress.tls }}
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure,web
-    {{- else }}
+    # 端口隔离（2026-11-24）：DSH 具备命令执行能力，只允许从 web entrypoint（4888/3888）进入。
+    # 此前 TLS 启用时会同时绑定 websecure（4443/3443），使公网可直接触达 Agent 执行面。
+    # 禁止改回双绑定——这是报告漏洞的直接入口。
     traefik.ingress.kubernetes.io/router.entrypoints: web
-    {{- end }}
     # 优先级需高于主站 / 回退路由，否则 /dsh 会被 customer-ui 吞掉
     # （既有取值参考：grafana 2000、langfuse 3000）
     traefik.ingress.kubernetes.io/router.priority: {{ .Values.ingress.routerPriority | quote }}
