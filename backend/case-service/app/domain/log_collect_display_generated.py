@@ -71,7 +71,7 @@ ARTIFACT_REASON_CODES = {   'missing': 'LC-TRANSFER-001',
 
 NETWORK_GRADE_LABELS = {'good': '良好', 'fair': '一般', 'poor': '较差', 'unknown': '未知'}
 
-TRANSFER_STAGE_LABELS = {'fetching': '拉取', 'uploading': '上传', 'relaying': '代传'}
+TRANSFER_STAGE_LABELS = {'waiting': '等待采集', 'fetching': '拉取', 'uploading': '上传', 'relaying': '代传'}
 
 UPLOAD_MODE_LABELS = {'acli_direct': 'P1 直传日志服务器', 'bridge_relay': 'P2 经平台中转', 'unknown': '未定'}
 

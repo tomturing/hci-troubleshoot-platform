@@ -81,6 +81,7 @@
     "unknown": "未知"
   },
   "transfer_stage": {
+    "waiting": "等待采集",
     "fetching": "拉取",
     "uploading": "上传",
     "relaying": "代传"
