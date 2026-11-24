@@ -90,7 +90,8 @@ func main() {
 	// 否则排障时无法回答"日志到底写在哪"（工单 Q2026092010235 的直接教训）。
 	obslog.DefaultHub.ApplyRuntimeMode(config.Mode)
 	// 证据门面接线：必须在 obslog 初始化之后、业务 goroutine 启动之前。
-	installEvidenceSink()
+	// 版本一并注入：证据请求要带 X-Bridge-Version，平台据此识别上报方。
+	installEvidenceSink(getVersion())
 	// 节点同步链路登记：必须在任何同步任务受理之前完成，
 	// 否则守卫测试与运行期诊断看到的是一份不完整的链路清单。
 	installKinds()
