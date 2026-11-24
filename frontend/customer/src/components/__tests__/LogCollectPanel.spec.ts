@@ -1594,8 +1594,9 @@ describe('LogCollectPanel', () => {
     expect(vi.mocked(logCollectApi.getTask)).toHaveBeenCalledWith('task-stale')
     const result = wrapper.find('.lc-result')
     expect(result.text()).not.toContain('该工单上次采集失败')
-    // 展示的必须是纠正后的时间，用户据此判断"这条结论有多新"
-    expect(result.text()).toContain('17:56')
+    // 结论必须换成纠正后的成功态。这里刻意不断言具体时刻：渲染走本地时区，
+    // CI（UTC）与本机（+08）会得到不同字符串，钉死时间等于给未来加一个时区坑。
+    expect(result.text()).toContain('该工单已完成日志收集')
     wrapper.unmount()
   })
 
