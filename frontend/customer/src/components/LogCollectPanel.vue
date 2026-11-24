@@ -99,7 +99,7 @@ import {
   type SyncAction,
 } from '@/services/logCollectSync'
 import { useChatStore } from '@/stores/chat'
-import { formatVersionArchitecture } from '@/utils/logCollectProbeDisplay'
+import { formatAcliVersion, formatVersionArchitecture } from '@/utils/logCollectProbeDisplay'
 
 const props = defineProps<{ caseId: string; nodeIp?: string }>()
 const visible = defineModel<boolean>({ required: true })
@@ -985,9 +985,7 @@ const versionArchitectureText = computed(() =>
 const acliVersionText = computed(() => {
   const probe = probeResult.value
   if (!probe) return ''
-  if (!probe.acli_installed) return '未安装'
-  const build = (probe.acli_build_time || '').trim()
-  return build ? `${probe.acli_version} (build ${build})` : probe.acli_version
+  return formatAcliVersion(probe.acli_version, probe.acli_build_time, probe.acli_installed)
 })
 
 /** 探测命中的 acli 路径（悬停可见）：与手敲结果不一致时，第一眼要能看出是哪份二进制。 */

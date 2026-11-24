@@ -10,11 +10,34 @@
  * 前端不重新计算 status，也不自己拼「已完成」。缺失项一律显示「—」或
  * 「桥接端版本较旧」，绝不拿 0/100 顶替。
  */
-import { createApiClient } from '@hci/shared'
+import { createApiClient, type EnvironmentContextResponse } from '@hci/shared'
 import { getAccessToken } from '@/utils/auth'
 
 const client = createApiClient('/api/v1', undefined, getAccessToken)
 const BASE = '/log-collect/admin/tasks'
+
+/**
+ * 环境上下文在网关只有 `/api/environments`，没有 `/api/v1` 版本，
+ * 因此必须另建 `/api` client，不能复用上面的管理端 client。
+ *
+ * 对抗性审查：admin JWT 的 client_id 是管理员 ID，case-service 的 BOLA 校验会判
+ * 无权访问客户工单；网关 require_user 允许 admin 显式指定 client_id，
+ * 所以调用必须带上任务所属客户的 client_id。
+ */
+const envClient = createApiClient('/api', undefined, getAccessToken)
+
+/** 读取工单环境快照里的 HCI 版本；缺失或类型异常一律返回 null，由调用方降级。 */
+export async function getTaskEnvironmentHciVersion(
+  caseId: string,
+  clientId: string,
+): Promise<string | null> {
+  const response = await envClient.get<EnvironmentContextResponse>(
+    `/environments/case/${encodeURIComponent(caseId)}/context`,
+    { params: { client_id: clientId } },
+  )
+  const raw = response.data?.env_info?.hci_version
+  return typeof raw === 'string' ? raw.trim() || null : null
+}
 
 export interface AdminTaskFilters {
   page?: number
