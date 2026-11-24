@@ -12,6 +12,7 @@ package evidence
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 
 	"terminal_bridge/internal/shared/models"
@@ -52,6 +53,32 @@ func (nopSink) LogDir() string                               { return "" }
 // sink 用 atomic.Value 保存：启动时注入一次，之后全仓只读，
 // 避免在 goroutine 里读到半初始化的接口值（race）。
 var sink atomic.Value
+
+// bridgeVersion 是"上报方版本"的注入缝。
+//
+// 为什么放在这里而不是 Sink 上：Sink 是"证据通道能力"的跨域契约，
+// 加一个方法要同步改全部实现与测试替身；而版本只是一个只读字符串，
+// 由装配层注入一次、证据请求处读取即可。
+//
+// 为什么必须让每次证据上报都带版本：bridge 的启动事件（bridge.startup）
+// 走的是桥侧日志直传，那一刻浏览器通常还没连上，直传失败就永久丢失。
+// 2026-11-24 Q2026112400942 现场正是如此——想回答"这台跑的哪个版本"，
+// 平台侧查无此项，只能到客户机桌面翻日志。版本随业务请求一起上报后，
+// 任何一条指标/探测/清单都能反查上报方身份。
+var bridgeVersion atomic.Value
+
+// SetBridgeVersion 由装配层在启动时调用一次；传空串等价于清空（测试复位用）。
+func SetBridgeVersion(version string) {
+	bridgeVersion.Store(strings.TrimSpace(version))
+}
+
+// BridgeVersion 返回注入的版本串；未注入时返回空串（调用方据此省略请求头）。
+func BridgeVersion() string {
+	if v, ok := bridgeVersion.Load().(string); ok {
+		return v
+	}
+	return ""
+}
 
 func load() Sink {
 	if v := sink.Load(); v != nil {
