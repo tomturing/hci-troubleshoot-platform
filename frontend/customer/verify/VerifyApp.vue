@@ -35,11 +35,21 @@ import LogCollectStatusCard from '../src/components/LogCollectStatusCard.vue'
 import { buildResultHeadline } from '../src/utils/logCollectDelivery'
 import { showCustomerFault } from '../src/utils/logCollectFault'
 import { buildNodeCleanupTip } from '../src/services/logCollectCleanup'
+import { formatVersionArchitecture } from '../src/utils/logCollectProbeDisplay'
 import type { LogCollectDisplayView, LogCollectStageView } from '../src/api/logCollect'
 
 const params = new URLSearchParams(window.location.search)
 const isDeliveredScenario = params.get('scenario') === 'delivered'
 const isCollectAlertScenario = params.get('scenario') === 'collect-alert'
+const isProbeInfoScenario = params.get('scenario') === 'probe-info'
+// 探测卡「版本架构」回归：与产品组件调用同一个拼接函数，
+// 在真实浏览器里确认标签与取值（含环境上下文缺失时的降级）。
+const probeArchitecture = 'x86_64'
+const probeHciVersion = '6.10.0_R2'
+const probeAcliText = '1.0.1 (build 2026-09-20 17:22:30)'
+const versionArchitectureText = computed(() =>
+  formatVersionArchitecture(probeArchitecture, probeHciVersion),
+)
 const requested = params.get('code') ?? ''
 const code: FaultCode = (requested in FAULT_CATALOG ? requested : 'LC-HCI-001') as FaultCode
 const traceId = `trace-${code}-Q2026111300155`
@@ -181,7 +191,7 @@ const collectAlertHeadline = buildResultHeadline({
 })
 
 function triggerFault(): void {
-  if (!isDeliveredScenario && !isCollectAlertScenario) showCustomerFault('', code)
+  if (!isDeliveredScenario && !isCollectAlertScenario && !isProbeInfoScenario) showCustomerFault('', code)
 }
 
 onMounted(triggerFault)
@@ -275,8 +285,20 @@ onMounted(triggerFault)
       <div data-testid="collect-alert-trace">{{ collectAlertTrace }}</div>
     </section>
 
+    <section v-if="isProbeInfoScenario" class="verify-section" data-testid="probe-info-section">
+      <h2>探测卡「版本架构」展示回归</h2>
+      <p class="verify-note">
+        标签与取值走产品同一份拼接函数 <code>formatVersionArchitecture</code>：
+        HCI 版本来自环境上下文，架构来自本次探测。
+      </p>
+      <el-descriptions :column="2" border size="small">
+        <el-descriptions-item label="版本架构">{{ versionArchitectureText }}</el-descriptions-item>
+        <el-descriptions-item label="acli版本">{{ probeAcliText }}</el-descriptions-item>
+      </el-descriptions>
+    </section>
+
     <section class="verify-section">
-      <h2>{{ isDeliveredScenario || isCollectAlertScenario ? '6' : '3' }}. 错误字典全量（{{ catalogRows.length }} 条，客户与管理端同源）</h2>
+      <h2>{{ isDeliveredScenario || isCollectAlertScenario || isProbeInfoScenario ? '6' : '3' }}. 错误字典全量（{{ catalogRows.length }} 条，客户与管理端同源）</h2>
       <el-table :data="catalogRows" size="small" border>
         <el-table-column prop="code" label="错误码" width="140" />
         <el-table-column prop="scope" label="大段" width="80" />

@@ -5,10 +5,18 @@
  * fixture 由 scripts/gen_log_collect_admin_verify_fixture.py 调用真实 derive() 生成，
  * 因此截图证明的是产品派生逻辑与产品组件，而不是另画一份。
  */
+import { computed } from 'vue'
+import { formatAcliVersion, formatVersionArchitecture } from '@hci/shared'
 import LogCollectAttribution from '../src/views/components/LogCollectAttribution.vue'
 import fixture from './mock-admin.json'
 
 const detail = fixture.detail
+
+// 任务进展详情的版本字段验收：与产品组件共用 @hci/shared 的拼接函数。
+const isVersionArchScenario =
+  new URLSearchParams(window.location.search).get('scenario') === 'version-arch'
+const versionArchitectureText = computed(() => formatVersionArchitecture('x86_64', '6.10.0_R2'))
+const acliVersionText = computed(() => formatAcliVersion('1.0.1', '2026-09-20 17:22:30'))
 </script>
 
 <template>
@@ -36,6 +44,15 @@ const detail = fixture.detail
       <h2>2. S1-S8 阶段时间线（感叹号里是固定设计说明弹框）</h2>
       <p class="note">阶段状态查不到即 unknown，不伪造；段/组件说明来自同一错误字典，按需弹框查看。</p>
       <LogCollectAttribution variant="panel" :display="detail.display" />
+    </section>
+
+    <section v-if="isVersionArchScenario" class="card" data-testid="version-arch-section">
+      <h2>3. 任务进展详情：版本架构 / acli版本</h2>
+      <p class="note">与客户侧探测卡共用 @hci/shared 的拼接函数，标签与取值口径一致。</p>
+      <el-descriptions :column="1" border size="small">
+        <el-descriptions-item label="版本架构">{{ versionArchitectureText }}</el-descriptions-item>
+        <el-descriptions-item label="acli版本">{{ acliVersionText }}</el-descriptions-item>
+      </el-descriptions>
     </section>
   </main>
 </template>

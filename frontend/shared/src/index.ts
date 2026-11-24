@@ -8,6 +8,7 @@ export * from './utils/crypto'
 export * from './conversation'
 export * from './logCollectDisplay'
 export * from './logCollectUi'
+export * from './logCollectProbeDisplay'
 
 // 导出 Environment 相关类型和 API
 export type {

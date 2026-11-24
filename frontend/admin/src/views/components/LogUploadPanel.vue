@@ -22,7 +22,9 @@ import {
   MODE_TEXT,
   STATUS_TEXT,
   UI_TEXT,
+  formatAcliVersion,
   formatLogCollectSize,
+  formatVersionArchitecture,
 } from '@hci/shared'
 import LogCollectAttribution from './LogCollectAttribution.vue'
 
@@ -34,6 +36,7 @@ import {
   getNetworkProbe,
   getProcessLogContent,
   getProcessLogs,
+  getTaskEnvironmentHciVersion,
   getTransferMetrics,
   listAdminTasks,
   type AdminLogCollectTask,
@@ -63,6 +66,7 @@ const progressMap = ref<Record<string, DestinationProgress>>({})
 const detailVisible = ref(false)
 const detailTask = ref<AdminLogCollectTask | null>(null)
 const detailData = ref<AdminTaskDetail | null>(null)
+const detailHciVersion = ref<string | null>(null)
 const detailTab = ref('transfer')
 
 const evidenceLoading = ref(false)
@@ -291,6 +295,33 @@ const structuredDetail = computed<Record<string, unknown>>(() => {
 const structuredKeys = computed(() => Object.keys(structuredDetail.value))
 const structuredJson = computed(() => JSON.stringify(structuredDetail.value, null, 2))
 
+/**
+ * 详情里的架构/acli 字段由单任务接口回写，列表行只有部分证据键；
+ * 因此在详情打开前它们为空，界面显示「—」而不是拿列表行拼半截事实。
+ */
+const detailForProbe = computed<AdminTaskDetail | null>(
+  () => detailTask.value as AdminTaskDetail | null,
+)
+
+/**
+ * 版本架构：arch 来自任务快照，HCI 版本来自工单环境上下文。
+ * 对抗性审查：环境接口失败/字段缺省时只显示架构，不让详情抽屉整块空掉。
+ */
+const versionArchitectureText = computed(() =>
+  formatVersionArchitecture(detailForProbe.value?.arch, detailHciVersion.value),
+)
+
+/** acli 版本：顶层版本号 + detail.probe 里的 build 时间，口径与客户侧探测卡一致。 */
+const acliVersionText = computed(() => {
+  const detail = detailForProbe.value
+  if (!detail) return ''
+  const probe = structuredDetail.value.probe
+  const buildTime = probe && typeof probe === 'object'
+    ? (probe as Record<string, unknown>).acli_build_time
+    : undefined
+  return formatAcliVersion(detail.acli_version, buildTime)
+})
+
 /** 采集告警原文：只给 admin 看（客户侧只有三问文案）；file/line 是定位坏包的关键。 */
 interface CollectAlertRow {
   code?: string
@@ -427,6 +458,7 @@ async function loadProcessLogContent(logId: string) {
 function openDetail(task: AdminLogCollectTask) {
   detailTask.value = task
   detailData.value = null
+  detailHciVersion.value = null
   detailTab.value = 'transfer'
   transferMetrics.value = null
   hostResults.value = []
@@ -464,6 +496,16 @@ function openDetail(task: AdminLogCollectTask) {
       }
     })
     .catch(() => { detailData.value = null })
+  // HCI 版本来自工单环境快照；接口不可用或归属校验失败时只显示架构，不阻断详情。
+  if (task.case_id && task.client_id) {
+    void getTaskEnvironmentHciVersion(task.case_id, task.client_id)
+      .then((version) => {
+        // 切单或关抽屉后旧请求不得覆盖新任务，与 getAdminTask 同一保护。
+        if (!detailVisible.value || detailTask.value?.task_id !== openedTaskId) return
+        detailHciVersion.value = version
+      })
+      .catch(() => { detailHciVersion.value = null })
+  }
 }
 
 watch(detailTab, (tab) => void loadEvidence(tab))
@@ -712,6 +754,8 @@ const summaryCells = computed(() => [
           <el-descriptions-item label="client_id">{{ detailTask.client_id || '—' }}</el-descriptions-item>
           <el-descriptions-item label="发起节点">{{ detailTask.origin_node_ip || '—' }}</el-descriptions-item>
           <el-descriptions-item label="交付路径">{{ MODE_TEXT[detailTask.upload_mode] ?? '未定' }}</el-descriptions-item>
+          <el-descriptions-item label="版本架构">{{ versionArchitectureText || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="acli版本">{{ acliVersionText || '—' }}</el-descriptions-item>
           <el-descriptions-item label="采集状态">{{ STATUS_TEXT[detailTask.status] ?? detailTask.status }}（{{ detailTask.progress }}%）</el-descriptions-item>
           <el-descriptions-item label="交付结论">{{ DELIVERY_TEXT[detailTask.delivery_status] ?? detailTask.delivery_status }}</el-descriptions-item>
           <el-descriptions-item label="代传状态">{{ detailTask.relay_status }}</el-descriptions-item>

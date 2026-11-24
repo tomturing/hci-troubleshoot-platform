@@ -99,6 +99,7 @@ import {
   type SyncAction,
 } from '@/services/logCollectSync'
 import { useChatStore } from '@/stores/chat'
+import { formatAcliVersion, formatVersionArchitecture } from '@/utils/logCollectProbeDisplay'
 
 const props = defineProps<{ caseId: string; nodeIp?: string }>()
 const visible = defineModel<boolean>({ required: true })
@@ -958,6 +959,23 @@ const manualHostHint = computed(() => {
 })
 
 /**
+ * 展示用「版本架构」文案：HCI 产品版本 + 节点 CPU 架构。
+ *
+ * 第一性原理：排障必须同时看到「软件版本」与「硬件指令集」，缺一就会把版本相关
+ * 缺陷误判成环境问题。HCI 版本在建单/切单时已由环境上下文采集并落库，直接复用；
+ * 不在探测里重复下发 `acli platform info get`（那要改 bridge exe 且需现场人工重装）。
+ * 对抗性审查：环境上下文可能尚未采集（手工指定工单号/采集失败），此时只显示架构；
+ * env_info.hci_version 在契约里是 unknown，必须收窄成字符串，
+ * 否则对象/数字会被插值渲染成 "[object Object]"。
+ */
+const versionArchitectureText = computed(() =>
+  formatVersionArchitecture(
+    probeResult.value?.architecture,
+    chatStore.environmentContext?.env_info?.hci_version,
+  ),
+)
+
+/**
  * 展示用 acli 版本文案：版本号 + 编译时间。
  *
  * 第一性原理：`acli --version` 的两行输出才是完整事实（1.0.1 / build 2026-09-15 21:00:04），
@@ -967,9 +985,7 @@ const manualHostHint = computed(() => {
 const acliVersionText = computed(() => {
   const probe = probeResult.value
   if (!probe) return ''
-  if (!probe.acli_installed) return '未安装'
-  const build = (probe.acli_build_time || '').trim()
-  return build ? `${probe.acli_version} (build ${build})` : probe.acli_version
+  return formatAcliVersion(probe.acli_version, probe.acli_build_time, probe.acli_installed)
 })
 
 /** 探测命中的 acli 路径（悬停可见）：与手敲结果不一致时，第一眼要能看出是哪份二进制。 */
@@ -5616,8 +5632,8 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <el-descriptions v-if="probeResult" :column="descColumns" border size="small" class="lc-probe">
-          <el-descriptions-item label="架构">{{ probeResult.architecture }}</el-descriptions-item>
-          <el-descriptions-item label="acli">
+          <el-descriptions-item label="版本架构">{{ versionArchitectureText }}</el-descriptions-item>
+          <el-descriptions-item label="acli版本">
             <span :title="acliTitle">{{ acliVersionText }}</span>
           </el-descriptions-item>
           <el-descriptions-item v-if="deliveryModeFact" label="建议路径">

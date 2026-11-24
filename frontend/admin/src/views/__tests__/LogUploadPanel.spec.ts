@@ -24,6 +24,7 @@ const api = vi.hoisted(() => ({
   getArtifactManifest: vi.fn(),
   getProcessLogs: vi.fn(),
   getProcessLogContent: vi.fn(),
+  getTaskEnvironmentHciVersion: vi.fn(),
 }))
 
 vi.mock('@/api/logCollectAdminTasks', async (importOriginal) => {
@@ -84,6 +85,7 @@ beforeEach(() => {
   api.getArtifactManifest.mockResolvedValue({ task_id: 'task-done', items: [] })
   api.getProcessLogs.mockResolvedValue({ task_id: 'task-done', items: [] })
   api.getProcessLogContent.mockResolvedValue({ content: '', truncated: false })
+  api.getTaskEnvironmentHciVersion.mockResolvedValue(null)
   api.listAdminTasks.mockResolvedValue({
     items: [activeTask, doneTask], total: 2, page: 1, page_size: 20, summary,
   })
@@ -409,6 +411,54 @@ describe('LogUploadPanel', () => {
     expect(text).toContain('100%')
     expect(text).toContain('hosts_count')
     expect(text).not.toContain('该任务未上报逐台明细')
+    wrapper.unmount()
+  })
+
+  it('任务详情展示版本架构与 acli版本，口径与客户侧探测卡一致', async () => {
+    api.getAdminTask.mockResolvedValue({
+      ...doneTask,
+      arch: 'x86_64',
+      acli_version: '1.0.1',
+      detail: { probe: { acli_build_time: '2026-09-20 17:22:30' } },
+      transfer: null,
+      network: null,
+    })
+    api.getTaskEnvironmentHciVersion.mockResolvedValue('6.10.0_R2')
+    const wrapper = await mountPanel()
+    const buttons = wrapper.findAll('button').filter((item) => item.text() === '详情')
+    await buttons[buttons.length - 1]!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    // 管理端 JWT 的 client_id 是管理员，必须显式带任务客户的 client_id 过 BOLA
+    expect(api.getTaskEnvironmentHciVersion).toHaveBeenCalledWith('Q2026111000244', 'client-xyz')
+    const text = wrapper.text()
+    expect(text).toContain('版本架构')
+    expect(text).toContain('HCI 6.10.0_R2 / x86_64')
+    expect(text).toContain('acli版本')
+    expect(text).toContain('1.0.1 (build 2026-09-20 17:22:30)')
+    wrapper.unmount()
+  })
+
+  it('环境上下文不可用时版本架构只显示架构，不渲染 undefined', async () => {
+    api.getAdminTask.mockResolvedValue({
+      ...doneTask,
+      arch: 'x86_64',
+      acli_version: '1.0.1',
+      transfer: null,
+      network: null,
+    })
+    api.getTaskEnvironmentHciVersion.mockRejectedValue(new Error('403'))
+    const wrapper = await mountPanel()
+    const buttons = wrapper.findAll('button').filter((item) => item.text() === '详情')
+    await buttons[buttons.length - 1]!.trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('x86_64')
+    expect(text).not.toContain('HCI undefined')
+    expect(text).not.toContain('[object Object]')
     wrapper.unmount()
   })
 

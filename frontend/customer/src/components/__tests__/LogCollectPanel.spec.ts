@@ -61,6 +61,8 @@ const { sentMessages, fakeSocket, mockStore, resolveAcliPluginSyncCredentialsMoc
     resolveAcliPluginSyncCredentialsMock: vi.fn(),
     mockStore: {
       lastSshHost: '',
+      // HCI 版本来自环境上下文（建单/切单时采集），探测面板只做展示
+      environmentContext: null as null | { env_info: Record<string, unknown> },
       sshConnectionState: 'disconnected' as 'disconnected' | 'connected',
       sshCurrentConfig: null as null | { host: string; port: number; username: string },
       logCollectActiveTask: null,
@@ -397,6 +399,7 @@ describe('LogCollectPanel', () => {
     sentMessages.length = 0
     fakeSocket.readyState = 1
     mockStore.lastSshHost = ''
+    mockStore.environmentContext = null
     mockStore.sshConnectionState = 'disconnected'
     mockStore.sshCurrentConfig = null
     // 抽屉宽度用例会改写，逐例复位，避免用例间互相污染
@@ -1257,6 +1260,55 @@ describe('LogCollectPanel', () => {
       .find((node: any) => node.find('.desc-label').text() === '建议路径')
     return cell ? cell.find('.desc-val').text() : ''
   }
+
+  // 同一张表的两格来自不同事实源：HCI 版本取环境上下文（建单时采集），
+  // acli 版本取本次探测快照。两个标签必须与界面口径一致，旧标签不能残留。
+  const probeCellText = (wrapper: any, label: string): string => {
+    const cell = wrapper
+      .findAll('.desc-item')
+      .find((node: any) => node.find('.desc-label').text() === label)
+    return cell ? cell.find('.desc-val').text() : ''
+  }
+
+  it('探测表格显示「版本架构」和「acli版本」两个标签', async () => {
+    mockStore.environmentContext = { env_info: { hci_version: '6.10.0_R2' } }
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    replyProbe({ status: 'ok', log_data: probePayload() })
+    await flushPromises()
+
+    expect(probeCellText(wrapper, '版本架构')).toBe('HCI 6.10.0_R2 / x86_64')
+    expect(probeCellText(wrapper, 'acli版本')).toContain('1.0.1 (build 2026-09-20 17:22:30)')
+    // 旧标签必须彻底消失，不能出现两行都讲架构/acli 的重复信息
+    expect(probeCellText(wrapper, '架构')).toBe('')
+    expect(probeCellText(wrapper, 'acli')).toBe('')
+    wrapper.unmount()
+  })
+
+  it('环境上下文缺失或 hci_version 类型异常时，「版本架构」只显示架构', async () => {
+    const mountWithProbe = async () => {
+      const wrapper = mountPanel()
+      await flushPromises()
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      replyProbe({ status: 'ok', log_data: probePayload() })
+      await flushPromises()
+      return wrapper
+    }
+
+    // 未采集环境数据（手工指定工单号/采集失败）
+    let wrapper = await mountWithProbe()
+    expect(probeCellText(wrapper, '版本架构')).toBe('x86_64')
+    expect(wrapper.text()).not.toContain('[object Object]')
+    wrapper.unmount()
+
+    // 上游把 hci_version 写成对象：不能把对象插值进界面
+    mockStore.environmentContext = { env_info: { hci_version: { unexpected: true } } }
+    wrapper = await mountWithProbe()
+    expect(probeCellText(wrapper, '版本架构')).toBe('x86_64')
+    expect(wrapper.text()).not.toContain('[object Object]')
+    wrapper.unmount()
+  })
 
   // 回归（Q2026102801062）：内网 HCI 连不上日志服务器是最常见的现场，不是故障。
   // 契约：探测结果只体现在「建议路径」的取值 + 交付路径的默认值/可选性上，
