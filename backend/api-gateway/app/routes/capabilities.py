@@ -5,13 +5,22 @@
 """
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from shared.observability.logger import get_logger
 
 from app.config import settings
+from app.security.gateway_auth import require_admin
 
-router = APIRouter(prefix="/api/v1", tags=["agent-capabilities-proxy"])
+# 2026-11-24 端口隔离加固：这三条路由是 Tools/Prompts/Skills 定义表 CRUD，
+# 上游 conversation-service 无任何鉴权，此前网关也无 require_*，导致公网 4443
+# 可直接读写智能体能力定义。调用方仅 admin-ui（customer-ui 零命中），
+# 因此在 router 级统一挂 require_admin，不影响任何合法调用。
+router = APIRouter(
+    prefix="/api/v1",
+    tags=["agent-capabilities-proxy"],
+    dependencies=[Depends(require_admin)],
+)
 logger = get_logger("gateway-agent-capabilities")
 
 # 上游 conversation-service 的地址
