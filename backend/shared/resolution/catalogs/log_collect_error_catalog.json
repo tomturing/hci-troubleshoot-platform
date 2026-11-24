@@ -683,12 +683,12 @@
       "code": "LC-TRANSFER-011",
       "layer": "TRANSFER",
       "stage": "package",
-      "title_zh": "节点产物早于本次采集",
+      "title_zh": "节点产物超出交付时效",
       "owner": "customer",
       "retryable": "manual",
       "http_status": 409,
-      "user_hint": "节点上的压缩包修改时间早于本次采集开始时间，平台拒绝把旧包当成本轮结果上传。请等本次采集真正结束、包大小不再变化后再点「上传到平台」；需要最新内容请重新采集。",
-      "ops_hint": "bridge 侧 delivery.job_finished 的 error 带节点包 mtime 与本次采集开始时间；不要按磁盘空间不足处置，无需清理 /sf/data/local。"
+      "user_hint": "请先确认节点时间是否准确；如需交付已采集完成的包，请使用「上传到平台」补交付；需要本轮最新内容请重新采集。",
+      "ops_hint": "bridge 侧 delivery.archive_age_probe 给出 node_now/mtime/mtime_on_bridge/job_started_at/age_sec/threshold_sec/clock_offset_sec/verdict；只有节点内年龄超过 30 分钟且校正后仍早于作业创建时间 5 分钟以上才判旧包。不要按磁盘空间不足处置，无需清理 /sf/data/local。"
     },
     {
       "code": "LC-PLATFORM-001",

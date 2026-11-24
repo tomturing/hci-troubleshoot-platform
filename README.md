@@ -4,6 +4,14 @@
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
+### 日志收集包归属时钟鲁棒性（2026-11-24）
+
+- 旧包判定不再拿未校正的节点 `mtime` 与 bridge 墙钟比较：同一条节点命令取 `date +%s` 与 `stat -c %Y` 做差，并测得偏移把 mtime 校正到平台时钟；节点时钟慢/快数小时、交付排队较久都不会再误杀本轮新包。
+- 只有“节点内年龄 > 30 分钟”且“校正后仍早于作业创建时间 5 分钟以上”两个证据同时成立才判旧包，任一侧证明是新的就放行。
+- `LC-TRANSFER-011` 改为结构化 fatal 错误并落 `LastErrorCode`；文案只陈述“按节点本地时间生成于 X 分钟前，且校正后仍早于作业创建时间”，处置第一步是校准节点时间，补交付走「上传到平台」。
+- 新增证据 `delivery.archive_age_probe`（`node_now/mtime/mtime_on_bridge/job_started_at/age_sec/threshold_sec/clock_offset_sec/verdict`）。
+  详见 [需求](docs/requirement/events/2026-11-24-日志收集包归属时钟鲁棒性.md)、[方案](docs/solution/events/2026-11-24-日志收集包归属时钟鲁棒性.md)、[任务](docs/task/events/2026-11-24-日志收集包归属时钟鲁棒性任务.md)。
+
 ### 失败工单交付事实误标修复（2026-11-20）
 
 - 206 个失败行对应 101 个工单；直连 5888 `/archive_status` 对账后，54 个工单已有本轮归档。其中 4 条「已登记交付 + 权威核验通过」的行不再被节点迟到的 `failed` 覆盖，并由迁移 068 带审计订正（原值写入 `detail.data_correction`）。

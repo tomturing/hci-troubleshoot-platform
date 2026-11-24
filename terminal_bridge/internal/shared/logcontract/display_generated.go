@@ -663,9 +663,9 @@ var contractErrors = map[string]contractError{
 		Stage:     "S4",
 	},
 	"LC-TRANSFER-011": {
-		Title:     "节点产物早于本次采集",
-		Problem:   "节点压缩包是上一轮任务的旧产物",
-		Action:    "节点上的压缩包修改时间早于本次采集开始时间，平台拒绝把旧包当成本轮结果上传。请等本次采集真正结束、包大小不再变化后再点「上传到平台」；需要最新内容请重新采集。",
+		Title:     "节点产物超出交付时效",
+		Problem:   "按节点本地时间，压缩包生成于较早时刻；校正节点时钟偏差后仍早于本次交付作业创建时间",
+		Action:    "请先确认节点时间是否准确；如需交付已采集完成的包，请使用「上传到平台」补交付；需要本轮最新内容请重新采集。",
 		Layer:     "TRANSFER",
 		Component: "bridge",
 		Stage:     "S4",
