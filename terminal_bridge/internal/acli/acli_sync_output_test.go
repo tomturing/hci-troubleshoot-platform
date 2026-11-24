@@ -102,17 +102,22 @@ func TestFormatOutputPreviewKeepsTail(t *testing.T) {
 	}
 }
 
-// 包名解析只认现行命名约定 acli_<版本>_<架构>_<YYYYMMDDHHMMSS>.acli。
-// 旧格式（acli-installer_<架构>_YYYY-MM-DD_HH-MM-SS.acli）已随发布侧改名退役：
-// 解析落空必须返回空串交调用方留痕+保守跳过，而不是猜一个时间戳进判序
-// （Q2026101401677：旧正则对新包名落空 → 静默"已是最新"，1.0.3 发布后节点仍 1.0.0）。
+// 包名解析：新命名 acli_<版本>_<架构>_<YYYYMMDDHHMMSS>.acli 是正式约定；
+// 旧命名 acli-installer_[<版本>_]<架构>_YYYY-MM-DD_HH-MM-SS.acli 是 2026-11-24
+// 起的**临时兼容**（1.0.3 安装环节有问题，发布侧临时回退旧稳定包），只取尾部
+// 打包时间与可选版本段。两者都不允许"猜"：缺时间戳一律返回空串，交调用方
+// 留痕+保守跳过（Q2026101401677：旧正则对新包名落空 → 静默"已是最新"）。
+// 回滚时把三条旧命名用例改回「落空」。
 func TestParseAcliRemoteName(t *testing.T) {
 	cases := []struct {
 		name, filename, wantVersion, wantBuild string
 	}{
 		{"现行 x86/c86 合包名", "acli_1.0.3_x86-c86_64_20261029170012.acli", "1.0.3", "2026-10-29 17:00:12"},
 		{"现行 aarch64 包名", "acli_1.0.3_aarch64_20261029165837.acli", "1.0.3", "2026-10-29 16:58:37"},
-		{"旧格式退役不落兜底", "acli-installer_x86_64_2026-05-20_17-33-24.acli", "", ""},
+		{"临时兼容旧命名（无版本段）", "acli-installer_x86_64_2026-05-20_17-33-24.acli", "", "2026-05-20 17:33:24"},
+		{"临时兼容旧命名（带版本段）", "acli-installer_1.0.1_x86-c86_64_2026-09-15_21-06-12.acli", "1.0.1", "2026-09-15 21:06:12"},
+		{"临时兼容旧命名缺时间戳不猜", "acli-installer_x86_64.acli", "", ""},
+		{"旧命名含路径片段不认", "acli-installer_../../etc/passwd_2026-05-20_17-33-24.acli", "", ""},
 		{"无时间戳不猜", "acli_1.0.3_x86_64.acli", "1.0.3", ""},
 		{"乱码名全落空", "evil../../passwd.acli", "", ""},
 		{"空名", "", "", ""},
@@ -142,6 +147,46 @@ func TestCompareAcliVersions(t *testing.T) {
 	for _, c := range cases {
 		if got := compareAcliVersions(c.a, c.b); got != c.want {
 			t.Fatalf("%s: compareAcliVersions(%q,%q)=%d want %d", c.name, c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// 临时兼容的判定终点（回滚时与解析用例一起删）：
+// 旧命名包只有打包日期可用时，日期严格更新才装、同日不装、本地更新禁降级。
+// 依据：2026-11-24 latest 端点返回 acli-installer_x86_64_2026-05-20_17-33-24.acli，
+// 现场节点停在 1.0.12-preview（2026-01-28）因 probe_failed 永不升级。
+func TestAcliLegacyPackageCompatibility(t *testing.T) {
+	const (
+		legacyFilename = "acli-installer_x86_64_2026-05-20_17-33-24.acli"
+		wantBuild      = "2026-05-20 17:33:24"
+	)
+	if !isLegacyAcliPackageName(legacyFilename) {
+		t.Fatalf("旧命名未被识别: %q", legacyFilename)
+	}
+	if isLegacyAcliPackageName("acli_1.0.3_x86-c86_64_20261029170012.acli") {
+		t.Fatal("新命名不得被误判为旧命名")
+	}
+	ver, build := parseAcliRemoteName(legacyFilename)
+	if ver != "" || build != wantBuild {
+		t.Fatalf("旧命名解析=(%q,%q) want (\"\",%q)", ver, build, wantBuild)
+	}
+
+	cases := []struct {
+		name                     string
+		currentVer, currentBuild string
+		wantInstall              bool
+		wantEvent                string
+	}{
+		{"preview 构建落后按日期升级", "1.0.12-preview", "2026-01-28 20:17:50", true, "version_outdated"},
+		{"同日打包不重复安装", "1.0.0", "2026-05-20 17:22:16", false, ""},
+		{"本地更新禁止降级", "1.0.3", "2026-10-29 17:00:12", false, "downgrade_blocked"},
+		{"未安装照常安装", "", "", true, "not_installed"},
+	}
+	for _, c := range cases {
+		install, event := acliInstallDecision(c.currentVer, c.currentBuild, ver, build, false, "all")
+		if install != c.wantInstall || event != c.wantEvent {
+			t.Fatalf("%s: acliInstallDecision(%q,%q,%q,%q)=(%v,%q) want (%v,%q)",
+				c.name, c.currentVer, c.currentBuild, ver, build, install, event, c.wantInstall, c.wantEvent)
 		}
 	}
 }

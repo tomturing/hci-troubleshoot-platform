@@ -175,6 +175,13 @@ func HandleAcliSync(b *session.Hub, ws *websocket.Conn, msg models.InMessage, cu
 	// 命名约定再次变更时解析会落空：HTTP 探测本身成功（probeErr=nil），
 	// 失败只发生在文件名解析层。不留痕就会重演 Q2026101401677 的静默失效——
 	// 判定层把"解析不出"保守跳过，界面却显示"已是最新"，无人察觉。
+	// 临时兼容留痕（回滚观察点）：出现这条事件说明发布侧仍在发旧命名包，
+	// 兼容分支不能删。见 parseAcliRemoteName 上方的临时兼容说明。
+	if probeErr == nil && isLegacyAcliPackageName(remoteFilename) {
+		evidence.Emit("WARN", "acli_sync.legacy_package_name", "下载源返回旧命名安装包，临时兼容解析生效（发布侧回滚后删除）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"remote_filename": remoteFilename, "parsed_version": remoteVersion, "parsed_build": remoteBuild,
+		})
+	}
 	if probeErr == nil && remoteFilename != "" && remoteVersion == "" && remoteBuild == "" {
 		evidence.Emit("WARN", "acli_sync.build_parse_failed", "远端包名不符合已知命名约定，无法判序，保守跳过升级（可 force）", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
 			"remote_filename": remoteFilename,
@@ -788,13 +795,51 @@ func remoteBuildNewer(current, remote string) bool {
 // 官方包命名约定（单一）：acli_<版本>_<架构>_<YYYYMMDDHHMMSS>.acli，
 // 如 acli_1.0.3_x86-c86_64_20261029170012.acli。架构段可为合包形态 x86-c86_64：
 // 一个包同时兼容 x86_64 与海光 C86_64（两者 uname -m 均报 x86_64），不是笔误。
-// 旧格式 acli-installer_<架构>_YYYY-MM-DD_HH-MM-SS.acli
-// 已随发布侧改名退役：latest 端点只发最新包，节点历史残包走重试安装兜底（不解析时间戳），
-// 自定义源无活体调用方——保留旧格式分支等于维护一份没有对手方的契约（Q2026101401677 审查结论）。
 var (
 	acliRemoteVersionRe = regexp.MustCompile(`^acli_(\d+\.\d+\.\d+)_`)
 	acliRemoteBuildRe   = regexp.MustCompile(`_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.acli$`)
 )
+
+// ── 临时兼容：旧命名安装包（2026-11-24 引入，发布侧回滚后删除）───────────────
+//
+// 背景：1.0.3 发布后测出安装环节新问题，发布侧临时把 latest 端点回退到上一版
+// 稳定包，该包沿用已退役的旧命名
+// acli-installer_[<版本>_]<架构>_YYYY-MM-DD_HH-MM-SS.acli
+// （2026-11-24 实测返回 acli-installer_x86_64_2026-05-20_17-33-24.acli）。
+// 桥在 Q2026101401677 之后只认新命名，于是包名解析落空 → probe_failed →
+// 已安装节点永远不会被自动升级，面板长期停留在旧 preview 构建。
+//
+// 临时约定：旧命名只取「尾部打包时间」与「可选版本段」，其余一律不猜；
+// 字符集限定为字母数字与 ._-，不把任意响应头文件名当成官方包。
+//
+// 回滚条件（满足任一即可整段删除）：发布侧恢复新命名后，
+// acli_sync.legacy_package_name 事件连续 7 天为 0，或发布侧明确通知旧包下线。
+// 回滚步骤：删除本段两个正则与 parseLegacyAcliRemoteName / isLegacyAcliPackageName，
+// 还原 parseAcliRemoteName 的旧命名分支，并把 TestParseAcliRemoteName 的
+// 旧格式用例改回「落空」。
+var (
+	acliLegacyVersionRe = regexp.MustCompile(`^acli-installer_(\d+\.\d+\.\d+)_`)
+	acliLegacyBuildRe   = regexp.MustCompile(`^acli-installer_[A-Za-z0-9_.\-]+?_(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.acli$`)
+)
+
+// isLegacyAcliPackageName 判断远端包名是否属于临时兼容的旧命名。
+// 调用方据此发 WARN 证据，保证「兼容仍被依赖」可见——它是回滚的唯一观察点。
+func isLegacyAcliPackageName(filename string) bool {
+	return strings.HasPrefix(strings.TrimSpace(filename), "acli-installer_")
+}
+
+// parseLegacyAcliRemoteName 从旧命名包名提取版本（可选）与打包时间。
+// 时间戳缺失时返回空串，保持「解析不出就不猜」的既有语义。
+func parseLegacyAcliRemoteName(filename string) (version string, buildTime string) {
+	name := strings.TrimSpace(filename)
+	if m := acliLegacyVersionRe.FindStringSubmatch(name); len(m) == 2 {
+		version = m[1]
+	}
+	if m := acliLegacyBuildRe.FindStringSubmatch(name); len(m) == 7 {
+		buildTime = fmt.Sprintf("%s-%s-%s %s:%s:%s", m[1], m[2], m[3], m[4], m[5], m[6])
+	}
+	return version, buildTime
+}
 
 // parseAcliRemoteName 从官方包名解析版本号与打包时间。
 // 任一 segment 不符合约定即返回空串，由调用方决定留痕与保守跳过；
@@ -805,6 +850,11 @@ func parseAcliRemoteName(filename string) (version string, buildTime string) {
 	}
 	if m := acliRemoteBuildRe.FindStringSubmatch(filename); len(m) == 7 {
 		buildTime = fmt.Sprintf("%s-%s-%s %s:%s:%s", m[1], m[2], m[3], m[4], m[5], m[6])
+	}
+	// 临时兼容：仅当新命名完全落空时才尝试旧命名（回滚时删除本分支，
+	// 连同上面的 acliLegacy* 正则与 parseLegacyAcliRemoteName）。
+	if version == "" && buildTime == "" && isLegacyAcliPackageName(filename) {
+		return parseLegacyAcliRemoteName(filename)
 	}
 	return version, buildTime
 }
