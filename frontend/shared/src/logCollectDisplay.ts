@@ -96,7 +96,8 @@ export const NETWORK_GRADE_LABELS = {
 export const TRANSFER_STAGE_LABELS = {
   "fetching": "拉取",
   "relaying": "代传",
-  "uploading": "上传"
+  "uploading": "上传",
+  "waiting": "等待采集"
 } as const
 
 export const UPLOAD_MODE_LABELS = {
