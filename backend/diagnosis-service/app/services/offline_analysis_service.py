@@ -157,6 +157,26 @@ class OfflineAnalysisService:
         self._cdd_decision: Any = None
         self._cdd_assessments: dict[str, Any] = {}
 
+    async def _require_session_exists(self, *, actor: ActorContext, session_id: str) -> None:
+        """校验会话属于当前租户且确实存在（SRC-2026-5358）。
+
+        只读列表若跳过此校验，不存在的会话与无数据都会返回空数组，
+        调用方无法区分，也给会话 ID 探测留下 oracle。行为与 timeline
+        端点的 DIAGNOSIS_SESSION_NOT_FOUND 保持一致。
+        """
+        row = await self._session.execute(
+            text(
+                """
+                SELECT 1 FROM diagnosis_session
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                LIMIT 1
+                """
+            ),
+            {"tenant_id": actor.tenant_id, "session_id": session_id},
+        )
+        if row.first() is None:
+            raise DiagnosisError(code="DIAGNOSIS_SESSION_NOT_FOUND", message="诊断会话不存在", http_status=404)
+
     async def assess_and_diagnose(self, *, tenant_id: str, session_id: str, trace_id: str) -> dict[str, Any]:
         """按当前 ready Bundle 集合幂等创建评估和诊断运行。"""
 
@@ -395,6 +415,7 @@ class OfflineAnalysisService:
         """列出会话全部不可变诊断运行。"""
 
         self._require_read_role(actor)
+        await self._require_session_exists(actor=actor, session_id=session_id)
         publication_clause = ""
         if actor.roles.isdisjoint(ANALYSIS_ROLES):
             publication_clause = """
@@ -488,6 +509,7 @@ class OfflineAnalysisService:
         """客户只能看到已发布报告，其余可信角色可看完整版本。"""
 
         self._require_read_role(actor)
+        await self._require_session_exists(actor=actor, session_id=session_id)
         status_clause = ""
         if actor.roles.isdisjoint(ANALYSIS_ROLES):
             status_clause = """
@@ -2059,7 +2081,9 @@ def _extract_offline_producer_values(
                 projected["date"] = complete["date"]
             return True, projected
         if tool.startswith("qfk_"):
-            outputs = structured_data if isinstance(structured_data, dict) else {"stdout": _flatten_text(structured_data)}
+            outputs = (
+                structured_data if isinstance(structured_data, dict) else {"stdout": _flatten_text(structured_data)}
+            )
             if "stdout" not in outputs:
                 outputs = {**outputs, "stdout": _flatten_text(structured_data)}
             values: dict[str, Any] = {}
@@ -2131,7 +2155,9 @@ def _resolve_offline_acquire_args(
 def _variable_provenance_snapshot(args: Any, variable_values: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """只记录本消费者真正引用的变量来源，避免把整个变量池写入审计快照。"""
 
-    serialized = json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, (dict, list)) else str(args or "")
+    serialized = (
+        json.dumps(args, ensure_ascii=False, sort_keys=True) if isinstance(args, (dict, list)) else str(args or "")
+    )
     names = sorted({match.group(1).split(".")[0].lower() for match in _VARIABLE_PLACEHOLDER_RE.finditer(serialized)})
     snapshot: dict[str, dict[str, Any]] = {}
     for name in names:

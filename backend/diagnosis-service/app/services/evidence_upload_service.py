@@ -441,10 +441,31 @@ class EvidenceUploadService:
             raise DiagnosisError(code="EVIDENCE_BUNDLE_NOT_FOUND", message="诊断证据包不存在", http_status=404)
         return row
 
+    async def _require_session_exists(self, *, actor: ActorContext, session_id: str) -> None:
+        """校验会话属于当前租户且确实存在，避免对不存在的会话返回空数组。
+
+        SRC-2026-5358 报告指出：子资源列表若不校验会话存在性，不存在与
+        无数据会返回同一个空列表，调用方无法区分，且会暴露会话 ID 探测面。
+        与 timeline 等端点的 DIAGNOSIS_SESSION_NOT_FOUND 行为保持一致。
+        """
+        row = await self._session.execute(
+            text(
+                """
+                SELECT 1 FROM diagnosis_session
+                WHERE tenant_id = :tenant_id AND session_id = :session_id
+                LIMIT 1
+                """
+            ),
+            {"tenant_id": actor.tenant_id, "session_id": session_id},
+        )
+        if row.first() is None:
+            raise DiagnosisError(code="DIAGNOSIS_SESSION_NOT_FOUND", message="诊断会话不存在", http_status=404)
+
     async def list_bundles(self, *, actor: ActorContext, session_id: str) -> list[dict[str, Any]]:
         """按创建顺序读取会话证据包。"""
 
         self._require_role(actor)
+        await self._require_session_exists(actor=actor, session_id=session_id)
         result = await self._session.execute(
             text(
                 """
