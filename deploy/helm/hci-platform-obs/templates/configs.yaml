@@ -134,9 +134,10 @@ data:
       // 打进日志的路径仍需兜底。这里在日志进入 Loki 前把 token 值替换掉。
       // 匹配 `token=` 或 `token: ` 后跟至少 10 位 base64url/JWT 字符；
       // 保留 `token=` 前缀便于排障时确认"这里曾有个 token"。
+      // Token redaction: JWT dots included; ${1} is the Go Expand capture syntax.
       stage.replace {
-        expression = "token([=:]\\s*)[A-Za-z0-9_\\-]{10,}"
-        replace    = "token$1<REDACTED>"
+        expression = "token([=:]\\s*)[A-Za-z0-9_.\\-]{10,}"
+        replace    = "token${1}<REDACTED>"
       }
       // trace_id / span_id 提为 structured metadata 是**必需的**：全局规则要求
       // 「所有请求日志使用唯一调用链，可追踪完整调用路径」，而 metadata 是唯一
