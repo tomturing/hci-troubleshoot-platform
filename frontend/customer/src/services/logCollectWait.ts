@@ -64,6 +64,54 @@ export interface CollectWaitExpiryPlan {
   notice: string
 }
 
+/** 转入后台观察时写入 detail 的审计快照，供事后回答“为什么降频/为什么没判失败”。 */
+export interface ObserveHandoffAudit {
+  at: string
+  node_state: NodeState | 'unknown'
+  upload_state: string | null
+  done: number | null
+  total: number | null
+  archive_size: number | null
+  notice: string
+  trace_id: string | null
+}
+
+function finiteNumber(value: unknown): number | null {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : null
+}
+
+/**
+ * 构造观察交接审计。
+ *
+ * 只写事实，不写推测：节点态、上传原文、台数、包大小、提示语与 trace_id。
+ * 审计写 detail 而不是 status/error_code，避免把“本端停止等待”伪装成节点失败。
+ */
+export function buildObserveHandoffAudit(
+  input: CollectWaitExpiryInput & {
+    notice: string
+    traceId?: string | null
+    at?: string
+  },
+): ObserveHandoffAudit {
+  return {
+    at: input.at ?? new Date().toISOString(),
+    node_state: input.nodeState ?? 'unknown',
+    upload_state: input.uploadState ?? null,
+    done: finiteNumber(input.done),
+    total: finiteNumber(input.total),
+    archive_size: finiteNumber(input.archiveSize),
+    notice: input.notice,
+    trace_id: input.traceId ?? null,
+  }
+}
+
+/** 页面重开时判断任务是否已交接过后台观察；只有 collecting 才应恢复降频。 */
+export function hasObserveHandoff(detail: Record<string, unknown> | null | undefined): boolean {
+  const audit = detail?.['observation_handoff']
+  return Boolean(audit && typeof audit === 'object')
+}
+
 /**
  * 预算到点时的结论与文案。
  *
