@@ -22,7 +22,19 @@ data:
     http {
         include /etc/nginx/mime.types;
         default_type application/octet-stream;
-        access_log /dev/stdout;
+
+        # 2026-11-24 令牌脱敏：默认 combined 格式会把 $request（含 query string）
+        # 整条写进 accesslog，而 DSH 的 launch token 正好在 /dsh/?token=<t> 的
+        # query 里。Promtail/Alloy 采集容器日志入 Loki，Grafana 匿名可读，
+        # 于是「读日志 → 拿 token → 换 30 天 Cookie → RCE」形成闭环。
+        # 这里用自定义格式只记 $uri（不含 query），从源头杜绝 token 落盘。
+        # 代价：accesslog 不再包含任何 query 参数。对 DSH 反代而言 query 仅含
+        # token，无排障价值；路径与状态码、耗时、UA 均保留，可观测性不受损。
+        log_format dsh_safe '$remote_addr - $remote_user [$time_local] '
+                            '"$request_method $uri $server_protocol" '
+                            '$status $body_bytes_sent "$http_referer" '
+                            '"$http_user_agent" rt=$request_time';
+        access_log /dev/stdout dsh_safe;
 
         sendfile on;
         keepalive_timeout 65;

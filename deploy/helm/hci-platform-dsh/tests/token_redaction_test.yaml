@@ -1,0 +1,20 @@
+suite: "DSH token 泄露根治（2026-11-24）"
+templates:
+  - configmap.yaml
+tests:
+  - it: "accesslog 使用不含 query string 的 dsh_safe 格式"
+    template: configmap.yaml
+    asserts:
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "log_format dsh_safe"
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: '"\$request_method \$uri \$server_protocol"'
+      - matchRegex:
+          path: data["nginx.conf"]
+          pattern: "access_log /dev/stdout dsh_safe"
+      # 禁止回归到 combined（$request 含 query，会把 ?token= 写进日志）
+      - notMatchRegex:
+          path: data["nginx.conf"]
+          pattern: "access_log /dev/stdout;"
