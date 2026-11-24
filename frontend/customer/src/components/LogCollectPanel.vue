@@ -79,8 +79,10 @@ import {
   formatByteCount,
 } from '@/services/logCollectProgress'
 import {
+  buildObserveHandoffAudit,
   COLLECT_FOREGROUND_BUDGET_MS,
   COLLECT_POLL_SAFETY_MAX,
+  hasObserveHandoff,
   OBSERVE_POLL_INTERVAL_MS,
   planCollectWaitExpiry,
 } from '@/services/logCollectWait'
@@ -2349,11 +2351,12 @@ async function resumeTask(taskId: string) {
     // 进面板即对账：平台快照可能停在旧投影上（节点仍在跑、或早已异常结束）
     if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
 
+    // 观察交接要跨页面重开恢复：否则一次数小时的大包上传重开后又回到 5 秒轮询。
+    // 只认 collecting：终态/失败任务不能被旧审计拖进观察模式。
+    observeMode.value = task.status === 'collecting' && hasObserveHandoff(task.detail)
     // 终态任务仍然对账，但降频：节点可能还在跑（需要「接管」），5s 空转没有意义。
     // 等证据窗口内例外：加密到 10s，证据一到就回落。
-    startAutoSync(
-      TERMINAL_TASK_STATUSES.includes(task.status) ? terminalSyncInterval(task) : POLL_INTERVAL,
-    )
+    resumeAutoSync(task)
   } catch (e: any) {
     ElMessage.error(
       e?.response?.status === 404
@@ -4165,9 +4168,27 @@ async function syncNodeState(
  * 后端把这句话按关键词翻成 `LC-PLUGIN-010`，页面出现「平台已判失败，但节点任务仍在运行」，
  * 用户在 9.8 GiB 已传 60% 的时刻被推进「重新采集」。
  */
-function enterObserveMode(notice: string) {
+function enterObserveMode(notice: string, snapshot: ProgressSnapshot | null = null) {
   observeMode.value = true
   nodeSyncHint.value = notice
+  // 审计是旁路：写失败只留前端日志，不能反过来影响任务继续跑。
+  // 只写 detail、不改 status，避免与主流程/自动对账抢写状态机。
+  const taskId = currentTask.value?.task_id
+  if (taskId) {
+    const audit = buildObserveHandoffAudit({
+      nodeState: snapshot ? (snapshot.node_state ?? fallbackNodeState(snapshot)) : 'unknown',
+      uploadState: snapshot?.upload_state ?? null,
+      done: snapshot?.done ?? null,
+      total: snapshot?.total ?? null,
+      archiveSize: snapshot?.archive_size ?? observedArchiveSize.value ?? null,
+      notice,
+      traceId: currentTask.value?.display?.trace_id ?? null,
+    })
+    console.warn('[log-collect] observation-window-handoff', { task_id: taskId, ...audit })
+    void logCollectApi.patchTask(taskId, { detail: { observation_handoff: audit } }).catch((error: any) => {
+      console.warn('[log-collect] observation_handoff 审计写入失败', error?.message || error)
+    })
+  }
   // info 而不是 warning：节点侧一切正常，没有任何需要用户处理的异常。
   ElMessage.info(notice)
 }
@@ -4228,13 +4249,13 @@ async function resumeTaskFlow(
     // 到点只有两种情况：节点已自己报完成（把收尾补完），否则转后台观察。
     // 两种情况下都**不写** failed：预算耗尽是本端的事，不是节点的事实。
     if (plan.mode === 'observe' || !collected) {
-      enterObserveMode(plan.notice)
+      enterObserveMode(plan.notice, collected)
       return
     }
   }
   if (!collected) {
     // 理论不可达（expired + finalize 已带快照）；退化为观察而不是判失败。
-    enterObserveMode(planCollectWaitExpiry({ nodeState: 'unknown' }).notice)
+    enterObserveMode(planCollectWaitExpiry({ nodeState: 'unknown' }).notice, null)
     return
   }
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
