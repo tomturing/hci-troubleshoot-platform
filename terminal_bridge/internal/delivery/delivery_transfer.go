@@ -25,6 +25,23 @@ import (
 	"time"
 )
 
+const (
+	// deliveryProgressCommandTimeout 是 `acli log_collect progress` 的单条上限。
+	// acli 首次调用有进程启动与读状态文件的开销，给足 60 秒；超过即视为会话不可用。
+	deliveryProgressCommandTimeout = 60 * time.Second
+	// deliveryNodeProbeTimeout 是探测类命令（stat/ls/date/sha256sum）的单条上限。
+	// 这些命令在正常节点上都是毫秒级，15 秒已经非常宽松，只用于把"永久挂起"变成"可重试失败"。
+	deliveryNodeProbeTimeout = 15 * time.Second
+	// deliveryNodeCommandFailureLimit 是"连续多少次节点命令失败"判定会话不可用的阈值。
+	//
+	// 为什么不是看字节增量：等待采集阶段节点本来就可以长时间没有新字节（多节点串行采集），
+	// 用增量判定会误杀正常等待。而"命令一条都执行不了"是另一件事——它说明 SSH 会话已死
+	// （TMOUT 静默登出、NAT 老化导致通道半开），继续在这个会话上轮询就会永久冻结。
+	// 2026-11-24 Q2026112400942：P2 中继 149 分钟 0 字节、全程 fetching、无任何重连，
+	// 正是"命令永久挂起 + 等待阶段不判停摆"叠加的结果。
+	deliveryNodeCommandFailureLimit = 3
+)
+
 // waitCollect 只读 progress，直到 acli 报 done == total。
 //
 // 硬约束：**绝不 cancel、绝不发 create**——采集是节点侧的事，交付只负责搬运。
@@ -40,12 +57,32 @@ import (
 func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, job *deliveryJob) error {
 	deadline := time.Now().Add(deliveryCollectTimeout)
 	interval := 10 * time.Second
+	failTracker := newCommandFailTracker(deliveryNodeCommandFailureLimit)
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("等待采集完成超时（%s）", deliveryCollectTimeout)
 		}
-		output, _, err := session.RunCommandPty(ctx, "acli log_collect progress", 60*time.Second)
-		if err == nil {
+		output, _, err := session.RunCommandPty(ctx, "acli log_collect progress", deliveryProgressCommandTimeout)
+		if err != nil {
+			// 取消/掐断不是"节点不可用"：必须原样上交，否则会被误判成会话失效重排。
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			// 命令失败本身也可能是"节点正在忙"，所以只累计；连续失败到阈值才判定会话已死。
+			// 判据取"命令能不能执行"而不是"字节有没有涨"：等待采集阶段节点本就可以长时间
+			// 没有新字节（多节点串行），用增量判定会误杀正常等待。
+			streak, unreachable := failTracker.fail()
+			if unreachable {
+				evidence.Emit("WARN", "delivery.node_unreachable", "连续多条节点命令无响应，判定 SSH 会话已失效，本轮交回重排以重建连接", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "task_id": job.TaskID,
+					"command": "acli log_collect progress", "fail_streak": streak,
+					"timeout_sec": int64(deliveryProgressCommandTimeout / time.Second),
+					"last_error":  err.Error(),
+				})
+				return fmt.Errorf("节点命令连续 %d 次无响应（最后错误：%v）：会话可能已被节点空闲登出，本轮交回重排以重建连接", streak, err)
+			}
+		} else {
+			failTracker.reset()
 			progress := acliout.ParseProgress(output)
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
 				sourcePath := firstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
@@ -116,12 +153,16 @@ func statArchiveSize(ctx context.Context, session NodeSession, path string) (int
 	if strings.TrimSpace(path) == "" {
 		return 0, false
 	}
-	if out, _, err := session.RunQuickCommand(ctx, fmt.Sprintf("stat -c %%s %s", remote.ShellQuote(path))); err == nil {
+	// 探测预算必须自己给：上层 ctx 是整个作业的（最长 48 小时），
+	// 一旦 SSH 通道半开，stat 会永远不返回，交付就此冻结且看不出任何异常。
+	probeCtx, cancel := context.WithTimeout(ctx, deliveryNodeProbeTimeout)
+	defer cancel()
+	if out, _, err := session.RunQuickCommand(probeCtx, fmt.Sprintf("stat -c %%s %s", remote.ShellQuote(path))); err == nil {
 		if size, parseErr := strconv.ParseInt(strings.TrimSpace(out), 10, 64); parseErr == nil && size > 0 {
 			return size, true
 		}
 	}
-	probed := remote.ProbeArchive(ctx, session, path)
+	probed := remote.ProbeArchive(probeCtx, session, path)
 	if probed.Exists != nil && *probed.Exists && probed.Size > 0 {
 		return probed.Size, true
 	}
@@ -158,6 +199,10 @@ func (r *deliveryRunner) waitArchiveSettled(ctx context.Context, session NodeSes
 			completeErr := verifyArchiveComplete(ctx, session, path)
 			if completeErr == nil {
 				return size, nil
+			}
+			if errors.Is(completeErr, errNodeCommandUnreachable) {
+				// 会话层面已经不可用，继续在本轮里等只会白耗到 5 分钟超时并给出错误结论。
+				return 0, completeErr
 			}
 			if errors.Is(completeErr, errArchiveCompleteUnverifiable) {
 				evidence.Emit("WARN", "delivery.archive_eocd_unavailable", "节点缺少 zip 结束标记校验命令，仅按大小稳定判定包已写完", "", job.CaseID, job.NodeIP, "", map[string]any{
@@ -304,6 +349,15 @@ func (r *deliveryRunner) ensureSourceDigest(ctx context.Context, session NodeSes
 // 它必须与"包不完整"严格区分：前者只是少了一个可观测手段，后者是数据真的坏了。
 var errArchiveCompleteUnverifiable = errors.New("节点缺少 tail/od/tr/grep，无法校验 zip 结束标记")
 
+// errNodeCommandUnreachable 表示节点命令根本没有返回（超时/通道半开）。
+//
+// 它必须与"包还在写"和"节点缺工具"都分开：
+//   - 当成"包还在写"会白等满 5 分钟再报一个假原因；
+//   - 当成"缺工具"会降级放行，可能把半截包传上去。
+//
+// 正确处置是交给上层重排，重建会话后重来。
+var errNodeCommandUnreachable = errors.New("节点命令无响应（会话可能已被空闲登出）")
+
 // verifyArchiveComplete 通过 zip 尾部的 EOCD 标记判断包是否写完。
 // 只看尾部 64KiB：EOCD 在最末尾（含最大 65535 字节注释），无需读全文件。
 //
@@ -315,11 +369,19 @@ func verifyArchiveComplete(ctx context.Context, session NodeSession, path string
 		`tail -c 65536 %s | od -An -tx1 | tr -d ' \n' | grep -c 504b0506`,
 		remote.ShellQuote(path),
 	)
-	stdout, stderr, exitCode, err := session.RunQuickCommandStreams(ctx, command)
+	// 校验尾部是秒级操作，给它独立的短预算：这条命令一旦挂在半开会话上，
+	// 整个交付就会停在"等包写完"的判定里，且等待阶段不参与停摆看门狗。
+	probeCtx, cancel := context.WithTimeout(ctx, deliveryNodeProbeTimeout)
+	defer cancel()
+	stdout, stderr, exitCode, err := session.RunQuickCommandStreams(probeCtx, command)
 	combined := stdout + "\n" + stderr
 	// 注意：runQuickCommandStreams 在非零退出时也会返回 ssh.ExitError，
 	// 因此不能用 err != nil 判“命令不可用”——grep 未命中（exit 1）同样是 err != nil，
 	// 那是“包不完整”的正面证据，不能当成“没法校验”放行。
+	if ctx.Err() != nil {
+		// 超时/取消不是"节点缺工具"：绝不能降级放行，否则半截包会被当成完整包传上去。
+		return fmt.Errorf("%w：%v", errNodeCommandUnreachable, ctx.Err())
+	}
 	if exitCode < 0 {
 		return fmt.Errorf("%w（通道异常 %s）", errArchiveCompleteUnverifiable, errString(err))
 	}
@@ -365,7 +427,9 @@ const (
 // 若来自不同时钟源（一次节点、一次 bridge）就又回到“跨时钟比较”的老问题。
 func inspectArchiveAge(ctx context.Context, session NodeSession, path string) (archiveAgeSample, error) {
 	command := `printf '%s %s\n' "$(date +%s)" "$(stat -c %Y ` + remote.ShellQuote(path) + ` 2>/dev/null)"`
-	output, _, err := session.RunQuickCommand(ctx, command)
+	probeCtx, cancel := context.WithTimeout(ctx, deliveryNodeProbeTimeout)
+	defer cancel()
+	output, _, err := session.RunQuickCommand(probeCtx, command)
 	if err != nil {
 		return archiveAgeSample{}, err
 	}
@@ -1021,6 +1085,23 @@ func (r *deliveryRunner) complete(ctx context.Context, job *deliveryJob) error {
 	return nil
 }
 
+// transferStageFor 把作业阶段映射成传输证据里的 stage。
+//
+// 为什么不能只有 fetching/uploading 两种：等待采集与"上一轮失败后等重排"这两个阶段
+// 里，节点与桥之间一个字节都没流动。报 fetching 会让面板显示
+// 「上传中 0/5 片 · 传输已停滞」——把"还没开工/在等重建"说成"传不动"，
+// 现场据此会去查带宽和磁盘，方向完全错位（2026-11-24 Q2026112400942）。
+func transferStageFor(phase deliveryPhase, uploaded int64) string {
+	switch {
+	case phase == phaseUploading || uploaded > 0:
+		return "uploading"
+	case phase == phaseWaitingCollect || phase == "" || phase == phaseRetrying:
+		return "waiting"
+	default:
+		return "fetching"
+	}
+}
+
 // streamEvidenceMetrics 每 2 秒采样一次作业进度，速率用 EMA 平滑、ETA 用剩余字节估算。
 // 没有增量不补零：stalled 由平台按 60 秒阈值判定并写进 conditions。
 func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliveryJob) {
@@ -1075,10 +1156,7 @@ func (r *deliveryRunner) streamEvidenceMetrics(ctx context.Context, job *deliver
 			} else {
 				stalledSince = time.Time{}
 			}
-			stage := "fetching"
-			if phase == phaseUploading || uploaded > 0 {
-				stage = "uploading"
-			}
+			stage := transferStageFor(phase, uploaded)
 			metric := evidence.TransferMetric{
 				Seq: seq, Stage: stage, BytesDone: done, ElapsedMS: now.Sub(started).Milliseconds(),
 				Stalled: !stalledSince.IsZero() && now.Sub(stalledSince) >= time.Duration(reporter.StallSeconds())*time.Second,

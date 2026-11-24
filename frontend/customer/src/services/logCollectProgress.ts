@@ -87,6 +87,29 @@ export function computeOverallPercent(input: OverallPercentInput): number {
 }
 
 /**
+ * P1 直传上传阶段的文案。
+ *
+ * 第一性原理：进度文案只能报「本端真的量到了什么」。直传的字节流由节点上的插件
+ * 直接发给日志服务器，平台一个字节都看不到；节点的 `percent` 在「采集 + 打包」
+ * 结束时就封顶（现场实测 85%），只有节点报「发送成功」才跳 100%，上传全程不动。
+ *
+ * 旧实现写成 `发送中（85%）`，把采集封顶值伪装成上传进度：2026-11-24
+ * Q2026091700436 现场节点实传 66%（5888 侧落片核实），界面 40 分钟恒定 85%，
+ * 用户只能得出「卡死了」，进而点「重新采集」——而那会与节点上正在跑的任务互斥，
+ * 已传的几 GB 也白费。
+ *
+ * 所以这里只报节点自报的阶段 + 可核对的包大小，不附加任何百分比。
+ */
+export function describeDirectUpload(
+  snapshot: { upload_state?: string | null; archive_size?: number | null } | null | undefined,
+): string {
+  const state = (snapshot?.upload_state || '发送中').trim()
+  const size = Number(snapshot?.archive_size)
+  const sizeText = Number.isFinite(size) && size > 0 ? `，包 ${formatByteCount(size)}` : ''
+  return `正在发送到日志服务器：${state}${sizeText}`
+}
+
+/**
  * 字节数的展示口径（进度文案用）。
  *
  * 传输过程里用户关心的是「还要多久」，一个精确到个位的原始字节数没有信息量；

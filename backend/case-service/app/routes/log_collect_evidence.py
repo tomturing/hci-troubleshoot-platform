@@ -16,6 +16,7 @@ import base64
 import binascii
 import gzip
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -92,11 +93,55 @@ def _trace_of(task: dict[str, Any]) -> str:
     return str(task.get("trace_id") or get_current_trace_id() or "")
 
 
+# 上报方版本头：bridge 每条证据请求都带，用来回答"这条数据是哪个 bridge 发的"。
+#
+# 为什么不能只靠启动事件 bridge.startup：那一刻浏览器通常还没连上，事件只能走
+# 桥侧日志直传，一旦直传失败就永久丢失。2026-11-24 Q2026112400942 现场即如此：
+# 平台侧查不到"这台跑的哪个版本"，只能让客户到桌面翻本地日志。
+BRIDGE_VERSION_HEADER = "X-Bridge-Version"
+BRIDGE_VERSION_MAX_LEN = 64
+# 只接受版本串常见字符：既防注入，也避免把任意文本塞进 detail 后污染界面。
+_BRIDGE_VERSION_PATTERN = re.compile(r"^[0-9A-Za-z._+()-]{1,64}$")
+
+
+def _clean_bridge_version(raw: str | None) -> str:
+    """规范化版本串；不合法一律当没上报（宁可空，不可脏）。"""
+    value = (raw or "").strip()
+    if not value or len(value) > BRIDGE_VERSION_MAX_LEN:
+        return ""
+    return value if _BRIDGE_VERSION_PATTERN.fullmatch(value) else ""
+
+
+async def _record_bridge_version(service: Any, task_id: UUID, raw: str | None) -> None:
+    """把上报方版本写进任务 detail，且只在变化时写一次。
+
+    metrics 每 2 秒一条，如果无条件更新会把这个高频端点变成写放大源头，
+    所以 SQL 里用 ``IS DISTINCT FROM`` 收敛成"版本变了才写"。
+    """
+    version = _clean_bridge_version(raw)
+    if not version:
+        return
+    await service.repository.session.execute(
+        text(
+            """
+            UPDATE log_collect_task
+            SET detail = COALESCE(detail, '{}'::jsonb)
+                         || jsonb_build_object('bridge_version', CAST(:version AS text)),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE task_id = :task_id
+              AND COALESCE(detail ->> 'bridge_version', '') IS DISTINCT FROM :version
+            """
+        ),
+        {"task_id": str(task_id), "version": version},
+    )
+
+
 @router.post("/tasks/{task_id}/metrics", response_model=EvidenceAck)
 async def put_metric(
     task_id: UUID,
     payload: TransferMetricIn,
     x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    x_bridge_version: str = Header(default="", alias=BRIDGE_VERSION_HEADER),
     service: Any = Depends(get_log_collect_service),
 ) -> EvidenceAck:
     """一条传输样本；``(task_id, seq)`` 幂等。"""
@@ -104,6 +149,9 @@ async def put_metric(
         raise _unauthorized()
     task = await _require_task(service, task_id)
     session = service.repository.session
+    # 交付期间每 2 秒一条，正好覆盖"等待/拉取/上传"全程；
+    # 内部按"版本变化才写"收敛，不会把这个高频端点变成写放大。
+    await _record_bridge_version(service, task_id, x_bridge_version)
     result = await session.execute(
         text(
             """
@@ -153,12 +201,18 @@ async def put_network_probe(
     task_id: UUID,
     payload: NetworkProbeIn,
     x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    x_bridge_version: str = Header(default="", alias=BRIDGE_VERSION_HEADER),
     service: Any = Depends(get_log_collect_service),
 ) -> NetworkProbeAck:
     """一次探测结果；分级由平台按丢包/RTT/抖动推导，不信任客户端 grade。"""
     if not tickets.verify(str(task_id), x_evidence_ticket):
         raise _unauthorized()
     task = await _require_task(service, task_id)
+    # 探测是每个任务的第一个证据请求，最能代表"是谁在跑这份采集"。
+    bridge_version = _clean_bridge_version(payload.bridge_version) or _clean_bridge_version(
+        x_bridge_version
+    )
+    await _record_bridge_version(service, task_id, bridge_version)
     grade = probe_grade(
         reachable=payload.reachable,
         loss_rate=payload.loss_rate,
@@ -190,6 +244,8 @@ async def put_network_probe(
             "grade": grade,
             "samples": json.dumps(payload.samples, ensure_ascii=False),
             **payload.model_dump(exclude={"samples"}),
+            # 覆盖 payload 里的空值：新 bridge 走请求头，旧 bridge 的 payload 字段仍为空。
+            "bridge_version": bridge_version or None,
         },
     )
     await service.repository.session.execute(
@@ -314,14 +370,24 @@ async def put_process_log(
     )
     inserted = result.first()
     await session.commit()
-    await _sync_collect_alerts(
-        service,
-        task_id=task_id,
-        path=path,
-        payload=payload,
-        content=content,
-        trace_id=_trace_of(task),
-    )
+    # 旁路派生：正文已在上面提交，派生失败绝不能再把回执打成 500。
+    # 2026-11-24 现场就是这里没有兜底：_sync_collect_alerts 内部一个 TypeError
+    # 直接把 /process-logs 变成 500，桥以为证据没上报成功，证据清单因此缺失
+    # （客户界面 S7 只能显示「未知」），而正文其实早就写进库了。
+    try:
+        await _sync_collect_alerts(
+            service,
+            task_id=task_id,
+            path=path,
+            payload=payload,
+            content=content,
+            trace_id=_trace_of(task),
+        )
+    except Exception:  # noqa: BLE001 - 契约要求：派生失败只记日志，不影响回执
+        logger.warning(
+            "collect_alerts.sync_failed task_id=%s trace_id=%s",
+            task_id, _trace_of(task), exc_info=True,
+        )
     return EvidenceAck(
         task_id=task_id,
         id=str(inserted[0]) if inserted else str(log_id),
@@ -346,7 +412,9 @@ async def _sync_collect_alerts(
     if not is_collect_alert_source(path) or not content:
         return
     try:
-        text = gzip.decompress(content).decode("utf-8", errors="replace")
+        # 变量名不能叫 text：那会遮蔽 sqlalchemy.text，下面第 421 行就会变成
+        # 「'str' object is not callable」，整个上报接口 500（2026-11-24 现场）。
+        log_text = gzip.decompress(content).decode("utf-8", errors="replace")
     except (OSError, EOFError, UnicodeError) as exc:
         logger.warning(
             "collect_alerts.decode_failed task_id=%s path=%s error=%s trace_id=%s",
@@ -355,7 +423,7 @@ async def _sync_collect_alerts(
         return
     fresh = extract_collect_alerts(
         path,
-        text,
+        log_text,
         collected_at=payload.collected_at.isoformat() if payload.collected_at else None,
         trace_id=trace_id,
         node_ip=payload.host,
@@ -395,11 +463,15 @@ async def put_artifact_manifest(
     task_id: UUID,
     payload: ArtifactManifestIn,
     x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    x_bridge_version: str = Header(default="", alias=BRIDGE_VERSION_HEADER),
     service: Any = Depends(get_log_collect_service),
 ) -> EvidenceAck:
     """包内容探测清单；质量由中央目录事实推导，并回写任务证据快照。"""
     if not tickets.verify(str(task_id), x_evidence_ticket):
         raise _unauthorized()
+    # P1 直传任务没有 transfer-metrics 流，清单是他们唯一的"交付前"证据，
+    # 版本挂在这里才能覆盖直传场景。
+    await _record_bridge_version(service, task_id, x_bridge_version)
     quality, reason = derive_manifest_quality(
         archive_size=payload.archive_size,
         entry_count=payload.entry_count,

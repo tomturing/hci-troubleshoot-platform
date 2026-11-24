@@ -534,6 +534,14 @@ export interface AcliSyncOptions {
    */
   platformUrl?: string
   pluginTicket?: string
+  /**
+   * 平台使用自签证书时，由用户在当前浏览器会话内显式授权的证书放宽位。
+   *
+   * 与 platformUrl/pluginTicket 成对下发：桥只对本次拉插件清单放宽校验，不写全局状态；
+   * 缺省时桥走严格校验（自签证书会报 x509）。字段复用交付通道已有的 `tls_insecure`，
+   * 不新增契约（见 terminal_bridge/internal/shared/models/ws.go 的注释）。
+   */
+  tlsInsecure?: boolean
 }
 
 /** acli 安装链路的重试起点 */
@@ -557,6 +565,9 @@ export function buildAcliSyncMessage(caseId: string, options?: AcliSyncOptions):
     // 不如前端就不发：旧桥收到不认识的字段会静默忽略，阶段一不受影响。
     platform_url: options?.platformUrl && options?.pluginTicket ? options.platformUrl : undefined,
     plugin_ticket: options?.platformUrl && options?.pluginTicket ? options.pluginTicket : undefined,
+    // 自签证书授权位同样成对下发：缺省（undefined/false）不下发，桥按严格校验证书。
+    tls_insecure:
+      options?.platformUrl && options?.pluginTicket && options.tlsInsecure ? true : undefined,
   })
 }
 

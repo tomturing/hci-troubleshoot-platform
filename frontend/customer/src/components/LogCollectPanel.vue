@@ -73,7 +73,19 @@ import { CLAIM_BLOCKED_REASON_TEXT } from '@/utils/logCollectOwnership'
 import { buildCancelNotice, cancelLogCollectTask } from '@/services/logCollectCancel'
 import { ACLI_SYNC_TIMEOUT_MS, acliRetrySuggestions } from '@/services/acliManager'
 import { pickDisplayTask } from '@/services/logCollectHistory'
-import { computeOverallPercent, formatByteCount } from '@/services/logCollectProgress'
+import {
+  computeOverallPercent,
+  describeDirectUpload,
+  formatByteCount,
+} from '@/services/logCollectProgress'
+import {
+  buildObserveHandoffAudit,
+  COLLECT_FOREGROUND_BUDGET_MS,
+  COLLECT_POLL_SAFETY_MAX,
+  hasObserveHandoff,
+  OBSERVE_POLL_INTERVAL_MS,
+  planCollectWaitExpiry,
+} from '@/services/logCollectWait'
 import { buildNodeCleanupTip } from '@/services/logCollectCleanup'
 import {
   BRIDGE_CHANNEL_LOST_MESSAGE,
@@ -1973,10 +1985,9 @@ const statusText = computed(() => {
     return `正在从 HCI 拉取：${formatByteCount(transfer.pulled)}${total}`
   }
   if (stage.value === 'uploading') {
-    if (isDirectDelivery.value) {
-      const p = progress.value
-      return `正在发送到日志服务器：${p?.upload_state || '发送中'}（${p?.percent ?? 0}%）`
-    }
+    // 直传的文案必须走纯函数：它锁死「不显示伪造的上传百分比」这条契约，
+    // 详见 describeDirectUpload 的注释。
+    if (isDirectDelivery.value) return describeDirectUpload(progress.value)
     return `正在上传平台：${transfer.uploadedParts}/${transfer.partCount} 片`
   }
   if (stage.value === 'relaying') {
@@ -2340,11 +2351,12 @@ async function resumeTask(taskId: string) {
     // 进面板即对账：平台快照可能停在旧投影上（节点仍在跑、或早已异常结束）
     if (sshConnected.value) void syncNodeState({ applyPatches: true, silent: true, source: 'open' })
 
+    // 观察交接要跨页面重开恢复：否则一次数小时的大包上传重开后又回到 5 秒轮询。
+    // 只认 collecting：终态/失败任务不能被旧审计拖进观察模式。
+    observeMode.value = task.status === 'collecting' && hasObserveHandoff(task.detail)
     // 终态任务仍然对账，但降频：节点可能还在跑（需要「接管」），5s 空转没有意义。
     // 等证据窗口内例外：加密到 10s，证据一到就回落。
-    startAutoSync(
-      TERMINAL_TASK_STATUSES.includes(task.status) ? terminalSyncInterval(task) : POLL_INTERVAL,
-    )
+    resumeAutoSync(task)
   } catch (e: any) {
     ElMessage.error(
       e?.response?.status === 404
@@ -2404,6 +2416,13 @@ let autoSyncInterval = 0
 let terminalPollTicks = 0
 // 自动刷新是否因终态收敛而停止。只影响提示文案，不影响手动刷新。
 const autoSyncStopped = ref(false)
+/**
+ * 是否处于「前台预算耗尽、转后台观察」状态。
+ *
+ * 唯一作用是决定对账频率（15s 而不是 5s）：此状态不改变任务状态，
+ * 节点传完后仍由同一条 `decideNodeSync` 判定收敛，不需要另一套完成逻辑。
+ */
+const observeMode = ref(false)
 
 function startAutoSync(interval = POLL_INTERVAL) {
   stopAutoSync()
@@ -2485,8 +2504,13 @@ async function triggerAutoSync() {
 function resumeAutoSync(task?: LogCollectTask | null) {
   terminalPollTicks = 0
   lastTerminalSignature = ''
+  // 非终态下区分两种节奏：主流程刚下发时 5s（用户正盯着），
+  // 前台预算耗尽转观察后 15s（没人等了，降频即可）。
+  const runningInterval = observeMode.value ? OBSERVE_POLL_INTERVAL_MS : POLL_INTERVAL
   startAutoSync(
-    task && TERMINAL_TASK_STATUSES.includes(task.status) ? terminalSyncInterval(task) : POLL_INTERVAL,
+    task && TERMINAL_TASK_STATUSES.includes(task.status)
+      ? terminalSyncInterval(task)
+      : runningInterval,
   )
 }
 
@@ -2597,6 +2621,12 @@ async function restoreTaskState(force = false) {
     // 同一会话内重开面板：任务与基线都还在，必须把自动刷新接回来。
     // 旧实现这里直接 return，于是「关抽屉 → 再打开」后自动刷新永久失效，
     // 只有手动点「刷新进度」才会动。
+    //
+    // 复用内存快照的另一面是**结论会过时**：关抽屉期间平台侧可能已经把 failed 纠正成
+    // completed（接管、verify 后置、P1 自愈都会这样），而重开时只复用旧快照，
+    // 用户会以为"重新登录也没用"（Q2026091700436：界面停在 17:24 的失败，实际 17:56 已成功）。
+    // 所以这里无条件重读一次平台快照——它与 SSH 无关，没有连接也必须能刷新。
+    void refreshPlatformSnapshot()
     if (currentTask.value) {
       // 终态任务同样要恢复对账：failed 的节点任务可能仍在跑，
       // 「接管」入口依赖这一次对账（同会话重开面板也走这里）。
@@ -2660,6 +2690,47 @@ function showResult(task: LogCollectTask) {
   relayStatus.value = 'none'
   cleanupTip.value = ''
   errorMessage.value = ''
+}
+
+/**
+ * 只读刷新平台快照（不写库）。
+ *
+ * 第一性原理：界面上的结论必须能被证明是「刚刚问过平台」的。结果态的数据源是
+ * `resultTask`，而它只在两处更新——「打开面板 → listTasks」与「结果态的 30s 对账」。
+ * 后者有两道闸：收起面板会 `stopAutoSync()`；终态对账预算只有 `TERMINAL_POLL_MAX_TICKS`
+ * （30s × 4 ≈ 2 分钟），耗尽后 `autoSyncStopped=true` 永久停跳。
+ * 于是「关掉抽屉期间平台侧发生的纠正」永远进不来。
+ *
+ * 2026-11-24 Q2026091700436：17:24 被判 failed，17:56 平台已核验为
+ * `completed / 100 / delivered`（归档件 10,563,438,951 B），17:58 自动刷新已停；
+ * 用户「重新登录」后重开面板，`restoreTaskState` 复用内存里的旧快照，界面仍显示 17:24 的失败。
+ * 硬证据：case-service 侧 17:58 之后对该任务**没有任何** GET 请求——界面根本没再问过平台。
+ *
+ * 所以「重开面板」必须自己重读一次，且不能依赖 SSH：接管、失败纠正、verify 后置
+ * 都是纯平台侧变化，用户没连 SSH 时也必须能看到。
+ * 只读、不 PATCH：状态机的写权限仍由主流程与对账链路独占。
+ */
+async function refreshPlatformSnapshot() {
+  const taskId = currentTask.value?.task_id || resultTask.value?.task_id
+  if (!taskId) return
+  const latest = await logCollectApi.getTask(taskId).catch(() => null)
+  if (!latest) return
+  // 等待期间面板可能已切到另一条任务或另一个工单：迟到的回包不得覆盖新上下文。
+  if ((currentTask.value?.task_id || resultTask.value?.task_id) !== taskId) return
+  const prev = currentTask.value
+  const changed =
+    !prev ||
+    latest.status !== prev.status ||
+    latest.progress !== prev.progress ||
+    latest.delivery_status !== prev.delivery_status ||
+    latest.finished_at !== prev.finished_at ||
+    (latest.error_code ?? '') !== (prev.error_code ?? '')
+  currentTask.value = latest
+  // 没有变化就不动 UI：每次开面板都重置一次表单/结果会闪，也会清掉用户正在看的现场。
+  if (!changed) return
+  // 终态变化必须走 showResult：结果卡与表单态的 stage 是两套渲染路径，
+  // 只换 currentTask 会让卡片仍停在旧结论上。
+  if (TERMINAL_TASK_STATUSES.includes(latest.status)) showResult(latest)
 }
 
 /**
@@ -2929,6 +3000,8 @@ async function handleStart() {
   // 开跑前先把残留的自动对账停掉：它可能在上一轮终态后仍以 30s 节奏在跑。
   const myFlow = ++mainFlowSeq
   mainFlowActive.value = true
+  // 新一次下发回到常规节奏：上一个任务的「观察模式」不能继承过来。
+  observeMode.value = false
   stopAutoSync()
 
   // 自定义模式固定 -m other：config 的 modules 永不生效，显式传 other 让
@@ -3929,7 +4002,10 @@ async function syncNodeState(
             ? 'correct'
             : ''
     // patch_delivered 是后台补登、不需要用户做任何事：留一条常驻提示只会占用固定区
-    nodeSyncHint.value = action.action === 'patch_delivered' ? '' : buildSyncNotice(action)
+    // 观察模式下节点仍在正常跑，通用对账文案（典型是「节点状态无法识别」）会把
+    // 「平台已转后台跟踪」这条关键信息顶掉，用户看到的就只是界面静止。
+    const syncNotice = action.action === 'patch_delivered' ? '' : buildSyncNotice(action)
+    nodeSyncHint.value = syncNotice || (observeMode.value ? nodeSyncHint.value : '')
 
     // syncPatchBlocked：收到过确定性拒绝（4xx）后不再自动写库。
     // 状态机拒绝不会因为再等 30 秒而变好，继续重试只会把同一条错误刷成日志噪音。
@@ -4004,6 +4080,8 @@ async function syncNodeState(
             currentTask.value = await logCollectApi.patchTask(currentTask.value.task_id, patch)
             if (action.action === 'patch_completed') {
               stage.value = 'done'
+              // 观察模式到此结束：结论已由节点给出，恢复常规节奏。
+              observeMode.value = false
               nodeSyncHint.value = buildSyncNotice(action)
               // 与「刷新页面重新进入」保持一致：完成即切结果视图。
               // 否则页面会停在收集表单上、右下角按钮还写着「开始收集」，
@@ -4079,6 +4157,42 @@ async function syncNodeState(
   }
 }
 
+/**
+ * 前台等待预算耗尽后的观察模式。
+ *
+ * 只做三件事：给出可核对的事实、把对账降到 15s、**不写任何终态**。
+ * 节点传完后由 auto-sync 的 `decideNodeSync` 走 patch_completed / patch_delivered，
+ * 与「接管」路径复用同一套判定——这里再写一份完成逻辑必然与那份分叉。
+ *
+ * 反例（2026-11-24 Q2026112400468 / Q2026091700436）：预算到点后抛「采集未完成」，
+ * 后端把这句话按关键词翻成 `LC-PLUGIN-010`，页面出现「平台已判失败，但节点任务仍在运行」，
+ * 用户在 9.8 GiB 已传 60% 的时刻被推进「重新采集」。
+ */
+function enterObserveMode(notice: string, snapshot: ProgressSnapshot | null = null) {
+  observeMode.value = true
+  nodeSyncHint.value = notice
+  // 审计是旁路：写失败只留前端日志，不能反过来影响任务继续跑。
+  // 只写 detail、不改 status，避免与主流程/自动对账抢写状态机。
+  const taskId = currentTask.value?.task_id
+  if (taskId) {
+    const audit = buildObserveHandoffAudit({
+      nodeState: snapshot ? (snapshot.node_state ?? fallbackNodeState(snapshot)) : 'unknown',
+      uploadState: snapshot?.upload_state ?? null,
+      done: snapshot?.done ?? null,
+      total: snapshot?.total ?? null,
+      archiveSize: snapshot?.archive_size ?? observedArchiveSize.value ?? null,
+      notice,
+      traceId: currentTask.value?.display?.trace_id ?? null,
+    })
+    console.warn('[log-collect] observation-window-handoff', { task_id: taskId, ...audit })
+    void logCollectApi.patchTask(taskId, { detail: { observation_handoff: audit } }).catch((error: any) => {
+      console.warn('[log-collect] observation_handoff 审计写入失败', error?.message || error)
+    })
+  }
+  // info 而不是 warning：节点侧一切正常，没有任何需要用户处理的异常。
+  ElMessage.info(notice)
+}
+
 /** 采集完成后的收尾：按任务实际的交付路径决定是等直传还是走中转 */
 async function resumeTaskFlow(
   ws: WebSocket,
@@ -4119,9 +4233,31 @@ async function resumeTaskFlow(
     throw new Error('平台任务处于交付阶段，但 bridge 侧没有对应作业（可能已重启且记录丢失），请使用「取消并重试」')
   }
 
-  const collected = await pollUntilCollected(ws, token, baseline)
+  const outcome = await pollUntilCollected(ws, token, baseline)
   if (token !== runToken) return
-  if (!collected) throw new Error('采集未完成')
+  // null = 运行令牌换代（取消/新任务接管），什么都不该写。
+  if (!outcome) return
+  const collected = outcome.snapshot
+  if (outcome.kind === 'expired') {
+    const plan = planCollectWaitExpiry({
+      nodeState: collected ? (collected.node_state ?? fallbackNodeState(collected)) : 'unknown',
+      uploadState: collected?.upload_state ?? null,
+      done: collected?.done ?? null,
+      total: collected?.total ?? null,
+      archiveSize: collected?.archive_size ?? observedArchiveSize.value ?? null,
+    })
+    // 到点只有两种情况：节点已自己报完成（把收尾补完），否则转后台观察。
+    // 两种情况下都**不写** failed：预算耗尽是本端的事，不是节点的事实。
+    if (plan.mode === 'observe' || !collected) {
+      enterObserveMode(plan.notice, collected)
+      return
+    }
+  }
+  if (!collected) {
+    // 理论不可达（expired + finalize 已带快照）；退化为观察而不是判失败。
+    enterObserveMode(planCollectWaitExpiry({ nodeState: 'unknown' }).notice, null)
+    return
+  }
   const isDirect = task.upload_mode === 'acli_direct' || Boolean(task.remote_url)
   if (!isDirect) {
     // 把「已量到的证据」一起交给 runP2：完成那份快照里的 archive_size 是同一份包的
@@ -4425,18 +4561,35 @@ async function restoreSpcSlot(ws: WebSocket, taskId: string): Promise<void> {
   }
 }
 
+/**
+ * 采集等待的结果。
+ *
+ * 这里刻意不用「返回 null = 超时失败」的写法：null 已经承担「运行令牌失效」的语义，
+ * 两种含义挤在一个值上，调用方就只能靠猜，而猜错的代价是给一次健康的上传写 failed
+ * （2026-11-24 两起现场）。用判别联合把「本端不再等待」与「令牌换代」分开。
+ */
+type CollectPollOutcome =
+  | { kind: 'completed'; snapshot: ProgressSnapshot }
+  | { kind: 'expired'; snapshot: ProgressSnapshot | null }
+
 async function pollUntilCollected(
   ws: WebSocket,
   token: number,
   baseline = '',
-): Promise<ProgressSnapshot | null> {
-  // 采集上限 1 小时（720 次 × 5s）：超时明确失败，避免面板无限转圈。
+): Promise<CollectPollOutcome | null> {
   pollingBridgeProgress = true
   // 基线缺失时退化为"首次看到的进行中报告"：之后出现不同的报告即可判定归属。
   let baselineHash = baseline
+  // 最后一次成功采到的快照：到点后要据此决定"还能不能下结论"，而不是凭空宣布失败。
+  let lastSnapshot: ProgressSnapshot | null = null
+  // 预算按**真实时钟**算，把每次 RPC 自己的耗时也算进去。
+  // 旧实现是「720 次 × 5s」的想象值，实测每次 `sendAndWait` 约 1~6s，
+  // 于是在 72~76 分钟才耗尽，既不是注释写的 1 小时，也没有任何确定性。
+  const deadline = Date.now() + COLLECT_FOREGROUND_BUDGET_MS
   try {
-    for (let attempt = 0; attempt < 720; attempt++) {
+    for (let attempt = 0; attempt < COLLECT_POLL_SAFETY_MAX; attempt++) {
       if (token !== runToken) return null
+      if (Date.now() >= deadline) return { kind: 'expired', snapshot: lastSnapshot }
       // 通道守卫：WS 已关闭时继续轮询只会空等到 60s 超时，必须立刻失败。
       // 这里刻意**不看** sshSessionLost / sshConnected：shell EOF 后 bridge 保留会话，
       // 进度查询仍可用，此时终止轮询等于把能跑完的采集判死。
@@ -4487,11 +4640,14 @@ async function pollUntilCollected(
         if (action.action !== 'wait_refresh') {
           progress.value = snapshot
           applyNodeStage(snapshot)
+          // 只把「已归属到本次任务」的快照留作到点时的判据：
+          // 上一轮的报告会把 running 误当成这次的状态。
+          lastSnapshot = snapshot
         }
         lastRefreshAt.value = new Date()
         if (action.action === 'patch_completed') {
           nodeSyncHint.value = ''
-          return snapshot
+          return { kind: 'completed', snapshot }
         }
         if (action.action === 'patch_failed') {
           // 判定层的规范码必须带回主流程：这里的失败以 throw 收尾，
@@ -4510,7 +4666,8 @@ async function pollUntilCollected(
       }
       await sleep(POLL_INTERVAL)
     }
-    return null
+    // 安全阀兜底：与时间预算同样只宣布"本端不再等待"，不下节点结论。
+    return { kind: 'expired', snapshot: lastSnapshot }
   } finally {
     pollingBridgeProgress = false
   }
@@ -6037,6 +6194,12 @@ onBeforeUnmount(() => {
           上次采集 {{ resultFinishedText }} · 本工单共 {{ historyTotal }} 条记录
           <!-- 对账还没回来时按钮先不出现，但必须说明"在等什么"，否则就是干等 -->
           <span v-if="nodeVerifyPending"> · 正在与节点核对包状态…</span>
+          <!--
+            终态对账有预算（30s × 4 ≈ 2 分钟），耗尽即停。不说这句，用户会把
+            「不再刷新」读成「这条结论永远有效」——2026-11-24 Q2026091700436 就是这样
+            在失败纠正后仍盯着 32 分钟前的判定。
+          -->
+          <span v-else-if="autoSyncStopped"> · 自动刷新已停止，点「刷新进度」获取最新</span>
         </template>
         <template v-else-if="!canCollect">
           采集依赖 SSH 会话：点「连接 SSH」登录后即可开始收集

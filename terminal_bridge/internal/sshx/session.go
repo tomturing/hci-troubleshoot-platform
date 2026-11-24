@@ -1223,6 +1223,44 @@ func isShellOperator(ch rune) bool {
 //     vm_console_result 元数据，绝不降级 base64 over WS。
 //  4. PLATFORM_ARTIFACT_URL 未配置 → fail-closed artifact_upload_disabled。
 
+// quickCommandCeilingDefault 是单条远端命令的兜底上限：只防"永久挂起"，不评价快慢。
+//
+// 取 20 分钟的依据：节点内 cp GB 级文件在本机盘上通常数分钟内完成，
+// 20 分钟足够覆盖最慢的正常场景；而任何一个"正常"命令都不该超过它。
+const quickCommandCeilingDefault = 20 * time.Minute
+
+// quickCommandCeiling 读取"命令兜底上限"，允许现场用环境变量临时调整。
+func quickCommandCeiling() time.Duration {
+	raw := strings.TrimSpace(bruntime.EnvOrDefault("HCI_BRIDGE_COMMAND_CEILING_SEC", ""))
+	if raw == "" {
+		return quickCommandCeilingDefault
+	}
+	sec, err := strconv.Atoi(raw)
+	if err != nil || sec <= 0 {
+		// 配错不能变成"关掉保护"：退回默认值，宁可保守。
+		return quickCommandCeilingDefault
+	}
+	// 低于 5 秒的配置必然误杀正常命令，视为无效配置。
+	if sec < 5 {
+		return quickCommandCeilingDefault
+	}
+	return time.Duration(sec) * time.Second
+}
+
+// capCommandContext 给命令套一个上限，且只收紧不放宽。
+//
+// 语义只有一条：调用方给的 deadline 更早时沿用它（那才是业务语义上的真正上限），
+// 否则用兜底上限。这样 stat/探测类（15 秒）不会被放大，长任务（cp）也不会被误杀。
+func capCommandContext(ctx context.Context, limit time.Duration) (context.Context, context.CancelFunc) {
+	if limit <= 0 {
+		return ctx, func() {}
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= limit {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, limit)
+}
+
 func (s *SSHSession) RunQuickCommand(ctx context.Context, cmd string) (string, int, error) {
 	stdout, stderr, exitCode, err := s.RunQuickCommandStreams(ctx, cmd)
 	// 历史契约：stdout 为空时用 stderr 兜底当输出，调用方只看一个字符串。
@@ -1240,6 +1278,23 @@ func (s *SSHSession) RunQuickCommand(ctx context.Context, cmd string) (string, i
 // 二者的结论完全相反，合并成一条字符串后不可分辨，只能一律当成"包被删了"，
 // 这正是 Q2026102900165 现场"包在盘上却被判不存在"的根因。
 func (s *SSHSession) RunQuickCommandStreams(ctx context.Context, cmd string) (string, string, int, error) {
+	// 每条命令都必须有自己的时间上限，不能只依赖调用方 ctx。
+	//
+	// 第一性原理：阻塞只可能来自远端，而远端不会感知本地 ctx；所以"多久算超时"
+	// 必须由本地这条调用自己保证。历史实现直接 select ctx.Done()，而交付域传进来
+	// 的是整个作业的 ctx（最长 48 小时），一旦 SSH 通道半开——节点 TMOUT 静默登出、
+	// NAT 老化把 SYN/ACK 吃掉——session.Run 永不返回，上层循环里的 deadline 检查
+	// 永远到不了，作业就此冻结却仍在上报"进行中"。
+	// 2026-11-24 Q2026112400942（P2 中继 149 分钟 0 字节、全程 fetching）即此形态。
+	//
+	// 对抗性审查：
+	//  1. 上限太小会误杀节点内大文件复制（reconcile 的 cp 有 GB 级）→ 天花板取 20 分钟，
+	//     只对"永久挂起"生效，不参与正常快慢判定；
+	//  2. 调用方已经有更紧的 deadline（stat/探测类都是 15 秒级）→ 取更早的那个，绝不放宽；
+	//  3. 现场需要临时调整 → 环境变量可覆盖，不必重新出包。
+	ctx, cancelCommand := capCommandContext(ctx, quickCommandCeiling())
+	defer cancelCommand()
+
 	session, err := s.Client.NewSession()
 	if err != nil {
 		return "", "", -1, err
