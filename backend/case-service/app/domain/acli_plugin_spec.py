@@ -44,7 +44,9 @@ SAFE_RELATIVE_PATH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,255}$")
 # （terminal_bridge/internal/acli/acli_plugin_manifest.go）同口径。
 # 桥侧超限会整单拒收 manifest（manifest_file_too_large）；若平台侧不校验，
 # 会出现「admin-ui 保存成功、客户侧永远下发失败」的误导（2026-11-24 现场）。
-MAX_PLUGIN_FILE_BYTES = 1 << 20
+# 2026-11-25 按运维需求由 1MiB 放宽到 5MiB（完整巡检脚本已进入 ~1MiB 量级）。
+MAX_PLUGIN_FILE_BYTES = 5 << 20
+_MAX_PLUGIN_FILE_MIB = MAX_PLUGIN_FILE_BYTES // (1024 * 1024)
 
 MANIFEST_REQUIRED_FIELDS = frozenset(
     {
@@ -351,13 +353,13 @@ def validate_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
     script_bytes = len(str(spec.get("script_content") or "").encode("utf-8"))
     if script_bytes > MAX_PLUGIN_FILE_BYTES:
         errors.append(
-            f"script_content 超过单文件上限 1MiB（当前 {script_bytes} 字节），请精简脚本后再保存"
+            f"script_content 超过单文件上限 {_MAX_PLUGIN_FILE_MIB}MiB（当前 {script_bytes} 字节），请精简脚本后再保存"
         )
     for index, item in enumerate(spec.get("extra_files") or []):
         content_bytes = len(str(item.get("content") or "").encode("utf-8"))
         if content_bytes > MAX_PLUGIN_FILE_BYTES:
             errors.append(
-                f"附加文件 extra_files[{index}] 超过单文件上限 1MiB（当前 {content_bytes} 字节）"
+                f"附加文件 extra_files[{index}] 超过单文件上限 {_MAX_PLUGIN_FILE_MIB}MiB（当前 {content_bytes} 字节）"
             )
 
     if not str(spec.get("title_zh") or "").strip():
