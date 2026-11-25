@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.38.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.37.0...v2.38.0) (2026-11-25)
+
+
+### ✨ 新功能
+
+* **customer-ui:** 日志收集探测卡展示版本架构与 acli版本 ([#1638](https://github.com/tomturing/hci-troubleshoot-platform/issues/1638)) ([5a3623c](https://github.com/tomturing/hci-troubleshoot-platform/commit/5a3623c59276dd8b1a39987fab89bec9abc9bb19))
+* **log-collect:** 桥接版本随证据请求上报，平台可归因 ([#1655](https://github.com/tomturing/hci-troubleshoot-platform/issues/1655)) ([75eed9c](https://github.com/tomturing/hci-troubleshoot-platform/commit/75eed9c5d967a3e3a3ee79c074195750a13fed49))
+
+
+### 🐛 Bug 修复
+
+* **acli:** 临时兼容旧命名安装包，恢复被 probe_failed 冻结的升级判定 ([#1651](https://github.com/tomturing/hci-troubleshoot-platform/issues/1651)) ([7908bc1](https://github.com/tomturing/hci-troubleshoot-platform/commit/7908bc1733f6f1c9daded058774a626b500c9e62))
+* **acli:** 放宽插件单文件上限至 1MiB 并对齐保存校验与鉴权提示 ([#1660](https://github.com/tomturing/hci-troubleshoot-platform/issues/1660)) ([e4e4002](https://github.com/tomturing/hci-troubleshoot-platform/commit/e4e40024307710b69e03e8f127f0443b7e70bf78))
+* **acli:** 自签证书平台补 tls_insecure 授权，修复插件同步 x509 失败 ([#1661](https://github.com/tomturing/hci-troubleshoot-platform/issues/1661)) ([6b6796b](https://github.com/tomturing/hci-troubleshoot-platform/commit/6b6796ba177d6ef93eaa5f98ffe8c6f999585d4d))
+* **admin-ui:** 补 session-bi 新前缀转发，修复 /api/session-bi/* 404 ([#1636](https://github.com/tomturing/hci-troubleshoot-platform/issues/1636)) ([56b73ae](https://github.com/tomturing/hci-troubleshoot-platform/commit/56b73ae08efc36b3226326c6c11f684680e1118c))
+* **delivery:** 交付等待阶段不再永久冻结，节点命令加硬超时 ([#1648](https://github.com/tomturing/hci-troubleshoot-platform/issues/1648)) ([7ea91e5](https://github.com/tomturing/hci-troubleshoot-platform/commit/7ea91e5df0e856d0e0918820169c1b2f729df55f))
+* **log-collect:** 修复 LC-INSTALL-010 误报（运行时进度文件不得作为安装期判据） ([#1640](https://github.com/tomturing/hci-troubleshoot-platform/issues/1640)) ([d3438ed](https://github.com/tomturing/hci-troubleshoot-platform/commit/d3438ed4f0b8b056ab627b557591b56a56da6df4))
+* **log-collect:** 修复英文 help 长标签误报节点不支持 ([#1646](https://github.com/tomturing/hci-troubleshoot-platform/issues/1646)) ([3303e67](https://github.com/tomturing/hci-troubleshoot-platform/commit/3303e67d84f8fc8d131bcfac082677692342b7ee))
+* **log-collect:** 修复证据上报派生遮蔽 sqlalchemy.text 导致 500 ([#1658](https://github.com/tomturing/hci-troubleshoot-platform/issues/1658)) ([e00166e](https://github.com/tomturing/hci-troubleshoot-platform/commit/e00166e6f4c854c7289abb062abc468955cd5cde))
+* **log-collect:** 清单快照不再被质量门槛吞掉，存量回填 069 ([#1659](https://github.com/tomturing/hci-troubleshoot-platform/issues/1659)) ([41966f6](https://github.com/tomturing/hci-troubleshoot-platform/commit/41966f63e7380c8e27f1262d3d13f50e50cc0b11))
+* **log-collect:** 结果态重开面板必须重读平台快照 ([#1654](https://github.com/tomturing/hci-troubleshoot-platform/issues/1654)) ([7e2c577](https://github.com/tomturing/hci-troubleshoot-platform/commit/7e2c577f31b854918d81d0ae83a89947a53212df))
+* **log-collect:** 采集等待预算耗尽不再误判失败 ([#1650](https://github.com/tomturing/hci-troubleshoot-platform/issues/1650)) ([ce777db](https://github.com/tomturing/hci-troubleshoot-platform/commit/ce777db31241bad33ae43834f204b6cb0795f8a7))
+* 修复诊断会话子资源会话存在性校验（SRC 批量验证）([#1643](https://github.com/tomturing/hci-troubleshoot-platform/issues/1643)) ([d22a48e](https://github.com/tomturing/hci-troubleshoot-platform/commit/d22a48e305c7b5c0abc041124f58b21dbd43ddcd))
+* 修正 Alloy token 脱敏正则与语法 ([#1642](https://github.com/tomturing/hci-troubleshoot-platform/issues/1642)) ([6301b5d](https://github.com/tomturing/hci-troubleshoot-platform/commit/6301b5dbc913f23e6f7f22d9fec77eb3fb9cb918))
+* 日志收集旧包判定改为节点内相对时间并纠正提示 ([#1644](https://github.com/tomturing/hci-troubleshoot-platform/issues/1644)) ([cef9e5f](https://github.com/tomturing/hci-troubleshoot-platform/commit/cef9e5fc0fa2ebe393a369bbbfba4cb6762f4970))
+* 日志采集观察模式支持页面重开恢复与交接审计 ([#1656](https://github.com/tomturing/hci-troubleshoot-platform/issues/1656)) ([7cbf9cb](https://github.com/tomturing/hci-troubleshoot-platform/commit/7cbf9cb44c117eb3a637cf5b28b3ba03790ab95b))
+* 根治 DSH token 入日志泄露并收窄 Grafana 匿名权限 ([#1641](https://github.com/tomturing/hci-troubleshoot-platform/issues/1641)) ([8ab8bab](https://github.com/tomturing/hci-troubleshoot-platform/commit/8ab8bab9796effa7aa3e9f66401cf8074bf4e95d))
+* 隔离 4443 公网入口与 4888 管理面的前后端 ([#1639](https://github.com/tomturing/hci-troubleshoot-platform/issues/1639)) ([249ba2d](https://github.com/tomturing/hci-troubleshoot-platform/commit/249ba2dc1d82943b2a547b1402edb59354bf61c9))
+
 ## [2.37.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.36.0...v2.37.0) (2026-11-23)
 
 
