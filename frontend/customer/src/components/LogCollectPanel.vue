@@ -58,7 +58,11 @@ import {
   type RelayProgressView,
 } from '@/utils/logCollectDelivery'
 import { logCollectErrorHint } from '@/services/logCollectErrorHints'
-import { customerFaultText, showCustomerFault } from '@/utils/logCollectFault'
+import {
+  customerFaultText,
+  showCustomerFault,
+  type CustomerFaultToast,
+} from '@/utils/logCollectFault'
 import { UI_TEXT, MISSING_DATA_TEXT, RENDER_POLICY } from '@hci/shared'
 import LogCollectStatusCard from './LogCollectStatusCard.vue'
 import {
@@ -393,7 +397,17 @@ const acliFailure = ref<null | {
   stage: string
   suggestions: AcliRetryStage[]
   facts: AcliSyncFacts
+  /** 产生该失败的节点：只有同节点探测恢复才允许清除，避免异节点误清。 */
+  nodeIp: string
+  /** 本次失败对应的常驻红条句柄；只关这一条，不 closeAll。 */
+  toast: CustomerFaultToast | null
+  /** 3 次短间隔复查都未恢复时置真，用于给用户明确交代。 */
+  autoRecheckExhausted: boolean
 }>(null)
+/** 本次 acli_sync 请求的目标节点：迟到回包不能用“当前连接节点”误归属。 */
+let acliSyncTargetNode = ''
+/** 失败态已落、但红条还没弹出（confirmInstall 抛错后由外层统一弹）。 */
+let acliFailureToastPending = false
 /** 重试进行中：按钮置灰，避免用户连点造成两个上传叠在同一个 destPath 上。 */
 const acliRetrying = ref(false)
 /**
@@ -738,9 +752,14 @@ let prepareToken = 0
  * 把两类塞进同一个重试循环，就会在「acli 没装」上空转到上限，把真因刷成噪音。
  */
 const PROBE_RETRY_DELAYS = [2000, 4000, 8000]
-/** 事实复查节奏：acli 可能被后台安装流程装上、节点可能上下线，低频看一眼足够。 */
-const PROBE_RECHECK_INTERVAL_MS = 30000
-const PROBE_RECHECK_MAX = 3
+/**
+ * 事实复查节奏：短间隔多次确认，恢复即停。
+ *
+ * 旧实现固定 30s×3，现场反馈「节点已恢复还要等半分钟」。现在改成 3/5/8 秒：
+ * 覆盖 acli 安装与日志目录日切这类秒级变化，同时最多只多打 3 次 SSH。
+ */
+const PROBE_RECHECK_DELAYS = [3000, 5000, 8000]
+const PROBE_RECHECK_MAX = PROBE_RECHECK_DELAYS.length
 /**
  * 探测卡死自愈阈值。
  *
@@ -764,6 +783,14 @@ let probeRecheckTimer: ReturnType<typeof setTimeout> | null = null
 function probeRetryDelay(index: number): number {
   const base =
     PROBE_RETRY_DELAYS[Math.min(index, PROBE_RETRY_DELAYS.length - 1)] ?? PROBE_RETRY_DELAYS[0]
+  return Math.round(base + base * (Math.random() * 0.4 - 0.2))
+}
+
+/** 复查间隔同样加抖动：多客户端同时开着面板时，避免同相位探测同一节点。 */
+function probeRecheckDelay(index: number): number {
+  const base =
+    PROBE_RECHECK_DELAYS[Math.min(index, PROBE_RECHECK_DELAYS.length - 1)]
+    ?? PROBE_RECHECK_DELAYS[0]
   return Math.round(base + base * (Math.random() * 0.4 - 0.2))
 }
 
@@ -826,10 +853,56 @@ const probeRetryText = computed(() => {
  */
 function needsFactRecheck(data: ProbeResult | null | undefined): boolean {
   if (!data) return false
+  // 有同节点 acli 失败卡片时必须继续确认恢复，即使当前快照自称已安装
+  // 但版本为空（二进制存在 ≠ --version 可用）。
+  if (acliFailure.value && acliFailure.value.nodeIp === nodeIp.value) return true
   if (!data.acli_installed) return true
   if (!data.hosts?.length) return true
   if (!data.log_server_reachable) return true
   return false
+}
+
+/**
+ * 把常驻红条句柄挂到失败态上。
+ *
+ * 只挂本次 acli 失败对应的句柄：外层 catch 也处理采集/交付失败，
+ * 不能因为“当前有 acli 卡片”就把别的错误 toast 也认领了。
+ */
+function attachAcliFailureToast(toast: CustomerFaultToast | null | undefined) {
+  if (!toast || !acliFailure.value || !acliFailureToastPending) return
+  acliFailure.value.toast = toast
+  acliFailureToastPending = false
+}
+
+/** 关闭并清空 acli 失败态；调用方负责决定是否同时停复查。 */
+function clearAcliFailure() {
+  acliFailure.value?.toast?.close()
+  acliFailure.value = null
+  acliFailureToastPending = false
+}
+
+/**
+ * 同节点探测确认 acli 可用后，清除失败卡片与红条。
+ *
+ * 两个条件缺一不可：节点必须一致（异节点探测成功不能清旧节点证据），
+ * 版本必须非空（只有二进制存在但 --version 仍失败时不得误判恢复）。
+ */
+function reconcileAcliFailure(data: ProbeResult, targetNode: string) {
+  const failure = acliFailure.value
+  if (!failure || failure.nodeIp !== targetNode) return
+  if (!data.acli_installed || !data.acli_version) return
+  clearAcliFailure()
+  resetAcliLive()
+  stopFactRecheck()
+  probeRecheckCount.value = 0
+}
+
+/** 3 次短复查仍未恢复：保留卡片，但明确告诉用户系统已经试过。 */
+function markAcliRecheckExhausted() {
+  const failure = acliFailure.value
+  if (!failure) return
+  if (failure.nodeIp && failure.nodeIp !== nodeIp.value) return
+  failure.autoRecheckExhausted = true
 }
 
 function stopFactRecheck() {
@@ -859,11 +932,14 @@ function scheduleFactRecheck() {
     return
   }
   if (!needsFactRecheck(probeResult.value)) return
-  if (probeRecheckCount.value >= PROBE_RECHECK_MAX) return
+  if (probeRecheckCount.value >= PROBE_RECHECK_MAX) {
+    markAcliRecheckExhausted()
+    return
+  }
   probeRecheckTimer = setTimeout(() => {
     probeRecheckTimer = null
     if (!visible.value) return
-    // 到点时采集已经开始了：这里不能直接丢弃。安装成功后 30s 才到期，而用户往往
+    // 到点时采集已经开始了：这里不能直接丢弃。安装成功后很快到期，而用户往往
     // 十几秒内就点了「开始收集」（本工单相隔 13 秒），一丢弃就再没有任何事件能
     // 触发复查，快照永久停在安装前（Q2026112300145）。改为记 pending 交给
     // watch(running) 在采集终态补做。
@@ -873,7 +949,7 @@ function scheduleFactRecheck() {
     }
     probeRecheckCount.value += 1
     void prepare({ silent: true, retries: false, resetRecheck: false })
-  }, PROBE_RECHECK_INTERVAL_MS)
+  }, probeRecheckDelay(probeRecheckCount.value))
 }
 
 const nodeIpReady = computed(() => Boolean(nodeIp.value))
@@ -1827,6 +1903,8 @@ async function probeOnce(targetNode: string, token: number): Promise<ProbeResult
   if (token !== prepareToken) return null
   probeResult.value = data
   applyCatalog(data)
+  // 同节点确认 acli 恢复后，把旧的失败卡片与红条一起收掉。
+  reconcileAcliFailure(data, targetNode)
   return data
 }
 
@@ -1869,6 +1947,8 @@ async function prepare(
   probingStartedAt.value = Date.now()
   prepareError.value = ''
   probeRetry.value = null
+  // 用户手动重探 = 重新给一轮自动复查预算；旧提示不能继续挂着。
+  if (!options.silent && acliFailure.value) acliFailure.value.autoRecheckExhausted = false
   if (options.resetRecheck !== false) probeRecheckCount.value = 0
 
   const maxRetries = options.retries === false ? 0 : PROBE_RETRY_DELAYS.length
@@ -1989,7 +2069,15 @@ const statusText = computed(() => {
   if (stage.value === 'pulling') {
     // 作业刚提交时 bridge 还在等节点把包写完（waiting_collect），此刻一个字节都还没拉。
     // 直接说「正在拉取 0 字节」会把「还没开始」说成「传输卡住了」。
-    if (transfer.stage === 'waiting_collect') return '节点采集已收尾，等待压缩包写入完成（尚未开始传输）'
+    if (transfer.phase === 'retrying' || transfer.stage === 'retrying') {
+      // retrying 是 bridge 的中间态：它在退避后重建连接再重试，不是失败。
+      // 必须把重试次数说清楚，否则"进度不动"会被用户理解成卡死。
+      const retry = transfer.attempt > 0 ? `第 ${transfer.attempt} 次重试` : '自动重试中'
+      return `等待节点会话恢复（${retry}，已传进度保留，尚未开始传输）`
+    }
+    if (transfer.stage === 'waiting_collect' || transfer.phase === 'waiting_collect') {
+      return '节点采集已收尾，等待压缩包写入完成（尚未开始传输）'
+    }
     const total = transfer.totalSize > 0 ? ` / ${formatByteCount(transfer.totalSize)}` : ''
     return `正在从 HCI 拉取：${formatByteCount(transfer.pulled)}${total}`
   }
@@ -2153,7 +2241,8 @@ function handleMessage(event: MessageEvent) {
     // 可重试的界面状态，否则 bridge 已经在节点上校验过的结论就彻底丢了；
     // 用户会误以为“什么也没发生”而重头再点一次。
     if (data.status && data.status !== 'installed' && data.status !== 'up_to_date') {
-      recordAcliFailure(data, 'acli 安装失败')
+      // 迟到回包没有调用方会再弹红条：只落卡片，不留下永远等不到 toast 的 pending。
+      recordAcliFailure(data, 'acli 安装失败', { expectToast: false })
     }
     return
   }
@@ -2246,6 +2335,9 @@ function sendAndWait(
       reject(error)
     })
     if (action === 'acli_sync') {
+      // 记下发起节点：失败回包可能迟到，届时 SSH 可能已切到别的节点，
+      // 用当前 nodeIp 归属会把错误挂到错误机器上。
+      acliSyncTargetNode = nodeIp.value
       // 与 log_collect 同一锚点：不带 node_ip 时 bridge 会去找键为 caseID 的会话，
       // 而真实会话键是 caseID@nodeIP → 必然 session_missing（安装链路根本不会启动）。
       //
@@ -3390,7 +3482,12 @@ async function handleStart() {
     }
     // 兜底文案必须可行动：只显示"日志收集失败"等于没给任何信息，
     // 现场只能再点一次碰运气（2026-11-12 Q2026110302155）。
-    showCustomerFault(errorMessage.value || UI_TEXT.fallback.no_code, failureCode.value || undefined)
+    const toast = showCustomerFault(
+      errorMessage.value || UI_TEXT.fallback.no_code,
+      failureCode.value || undefined,
+    )
+    // confirmInstall 先落卡片后抛错，红条由这里统一弹出；把句柄回挂给卡片。
+    attachAcliFailureToast(toast)
   } finally {
     // 主流程退出（成功/失败/取消）后必须交还写权限，否则自动对账永久停摆，
     // 结果态里「上传到平台」与归档状态就再也不会随节点态刷新。
@@ -3484,23 +3581,40 @@ function acliPluginSyncDetail(receipt: AcliPluginSyncReceipt): string {
  * 关键约定：**不丢弃 facts**。历史实现只把 message 抛给上层，于是界面只剩
  * 一句“上传失败”，既不知道包多大、摘要是什么，也不知道该重传还是重装。
  */
-function recordAcliFailure(data: any, fallbackMessage: string) {
+function recordAcliFailure(
+  data: any,
+  fallbackMessage: string,
+  options: { expectToast?: boolean } = {},
+) {
   const facts = parseAcliSyncFacts(data)
   const stageHint = facts.stage || ''
   const suggestions = acliRetrySuggestions({ ...facts, status: 'error' })
+  // 同一张卡片被新失败覆盖时，旧红条已经失去指向，先关掉避免叠两条。
+  acliFailure.value?.toast?.close()
+  acliFailureToastPending = options.expectToast !== false
   acliFailure.value = {
     message: String(data?.message || fallbackMessage),
     stage: stageHint,
     // 建议为空只会在“不可重试”（如磁盘不足）时出现：那类失败重试也不会变好。
     suggestions,
     facts,
+    // 迟到回包可能已切节点：优先用发送时快照，其次回包自带 node_ip，最后才是当前节点。
+    nodeIp: String(data?.node_ip || acliSyncTargetNode || nodeIp.value || ''),
+    toast: null,
+    autoRecheckExhausted: false,
   }
   acliLive.installOutput = facts.installOutput || acliLive.installOutput
 }
 
+/** 弹 acli 失败红条并把句柄挂到卡片上，供探测恢复时精准关闭。 */
+function showAcliFailureToast(message: string) {
+  const toast = showCustomerFault(message)
+  attachAcliFailureToast(toast)
+}
+
 /** 安装/重试成功后清空失败态，并把 acli 标记为可用 + 重探集群能力。 */
 async function markAcliInstalled() {
-  acliFailure.value = null
+  clearAcliFailure()
   resetAcliLive()
   probeResult.value = { ...(probeResult.value as ProbeResult), acli_installed: true }
   // 安装是事实层面的强变更，必须重开复查预算：预算被前面几次"装好但还没同步"
@@ -3510,7 +3624,7 @@ async function markAcliInstalled() {
   // 安装成功后必须重探：节点清单与场景目录只有 acli 可用后才读得到，
   // 不重探会让用户"装完 acli 仍看到读不到节点清单"，误判为安装无效。
   // 只探一次（retries: false）：安装已经成功，重探失败不该再拖住用户等待；
-  // 真没探到会由事实复查在 30s 后自动补读。
+  // 真没探到会由事实复查在几秒后自动补读。
   const refreshed = await prepare({ silent: true, retries: false })
   if (!refreshed) {
     if (prepareState.value === 'failed') {
@@ -3535,7 +3649,7 @@ async function confirmInstall(ws: WebSocket) {
   stage.value = 'installing'
   resetAcliLive()
   resetAcliPluginSync()
-  acliFailure.value = null
+  clearAcliFailure()
   // 超时预算跟 bridge 的分段预算对齐（下载 120s + 上传 300s + 安装 240s，再 + 阶段二封顶 30min）：
   // 前端先超时会让用户误以为已经失败，并叠出第二次上传。
   const credentials = await acliSyncCredentialOptions(props.caseId)
@@ -3581,7 +3695,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
     const result = await sendAndWait(ws, 'acli_sync', { retryStage, ...credentials }, ACLI_SYNC_TIMEOUT_MS)
     if (result.status !== 'installed' && result.status !== 'up_to_date') {
       recordAcliFailure(result, 'acli 安装重试失败')
-      showCustomerFault(result.message || 'acli 安装重试失败')
+      showAcliFailureToast(result.message || 'acli 安装重试失败')
       return
     }
     await markAcliInstalled()
@@ -3594,7 +3708,7 @@ async function retryAcliSync(retryStage: AcliRetryStage) {
       { status: 'error', stage: 'upload', message: error?.message || 'acli 重试失败' },
       'acli 重试失败',
     )
-    showCustomerFault(error?.message || 'acli 重试失败')
+    showAcliFailureToast(error?.message || 'acli 重试失败')
   } finally {
     acliRetrying.value = false
     // 失败前如果已经在别的阶段（如采集中），不能被一次重试拉回 installing。
@@ -5052,10 +5166,16 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
     }
     const view = (result.log_data || {}) as DeliveryJobView
     if (view.phase === 'pulling') stage.value = 'pulling'
-    if (view.phase === 'uploading' || view.phase === 'completing' || view.phase === 'retrying') {
+    // waiting_collect / retrying 都是“还没开工”：不能映射成 uploading，
+    // 否则文案会显示“正在上传平台 0/N 片”，把“等会话恢复”说成“传不动”
+    // （Q2026112500592：5 次 node_unreachable 全被渲染成上传中 0/287 片）。
+    if (view.phase === 'waiting_collect' || view.phase === 'retrying') stage.value = 'pulling'
+    if (view.phase === 'uploading' || view.phase === 'completing') {
       stage.value = 'uploading'
     }
     transfer.stage = String(view.phase || '')
+    transfer.phase = String(view.phase || '')
+    transfer.attempt = view.attempt || 0
     transfer.percent = view.progress || 0
     transfer.pulled = view.pulled_bytes || 0
     if (view.source_size && view.source_size > 0) transfer.totalSize = view.source_size
@@ -5385,7 +5505,8 @@ watch(
     errorMessage.value = ''
     // 上一单的 acli 失败态与校验摘要必须一起清掉：带着 A 单的 sha256 去展示
     // B 单的安装失败，只会把排障引到错误的包上。
-    acliFailure.value = null
+    clearAcliFailure()
+    acliSyncTargetNode = ''
     resetAcliLive()
     // 阶段二回执同样属于上一单：A 单的插件三态展示给 B 单，会被读成“这个单也收敛完了”。
     resetAcliPluginSync()
@@ -5566,6 +5687,9 @@ onBeforeUnmount(() => {
         <div v-if="acliFailure.facts.packagePath" class="lc-acli-path">
           节点路径：{{ acliFailure.facts.packagePath }}
         </div>
+        <div v-if="acliFailure.autoRecheckExhausted" class="lc-acli-recheck">
+          已自动复查 {{ PROBE_RECHECK_MAX }} 次仍未恢复，请确认节点环境后重试。
+        </div>
         <div class="lc-sync-actions">
           <el-button
             v-for="option in acliFailure.suggestions"
@@ -5579,7 +5703,7 @@ onBeforeUnmount(() => {
           >
             {{ acliRetryLabel(option) }}
           </el-button>
-          <el-button v-if="!acliFailure.suggestions.length" size="small" text @click="acliFailure = null">
+          <el-button v-if="!acliFailure.suggestions.length" size="small" text @click="clearAcliFailure()">
             知道了
           </el-button>
         </div>
@@ -6425,6 +6549,12 @@ onBeforeUnmount(() => {
   font-size: 12px;
   word-break: break-all;
   opacity: 0.8;
+}
+.lc-acli-recheck {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-color-danger);
 }
 /* 阶段二回执：与安装失败卡片同层但不同色，避开“插件没成”被误读成“工具没装上”。 */
 .lc-acli-plugin {
