@@ -102,7 +102,7 @@ class AutoRegistryTest(unittest.IsolatedAsyncioTestCase):
             )
             running = asyncio.Event()
 
-            async def hold(_registry: JobRegistry, job) -> None:
+            async def hold(_registry: JobRegistry, job, *_args) -> None:
                 running.set()
                 await asyncio.Event().wait()
 

@@ -444,7 +444,7 @@ class JobRegistry:
             job.origin,
             len(self.jobs),
         )
-        job.task = asyncio.create_task(self._run(job), name=f"ticket-sync:{job.ticket_id}")
+        job.task = asyncio.create_task(self._run(job, request_id), name=f"ticket-sync:{job.ticket_id}")
 
     def get(self, ticket_id: str) -> Job | None:
         # 内存优先；重启后内存为空，用 SQLite 历史回答"上次同步到哪一步"。
@@ -650,7 +650,7 @@ class JobRegistry:
         entries.sort(key=lambda item: item["cleanedAt"] or "", reverse=True)
         return entries[:CLEANED_DISPLAY_LIMIT]
 
-    async def _run(self, job: Job) -> None:
+    async def _run(self, job: Job, request_id: str = "-") -> None:
         ticket_id = job.ticket_id
         # 目录名只用工单号、不带 job_id：带 job_id 意味着每次重试都是全新目录，
         # rsync --partial 永远找不到上次的文件，65 GiB 级的包一旦失败就要从 0 重来。
@@ -719,10 +719,22 @@ class JobRegistry:
 
                 # 转储包（vmcore 等）按包探测、按包跳过：最新包是转储不代表更早的
                 # 包里没有日志；只有"整批都是转储"才沿用原来的确定性失败语义。
-                pending, ignored = await self._filter_non_log_archives(job, pending)
-                if not pending:
-                    self._handle_all_non_log(job, final_dir, meta, archives, ignored)
-                    return
+                # 该保护只服务自动巡检：手动点击代表用户已判断"该同步、该解压"，
+                # 因此完全不放内容判定，连列目录的 SSH 都不发。
+                if job.origin == ORIGIN_MANUAL:
+                    ignored = []
+                    logger.info(
+                        "request_id=%s ticket=%s job=%s origin=manual 手动同步跳过内容判定 待合并归档=%d",
+                        request_id,
+                        ticket_id,
+                        job.job_id,
+                        len(pending),
+                    )
+                else:
+                    pending, ignored = await self._filter_non_log_archives(job, pending)
+                    if not pending:
+                        self._handle_all_non_log(job, final_dir, meta, archives, ignored)
+                        return
 
                 if not self.cfg.archive_password:
                     raise TicketError(
@@ -845,7 +857,9 @@ class JobRegistry:
                 job.phase = Phase.READY
                 self._apply_extract_warnings(job, totals)
 
-                if not has_logs:
+                # has_logs 是内容事实，仍写入 meta；但手动同步由用户判断内容价值，
+                # 程序不再追加"可能仅含转储文件"的评价。
+                if not has_logs and job.origin == ORIGIN_AUTO:
                     suffix = "产物中未发现日志清单（log_list.json / sp_*），可能仅含转储文件"
                     job.message = f"{job.message}；{suffix}" if job.message else suffix
 
