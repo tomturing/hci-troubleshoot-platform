@@ -336,6 +336,36 @@ class MergeFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.error_code.value, "not-found")
         self.assertFalse(self.final_dir.exists())
 
+    async def test_auto_still_skips_dump_bundle(self) -> None:
+        """自动巡检必须保留转储跳过：该保护在方案 D 中一行未改。"""
+
+        async def _dump_entries(*_args, **_kwargs):
+            return ["vmdumpcore"]
+
+        self.remote.add(f"{TICKET}.zip", 1000.0, {"vmdumpcore": "dump"})
+        with patch("app.main.list_remote_entries", _dump_entries):
+            job = await self._run(origin=ORIGIN_AUTO)
+
+        self.assertEqual(job.phase.value, "failed")
+        self.assertEqual(job.error_code.value, "non-log-payload")
+        self.assertFalse(self.final_dir.exists())
+
+    async def test_manual_bypasses_content_detection(self) -> None:
+        """手动按钮代表人的判断：纯转储包也要照常下载解压，不做任何内容判定。"""
+
+        async def _forbidden_entries(*_args, **_kwargs):
+            raise AssertionError("手动同步不应调用远端列目录做内容判定")
+
+        self.remote.add(f"{TICKET}.zip", 1000.0, {"1125.dump": "dump"})
+        with patch("app.main.list_remote_entries", _forbidden_entries):
+            job = await self._run(origin=ORIGIN_MANUAL)
+
+        self.assertEqual(job.phase.value, "ready")
+        self.assertIsNone(job.error_code)
+        self.assertEqual(self._read("1125.dump"), "dump")
+        self.assertNotIn("可能仅含转储文件", job.message or "")
+        self.assertEqual(self.remote.fetched, [f"{TICKET}.zip"])
+
 
 if __name__ == "__main__":
     unittest.main()
