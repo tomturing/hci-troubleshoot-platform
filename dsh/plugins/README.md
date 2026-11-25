@@ -59,11 +59,11 @@ dsh_cockpit-rules/
 容器启动时从 npm registry 解析浮动版本。v2 的 WeKnora Key、知识库 ID 和智能体 ID
 通过环境仓 `dsh-offline-plugin-credentials` 注入，不写入公开 values。
 
-> ⚠️ `hci-weknora-diagnosis-bundle-0.2.3.tgz` 入库的是**离线整包**：解包后是
-> `hci-weknora-diagnosis-offline-0.2.3/`，其中才含 `package/` 结构的
-> `hci-weknora-diagnosis-bundle-0.2.3.tgz` 与 `wxg-prc-cpg-dsh-weknora-0.1.0.tgz`。
-> 它不能直接交给 `DSH_PLUGIN_PACKAGES` 安装，需要按包内 README 用 `install-offline.sh`
-> 或两条 `pnpm add` 手工安装。0.2.2 及更早版本均是可直装的 npm pack 制品。
+> `hci-weknora-diagnosis-bundle-0.2.3.tgz` 是标准 npm pack 制品（`package/` 结构），
+> 可直接由 `DSH_PLUGIN_PACKAGES` 安装；其依赖 `@wxg-prc-cpg/dsh-weknora@0.1.0`
+> 在 profile 安装时解析。不要把上游发布的「离线整包」
+> （`hci-weknora-diagnosis-offline-*`，解包后是目录里再嵌 tgz）放进本目录：它没有
+> 包根 `package.json`，`dsh plugin add` 会装成无 manifest 的 `0.0.0` 合成包后失败。
 
 只有尚未进入 `dsh_plugins` 正式构建流程的临时本地 bundle，才放在本目录的子目录，例如：
 
