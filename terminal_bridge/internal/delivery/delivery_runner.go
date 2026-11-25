@@ -93,6 +93,8 @@ type NodeSession interface {
 	MarkBusy()
 	// RunCommandPty 在独立通道上分配伪终端执行（acli 命令需要 tty）。
 	RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error)
+	// Alive 报告会话是否仍可执行命令；交付拒绝把命令发到已关闭的僵尸会话。
+	Alive() bool
 }
 
 // Reconnector 是 delivery 需要的装配层能力：
@@ -706,20 +708,40 @@ func (r *deliveryRunner) advance(ctx context.Context, job *deliveryJob) error {
 // 去敲一条 SSH 连接（否则会在不需要时开连接、甚至因节点不可达而误报 needs_reauth）。
 // 两个分支都落空才返回 nil（由调用方转成 needs_reauth）。
 func (r *deliveryRunner) sessionFor(job *deliveryJob) NodeSession {
-	sess, key, _ := r.hub.ResolveForNode(models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
-	if sess != nil {
-		// 钉住会话：交付拉取十几分钟且期间常常零键盘输入，不能让 reaper 按空闲收走。
-		r.hub.Pin(key, session.SessionPinTTL())
+	sess, key, reason := r.hub.ResolveForNode(models.InMessage{CaseID: job.CaseID, NodeIP: job.NodeIP})
+	// 交付必须落到作业指定的那台节点。only_session_for_case 是"本工单唯一会话"
+	// 的兜底，多节点场景下它可能是另一台机器的会话，拿它执行 acli 命令会落错机器：
+	// 2026-11-25 Q2026112500592 的 .35 会话被销毁后，兜底返回 .38 的僵尸会话，
+	// 连续 5 轮 acli log_collect progress 全部 no-session 直至失败。
+	// 因此兜底命中一律转自动重连，用节点身份重新建链。
+	if sess != nil && deliverySessionResolvable(reason) {
 		// 具体类型的适配只有装配层知道，这里通过端口取回可执行对象。
-		return r.reconnect.Wrap(key)
+		wrapped := r.reconnect.Wrap(key)
+		// 只接受"连接仍活着"的会话：Close() 会置空 Client，但对象可能还留在
+		// 注册表里。钉住一个僵尸会话等于把本轮直接判死。
+		if wrapped != nil && wrapped.Alive() {
+			// 钉住会话：交付拉取十几分钟且期间常常零键盘输入，不能让 reaper 按空闲收走。
+			// 必须在确认存活之后再 Pin，避免把僵尸会话的租约也钉住。
+			r.hub.Pin(key, session.SessionPinTTL())
+			return wrapped
+		}
 	}
 	if !deliveryPhaseNeedsNode(job.Phase) {
 		return nil
 	}
-	if reconnected, err := r.reconnect.ReconnectDeliveryNode(job.CaseID, job.NodeIP, "delivery-auto"); err == nil {
+	if reconnected, err := r.reconnect.ReconnectDeliveryNode(job.CaseID, job.NodeIP, "delivery-auto"); err == nil && reconnected != nil && reconnected.Alive() {
 		return reconnected
 	}
 	return nil
+}
+
+// deliverySessionResolvable 判断 ResolveForNode 的命中原因能否安全用于交付。
+//
+// 交付是"对某台指定节点执行命令"，与采集/取消不同：多一次重连可以接受，
+// 把命令发到另一台机器绝不可接受。only_session_for_case 只凭工单号找到唯一
+// 会话，不携带节点身份，因此在交付域必须拒绝，改走按节点重连。
+func deliverySessionResolvable(reason string) bool {
+	return reason != "only_session_for_case"
 }
 
 // deliveryPhaseNeedsNode 判断该阶段是否必须访问节点（因此必须有 SSH 会话）。

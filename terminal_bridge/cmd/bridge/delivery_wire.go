@@ -20,6 +20,11 @@ func (a deliveryReconnector) Wrap(key string) delivery.NodeSession {
 	if sess == nil {
 		return nil
 	}
+	// 已关闭但尚未摘表的会话仍会挂在注册表里；交给交付域之前先判活，
+	// 否则每轮 acli 命令都会得到 no-session（Q2026112500592）。
+	if !sess.Alive() {
+		return nil
+	}
 	return sshx.NewSSHRunner(sess)
 }
 

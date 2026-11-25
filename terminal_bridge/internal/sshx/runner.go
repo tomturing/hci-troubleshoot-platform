@@ -46,6 +46,8 @@ type Runner interface {
 	MarkBusy()
 	// RunCommandPty 在独立通道上分配伪终端执行（acli 命令需要 tty）。
 	RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error)
+	// Alive 报告底层 SSH 连接是否仍可用；适配器与交付域据此拒绝僵尸会话。
+	Alive() bool
 }
 
 // NewSSHRunner 构造适配器；session 为 nil 时返回 nil，由 remote 侧判空报错。
@@ -157,6 +159,10 @@ func (r sshRunner) MarkBusy() { r.session.MarkBusy() }
 func (r sshRunner) RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error) {
 	return r.session.RunCommandPty(ctx, command, timeout)
 }
+
+// Alive 透传底层会话健康状态。适配器自己不做缓存：Client 会在 Close 时置空，
+// 缓存一份布尔值就等于把"曾经活过"当成"现在活着"。
+func (r sshRunner) Alive() bool { return r.session.Alive() }
 
 func (r sshRunner) ReadStream(ctx context.Context, command string) (io.ReadCloser, remote.WaitFunc, error) {
 	session, err := r.session.Client.NewSession()

@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Stage = Literal["fetching", "uploading", "relaying"]
+Stage = Literal["waiting", "fetching", "uploading", "relaying"]
 ProbeTarget = Literal["log_server", "platform_data"]
 Source = Literal["node_zip", "platform_object"]
 

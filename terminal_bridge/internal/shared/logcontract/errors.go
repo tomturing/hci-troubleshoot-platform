@@ -152,6 +152,11 @@ const (
 	// 与 001/006 的区别：001 是包没生成，006 是探测不了，本码是包生成了、
 	// 也（据 acli 说）传完了，但落盘侧没有一致的归档件。
 	ErrTransferArchiveUnverified = "LC-TRANSFER-007"
+	// 交付会话失效：bridge 拿到的 SSH 会话已关闭（僵尸会话），或连续命令 no-session。
+	// 区别于 LC-ENV-006（会话"不存在"，需先 ssh_connect）：本码是"会话解析到了但不可用，
+	// 甚至落到了另一台节点"。处置同样是重连，但已采集的包与已传分片都保留，
+	// 不需要重新采集（2026-11-25 Q2026112500592）。
+	ErrDeliverySessionLost = "LC-TRANSFER-015"
 
 	ErrPlatUnauthorized = "LC-PLATFORM-001"
 	ErrPlatForbidden    = "LC-PLATFORM-002"
@@ -282,6 +287,8 @@ var logCollectErrorMeta = map[string]errorMeta{
 	ErrTransferSourceStale: {"TRANSFER", "customer", "manual", "package"},
 	// 不可自动重试：P1 成功后插件已删源包，重试没有输入。
 	ErrTransferArchiveUnverified: {"TRANSFER", "customer", "false", "upload"},
+	// 会话失效可自动重试：bridge 会退避后重建会话；包与已传分片都保留。
+	ErrDeliverySessionLost: {"TRANSFER", "customer", "true", "upload"},
 
 	ErrPlatUnauthorized: {"PLATFORM", "platform", "true", "api"},
 	ErrPlatForbidden:    {"PLATFORM", "platform", "false", "api"},

@@ -4243,7 +4243,7 @@ CREATE TABLE IF NOT EXISTS log_collect_transfer_metric (
     created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT log_collect_transfer_metric_pkey PRIMARY KEY (id),
     CONSTRAINT fk_lctm_task FOREIGN KEY (task_id) REFERENCES log_collect_task (task_id) ON DELETE CASCADE,
-    CONSTRAINT ck_lctm_stage CHECK ((stage)::text = ANY ((ARRAY['fetching'::character varying, 'uploading'::character varying, 'relaying'::character varying])::text[])),
+    CONSTRAINT ck_lctm_stage CHECK ((stage)::text = ANY ((ARRAY['waiting'::character varying, 'fetching'::character varying, 'uploading'::character varying, 'relaying'::character varying])::text[])),
     CONSTRAINT ck_lctm_source CHECK ((source)::text = ANY ((ARRAY['bridge'::character varying, 'platform'::character varying])::text[])),
     CONSTRAINT ck_lctm_bytes CHECK (bytes_done >= 0),
     CONSTRAINT ck_lctm_percent CHECK ((percent IS NULL) OR (percent >= 0 AND percent <= 100))

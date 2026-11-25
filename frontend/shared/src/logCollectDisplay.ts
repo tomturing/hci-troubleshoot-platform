@@ -2972,6 +2972,35 @@ export const FAULT_CATALOG = {
     "stage": "S6",
     "title_zh": "采集包内容无法读取",
     "tone": "error"
+  },
+  "LC-TRANSFER-015": {
+    "action": "节点 SSH 会话已被系统登出，bridge 会尝试自动重连；若持续失败请重新连接 SSH 后重试。",
+    "admin_detail": "交付域获取会话时命中了已关闭的僵尸会话，或连续命令 no-session。检查节点 TMOUT 与 only_session_for_case 兜底是否落到另一节点。",
+    "business_stage": "upload",
+    "check": [
+      "确认页面底部 SSH 连接状态。",
+      "确认节点未被重启、空闲策略未提前登出。"
+    ],
+    "component": "bridge",
+    "evidence": "bridge_execution_logs 的 delivery.node_unreachable / session.destroyed",
+    "fix": [
+      "重新连接 SSH 后重试；已采集的包与已传分片均保留，不需要重新采集。"
+    ],
+    "http_status": 503,
+    "kind": "runtime",
+    "layer": "TRANSFER",
+    "match_keywords": [
+      "no-session",
+      "节点命令连续",
+      "会话可能已被节点空闲登出"
+    ],
+    "owner": "customer",
+    "problem": "交付作业连续拿不到可用的 SSH 会话",
+    "retryable": true,
+    "scope": "local",
+    "stage": "S4",
+    "title_zh": "交付会话已失效",
+    "tone": "warning"
   }
 } as const
 
@@ -3306,6 +3335,14 @@ export const FAULT_MATCHERS = [
       "需重新连接节点",
       "重新连接 SSH",
       "交付需要重新认证"
+    ]
+  },
+  {
+    "code": "LC-TRANSFER-012",
+    "keywords": [
+      "no-session",
+      "节点命令连续",
+      "会话可能已被节点空闲登出"
     ]
   },
   {

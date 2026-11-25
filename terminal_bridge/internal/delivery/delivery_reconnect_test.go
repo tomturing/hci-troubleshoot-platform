@@ -13,13 +13,36 @@ func TestDeliverySessionForLiveSession(t *testing.T) {
 	b := session.NewHub()
 	sess := &sshx.SSHSession{CaseID: "case-x", CreatedAt: time.Now()}
 	b.Set(session.SessionKey("case-x", "10.0.0.1"), sess)
-	wrapped := sshx.NewSSHRunner(sess)
+	wrapped := liveNodeSession{}
 	r := &deliveryRunner{hub: b, reconnect: staticReconnector{wrap: wrapped}}
 	job := &deliveryJob{CaseID: "case-x", NodeIP: "10.0.0.1", Phase: phasePulling}
 	if got := r.sessionFor(job); got != NodeSession(wrapped) {
 		t.Fatalf("期望复用已有会话，得到 %v", got)
 	}
 }
+
+// TestDeliverySessionRejectsOnlySessionFallback 守护：本工单只剩"另一节点的唯一会话"时，
+// 交付不得拿它执行命令（会把 acli 命令发到错误的机器），必须转按节点自动重连。
+//
+// 现场形态见 Q2026112500592：.35 被 remote_eof 销毁后，ResolveForNode 的
+// only_session_for_case 兜底返回 .38 的会话，连续 5 轮 acli progress 全部 no-session。
+func TestDeliverySessionRejectsOnlySessionFallback(t *testing.T) {
+	b := session.NewHub()
+	// 只有 .38 的会话，作业要的是 .35。
+	sess := &sshx.SSHSession{CaseID: "case-x", CreatedAt: time.Now()}
+	b.Set(session.SessionKey("case-x", "10.0.0.38"), sess)
+	wrapped := liveNodeSession{}
+	r := &deliveryRunner{hub: b, reconnect: staticReconnector{wrap: wrapped}}
+	job := &deliveryJob{CaseID: "case-x", NodeIP: "10.0.0.35", Phase: phaseWaitingCollect}
+	if got := r.sessionFor(job); got != nil {
+		t.Fatalf("不得跨节点兜底返回会话，得到 %v", got)
+	}
+}
+
+// liveNodeSession 只实现 Alive：这些用例只验证会话解析与替换，不真正执行命令。
+type liveNodeSession struct{ NodeSession }
+
+func (liveNodeSession) Alive() bool { return true }
 
 // TestDeliverySessionForNoAuthReturnsNil 守护：没有 lastAuth、也没有会话时，
 // 不尝试连接、不 panic，返回 nil（由调用方转为 needs_reauth，走人工重连）。

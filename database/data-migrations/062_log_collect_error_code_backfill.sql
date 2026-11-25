@@ -125,7 +125,12 @@ INSERT INTO lc_error_rules (ord, needle, code) VALUES
         -- 若将来 message 改用「无法确认日志包」开头，必须先把它前移到 LC-TRANSFER-006 之前，
         -- 否则历史回填会继续落成 LC-TRANSFER-006。
         (89, '缺少探测命令', 'LC-ENV-009'),
-        (90, '探测命令不可用', 'LC-ENV-009');
+        (90, '探测命令不可用', 'LC-ENV-009'),
+        -- 91/92：交付会话失效（no-session）按细分码归因，不再落 LC-PLATFORM-011。
+        -- 放表尾的原因同 89/90：needle 足够长，不会被"超时/会话"等泛规则抢占；
+        -- 若将来文案改成只保留"无响应"，必须把它前移到 LC-EXEC-002 之前。
+        (91, 'no-session', 'LC-TRANSFER-015'),
+        (92, '节点命令连续', 'LC-TRANSFER-015');
 
 WITH targets AS (
     SELECT

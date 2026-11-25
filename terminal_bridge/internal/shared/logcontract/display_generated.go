@@ -694,6 +694,14 @@ var contractErrors = map[string]contractError{
 		Component: "bridge",
 		Stage:     "S6",
 	},
+	"LC-TRANSFER-015": {
+		Title:     "交付会话已失效",
+		Problem:   "交付作业连续拿不到可用的 SSH 会话",
+		Action:    "节点 SSH 会话已被系统登出，bridge 会尝试自动重连；若持续失败请重新连接 SSH 后重试。",
+		Layer:     "TRANSFER",
+		Component: "bridge",
+		Stage:     "S4",
+	},
 }
 
 // Title 返回该码对外展示的一句话结论；未知码返回空串，由调用方按契约兜底。

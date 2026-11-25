@@ -41,19 +41,85 @@ func NormalizePtyOutput(s string) string { return strings.ReplaceAll(s, "\r\n", 
 //
 // 为什么必须独立 Session：共享交互式 shell 上跑 PTY 命令会污染用户终端，
 // 且超时时无法确定性中止——关独立连接才能让远端进程立刻退出。
-func (s *SSHSession) RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error) {
-	if s == nil || s.Client == nil {
-		return "", -1, fmt.Errorf("no-session")
+// ErrNoSession 表示会话已失效（Client 为 nil）。
+//
+// 用哨兵而不是临时字符串：交付域据此立即判定"会话不可用并交回重排"，
+// 既不必累计 3 次失败，也不必靠错误文案匹配。
+var ErrNoSession = errors.New("no-session")
+
+// Alive 报告会话是否仍可执行命令。
+//
+// 为什么判 Client 而不是只看指针非空：Close() 会在锁内置空 Client，但会话
+// 对象可能仍留在 hub 注册表里（DestroySession 摘表与 Close 是两条路径）。
+// 只看指针会把"已关闭但未摘表"的僵尸会话当成可用——交付每轮都拿到 no-session。
+// 2026-11-25 Q2026112500592：主节点会话销毁后，only_session_for_case 兜底
+// 返回另一台机器的僵尸会话，连续 5 轮全部 no-session 直至失败。
+func (s *SSHSession) Alive() bool {
+	if s == nil {
+		return false
 	}
-	sess, err := s.Client.NewSession()
-	if err != nil {
-		return "", -1, err
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	return s.Client != nil
+}
+
+func (s *SSHSession) RunCommandPty(ctx context.Context, command string, timeout time.Duration) (string, int, error) {
+	if s == nil {
+		return "", -1, ErrNoSession
+	}
+	s.Mu.Lock()
+	client := s.Client
+	s.Mu.Unlock()
+	if client == nil {
+		return "", -1, ErrNoSession
+	}
+
+	// 建链（NewSession + RequestPty）必须与命令执行共享同一个超时预算。
+	//
+	// 旧实现只给 CombinedOutput 加了超时，建链两步裸奔：SSH 通道半开时它们
+	// 可以永久阻塞，表现为"命令根本没开始跑，整轮却 20+ 分钟不动"。
+	// Q2026112500592 的 07:28→07:49 跳变即由此放大。
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	type ptySetup struct {
+		sess *ssh.Session
+		err  error
+	}
+	setupCh := make(chan ptySetup, 1)
+	go func() {
+		sess, err := client.NewSession()
+		if err != nil {
+			setupCh <- ptySetup{err: err}
+			return
+		}
+		if err := sess.RequestPty("xterm-256color", PtyTerminalHeight, PtyTerminalWidth, PtyTerminalModes()); err != nil {
+			_ = sess.Close()
+			setupCh <- ptySetup{err: fmt.Errorf("request pty: %w", err)}
+			return
+		}
+		setupCh <- ptySetup{sess: sess}
+	}()
+
+	var sess *ssh.Session
+	select {
+	case <-execCtx.Done():
+		// 建链可能已经成功但结果还没送到，非阻塞收一次并关闭，避免泄漏通道。
+		select {
+		case setup := <-setupCh:
+			if setup.sess != nil {
+				_ = setup.sess.Close()
+			}
+		default:
+		}
+		return "", -1, execCtx.Err()
+	case setup := <-setupCh:
+		if setup.err != nil {
+			return "", -1, setup.err
+		}
+		sess = setup.sess
 	}
 	defer sess.Close()
-
-	if err := sess.RequestPty("xterm-256color", PtyTerminalHeight, PtyTerminalWidth, PtyTerminalModes()); err != nil {
-		return "", -1, fmt.Errorf("request pty: %w", err)
-	}
 
 	type execOutcome struct {
 		output []byte
@@ -64,9 +130,6 @@ func (s *SSHSession) RunCommandPty(ctx context.Context, command string, timeout 
 		output, runErr := sess.CombinedOutput(command)
 		outcomeCh <- execOutcome{output: output, err: runErr}
 	}()
-
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 
 	select {
 	case <-execCtx.Done():
