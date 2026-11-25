@@ -21,7 +21,13 @@ export function customerFaultText(error: unknown, preferredCode?: string | null)
   return formatFaultText(guessed)
 }
 
+/** 常驻错误提示的句柄：调用方可精准关闭本次错误，不能用 closeAll 误伤其他提示。 */
+export type CustomerFaultToast = ReturnType<typeof ElMessage.error>
+
 /** 链路故障弹框：客户截图反馈时，这一行就是定位所需的全部信息。 */
-export function showCustomerFault(error: unknown, preferredCode?: string | null): void {
-  ElMessage.error(customerFaultText(error, preferredCode))
+export function showCustomerFault(
+  error: unknown,
+  preferredCode?: string | null,
+): CustomerFaultToast {
+  return ElMessage.error(customerFaultText(error, preferredCode))
 }
