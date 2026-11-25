@@ -26,8 +26,10 @@ BEGIN;
 ALTER TABLE log_collect_transfer_metric
     DROP CONSTRAINT IF EXISTS ck_lctm_stage;
 
+-- 表达式必须与 desired_schema.sql 完全同形（含 ::text[] 强制转换），
+-- 否则迁移执行后 Atlas schema diff 仍会认为有未收敛的约束差异。
 ALTER TABLE log_collect_transfer_metric
     ADD CONSTRAINT ck_lctm_stage
-    CHECK (stage IN ('waiting', 'fetching', 'uploading', 'relaying'));
+    CHECK ((stage)::text = ANY ((ARRAY['waiting'::character varying, 'fetching'::character varying, 'uploading'::character varying, 'relaying'::character varying])::text[]));
 
 COMMIT;
