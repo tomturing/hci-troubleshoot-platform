@@ -52,12 +52,18 @@ dsh_cockpit-rules/
 | v1 / `DSH_PLUGIN_PACKAGES` | `deepseek-harness-wecom-0.1.33.tgz` | 旧 DSH 的企业微信通道 |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `wecom-0.1.34.tgz` | 新 DSH 的企业微信通道 |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.24.tgz` | 会话运营台账与规则包 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.2.tgz` | WeKnora HCI 单 Agent 诊断 Preset |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.3.tgz` | WeKnora HCI 单 Agent 诊断 Preset |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `ip-redactor-0.1.3.tgz` | 诊断输出 IP 脱敏插件 |
 
 这些 tgz 是构建上下文中的不可变本地制品；部署 values 必须使用精确文件名，禁止在
 容器启动时从 npm registry 解析浮动版本。v2 的 WeKnora Key、知识库 ID 和智能体 ID
 通过环境仓 `dsh-offline-plugin-credentials` 注入，不写入公开 values。
+
+> ⚠️ `hci-weknora-diagnosis-bundle-0.2.3.tgz` 入库的是**离线整包**：解包后是
+> `hci-weknora-diagnosis-offline-0.2.3/`，其中才含 `package/` 结构的
+> `hci-weknora-diagnosis-bundle-0.2.3.tgz` 与 `wxg-prc-cpg-dsh-weknora-0.1.0.tgz`。
+> 它不能直接交给 `DSH_PLUGIN_PACKAGES` 安装，需要按包内 README 用 `install-offline.sh`
+> 或两条 `pnpm add` 手工安装。0.2.2 及更早版本均是可直装的 npm pack 制品。
 
 只有尚未进入 `dsh_plugins` 正式构建流程的临时本地 bundle，才放在本目录的子目录，例如：
 
