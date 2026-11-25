@@ -44,22 +44,25 @@ dsh_cockpit-rules/
 
 ## 本地 bundle 开发
 
-镜像中同时保留旧诊断服务的历史制品（用于回滚），当前两个实例使用的插件组合分别来自
-`dsh_v1_plugins` 与 `dsh_v2_plugins`：
+当前两个实例使用的插件组合分别来自 `dsh_v1_plugins` 与 `dsh_v2_plugins`：
 
 | 实例 | 制品 | 用途 |
 |---|---:|---|
 | v1 / `DSH_PLUGIN_PACKAGES` | `deepseek-harness-wecom-0.1.33.tgz` | 旧 DSH 的企业微信通道 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `wecom-0.1.34.tgz` | 新 DSH 的企业微信通道 |
+| v1 / `DSH_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 旧 DSH 的诊断输出 IP 脱敏插件 |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `wecom-0.1.35.tgz` | 新 DSH 的企业微信通道 |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.24.tgz` | 会话运营台账与规则包 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.3.tgz` | WeKnora HCI 单 Agent 诊断 Preset |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `ip-redactor-0.1.3.tgz` | 诊断输出 IP 脱敏插件 |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.4.tgz` | WeKnora HCI 单 Agent 诊断 Preset |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 诊断输出 IP 脱敏插件 |
 
 这些 tgz 是构建上下文中的不可变本地制品；部署 values 必须使用精确文件名，禁止在
 容器启动时从 npm registry 解析浮动版本。v2 的 WeKnora Key、知识库 ID 和智能体 ID
 通过环境仓 `dsh-offline-plugin-credentials` 注入，不写入公开 values。
 
-> `hci-weknora-diagnosis-bundle-0.2.3.tgz` 是标准 npm pack 制品（`package/` 结构），
+> 旧 DSH 实例（v1）的 IP 脱敏自 0.1.4 起与离线实例共用 `ip-redactor-0.1.4.tgz`，
+> 不再使用早期的 `dsh-ip-redactor-0.1.3.tgz`。
+
+> `hci-weknora-diagnosis-bundle-0.2.4.tgz` 是标准 npm pack 制品（`package/` 结构），
 > 可直接由 `DSH_PLUGIN_PACKAGES` 安装；其依赖 `@wxg-prc-cpg/dsh-weknora@0.1.0`
 > 在 profile 安装时解析。不要把上游发布的「离线整包」
 > （`hci-weknora-diagnosis-offline-*`，解包后是目录里再嵌 tgz）放进本目录：它没有
