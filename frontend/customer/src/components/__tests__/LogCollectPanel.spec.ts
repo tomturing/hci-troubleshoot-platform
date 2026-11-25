@@ -14,6 +14,7 @@ import { resolve } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { h, inject, provide } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
+import { ElMessage } from 'element-plus'
 import LogCollectPanel from '@/components/LogCollectPanel.vue'
 import { logCollectApi, type LogCollectTask } from '@/api/logCollect'
 import { checkBridgeBeforeOpen } from '@/api/terminal'
@@ -4141,6 +4142,32 @@ describe('LogCollectPanel acli 安装失败兜底', () => {
     fakeSocket.onmessage?.({ data: JSON.stringify({ type: 'acli_sync_result', ...payload }) })
   }
 
+  const probePayload = (patch: Record<string, unknown> = {}) => ({
+    architecture: 'x86_64',
+    acli_installed: false,
+    acli_version: '',
+    acli_build_time: '',
+    acli_binary: '',
+    available_mb: 540088,
+    log_server_reachable: true,
+    http_code: 200,
+    modules: [],
+    hosts: [],
+    catalog_source: 'platform_default',
+    ...patch,
+  })
+
+  const replyProbe = (data: Record<string, unknown>) => {
+    fakeSocket.onmessage?.({
+      data: JSON.stringify({
+        type: 'log_collect_result',
+        log_action: 'probe',
+        status: 'ok',
+        log_data: data,
+      }),
+    })
+  }
+
   it('上传落盘校验不符时展示摘要，并给出「重试上传」而不是从头再来', async () => {
     const wrapper = await mountReady()
 
@@ -4373,6 +4400,158 @@ describe('LogCollectPanel acli 安装失败兜底', () => {
 
     expect(wrapper.find('.lc-acli-plugin').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('插件已按平台期望态收敛')
+  })
+
+  it('同节点重新探测确认 acli 恢复后清除失败卡片', async () => {
+    const wrapper = await mountReady()
+    replyProbe(probePayload())
+    await flushPromises()
+
+    pushAcliResult({
+      status: 'error',
+      stage: 'verify',
+      error_code: 'LC-INSTALL-006',
+      error_retryable: 'true',
+      message: 'acli 安装完成但 acli --version 验证失败（exit=1）',
+    })
+    await flushPromises()
+    expect(wrapper.find('.lc-acli-fail').exists()).toBe(true)
+
+    const reprobe = wrapper.findAll('button').find((btn) => btn.text().includes('重新探测'))
+    expect(reprobe).toBeTruthy()
+    await reprobe!.trigger('click')
+    await flushPromises()
+
+    replyProbe(
+      probePayload({
+        acli_installed: true,
+        acli_version: '1.0.0',
+        acli_build_time: '2026-05-20 17:22:16',
+        acli_binary: '/sf/bin/acli',
+        hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        catalog_source: 'acli_help',
+      }),
+    )
+    await flushPromises()
+
+    expect(wrapper.find('.lc-acli-fail').exists()).toBe(false)
+  })
+
+  it('同节点恢复时关闭本次 acli 失败对应的常驻红条', async () => {
+    const close = vi.fn()
+    const errorSpy = vi.spyOn(ElMessage, 'error').mockReturnValue({ close } as any)
+    try {
+      const wrapper = await mountReady()
+      replyProbe(probePayload())
+      await flushPromises()
+
+      pushAcliResult({
+        status: 'error',
+        stage: 'upload',
+        error_code: 'LC-INSTALL-001',
+        error_retryable: 'true',
+        message: '上传失败',
+      })
+      await flushPromises()
+
+      const retryUpload = wrapper
+        .find('.lc-acli-fail')
+        .findAll('button')
+        .find((btn) => btn.text().includes('重试上传'))
+      await retryUpload!.trigger('click')
+      await flushPromises()
+
+      // 重试失败会落新卡片并弹常驻红条；句柄必须挂到卡片上。
+      pushAcliResult({
+        status: 'error',
+        stage: 'upload',
+        error_code: 'LC-INSTALL-001',
+        error_retryable: 'true',
+        message: '上传仍然失败',
+      })
+      await flushPromises()
+      expect(errorSpy).toHaveBeenCalled()
+
+      const reprobe = wrapper.findAll('button').find((btn) => btn.text().includes('重新探测'))
+      await reprobe!.trigger('click')
+      await flushPromises()
+      replyProbe(
+        probePayload({
+          acli_installed: true,
+          acli_version: '1.0.0',
+          hosts: [{ ip: '172.28.25.1', name: 'node-1', master: true }],
+        }),
+      )
+      await flushPromises()
+
+      expect(close).toHaveBeenCalled()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('异节点探测成功不误清旧节点失败卡片', async () => {
+    const wrapper = await mountReady()
+    replyProbe(probePayload())
+    await flushPromises()
+
+    pushAcliResult({
+      status: 'error',
+      stage: 'verify',
+      error_code: 'LC-INSTALL-006',
+      error_retryable: 'true',
+      message: 'acli 安装完成但 acli --version 验证失败（exit=1）',
+    })
+    await flushPromises()
+    expect(wrapper.find('.lc-acli-fail').exists()).toBe(true)
+
+    // 断开会话后 props.nodeIp 生效：模拟用户切到另一台节点再探测。
+    mockStore.sshConnectionState = 'disconnected'
+    await wrapper.setProps({ nodeIp: '172.28.25.9' })
+    await flushPromises()
+    replyProbe(
+      probePayload({
+        acli_installed: true,
+        acli_version: '1.0.0',
+        hosts: [{ ip: '172.28.25.9', name: 'node-9', master: true }],
+      }),
+    )
+    await flushPromises()
+
+    expect(wrapper.find('.lc-acli-fail').exists()).toBe(true)
+  })
+
+  it('短间隔复查 3 次仍失败时明确提示已自动复查', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const wrapper = await mountReady()
+    try {
+      replyProbe(probePayload())
+      await flushPromises()
+
+      pushAcliResult({
+        status: 'error',
+        stage: 'verify',
+        error_code: 'LC-INSTALL-006',
+        error_retryable: 'true',
+        message: 'acli 安装完成但 acli --version 验证失败（exit=1）',
+      })
+      await flushPromises()
+
+      // 3/5/8 秒（含 ±20% 抖动）：分别推进到每次复查到期。
+      for (const advance of [4000, 7000, 10000]) {
+        await vi.advanceTimersByTimeAsync(advance)
+        await flushPromises()
+        replyProbe(probePayload())
+        await flushPromises()
+      }
+
+      const card = wrapper.find('.lc-acli-fail')
+      expect(card.exists()).toBe(true)
+      expect(card.text()).toContain('已自动复查 3 次仍未恢复')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
   })
 })
 
