@@ -1989,7 +1989,15 @@ const statusText = computed(() => {
   if (stage.value === 'pulling') {
     // 作业刚提交时 bridge 还在等节点把包写完（waiting_collect），此刻一个字节都还没拉。
     // 直接说「正在拉取 0 字节」会把「还没开始」说成「传输卡住了」。
-    if (transfer.stage === 'waiting_collect') return '节点采集已收尾，等待压缩包写入完成（尚未开始传输）'
+    if (transfer.phase === 'retrying' || transfer.stage === 'retrying') {
+      // retrying 是 bridge 的中间态：它在退避后重建连接再重试，不是失败。
+      // 必须把重试次数说清楚，否则"进度不动"会被用户理解成卡死。
+      const retry = transfer.attempt > 0 ? `第 ${transfer.attempt} 次重试` : '自动重试中'
+      return `等待节点会话恢复（${retry}，已传进度保留，尚未开始传输）`
+    }
+    if (transfer.stage === 'waiting_collect' || transfer.phase === 'waiting_collect') {
+      return '节点采集已收尾，等待压缩包写入完成（尚未开始传输）'
+    }
     const total = transfer.totalSize > 0 ? ` / ${formatByteCount(transfer.totalSize)}` : ''
     return `正在从 HCI 拉取：${formatByteCount(transfer.pulled)}${total}`
   }
@@ -5052,10 +5060,16 @@ async function waitDeliveryJob(ws: WebSocket, jobId: string, token: number) {
     }
     const view = (result.log_data || {}) as DeliveryJobView
     if (view.phase === 'pulling') stage.value = 'pulling'
-    if (view.phase === 'uploading' || view.phase === 'completing' || view.phase === 'retrying') {
+    // waiting_collect / retrying 都是“还没开工”：不能映射成 uploading，
+    // 否则文案会显示“正在上传平台 0/N 片”，把“等会话恢复”说成“传不动”
+    // （Q2026112500592：5 次 node_unreachable 全被渲染成上传中 0/287 片）。
+    if (view.phase === 'waiting_collect' || view.phase === 'retrying') stage.value = 'pulling'
+    if (view.phase === 'uploading' || view.phase === 'completing') {
       stage.value = 'uploading'
     }
     transfer.stage = String(view.phase || '')
+    transfer.phase = String(view.phase || '')
+    transfer.attempt = view.attempt || 0
     transfer.percent = view.progress || 0
     transfer.pulled = view.pulled_bytes || 0
     if (view.source_size && view.source_size > 0) transfer.totalSize = view.source_size
