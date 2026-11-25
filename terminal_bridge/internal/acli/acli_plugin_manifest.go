@@ -44,11 +44,11 @@ const (
 	acliPluginManifestMaxBytes = 16 << 20
 	// acliPluginMaxFiles / acliPluginMaxFileBytes 与 case-service 的规格校验同口径
 	// （backend/case-service/app/domain/acli_plugin_spec.py 的 MAX_PLUGIN_FILE_BYTES）。
-	// 单文件上限 1MiB：lmt 类完整巡检脚本实测已约 615KiB/16000 行，512KiB 会导致
-	// 整个 manifest 被拒（manifest_file_too_large）；内联走后 HTTP 拉取而非 WS 命令通道，
-	// 1MiB 内容 base64 约 1.34MiB，仍远低于 acliPluginManifestMaxBytes(16MiB)。
+	// 单文件上限 5MiB：完整巡检脚本已进入 ~1MiB 量级（lmt 615KiB 且持续增长），
+	// 按运维需求放宽到 5MiB；内联 base64 后约 6.7MiB，仍在
+	// acliPluginManifestMaxBytes(16MiB) 总量内，不会挤占其他插件。
 	acliPluginMaxFiles     = 64
-	acliPluginMaxFileBytes = 1 << 20
+	acliPluginMaxFileBytes = 5 << 20
 	// acliPluginHostProbeTimeout 单台一次探测：注册表 + 逐文件摘要，都是本地小命令。
 	acliPluginHostProbeTimeout = 45 * time.Second
 	// acliPluginHostDeployTimeout 单台一次部署：备份→写盘→jq 注册→plugin list→冒烟。

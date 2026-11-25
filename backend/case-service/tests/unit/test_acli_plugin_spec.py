@@ -124,7 +124,8 @@ def test_script_over_max_file_bytes_is_rejected_on_save():
     """单文件超限必须在保存时就拒绝，不能等客户侧 manifest_file_too_large 才发现。"""
     result = validate_spec(_spec(script_content="x" * (MAX_PLUGIN_FILE_BYTES + 1)))
     assert not result["ok"]
-    assert any("script_content" in e and "1MiB" in e for e in result["errors"]), result["errors"]
+    expected_mib = f"{MAX_PLUGIN_FILE_BYTES // (1024 * 1024)}MiB"
+    assert any("script_content" in e and expected_mib in e for e in result["errors"]), result["errors"]
 
 
 def test_script_at_max_file_bytes_is_accepted():

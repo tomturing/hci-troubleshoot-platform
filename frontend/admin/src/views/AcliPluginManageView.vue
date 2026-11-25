@@ -153,8 +153,8 @@ function validateBeforeSave(): boolean {
   }
   // 与后端 MAX_PLUGIN_FILE_BYTES / 桥侧 acliPluginMaxFileBytes 同口径（UTF-8 字节数）。
   // 提前拦截，避免保存成功但客户侧整单拒收（manifest_file_too_large）的误导。
-  if (new TextEncoder().encode(spec.script_content).length > 1024 * 1024) {
-    ElMessage.warning('原始脚本超过 1MiB 单文件上限，请精简后再保存')
+  if (new TextEncoder().encode(spec.script_content).length > 5 * 1024 * 1024) {
+    ElMessage.warning('原始脚本超过 5MiB 单文件上限，请精简后再保存')
     activeTab.value = 'script'
     return false
   }
