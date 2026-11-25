@@ -68,6 +68,18 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, j
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			// no-session 是**确定的**会话失效，不是"节点正忙"：立即交回重排。
+			// 累计到 3 次只会白等 3×60s，并把有限的重试预算耗在同一个僵尸会话上
+			// （2026-11-25 Q2026112500592：每轮 3 次 × 60s，5 轮全部撞同一堵墙）。
+			if isNodeSessionLost(err) {
+				evidence.Emit("WARN", "delivery.node_unreachable", "节点会话已失效（no-session），立即交回重排以重建连接", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "task_id": job.TaskID,
+					"command": "acli log_collect progress", "fail_streak": 1,
+					"timeout_sec": int64(deliveryProgressCommandTimeout / time.Second),
+					"last_error":  err.Error(),
+				})
+				return &sessionLostError{cause: err}
+			}
 			// 命令失败本身也可能是"节点正在忙"，所以只累计；连续失败到阈值才判定会话已死。
 			// 判据取"命令能不能执行"而不是"字节有没有涨"：等待采集阶段节点本就可以长时间
 			// 没有新字节（多节点串行），用增量判定会误杀正常等待。
@@ -138,6 +150,32 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, j
 		}
 	}
 }
+
+// errSessionLostText 是 sshx.ErrNoSession 的稳定文案。
+//
+// 交付域刻意不 import sshx 具体包（保持端口化边界，见 NodeSession 注释），
+// 因此用文案契约识别会话失效。改动该文案必须同步 sshx.ErrNoSession。
+const errSessionLostText = "no-session"
+
+// isNodeSessionLost 判定错误是否表示"SSH 会话已关闭/不存在"。
+func isNodeSessionLost(err error) bool {
+	return err != nil && strings.Contains(err.Error(), errSessionLostText)
+}
+
+// sessionLostError 给"会话已失效"的失败带上规范码。
+//
+// 为什么不能只靠文案：平台归因依赖 error_message 匹配，文案一改码就丢；
+// 带上 ErrorCode() 后，deliveryErrorCode 会直接把它写进 job.LastErrorCode，
+// 落库与前端分支都有稳定锚点（与磁盘满/并发准入两条路径一致）。
+type sessionLostError struct{ cause error }
+
+func (e *sessionLostError) Error() string {
+	return fmt.Sprintf("节点会话已失效（%v）：立即交回重排以重建连接", e.cause)
+}
+
+func (e *sessionLostError) Unwrap() error { return e.cause }
+
+func (e *sessionLostError) ErrorCode() string { return logcontract.ErrDeliverySessionLost }
 
 // 压缩包落定判定：两次采样间隔与最长等待。
 const (

@@ -530,6 +530,13 @@ const transfer = reactive({
   // bridge 交付作业的原始阶段（waiting_collect / pulling / uploading / …）：
   // 文案要区分「还没开始传输」与「正在拉取 0 字节」，只有它能分辨。
   stage: '',
+  // 作业级相位（waiting_collect / pulling / uploading / retrying / failed）：
+  // stage 是证据口径，phase 是作业状态机口径；重试时前者的 waiting 与后者的
+  // retrying 要一起看，才能区分"等采集"与"等会话恢复"。
+  phase: '',
+  // 已重试次数：>0 时界面必须显示"第 N 次重试"，否则用户看到进度不动
+  // 会误以为卡死，而实际是 bridge 在重建 SSH 会话（Q2026112500592）。
+  attempt: 0,
   percent: 0,
   pulled: 0,
   // 源包大小（job 的 source_size）：没有分母的「已拉 N 字节」无法判断还要多久。
@@ -541,6 +548,8 @@ const transfer = reactive({
 /** 交付进度整组归零：新任务不得继承上一轮的分母、阶段与摘要。 */
 function resetTransfer() {
   transfer.stage = ''
+  transfer.phase = ''
+  transfer.attempt = 0
   transfer.percent = 0
   transfer.pulled = 0
   transfer.totalSize = 0
@@ -2161,6 +2170,8 @@ function handleMessage(event: MessageEvent) {
   if (action === 'transfer') {
     const payload = data.log_data || {}
     transfer.stage = payload.stage || ''
+    transfer.phase = payload.phase || ''
+    transfer.attempt = payload.attempt || 0
     transfer.percent = payload.percent || 0
     transfer.pulled = payload.pulled_bytes || 0
     if (payload.total_size > 0) transfer.totalSize = payload.total_size
@@ -4999,6 +5010,8 @@ interface DeliveryJobView {
   uploaded_parts?: number
   part_count?: number
   needs_reauth?: boolean
+  /** 已重试次数：界面据此显示"第 N 次重试"，避免把"会话重建中"看成卡死。 */
+  attempt?: number
   last_error?: string
   /**
    * bridge 给出的结构化失败归因（如 LC-TRANSFER-008 客户机磁盘满）。

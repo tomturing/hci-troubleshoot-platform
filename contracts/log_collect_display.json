@@ -630,6 +630,14 @@
       ]
     },
     {
+      "code": "LC-TRANSFER-012",
+      "keywords": [
+        "no-session",
+        "节点命令连续",
+        "会话可能已被节点空闲登出"
+      ]
+    },
+    {
       "code": "LC-ENV-007",
       "keywords": [
         "SSH 认证失败"
@@ -3089,6 +3097,35 @@
         "与 bridge 的通道断开"
       ]
     },
+    "LC-TRANSFER-015": {
+      "kind": "runtime",
+      "layer": "TRANSFER",
+      "component": "bridge",
+      "scope": "local",
+      "stage": "S4",
+      "business_stage": "upload",
+      "title_zh": "交付会话已失效",
+      "problem": "交付作业连续拿不到可用的 SSH 会话",
+      "action": "节点 SSH 会话已被系统登出，bridge 会尝试自动重连；若持续失败请重新连接 SSH 后重试。",
+      "check": [
+        "确认页面底部 SSH 连接状态。",
+        "确认节点未被重启、空闲策略未提前登出。"
+      ],
+      "fix": [
+        "重新连接 SSH 后重试；已采集的包与已传分片均保留，不需要重新采集。"
+      ],
+      "admin_detail": "交付域获取会话时命中了已关闭的僵尸会话，或连续命令 no-session。检查节点 TMOUT 与 only_session_for_case 兜底是否落到另一节点。",
+      "evidence": "bridge_execution_logs 的 delivery.node_unreachable / session.destroyed",
+      "tone": "warning",
+      "owner": "customer",
+      "retryable": true,
+      "http_status": 503,
+      "match_keywords": [
+        "no-session",
+        "节点命令连续",
+        "会话可能已被节点空闲登出"
+      ]
+    },
     "LC-PLATFORM-011": {
       "kind": "runtime",
       "layer": "PLATFORM",
@@ -4046,6 +4083,14 @@
     {
       "needle": "探测命令不可用",
       "code": "LC-ENV-009"
+    },
+    {
+      "needle": "no-session",
+      "code": "LC-TRANSFER-015"
+    },
+    {
+      "needle": "节点命令连续",
+      "code": "LC-TRANSFER-015"
     }
   ],
   "layers": {

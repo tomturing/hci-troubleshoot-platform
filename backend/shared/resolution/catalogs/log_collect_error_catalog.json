@@ -812,6 +812,17 @@
       "ops_hint": "查 terminal_bridge 是否重启/OOM、WSS 心跳是否超时；未送达意味着节点侧没有留下任何任务，重试是安全的。"
     },
     {
+      "code": "LC-TRANSFER-015",
+      "layer": "TRANSFER",
+      "stage": "upload",
+      "title_zh": "交付会话已失效",
+      "owner": "customer",
+      "retryable": true,
+      "http_status": 503,
+      "user_hint": "节点 SSH 会话已被系统登出，bridge 会尝试自动重连；若持续失败请重新连接 SSH 后重试。",
+      "ops_hint": "交付域获取会话时命中了已关闭的僵尸会话，或连续命令 no-session。检查节点 TMOUT 与 only_session_for_case 兜底是否落到另一节点。"
+    },
+    {
       "code": "LC-PLATFORM-011",
       "layer": "PLATFORM",
       "stage": "api",

@@ -95,4 +95,6 @@ ATTRIBUTION_RULES: tuple[tuple[str, str], ...] = (
     ("节点上的压缩包", "LC-TRANSFER-011"),
     ("缺少探测命令", "LC-ENV-009"),
     ("探测命令不可用", "LC-ENV-009"),
+    ("no-session", "LC-TRANSFER-015"),
+    ("节点命令连续", "LC-TRANSFER-015"),
 )
