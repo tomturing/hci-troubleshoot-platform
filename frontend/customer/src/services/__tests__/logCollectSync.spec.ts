@@ -642,6 +642,21 @@ describe('interpretArchiveProbe：探测回包的三态判据', () => {
     expect(outcome.failure?.message).toContain('重新采集')
   })
 
+  it('P2 中转任务缺包时（Q2026112500790）不得误报 P1 自动删除，应提示检查磁盘与过程日志', () => {
+    const outcome = interpretArchiveProbe(
+      {
+        status: 'ok',
+        error_code: 'LC-TRANSFER-001',
+        log_data: { exists: false, size: 0, probe_level: 'missing' },
+      },
+      { uploadMode: 'bridge_relay' },
+    )
+    expect(outcome.failure?.errorCode).toBe('LC-TRANSFER-001')
+    expect(outcome.failure?.message).not.toContain('P1 发送成功后插件会自动删除')
+    expect(outcome.failure?.message).toContain('磁盘空间不足')
+    expect(outcome.failure?.message).toContain('重新采集')
+  })
+
   it('error 且无错误码时原样回显桥的 message，不丢失真因', () => {
     const outcome = interpretArchiveProbe({ status: 'error', message: 'SSH 会话已断开' })
     expect(outcome.failure?.message).toBe('SSH 会话已断开')

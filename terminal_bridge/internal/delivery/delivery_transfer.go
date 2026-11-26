@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"terminal_bridge/internal/shared/aclibin"
 	"terminal_bridge/internal/shared/acliout"
 	"terminal_bridge/internal/shared/evidence"
 	"terminal_bridge/internal/shared/logcontract"
@@ -62,7 +63,12 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, j
 		if time.Now().After(deadline) {
 			return fmt.Errorf("等待采集完成超时（%s）", deliveryCollectTimeout)
 		}
-		output, _, err := session.RunCommandPty(ctx, "acli log_collect progress", deliveryProgressCommandTimeout)
+		// 必须走 aclibin.Invoke 统一解析路径与 PATH：sshd 非交互会话 PATH 往往不含
+		// /sf/bin，裸写 "acli log_collect progress" 会持续返回 exit=127（command not found）；
+		// 旧实现丢弃 exitCode 且对 ParseOK=false 静默，导致包已打完仍在 waiting 空转
+		// 24~42 分钟直到 SSH 断连（2026-11-25 Q2026112500592、2026-11-26 Q2026112601001）。
+		progressCmd := aclibin.Invoke("log_collect progress")
+		output, exitCode, err := session.RunCommandPty(ctx, progressCmd, deliveryProgressCommandTimeout)
 		if err != nil {
 			// 取消/掐断不是"节点不可用"：必须原样上交，否则会被误判成会话失效重排。
 			if ctx.Err() != nil {
@@ -93,9 +99,22 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, j
 				})
 				return fmt.Errorf("节点命令连续 %d 次无响应（最后错误：%v）：会话可能已被节点空闲登出，本轮交回重排以重建连接", streak, err)
 			}
+		} else if exitCode == 127 || strings.Contains(output, aclibin.AbsentToken) {
+			// acli 缺失是确定性环境故障，继续在 waiting 空转只会把会话熬死。
+			evidence.Emit("WARN", "delivery.acli_missing", "等待采集进度时节点未找到 acli 命令", "", job.CaseID, job.NodeIP, "", map[string]any{
+				"job_id": job.JobID, "task_id": job.TaskID,
+				"exit_code": exitCode, "output": remote.FormatOutputPreview(strings.TrimSpace(output), 160, 40),
+			})
+			return fmt.Errorf("节点未找到 acli 命令（exit=%d），无法查询采集进度", exitCode)
 		} else {
 			failTracker.reset()
 			progress := acliout.ParseProgress(output)
+			if !progress.ParseOK {
+				evidence.Emit("WARN", "delivery.progress_unparsed", "等待采集进度输出未能解析，继续等待下一次探测", "", job.CaseID, job.NodeIP, "", map[string]any{
+					"job_id": job.JobID, "task_id": job.TaskID,
+					"exit_code": exitCode, "output": remote.FormatOutputPreview(strings.TrimSpace(output), 160, 40),
+				})
+			}
 			if progress.ParseOK && progress.Total > 0 && progress.Done >= progress.Total {
 				sourcePath := firstNonEmpty(strings.TrimSpace(job.SourcePath), strings.TrimSpace(progress.ArchivePath))
 				if sourcePath == "" {
