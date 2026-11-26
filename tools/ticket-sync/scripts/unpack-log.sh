@@ -42,8 +42,9 @@ DEPTH_TRUNC=0
 TMP=""
 TREE=""
 
-# 嵌套归档按扩展名发现，顺序必须长后缀在前（.tar.gz 先于 .gz）。
-ARCHIVE_SUFFIXES=(.tar.gz .tgz .tar.xz .txz .tar.bz2 .tbz2 .tar .zip .rar .7z)
+# 嵌套归档按扩展名发现，顺序必须长后缀在前（.tar.gz 先于 .gz、.tar.zst 先于 .zst）。
+# .tar.zst 是 HCI 节点每日滚动日志归档，旧白名单漏掉它导致产物里永远留着压缩包。
+ARCHIVE_SUFFIXES=(.tar.gz .tgz .tar.xz .txz .tar.bz2 .tbz2 .tar.zst .tar .zip .rar .7z .zst)
 
 log() { printf '%s\n' "$*" >&2; }
 warn() { printf '警告: %s\n' "$*" >&2; }
@@ -129,6 +130,7 @@ detect_format() {
   case "$hex" in
     504b0304* | 504b0506* | 504b0708*) echo zip; return 0 ;;
     1f8b*) echo tar.gz; return 0 ;;
+    28b52ffd*) echo tar.zst; return 0 ;;
     fd377a585a00*) echo tar.xz; return 0 ;;
     425a68*) echo tar.bz2; return 0 ;;
     377abcaf271c*) echo 7z; return 0 ;;
@@ -144,6 +146,7 @@ detect_format() {
     *.tar.gz | *.tgz) echo tar.gz ;;
     *.tar.xz | *.txz) echo tar.xz ;;
     *.tar.bz2 | *.tbz2) echo tar.bz2 ;;
+    *.tar.zst | *.zst) echo tar.zst ;;
     *.tar) echo tar ;;
     *.zip) echo zip ;;
     *.rar) echo rar ;;
@@ -188,6 +191,12 @@ extract_to() {
       # -xf 由 tar 自行识别压缩（GNU tar 与 bsdtar 都支持），
       # 显式 -xzf 对裸 tar 会因缺 gzip 头直接失败。
       tar -xf "$src" -C "$dst"
+      ;;
+    tar.zst)
+      command -v tar >/dev/null 2>&1 || return 1
+      command -v zstd >/dev/null 2>&1 || { warn "未找到 zstd，无法解压 $src"; return 1; }
+      # 与 Python 解压器保持同一口径：显式指定压缩程序，不依赖 tar 版本猜格式。
+      tar --use-compress-program=zstd -xf "$src" -C "$dst"
       ;;
     rar)
       if command -v unrar >/dev/null 2>&1; then
@@ -244,6 +253,7 @@ expand_tree() {
       find "$tree" -type f \
         \( -iname '*.zip' -o -iname '*.tar' -o -iname '*.tar.gz' -o -iname '*.tgz' \
         -o -iname '*.tar.xz' -o -iname '*.txz' -o -iname '*.tar.bz2' -o -iname '*.tbz2' \
+        -o -iname '*.tar.zst' -o -iname '*.zst' \
         -o -iname '*.rar' -o -iname '*.7z' \) -print0 2>/dev/null | sort -z
     )
     ((${#remaining[@]})) || return 0
@@ -355,6 +365,7 @@ main() {
   [[ -n "$PASS" ]] || load_password_from_env_file
 
   command -v unzip >/dev/null 2>&1 || warn "未找到 unzip，zip 归档将无法解压"
+  command -v zstd >/dev/null 2>&1 || warn "未找到 zstd，tar.zst 归档将保留原件"
   command -v tar >/dev/null 2>&1 || die "未找到 tar，无法继续"
 
   if [[ -z "$OUT" ]]; then

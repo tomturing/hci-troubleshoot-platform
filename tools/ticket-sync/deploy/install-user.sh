@@ -82,6 +82,15 @@ install_unrar() {
 
 install_unrar
 
+# zstd 是系统包，用户级部署没有 root 装不了。宿主机当前已有 /usr/bin/zstd；
+# 缺失时只告警不中断——运行时会把 tar.zst 保留原件并计入"无法解压"，
+# 不会让整单失败，但必须让部署者知道日志没被完整展开。
+if ! command -v zstd >/dev/null 2>&1; then
+  echo "警告：未找到 zstd，tar.zst 归档将保留原件（需系统包 zstd）" >&2
+else
+  echo "zstd 已就绪：$(command -v zstd)"
+fi
+
 systemctl --user daemon-reload
 # enable 只建开机链接；restart 保证重跑脚本时新代码真的生效（--now 对已在跑的服务不重启）。
 systemctl --user enable hci-ticket-sync.service

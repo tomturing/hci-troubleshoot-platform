@@ -1,4 +1,4 @@
-"""分层解压：zip（ZipCrypto）→ tar.gz → …，每层都做安全与配额审查。
+"""分层解压：zip（ZipCrypto）→ tar.gz / tar.zst → …，每层都做安全与配额审查。
 
 设计取舍：
 - 解压交给系统的 unzip / tar（C 实现），Python 只做编排与审计。
@@ -25,10 +25,23 @@ from .waterline import ensure_waterline
 
 logger = logging.getLogger(__name__)
 
-# 顺序必须长后缀在前：.tar.gz 先于 .gz 判断，否则会得到错误的去后缀结果。
+# 顺序必须长后缀在前：.tar.gz 先于 .gz、.tar.zst 先于 .zst，否则去后缀会截断错误。
 # .rar 来自客户现场自行打包的转储（实测 Q2026102700323 是 RAR5）。
+# .tar.zst 是 HCI 节点每日滚动日志归档（实测 Q2026111601650 每台一份 16.tar.zst）；
+# 旧白名单没有它，导致包解出来后作为普通文件留在产物里，永远不被展开。
 # 解压优先用 rarlab 的 unrar（RAR5 全方法），回退 p7zip 的 Rar5 解码器。
-ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".tar.xz", ".tar.bz2", ".tar", ".zip", ".rar", ".7z")
+ARCHIVE_SUFFIXES = (
+    ".tar.gz",
+    ".tgz",
+    ".tar.xz",
+    ".tar.bz2",
+    ".tar.zst",
+    ".tar",
+    ".zip",
+    ".rar",
+    ".7z",
+    ".zst",
+)
 
 # 扩展名 → 实际格式。只作为魔数失配时的兜底，不再作为唯一判据。
 _SUFFIX_FORMAT = {
@@ -36,10 +49,12 @@ _SUFFIX_FORMAT = {
     ".tgz": "tar.gz",
     ".tar.xz": "tar.xz",
     ".tar.bz2": "tar.bz2",
+    ".tar.zst": "tar.zst",
     ".tar": "tar",
     ".zip": "zip",
     ".rar": "rar",
     ".7z": "7z",
+    ".zst": "tar.zst",
 }
 
 # 归档格式的魔数判定。
@@ -51,6 +66,9 @@ _MAGIC_ZIP = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 _MAGIC_RAR = b"Rar!\x1a\x07"
 _MAGIC_7Z = b"7z\xbc\xaf\x27\x1c"
 _MAGIC_GZIP = b"\x1f\x8b"
+# 标准 zstd 帧魔数。可跳过帧（skippable frame）另有魔数，采集端不产出，
+# 且这类帧内部无法判断是否 tar，按未知格式处理比误解压更安全。
+_MAGIC_ZSTD = b"\x28\xb5\x2f\xfd"
 _MAGIC_XZ = b"\xfd7zXZ\x00"
 _MAGIC_BZ2 = b"BZh"
 _TAR_MAGIC_OFFSET = 257
@@ -85,6 +103,10 @@ def detect_archive_format(path: Path) -> tuple[str | None, str]:
         return "7z", "magic"
     if head[:2] == _MAGIC_GZIP:
         return "tar.gz", "magic"
+    if head[:4] == _MAGIC_ZSTD:
+        # zstd 魔数只说明压缩流，看不出内部是不是 tar；与 gzip 同样按 tar 处理。
+        # 非 tar 的 zst 会在 tar 阶段失败，由调用方保留原件而不是整单失败。
+        return "tar.zst", "magic"
     if head[:6] == _MAGIC_XZ:
         return "tar.xz", "magic"
     if head[:3] == _MAGIC_BZ2:
@@ -248,11 +270,15 @@ async def extract(
                     # 全部 EACCES，os.walk 也进不去、深层归档会被整片漏扫。
                     stats.permissions_fixed += _normalize_permissions(target)
                     continue
-                # .rar 降级：宿主的 p7zip 不支持部分 RAR5 压缩方法（实测报
-                # "Unsupported Method"），而这类包通常是客户自打的单个转储。
-                # 保留原件、记告警、继续走其它归档，避免一个解不开的附件
-                # 让整包日志都不可用。
-                if not nested.name.lower().endswith(".rar"):
+                # 无法解压时保留原件、记告警、继续其它归档，避免一个附件
+                # 让整包日志都不可用。覆盖两类：
+                # - .rar：p7zip 不支持部分 RAR5 方法（实测 "Unsupported Method"）；
+                # - .tar.zst/.zst：宿主缺 zstd 工具，或 zstd 流内部不是 tar
+                #   （魔数只认压缩层，无法预知内部结构）。
+                # 这两类都只是"这个附件没展开"，不会有数据丢失——原件还在。
+                lower_name = nested.name.lower()
+                degradable_suffix = lower_name.endswith((".rar", ".tar.zst", ".zst"))
+                if not degradable_suffix:
                     raise
                 shutil.rmtree(target, ignore_errors=True)
                 skipped_archives.add(nested)
@@ -435,6 +461,16 @@ async def _extract_any(
             f"无法识别归档格式 {archive.name}",
             f"path={archive} head=未知魔数 扩展名={suffix_fmt}",
         )
+    if fmt == "tar.zst":
+        # zstd 是本次新增的解压路径，单独留一条可追踪日志：事后能按 ticket/job
+        # 直接确认"这个归档走了 zstd 解压"，不必从"没有报错"反推。
+        logger.info(
+            "ticket=%s job=%s 归档格式=zstd path=%s 判据=%s 解压器=tar+--use-compress-program=zstd",
+            ticket_id,
+            job_id,
+            archive.name,
+            basis,
+        )
     if basis == "magic" and suffix_fmt is not None and suffix_fmt != fmt:
         # 扩展名与真实格式不一致必须留痕：这不是"坏包"，是我们的格式判据错了。
         logger.warning(
@@ -593,11 +629,15 @@ async def _seven_zip(archive: Path, target: Path, password: str) -> None:
     )
 
 
+# 每项是可直接展开进 argv 的参数序列，不能拼成带空格的单个字符串。
 _TAR_MODE = {
-    "tar": "-xf",
-    "tar.gz": "-xzf",
-    "tar.xz": "-xJf",
-    "tar.bz2": "-xjf",
+    "tar": ("-xf",),
+    "tar.gz": ("-xzf",),
+    "tar.xz": ("-xJf",),
+    "tar.bz2": ("-xjf",),
+    # --use-compress-program 比 --zstd 兼容更老的 GNU tar；显式点名 zstd
+    # 而不是靠 tar 猜压缩，也让"工具没装"变成一条明确的错误而不是含糊的 exit=2。
+    "tar.zst": ("--use-compress-program=zstd", "-xf"),
 }
 
 
@@ -608,11 +648,17 @@ async def _untar(archive: Path, target: Path, fmt: str = "tar.gz") -> None:
     （实测 Q2026102800262 的 .zip 其实是未压缩 tar），而 `-xf` 对 gzip 流
     依赖 tar 版本自动识别压缩，不做假设。
     """
+    if fmt == "tar.zst" and shutil.which("zstd") is None:
+        raise TicketError(
+            ErrorCode.EXTRACT_FAILED,
+            "宿主缺少 zstd 工具，无法解压 tar.zst",
+            f"archive={archive.name} tool=zstd PATH={os.environ.get('PATH', '')}",
+        )
     # --no-same-owner / --no-same-permissions：非 root 用户下避免 chown 失败。
     # GNU tar 默认拒绝 ../ 路径，但我们仍在解压后做一次符号链接审查，双保险。
     proc = await asyncio.create_subprocess_exec(
         "tar",
-        _TAR_MODE.get(fmt, "-xf"),
+        *_TAR_MODE.get(fmt, ("-xf",)),
         str(archive),
         "-C",
         str(target),

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -150,6 +151,73 @@ class PermissionNormalizeTest(unittest.TestCase):
         (self.root / "a" / "b" / "c.log").write_text("y", encoding="utf-8")
 
         self.assertEqual(extractor._normalize_permissions(self.root), 0)
+
+
+@unittest.skipUnless(shutil.which("tar") and shutil.which("zstd"), "需要宿主 tar 与 zstd")
+class ZstdArchiveTest(unittest.IsolatedAsyncioTestCase):
+    """节点每日滚动归档 16.tar.zst 必须随工单包一起展开。"""
+
+    async def asyncSetUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="ticket-sync-zstd-"))
+        self.work_dir = self.root / ".tmp" / f"{TICKET_ID}-zstd"
+        self.work_dir.mkdir(parents=True)
+        self.cfg = _make_config(self.root)
+
+    async def asyncTearDown(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _zstd_bytes(self) -> bytes:
+        source = self.root / "src" / "sf" / "log" / "kubelet"
+        source.mkdir(parents=True)
+        (source / "kubelet.log").write_text("zstd payload", encoding="utf-8")
+        archive = self.root / "16.tar.zst"
+        subprocess.run(
+            [
+                "tar",
+                "--use-compress-program=zstd",
+                "-cf",
+                str(archive),
+                "-C",
+                str(self.root / "src"),
+                "sf",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return archive.read_bytes()
+
+    def _ticket_zip(self, zstd_bytes: bytes) -> Path:
+        archive = self.work_dir / f"{TICKET_ID}.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("log_list.json", "{}")
+            zf.writestr("16.tar.zst", zstd_bytes)
+        return archive
+
+    async def test_nested_tar_zst_is_extracted(self) -> None:
+        """真实样本的形状：zip → 16.tar.zst → sf/log/kubelet/kubelet.log。"""
+        archive = self._ticket_zip(self._zstd_bytes())
+
+        stats = await extractor.extract(TICKET_ID, archive, self.work_dir, self.cfg, "job-zstd")
+
+        self.assertEqual(stats.archives, 2)
+        self.assertEqual(stats.unreadable_archives, 0)
+        self.assertTrue(
+            (self.work_dir / "16" / "sf" / "log" / "kubelet" / "kubelet.log").is_file()
+        )
+        self.assertFalse((self.work_dir / "16.tar.zst").exists())
+
+    async def test_missing_zstd_tool_keeps_original_without_failing_job(self) -> None:
+        """工具缺失是环境问题，不能把一个附件的缺失放大成整单失败。"""
+        archive = self._ticket_zip(self._zstd_bytes())
+
+        with patch.object(extractor.shutil, "which", return_value=None):
+            stats = await extractor.extract(
+                TICKET_ID, archive, self.work_dir, self.cfg, "job-zstd-no-tool"
+            )
+
+        self.assertEqual(stats.unreadable_archives, 1)
+        self.assertTrue((self.work_dir / "16.tar.zst").is_file())
+        self.assertFalse((self.work_dir / "16" / "sf" / "log" / "kubelet").exists())
 
 
 if __name__ == "__main__":

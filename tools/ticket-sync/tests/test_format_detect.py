@@ -80,6 +80,27 @@ class DetectArchiveFormatTest(unittest.TestCase):
 
         self.assertEqual(extractor.detect_archive_format(path)[0], "tar.gz")
 
+    def test_zstd_magic_is_detected_as_tar_zst(self) -> None:
+        """生产样本 16.tar.zst 的首 4 字节是 28 b5 2f fd。"""
+        path = self._write("16.tar.zst", b"\x28\xb5\x2f\xfd" + b"\x00" * 32)
+
+        self.assertEqual(extractor.detect_archive_format(path), ("tar.zst", "magic"))
+
+    def test_zst_suffix_fallback_when_magic_missing(self) -> None:
+        path = self._write("17.zst", b"content without zstd frame")
+
+        self.assertEqual(extractor.detect_archive_format(path), ("tar.zst", "suffix"))
+
+    def test_zst_archive_is_discovered_and_stripped_to_target(self) -> None:
+        """白名单漏掉 zst 时，归档会作为普通文件永远留在产物里。"""
+        nested = self.root / "16.tar.zst"
+        nested.write_bytes(b"placeholder")
+
+        found = extractor._find_archives(self.root)
+
+        self.assertIn(nested, found)
+        self.assertEqual(extractor._target_for(nested), self.root / "16")
+
     def test_rar_and_7z_magic(self) -> None:
         rar = self._write("a.bin", b"Rar!\x1a\x07\x01\x00" + b"\x00" * 32)
         seven = self._write("b.bin", b"7z\xbc\xaf\x27\x1c" + b"\x00" * 32)
