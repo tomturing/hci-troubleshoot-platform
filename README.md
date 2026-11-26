@@ -4,6 +4,13 @@
 
 HCI 环境 AI 故障诊断平台。微服务架构 + S0-S6 六阶段诊断状态机 + 双轨知识检索（SOP + RAG）。
 
+### 日志收集修复残留收口（2026-11-26）
+
+- 客户失败行在「环节/结论」之外新增只读条件「本工单已有权威归档」：只认链尾确认、P1 归档回查与明确归档证据，不按创建者过滤、不改本任务结论、不展示节点路径。
+- bridge 在交付 submit 与 waitCollect 两处校验压缩包 basename 必须等于当前工单号；非本工单包按 `LC-TRANSFER-001` 拒绝，并落 `delivery.archive_path_case_mismatch` 事件。
+- 全部六个证据端点都记录 `X-Bridge-Version`，消除失败任务 `detail.bridge_version` 空洞；5888 归档巡检脚本修正时区常量并补判定单测。
+  详见 [需求](docs/requirement/events/2026-11-26-日志收集修复残留收口.md)、[方案](docs/solution/events/2026-11-26-日志收集修复残留收口.md)、[任务](docs/task/events/2026-11-26-日志收集修复残留收口.md)。
+
 ### 日志收集包归属时钟鲁棒性（2026-11-24）
 
 - 旧包判定不再拿未校正的节点 `mtime` 与 bridge 墙钟比较：同一条节点命令取 `date +%s` 与 `stat -c %Y` 做差，并测得偏移把 mtime 校正到平台时钟；节点时钟慢/快数小时、交付排队较久都不会再误杀本轮新包。
