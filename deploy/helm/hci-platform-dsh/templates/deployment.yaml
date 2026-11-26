@@ -97,11 +97,13 @@ spec:
           {{- end }}
           # token 是否落盘是 DSH 真正可用的标志：entrypoint 只在抓到
           # 上游就绪行后才写入，因此它比 TCP 探活更能反映真实可用状态。
+          # 首次安装或升级插件时入口需要解析 npm 依赖；受限网络下单次解析
+          # 可能超过 5 分钟，故给启动探针留 10 分钟余量（120 × 5s）。
           startupProbe:
             exec:
               command: ["sh", "-c", "test -s /run/dsh/token"]
             periodSeconds: 5
-            failureThreshold: 60
+            failureThreshold: 120
           readinessProbe:
             exec:
               command: ["sh", "-c", "test -s /run/dsh/token"]

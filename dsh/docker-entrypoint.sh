@@ -71,11 +71,58 @@ fi
 # 先安装 profile bundle，再写入用户 patch。`dsh plugin add` 会维护
 # package.json 的 dependencies 与 dsh.profile.bundles，避免只写 patch 却因
 # Node 无法解析插件包而在加载期失败。包名使用空格分隔，适配 scoped npm 包。
+#
+# 持久化 profile 在重启/滚动时通常已经装好同一批制品；此时不要再调用
+# `dsh plugin add`：它会重新向 npm registry 解析整棵依赖树，在受限网络下
+# 每个请求都可能超时，最终把启动探针拖到失败。先核对清单，全部满足则跳过。
 if [ -n "${DSH_PLUGIN_PACKAGES:-}" ]; then
-    for PACKAGE in $DSH_PLUGIN_PACKAGES; do
-        echo "[dsh-entrypoint] installing profile plugin: ${PACKAGE}"
-        dsh plugin --profile "$DSH_PROFILE" add "$PACKAGE"
-    done
+    PENDING_PACKAGES="$(PROFILE_DIR="$PROFILE_DIR" DSH_PLUGIN_PACKAGES="$DSH_PLUGIN_PACKAGES" node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const { execFileSync } = require("child_process");
+
+const profileDir = process.env.PROFILE_DIR;
+const packages = (process.env.DSH_PLUGIN_PACKAGES || "").trim().split(/\s+/).filter(Boolean);
+
+let manifest = {};
+try {
+  manifest = JSON.parse(fs.readFileSync(path.join(profileDir, "package.json"), "utf8"));
+} catch {}
+const dependencies = manifest.dependencies || {};
+const bundles = manifest.dsh?.profile?.bundles || [];
+const pending = [];
+
+for (const pkg of packages) {
+  if (!pkg.startsWith("/") || !pkg.endsWith(".tgz")) {
+    pending.push(pkg);
+    continue;
+  }
+  let name = "";
+  try {
+    const text = execFileSync("tar", ["-xOf", pkg, "package/package.json"], { encoding: "utf8" });
+    name = JSON.parse(text).name;
+  } catch {
+    pending.push(pkg);
+    continue;
+  }
+  const installed = fs.existsSync(path.join(profileDir, "node_modules", name, "package.json"));
+  if (dependencies[name] === `file:${pkg}` && installed && bundles.includes(name)) continue;
+  pending.push(pkg);
+}
+
+process.stdout.write(pending.join(" "));
+NODE
+)"
+    if [ -z "$PENDING_PACKAGES" ]; then
+        echo "[dsh-entrypoint] profile bundle 已全部满足，跳过插件安装"
+    else
+        # 真正需要安装时优先使用持久化 home 的 pnpm 缓存，减少对 registry 的依赖。
+        export npm_config_prefer_offline=true
+        for PACKAGE in $PENDING_PACKAGES; do
+            echo "[dsh-entrypoint] installing profile plugin: ${PACKAGE}"
+            dsh plugin --profile "$DSH_PROFILE" add "$PACKAGE"
+        done
+    fi
 fi
 
 # ConfigMap/bind mount 只读，部署基线作为 launcher 的 --patch invocation layer

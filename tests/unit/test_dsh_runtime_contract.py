@@ -61,6 +61,21 @@ def test_dsh_entrypoint_prunes_missing_file_dependencies() -> None:
     assert "bundles.splice(index, 1)" in entrypoint
 
 
+def test_dsh_entrypoint_skips_already_installed_bundles() -> None:
+    """profile 已满足部署清单时不得重复解析 npm 依赖，避免启动探针超时。"""
+    entrypoint = ENTRYPOINT.read_text()
+    assert "PENDING_PACKAGES" in entrypoint
+    assert "profile bundle 已全部满足" in entrypoint
+    assert "npm_config_prefer_offline=true" in entrypoint
+
+
+def test_dsh_chart_allows_slow_plugin_installation() -> None:
+    """启动探针必须给受限网络下的插件安装留足时间。"""
+    deployment = (ROOT / "deploy" / "helm" / "hci-platform-dsh" / "templates" / "deployment.yaml").read_text()
+    assert "startupProbe:" in deployment
+    assert "failureThreshold: 120" in deployment
+
+
 def test_dsh_entrypoint_uses_generic_profile_bundle_installation() -> None:
     """入口脚本只按部署清单安装 bundle，不再推导旧 HCI Python 运行时。"""
     entrypoint = ENTRYPOINT.read_text()
