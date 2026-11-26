@@ -51,6 +51,16 @@ def test_dsh_image_validates_weknora_bundle_manifest() -> None:
     assert "uv sync" not in dockerfile
 
 
+def test_dsh_entrypoint_prunes_missing_file_dependencies() -> None:
+    """持久化 profile 引用已移除的制品时，入口必须清理依赖而不是崩溃。"""
+    entrypoint = ENTRYPOINT.read_text()
+    assert "PROFILE_PACKAGE" in entrypoint
+    assert 'spec.startsWith("file:")' in entrypoint
+    assert "fs.existsSync(target)" in entrypoint
+    assert "清理失效的 profile 依赖" in entrypoint
+    assert "bundles.splice(index, 1)" in entrypoint
+
+
 def test_dsh_entrypoint_uses_generic_profile_bundle_installation() -> None:
     """入口脚本只按部署清单安装 bundle，不再推导旧 HCI Python 运行时。"""
     entrypoint = ENTRYPOINT.read_text()
