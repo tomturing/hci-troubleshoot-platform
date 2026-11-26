@@ -116,12 +116,12 @@ type ExecResult struct {
 // ── SSH 会话 ──────────────────────────────────────────────────────────────────
 
 type SSHSession struct {
-	CaseID            string
-	Client            *ssh.Client
-	ClientConfig      *ssh.ClientConfig
-	Address           string
-	session           *ssh.Session
-	stdin             io.WriteCloser
+	CaseID       string
+	Client       *ssh.Client
+	ClientConfig *ssh.ClientConfig
+	Address      string
+	session      *ssh.Session
+	stdin        io.WriteCloser
 	// ptyCols/ptyRows 记录交互终端最近一次协商的窗口尺寸，供 RespawnShell 重建 PTY 时复用。
 	ptyCols           int
 	ptyRows           int
