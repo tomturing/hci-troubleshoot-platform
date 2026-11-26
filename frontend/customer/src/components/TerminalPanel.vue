@@ -1,17 +1,20 @@
 <script setup lang="ts">
 /**
  * TerminalPanel.vue
- * 两态实现（SSH 会话已与工单解耦）：
+ * 两态连接 + 双交互模式实现（SSH 会话已与工单解耦）：
  * - 未连接 → "连接 SSH" → 打开统一登录弹框（SshConnectDialog / terminal-only）
- * - 已连接 → 显示 xterm 终端
+ * - 已连接 → 显示 xterm 终端，支持通过顶部下拉菜单在两种模式间即时切换：
+ *   - 模式一（Agent 协作模式：关闭自动执行 / 安全模式 / 激进模式）：上方输出框 + 底部命令输入框，配合排障 Agent 使用
+ *   - 模式二（交互终端 / 实时 Shell）：全屏实时交互终端，支持 Tab 自动补全、方向键历史、Ctrl+C 中断、
+ *     Ctrl+Shift+C/V 复制粘贴、PTY 窗口尺寸自适应（vim/top/less）
  *
  * 终端、文件下载、日志收集、Agent 排障共用同一条 SSH 会话：连接本身不再要求
  * 先建工单，因此不存在"无工单 → 先弹创建工单"的中间态。工单只决定录像/历史
  * 归档到哪条工单下（无工单照常可连，只是不归档）。
  *
  * Task 42: 终端操作录制功能
- * - 命令输入和输出回显自动录制并上传数据库
- * - 用于排障复盘和审计回放
+ * - 模式一与模式二的命令输入和输出回显均自动录制并上传数据库
+ * - 用于排障复盘和审计回放（TerminalReplay）
  */
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -29,14 +32,19 @@ import {
   recordInput,
   recordOutput,
   forceFlushOutput,
-  stripAnsi,
 } from '@/api/terminal-recording'
+import { InteractiveInputTracker } from '@/utils/interactiveInputRecorder'
+
+type TerminalHeaderMode = 'off' | 'safe-only' | 'aggressive' | 'interactive'
 
 const chatStore = useChatStore()
 const emit = defineEmits<{ 'open-terminal-history': [] }>()
 
 // ===== 终端操作录制状态 =====
 const recordingState = createRecordingState()
+const inputTracker = new InteractiveInputTracker()
+// 串行化录制写入，保证「前序输出 → 本次输入 → 本次输出」的 seq_number 严格有序
+let recordingChain: Promise<void> = Promise.resolve()
 
 const terminalInputRef = ref<{ focus: () => void } | null>(null)
 const terminalContainer = ref<HTMLElement | null>(null)
@@ -47,6 +55,26 @@ const manualDisconnect = ref(false)
 // 断开连接时清空：换主机/换会话后再回填上一台机器的命令，等于把 A 机的操作
 // 顺手送到 B 机，这类误发在客户生产环境里代价很高。
 const lastExecutedCommand = ref('')
+
+// ===== 终端交互模式（模式一：agent / 模式二：interactive） =====
+const isInteractiveMode = computed(() => (chatStore.terminalMode ?? 'agent') === 'interactive')
+const selectedHeaderMode = computed<TerminalHeaderMode>(() =>
+  isInteractiveMode.value ? 'interactive' : chatStore.autoExecuteMode,
+)
+
+function handleHeaderModeChange(mode: TerminalHeaderMode) {
+  if (typeof chatStore.setTerminalHeaderMode === 'function') {
+    chatStore.setTerminalHeaderMode(mode)
+    return
+  }
+  // 兼容仅挂载基础字段的测试 store stub
+  if (mode === 'interactive') {
+    chatStore.setTerminalMode?.('interactive')
+  } else {
+    chatStore.setTerminalMode?.('agent')
+    chatStore.setAutoExecuteMode(mode)
+  }
+}
 
 // ===== 前置检测 loading =====
 const checkingBridge = ref(false)
@@ -65,7 +93,6 @@ async function handleOpenSshDialog() {
     checkingBridge.value = false
   }
 }
-
 
 const fullOutputText = ref('')
 const currentCommandOutput = ref('')
@@ -107,13 +134,38 @@ function openTerminalHistory() {
 let xterm: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
+let dataDisposable: { dispose: () => void } | null = null
+let lastHandledChunkSeq = 0
 
-// 监听全局 SSH 输出事件
+// 同步当前诊断阶段到录制状态（便于回放按阶段筛选）
+watch(
+  () => chatStore.diagnosticStage,
+  (stage) => {
+    if (stage) {
+      recordingState.diagnosticStage.value = stage
+    }
+  },
+  { immediate: true },
+)
+
+// 监听无损 SSH 输出分片（带单调递增序号，确保连按相同字符/退格不丢帧）
+watch(
+  () => chatStore.sshTerminalOutputChunk,
+  (chunk) => {
+    if (!chunk?.data || chunk.seq === lastHandledChunkSeq) return
+    if (chatStore.sshCommandConsumer === 'collection') return
+    lastHandledChunkSeq = chunk.seq
+    writeTerminalRaw(chunk.data)
+  },
+)
+
+// 兼容旧版单测仅触发 sshTerminalOutputEvent 字符串的场景（真实运行时由 chunk 接管，避免重复写入）
 watch(
   () => chatStore.sshTerminalOutputEvent,
   (output) => {
+    if (chatStore.sshTerminalOutputChunk != null) return
     if (output && chatStore.sshCommandConsumer === 'terminal') {
-      writeTerminal(output)
+      writeTerminalRaw(output)
     }
   },
 )
@@ -124,21 +176,49 @@ watch(
   () => chatStore.sshTerminalNotice,
   (notice) => {
     if (!notice?.text) return
-    writeTerminal(`\n[Bridge] ${notice.text}\n`)
+    writeInfoLine(notice.text)
   },
 )
 
-// 监听命令注入
+// 监听命令卡片「发送到终端」注入
 watch(
   () => chatStore.terminalInputCommand,
   (cmd) => {
-    if (cmd) {
-      localInput.value = cmd
+    if (!cmd) return
+
+    if (isInteractiveMode.value && isConnected.value) {
+      const normalized = cmd.replace(/[\r\n]+$/, '')
+      // 安全红线：多行命令直接写入未启用 bracketed paste 的远端 shell 会立即逐行执行。
+      // 因此检测到多行命令时自动切回模式一输入框，由用户逐行核对后再确认执行。
+      if (normalized.includes('\n') || normalized.includes('\r')) {
+        handleHeaderModeChange('off')
+        localInput.value = cmd
+        ElMessage.info('多行命令已切回命令输入模式，请确认后按 Enter 执行')
+        nextTick(() => {
+          chatStore.clearTerminalInput()
+          terminalInputRef.value?.focus()
+        })
+        return
+      }
+
+      // 单行命令直接注入远端 shell 当前命令行（不附加换行，等待用户按 Enter 确认）
+      if (typeof chatStore.sendSSHInjectCommand === 'function') {
+        chatStore.sendSSHInjectCommand(normalized)
+      } else {
+        chatStore.sendSSHRawInput?.(normalized)
+      }
       nextTick(() => {
         chatStore.clearTerminalInput()
-        terminalInputRef.value?.focus()
+        focusInteractiveTerminal()
       })
+      return
     }
+
+    localInput.value = cmd
+    nextTick(() => {
+      chatStore.clearTerminalInput()
+      terminalInputRef.value?.focus()
+    })
   },
   { immediate: true },
 )
@@ -147,8 +227,11 @@ watch(
 watch(isConnected, async (connected) => {
   if (!connected) {
     // 断开连接 → 停止录制 + 销毁 xterm 实例
+    await recordingChain
     await stopRecording(recordingState)
     disposeTerminal()
+    inputTracker.reset()
+    lastHandledChunkSeq = 0
     lastExecutedCommand.value = ''
     return
   }
@@ -158,6 +241,7 @@ watch(isConnected, async (connected) => {
   if (historyCaseId.value) {
     startRecording(recordingState, historyCaseId.value, {
       conversationId: chatStore.conversationId ?? undefined,
+      diagnosticStage: chatStore.diagnosticStage ?? undefined,
     })
   }
   await nextTick()
@@ -166,6 +250,25 @@ watch(isConnected, async (connected) => {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       fitTerminal()
+      if (isInteractiveMode.value) {
+        focusInteractiveTerminal()
+      }
+    })
+  })
+})
+
+// 监听模式一 ↔ 模式二切换：原地切换 xterm 交互属性，保留历史滚屏并重新 fit 同步 PTY 尺寸
+watch(isInteractiveMode, async (interactive) => {
+  inputTracker.reset()
+  applyXtermInteractionOptions(interactive)
+  if (!isConnected.value) return
+  await nextTick()
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      fitTerminal()
+      if (interactive) {
+        focusInteractiveTerminal()
+      }
     })
   })
 })
@@ -182,26 +285,123 @@ watch(
     if (!visible || !isConnected.value) return
     await nextTick()
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => fitTerminal())
+      requestAnimationFrame(() => {
+        fitTerminal()
+        if (isInteractiveMode.value) {
+          focusInteractiveTerminal()
+        }
+      })
     })
   },
 )
 
+function applyXtermInteractionOptions(interactive: boolean) {
+  if (!xterm || !xterm.options) return
+  xterm.options.disableStdin = !interactive
+  xterm.options.cursorBlink = interactive
+  xterm.options.convertEol = !interactive
+}
+
+function focusInteractiveTerminal() {
+  if (!isInteractiveMode.value || !isConnected.value || !xterm) return
+  if (typeof xterm.focus === 'function') {
+    xterm.focus()
+  }
+}
+
+function handleStageClick() {
+  if (!isInteractiveMode.value || !xterm) return
+  // 正在拖选复制文本时不抢焦点，避免清掉用户刚选中的区域
+  if (typeof xterm.hasSelection === 'function' && xterm.hasSelection()) return
+  focusInteractiveTerminal()
+}
+
+async function copyTextToClipboard(text: string) {
+  if (!text) return
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.cssText = 'position:fixed;opacity:0'
+  document.body.appendChild(ta)
+  ta.select()
+  document.execCommand('copy')
+  document.body.removeChild(ta)
+}
+
+async function pasteFromClipboardToInteractive() {
+  if (!isInteractiveMode.value || !isConnected.value) return
+  if (!navigator.clipboard || typeof navigator.clipboard.readText !== 'function') {
+    ElMessage.warning('当前浏览器环境不支持快捷粘贴，请使用右键粘贴')
+    return
+  }
+  try {
+    const pasted = await navigator.clipboard.readText()
+    if (pasted) {
+      handleInteractiveData(pasted)
+    }
+  } catch {
+    ElMessage.warning('无法读取剪贴板，请允许剪贴板权限或使用右键粘贴')
+  }
+}
+
+/**
+ * 模式二键盘与粘贴输入处理：
+ * 1. 先从当前 xterm 屏幕缓冲区提取即将提交的完整命令（兼容 Tab 补全与方向键历史，并屏蔽密码提示）；
+ * 2. 零延迟将原始字节透传远端 PTY；
+ * 3. 有序刷盘前序输出并录制本次输入，使模式二与模式一共享完整的终端历史回放。
+ */
+function handleInteractiveData(data: string) {
+  if (!isConnected.value || !isInteractiveMode.value || !data) return
+
+  const recordedEvents = inputTracker.consume(data, xterm)
+  chatStore.sendSSHRawInput?.(data)
+
+  if (recordedEvents.length === 0) return
+
+  for (const evt of recordedEvents) {
+    if (!evt.isControl) {
+      if (currentCommandOutput.value.trim()) {
+        lastCommandOutput.value = currentCommandOutput.value
+      }
+      currentCommandOutput.value = ''
+      hasExecutedCommand.value = true
+      lastExecutedCommand.value = evt.command
+    }
+
+    if (recordingState.isRecording.value) {
+      recordingChain = recordingChain
+        .then(async () => {
+          await forceFlushOutput(recordingState)
+          await recordInput(recordingState, evt.command)
+        })
+        .catch((err) => {
+          console.error('[TerminalPanel] 录制交互输入失败:', err)
+        })
+    }
+  }
+}
+
 function initTerminal() {
   if (!terminalContainer.value || xterm) return
 
+  const interactive = isInteractiveMode.value
   xterm = new Terminal({
-    convertEol: true,
-    disableStdin: true,
+    convertEol: !interactive,
+    disableStdin: !interactive,
     // 等宽字体栈：优先现代终端字体，缺失时逐级回退，避免不同机器行高漂移
     fontFamily: "'JetBrains Mono', 'Cascadia Mono', Consolas, Monaco, 'Courier New', monospace",
     fontSize: 13,
     lineHeight: 1.3,
-    cursorBlink: false,
+    cursorBlink: interactive,
+    cursorStyle: 'block',
     theme: {
       background: '#1e1e1e',
       foreground: '#d4d4d4',
       cursor: '#d4d4d4',
+      selectionBackground: 'rgba(64, 158, 255, 0.35)',
       black: '#1e1e1e',
       red: '#f56c6c',
       green: '#67c23a',
@@ -225,10 +425,59 @@ function initTerminal() {
   fitAddon = new FitAddon()
   xterm.loadAddon(fitAddon)
   xterm.open(terminalContainer.value)
+
+  // 模式二实时键盘流绑定（防御检查：兼容测试 stub）
+  if (typeof xterm.onData === 'function') {
+    dataDisposable = xterm.onData((data) => {
+      handleInteractiveData(data)
+    })
+  }
+
+  // 主流终端快捷键习惯：
+  // - Ctrl+Shift+C / 有选区时 Ctrl+C：复制选中内容（无选区时 Ctrl+C 透传 \x03 中断远端进程）
+  // - Ctrl+Shift+V：粘贴剪贴板文本（不拦截纯 Ctrl+V，保留 vim 可视块模式）
+  if (typeof xterm.attachCustomKeyEventHandler === 'function') {
+    xterm.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (!isInteractiveMode.value || e.type !== 'keydown') return true
+
+      const key = e.key.toLowerCase()
+      const hasModifier = e.ctrlKey || e.metaKey
+      if (hasModifier && e.shiftKey && key === 'c') {
+        const selection = typeof xterm?.getSelection === 'function' ? xterm.getSelection() : ''
+        if (selection) {
+          void copyTextToClipboard(selection)
+          xterm?.clearSelection?.()
+        }
+        return false
+      }
+      if (hasModifier && !e.shiftKey && key === 'c') {
+        const selection = typeof xterm?.getSelection === 'function' ? xterm.getSelection() : ''
+        if (selection) {
+          void copyTextToClipboard(selection)
+          xterm?.clearSelection?.()
+          return false
+        }
+        return true
+      }
+      if (hasModifier && e.shiftKey && key === 'v') {
+        e.preventDefault()
+        void pasteFromClipboardToInteractive()
+        return false
+      }
+      return true
+    })
+  }
+
   fitTerminal()
 
   if (fullOutputText.value) {
-    xterm.write(normalizeTerminalText(fullOutputText.value))
+    xterm.write(isInteractiveMode.value ? fullOutputText.value : normalizeTerminalText(fullOutputText.value))
+  } else if (chatStore.sshOutputBuffer && chatStore.sshCommandConsumer !== 'collection') {
+    // 刚建立 SSH 连接时，把远端已发出的登录欢迎语与初始 Shell 提示符渲染出来
+    if (chatStore.sshTerminalOutputChunk?.seq) {
+      lastHandledChunkSeq = chatStore.sshTerminalOutputChunk.seq
+    }
+    writeTerminalRaw(chatStore.sshOutputBuffer)
   }
 
   // 抽屉宽度现在会随三栏布局连续变化（拖拽 / 主区让位过渡），
@@ -251,7 +500,7 @@ function scheduleFit() {
 }
 
 /**
- * 计算并应用终端的列数与行数。
+ * 计算并应用终端的列数与行数，并同步给 terminal_bridge 调整远端 PTY 尺寸。
  *
  * 为什么不能只调 `fitAddon.fit()`：xterm 的字符高度是浮点值，FitAddon 按浮点算行数，
  * 渲染时却按整像素铺行，实测内容会比容器高出一行的一部分（本机 779px vs 771px）。
@@ -263,9 +512,11 @@ function fitTerminal() {
   fitAddon.fit()
   const host = terminalContainer.value.querySelector('.xterm') as HTMLElement | null
   const screen = terminalContainer.value.querySelector('.xterm-screen') as HTMLElement | null
-  if (!host || !screen || xterm.rows <= 2) return
-  if (screen.offsetHeight > host.clientHeight) {
+  if (host && screen && xterm.rows > 2 && screen.offsetHeight > host.clientHeight) {
     xterm.resize(xterm.cols, xterm.rows - 1)
+  }
+  if (isConnected.value && xterm.cols >= 2 && xterm.rows >= 2) {
+    chatStore.sendSSHResize?.(xterm.cols, xterm.rows)
   }
 }
 
@@ -273,6 +524,10 @@ function disposeTerminal() {
   if (fitTimer !== null) {
     window.clearTimeout(fitTimer)
     fitTimer = null
+  }
+  if (dataDisposable) {
+    dataDisposable.dispose()
+    dataDisposable = null
   }
   if (resizeObserver) {
     resizeObserver.disconnect()
@@ -289,6 +544,24 @@ function normalizeTerminalText(text: string): string {
   return text.replace(/\r?\n/g, '\r\n')
 }
 
+/** 写入来自远端 PTY 的原始输出流（模式二原样保留控制序列，模式一归一化换行） */
+function writeTerminalRaw(text: string) {
+  if (!text) return
+  fullOutputText.value += text
+  if (hasExecutedCommand.value) {
+    currentCommandOutput.value += text
+  }
+  if (xterm) {
+    xterm.write(isInteractiveMode.value ? text : normalizeTerminalText(text))
+  }
+
+  // Task 42: 录制输出（异步上传，不影响实时渲染）
+  if (recordingState.isRecording.value) {
+    recordOutput(recordingState, text)
+  }
+}
+
+/** 写入前端本地生成的提示/命令回显（统一转 CRLF） */
 function writeTerminal(text: string) {
   if (!text) return
   fullOutputText.value += text
@@ -299,7 +572,6 @@ function writeTerminal(text: string) {
     xterm.write(normalizeTerminalText(text))
   }
 
-  // Task 42: 录制输出（异步上传，不影响实时渲染）
   if (recordingState.isRecording.value) {
     recordOutput(recordingState, text)
   }
@@ -337,10 +609,9 @@ function latestOutputText(): string {
   return stripAnsiForText(fullOutputText.value)
 }
 
-
-
 function disconnectSsh() {
   manualDisconnect.value = true
+  inputTracker.reset()
   // Task 42: 停止录制（先刷新输出缓冲区）
   if (recordingState.isRecording.value) {
     forceFlushOutput(recordingState)
@@ -408,23 +679,14 @@ function clearOutput() {
   currentCommandOutput.value = ''
   lastCommandOutput.value = ''
   hasExecutedCommand.value = false
+  inputTracker.reset()
   if (xterm) xterm.clear()
 }
 
 async function copyLatestOutput() {
   const text = latestOutputText()
   if (!text) return
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text)
-  } else {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.cssText = 'position:fixed;opacity:0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
+  await copyTextToClipboard(text)
   writeInfoLine('本次输出已复制到剪贴板')
 }
 
@@ -447,6 +709,7 @@ onMounted(() => {
   if (isConnected.value && historyCaseId.value) {
     startRecording(recordingState, historyCaseId.value, {
       conversationId: chatStore.conversationId ?? undefined,
+      diagnosticStage: chatStore.diagnosticStage ?? undefined,
     })
   }
   // Drawer 可能正处于开启动画中，此时容器尺寸未稳定。
@@ -454,7 +717,10 @@ onMounted(() => {
   requestAnimationFrame(() => {
     requestAnimationFrame(() => {
       initTerminal()
-      if (fitAddon) fitAddon.fit()
+      fitTerminal()
+      if (isInteractiveMode.value && isConnected.value) {
+        focusInteractiveTerminal()
+      }
     })
   })
 })
@@ -473,18 +739,19 @@ onBeforeUnmount(() => {
         <el-tag v-else-if="isConnecting" size="small" type="warning" effect="plain">{{ connectingLabel }}</el-tag>
         <el-tag v-else-if="isError" size="small" type="danger" effect="plain">连接错误</el-tag>
         <el-tag v-else size="small" type="info" effect="plain">未连接</el-tag>
-        <!-- 自动执行模式开关（仅 SSH 已连接时显示） -->
+        <!-- 模式切换下拉（仅 SSH 已连接时显示）：前 3 项为模式一（配合排障 Agent），第 4 项为模式二（实时交互终端） -->
         <el-select
           v-if="isConnected"
-          :model-value="chatStore.autoExecuteMode"
+          :model-value="selectedHeaderMode"
           size="small"
           class="auto-exec-select"
-          placeholder="自动执行"
-          @change="chatStore.setAutoExecuteMode($event)"
+          placeholder="终端模式"
+          @change="handleHeaderModeChange($event)"
         >
           <el-option value="off" label="关闭自动执行" />
           <el-option value="safe-only" label="安全模式" />
           <el-option value="aggressive" label="激进模式（有风险）" />
+          <el-option value="interactive" label="交互终端（实时 Shell）" />
         </el-select>
       </div>
       <div class="header-actions">
@@ -524,9 +791,14 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <!-- 已连接 → 显示终端 -->
-    <div v-else class="terminal-stage">
-      <div ref="terminalContainer" class="terminal-canvas" />
+    <!-- 已连接 → 显示终端（模式二全屏交互、模式一只读配合底部输入框） -->
+    <div v-else class="terminal-stage" :class="{ 'terminal-stage--interactive': isInteractiveMode }">
+      <div
+        ref="terminalContainer"
+        class="terminal-canvas"
+        :class="{ 'terminal-canvas--interactive': isInteractiveMode }"
+        @click="handleStageClick"
+      />
     </div>
 
     <!--
@@ -534,11 +806,19 @@ onBeforeUnmount(() => {
       （见 App.vue 的右栏 rail 与 SftpPanel.vue）。终端这里不再嵌 SFTP 面板。
     -->
 
+    <!-- 模式二底部精简交互状态栏：隐藏命令输入框，保留快捷键说明与断开入口 -->
+    <div v-if="isConnected && isInteractiveMode" class="interactive-statusbar">
+      <span class="interactive-statusbar__hint">
+        实时交互模式 · Tab 补全 · ↑↓ 历史 · Ctrl+C 中断 · Ctrl+Shift+C/V 复制粘贴 · 自动录制回放
+      </span>
+      <el-link type="primary" :underline="false" @click="disconnectSsh">断开连接</el-link>
+    </div>
+
     <!--
-      底部操作区：与日志收集、会话输入同构（hint 行 + 36px 控件行 + 按钮组），
+      模式一底部操作区：与日志收集、会话输入同构（hint 行 + 36px 控件行 + 按钮组），
       深色主题只换颜色，尺寸沿用 styles/panel-composer.css 的同一套变量。
     -->
-    <div class="panel-composer panel-composer--dark">
+    <div v-else class="panel-composer panel-composer--dark">
       <div class="panel-composer__hint">
         <span v-if="!isConnected">请先点击『连接 SSH』按钮</span>
         <span v-else>
@@ -630,9 +910,9 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-/* 自动执行模式下拉 */
+/* 终端模式 / 自动执行模式下拉 */
 .auto-exec-select {
-  width: 148px;
+  width: 172px;
 }
 
 .auto-exec-select :deep(.el-input__wrapper) {
@@ -679,7 +959,6 @@ onBeforeUnmount(() => {
   font-size: 11px;
 }
 
-
 .terminal-stage {
   flex: 1;
   min-height: 0;           /* 允许 flex-item 缩小到内容以下，防止撑破父容器 */
@@ -689,6 +968,10 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.terminal-stage--interactive {
+  padding: 8px 10px;
 }
 
 .terminal-canvas {
@@ -702,13 +985,45 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
 }
 
+.terminal-canvas--interactive {
+  cursor: text;
+  border-color: #3f4b5b;
+}
+
+.terminal-canvas--interactive:focus-within {
+  border-color: #409eff;
+}
+
 .terminal-canvas :deep(.xterm) {
   height: 100%;
 }
 
-.terminal-canvas :deep(.xterm-cursor),
-.terminal-canvas :deep(.xterm-cursor-layer) {
+/* 仅模式一隐藏光标；模式二（.terminal-canvas--interactive）恢复真实终端闪烁光标 */
+.terminal-canvas:not(.terminal-canvas--interactive) :deep(.xterm-cursor),
+.terminal-canvas:not(.terminal-canvas--interactive) :deep(.xterm-cursor-layer) {
   display: none !important;
+}
+
+/* 模式二底部精简状态条 */
+.interactive-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding: 6px 12px;
+  background: #252526;
+  border-top: 1px solid #333;
+  font-size: 12px;
+  color: #909399;
+}
+
+.interactive-statusbar__hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 /*

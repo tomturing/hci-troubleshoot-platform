@@ -122,6 +122,9 @@ type SSHSession struct {
 	Address           string
 	session           *ssh.Session
 	stdin             io.WriteCloser
+	// ptyCols/ptyRows 记录交互终端最近一次协商的窗口尺寸，供 RespawnShell 重建 PTY 时复用。
+	ptyCols           int
+	ptyRows           int
 	Mu                sync.Mutex
 	closed            bool
 	listenersMu       sync.Mutex
@@ -556,12 +559,23 @@ func (s *SSHSession) Start() (io.ReadCloser, error) {
 		return nil, fmt.Errorf("获取 SSH stderr 失败: %w", err)
 	}
 
+	s.Mu.Lock()
+	rows := s.ptyRows
+	cols := s.ptyCols
+	s.Mu.Unlock()
+	if rows < MinPtyRows || rows > MaxPtyRows {
+		rows = PtyTerminalHeight
+	}
+	if cols < MinPtyCols || cols > MaxPtyCols {
+		cols = PtyTerminalWidth
+	}
+
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-	if err := s.session.RequestPty("xterm-256color", 40, 160, modes); err != nil {
+	if err := s.session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		return nil, fmt.Errorf("申请远端 PTY 失败: %w", err)
 	}
 	if err := s.session.Shell(); err != nil {
@@ -625,6 +639,41 @@ func (s *SSHSession) sendSilent(data string) error {
 	}
 	_, err := io.WriteString(s.stdin, data)
 	return err
+}
+
+// 交互式 PTY 窗口尺寸硬边界，防止异常超大/零值尺寸导致远端 PTY 错乱或拒绝服务。
+const (
+	MinPtyCols = 2
+	MaxPtyCols = 1000
+	MinPtyRows = 2
+	MaxPtyRows = 500
+)
+
+// ValidatePtySize 校验前端上报的终端列数与行数是否处于安全边界内。
+func ValidatePtySize(cols, rows int) error {
+	if cols < MinPtyCols || cols > MaxPtyCols {
+		return fmt.Errorf("终端列数超出允许范围 [%d, %d]: %d", MinPtyCols, MaxPtyCols, cols)
+	}
+	if rows < MinPtyRows || rows > MaxPtyRows {
+		return fmt.Errorf("终端行数超出允许范围 [%d, %d]: %d", MinPtyRows, MaxPtyRows, rows)
+	}
+	return nil
+}
+
+// Resize 同步前端 xterm 窗口尺寸到远端交互式 PTY（SIGWINCH）。
+// 同步记录 ptyCols/ptyRows，确保后续 TMOUT 自动重建 shell 时延续同一窗口尺寸。
+func (s *SSHSession) Resize(cols, rows int) error {
+	if err := ValidatePtySize(cols, rows); err != nil {
+		return err
+	}
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	s.ptyCols = cols
+	s.ptyRows = rows
+	if s.closed || s.session == nil {
+		return ErrNoSession
+	}
+	return s.session.WindowChange(rows, cols)
 }
 
 // injectCommand 填入命令行但不加换行，等客户回车确认

@@ -29,6 +29,7 @@ func SessionRoutes(deps SessionDeps) []wsctx.Route {
 	return []wsctx.Route{
 		{Type: "ssh_connect", Handler: func(ctx *wsctx.Context, msg models.InMessage) { handleConnect(ctx, msg, deps) }},
 		{Type: "ssh_input", Handler: handleInput},
+		{Type: "ssh_resize", Handler: handleResize},
 		{Type: "ssh_inject_command", Handler: handleInjectCommand},
 		{Type: "resume", Handler: handleResume},
 		{Type: "pong", Handler: handlePong},
@@ -150,6 +151,53 @@ func handleInput(ctx *wsctx.Context, msg models.InMessage) {
 	// 必须重建而不是判"已断开"，否则"敲完命令去查资料"必然换来一次重连。
 	s.MarkBusy()
 	s.Send(msg.Data)
+}
+
+// handleResize 将前端 xterm 窗口尺寸同步给远端交互式 PTY（SIGWINCH）。
+// 仅更新活动交互 shell 的 PTY 尺寸，不影响 Agent 隔离 exec 通道；旧版 bridge 会静默忽略此消息。
+func handleResize(ctx *wsctx.Context, msg models.InMessage) {
+	_, span := telemetry.Start(
+		obslog.ContextFromMessage(msg), "terminal_bridge.ssh.resize",
+		telemetry.String("case.id", msg.CaseID),
+		telemetry.Int("pty.cols", msg.Cols),
+		telemetry.Int("pty.rows", msg.Rows),
+	)
+	defer span.End()
+
+	if err := sshx.ValidatePtySize(msg.Cols, msg.Rows); err != nil {
+		atomic.AddUint64(&metrics.PromMetrics.SshResizeErrors, 1)
+		span.RecordError(err)
+		span.SetStatus(telemetry.StatusError, "invalid_pty_size")
+		obslog.Emit("WARN", "ssh_resize.rejected", "终端窗口尺寸非法，已忽略", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+			"cols": msg.Cols, "rows": msg.Rows, "error": err.Error(),
+		})
+		return
+	}
+
+	s, key := ctx.Hub.ResolveInput(msg, ctx.ActiveKey, ctx.Owned)
+	if s == nil {
+		atomic.AddUint64(&metrics.PromMetrics.SshResizeErrors, 1)
+		span.SetStatus(telemetry.StatusError, "session_missing")
+		obslog.Emit("WARN", "ssh_resize.session_missing", "SSH 会话不存在，忽略窗口尺寸同步", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+			"cols": msg.Cols, "rows": msg.Rows, "active_key": ctx.ActiveKey,
+		})
+		return
+	}
+
+	atomic.AddUint64(&metrics.PromMetrics.SshResizeTotal, 1)
+	if err := s.Resize(msg.Cols, msg.Rows); err != nil {
+		atomic.AddUint64(&metrics.PromMetrics.SshResizeErrors, 1)
+		span.RecordError(err)
+		span.SetStatus(telemetry.StatusError, "window_change_failed")
+		obslog.Emit("WARN", "ssh_resize.failed", "远端 PTY 窗口尺寸同步失败", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+			"key": key, "cols": msg.Cols, "rows": msg.Rows, "error": err.Error(),
+		})
+		return
+	}
+
+	obslog.Emit("DEBUG", "ssh_resize.ok", "已同步远端 PTY 窗口尺寸", msg.TraceID, msg.CaseID, msg.NodeIP, ctx.CUI, map[string]any{
+		"key": key, "cols": msg.Cols, "rows": msg.Rows,
+	})
 }
 
 func handleInjectCommand(ctx *wsctx.Context, msg models.InMessage) {

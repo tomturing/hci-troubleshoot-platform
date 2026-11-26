@@ -360,7 +360,8 @@ readiness 只表示 Bridge 服务可接受请求，不代表任意 HCI 目标一
 | type | 主要字段 | 说明 |
 |---|---|---|
 | `ssh_connect` | `host, username, port, auth_type, password?, private_key?, case_id` | 发起连接 |
-| `ssh_input` | `data, case_id` | 键盘输入 |
+| `ssh_input` | `data, case_id, node_ip?, trace_id?` | 键盘输入（支持实时交互控制序列与粘贴流） |
+| `ssh_resize` | `cols, rows, case_id, node_ip?, trace_id?` | 同步前端 xterm 窗口尺寸到远端交互 PTY（`WindowChange`，合法范围 `cols∈[2,1000]`、`rows∈[2,500]`；旧桥自动忽略） |
 | `ssh_inject_command` | `command, case_id` | 注入命令但不回车 |
 | `ssh_exec_command` | `command, exec_id, case_id, trace_id?` | PTY marker 通道执行 |
 | `ssh_exec_process` | `command, exec_id, case_id, node_ip?, container?, trace_id?` | 独立 SSH Session 执行 |
