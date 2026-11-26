@@ -1,0 +1,26 @@
+suite: "DSH 新会话权限默认值测试"
+# deployment 的 checksum 注解会 include 两个 ConfigMap 模板，必须一并渲染。
+templates:
+  - deployment.yaml
+  - configmap.yaml
+  - configmap-llm.yaml
+tests:
+  - it: "独立 Chart 默认保持 workspace-write"
+    template: deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DSH_PERMISSION_MODE
+            value: workspace-write
+
+  - it: "受管实例可由环境 values 覆盖为 danger-full-access"
+    template: deployment.yaml
+    set:
+      dsh.permissionMode: danger-full-access
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DSH_PERMISSION_MODE
+            value: danger-full-access

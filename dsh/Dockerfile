@@ -30,6 +30,10 @@ ARG NPM_REGISTRY=https://registry.npmjs.org
 RUN npm install -g --registry="${NPM_REGISTRY}" "@deepseek-ai/dsh@${DSH_VERSION}" \
     && npm cache clean --force
 
+# 为 workflow 提供同轮次继承 provider；原有 fork 语义保留，普通与离线实例都可选用。
+COPY dsh/patch-inflight-fork.mjs /tmp/patch-inflight-fork.mjs
+RUN node /tmp/patch-inflight-fork.mjs && rm /tmp/patch-inflight-fork.mjs
+
 # 单独成层：DSH 版本不变时，安装 pnpm 的调整不会重新下载 DSH 的完整依赖树。
 RUN npm install -g --registry="${NPM_REGISTRY}" "pnpm@${PNPM_VERSION}" \
     && npm cache clean --force
