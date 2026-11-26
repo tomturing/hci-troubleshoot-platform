@@ -114,7 +114,7 @@ func sessionKeyNode(key string) string { return session.NodeFromKey(key) }
 // 其余（resume / ping / pong）返回空串，表示不改变角色。
 func RoleOfMessageType(msgType string) string {
 	switch msgType {
-	case "ssh_connect", "ssh_input", "ssh_inject_command",
+	case "ssh_connect", "ssh_input", "ssh_resize", "ssh_inject_command",
 		"ssh_exec_command", "ssh_exec_process", "ssh_disconnect", "vm_console_op":
 		return ConnRoleTerminal
 	case "log_collect", "acli_sync":

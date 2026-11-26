@@ -39,6 +39,8 @@ type InMessage struct {
 	PrivateKey     string         `json:"private_key"`
 	Passphrase     string         `json:"passphrase"`
 	Data           string         `json:"data"`
+	Cols           int            `json:"cols,omitempty"` // ssh_resize 终端列数（交互式 PTY 窗口宽度）
+	Rows           int            `json:"rows,omitempty"` // ssh_resize 终端行数（交互式 PTY 窗口高度）
 	Command        string         `json:"command"`
 	ExecID         string         `json:"exec_id"`   // 用于 ssh_exec_command 和 ssh_exec_process
 	NodeIP         string         `json:"node_ip"`   // 目标节点 IP（多节点路由）

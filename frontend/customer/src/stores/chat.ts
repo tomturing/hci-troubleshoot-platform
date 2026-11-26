@@ -15,7 +15,7 @@ import {
 } from '@/utils/workspaceLayout'
 import { logCollectApi, type ActiveTaskSummary } from '@/api/logCollect'
 import { CLAIM_BLOCKED_REASON_TEXT } from '@/utils/logCollectOwnership'
-import { checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, buildSftpMessage, parseSftpListPayload, parseSftpTransferPayload, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec, type SftpEntry, type SftpTransferPayload } from '@/api/terminal'
+import { checkBridgeBeforeOpen, createBridgeSocket, getBridgeUrl, buildConnectMessage, buildInputMessage, buildResizeMessage, buildInjectCommandMessage, buildDisconnectMessage, stripAnsi, parseJsonOutput, buildAgentExecMessage, buildAgentExecProcessMessage, buildVmConsoleOpMessage, parseAgentExecResult, buildSftpMessage, parseSftpListPayload, parseSftpTransferPayload, type BridgeStatus, type TerminalWsMessage, type OutputFilterSpec, type SftpEntry, type SftpTransferPayload } from '@/api/terminal'
 import {
   appendExecOutput as appendFilteredExecOutput,
   buildSafeExecResultPayload,
@@ -693,6 +693,12 @@ export const useChatStore = defineStore('chat', () => {
   const sshOutputBuffer = ref<string>('')
   const sshCommandConsumer = ref<'terminal' | 'collection' | null>(null)
   const sshTerminalOutputEvent = ref<string>('')
+  // 无损终端流分片事件：带单调递增序号，确保连续收到相同字符（如连按两下 'l' 或退格）
+  // 时 Vue watch 仍必定触发，避免模式二实时交互丢字。
+  let sshOutputChunkSeq = 0
+  const sshTerminalOutputChunk = ref<{ seq: number; data: string } | null>(null)
+  // 记录最近一次已成功同步给 bridge 的 PTY 尺寸，避免连续 resize 重复发包。
+  let lastSentPtySize: { cols: number; rows: number } | null = null
   // 终端提示（非流式输出）：如 bridge 回包"输入无法路由到会话"。
   // 带唯一后缀刷新，保证相同文案也能触发下一次 watch。
   const sshTerminalNotice = ref<{ text: string; at: number } | null>(null)
@@ -828,7 +834,7 @@ export const useChatStore = defineStore('chat', () => {
   // Bridge 运行状态
   const bridgeStatus = ref<BridgeStatus>('not_running')
 
-  // === 结构化工具自动执行策略 ===
+  // === 结构化工具自动执行策略与终端交互模式 ===
   /** 自动执行模式，持久化到 localStorage；只影响服务端签发的结构化工具事件 */
   const AUTO_EXEC_MODE_KEY = 'hci_auto_execute_mode'
   const AUTO_EXEC_VALID_MODES = ['off', 'safe-only', 'aggressive'] as const
@@ -838,6 +844,23 @@ export const useChatStore = defineStore('chat', () => {
       ? (_storedMode as 'off' | 'safe-only' | 'aggressive')
       : 'off'
   )
+  /**
+   * 终端界面模式，持久化到 localStorage：
+   * - agent：模式一（上下分栏输入框 + 输出框，配合排障 Agent 使用）
+   * - interactive：模式二（全屏实时交互终端，类 Xshell/MobaXterm，切换时同步暂停 Agent 自动执行）
+   */
+  const TERMINAL_MODE_KEY = 'hci_terminal_mode'
+  const TERMINAL_VALID_MODES = ['agent', 'interactive'] as const
+  const _storedTerminalMode = typeof localStorage !== 'undefined' ? localStorage.getItem(TERMINAL_MODE_KEY) : null
+  const terminalMode = ref<'agent' | 'interactive'>(
+    TERMINAL_VALID_MODES.includes(_storedTerminalMode as 'agent' | 'interactive')
+      ? (_storedTerminalMode as 'agent' | 'interactive')
+      : 'agent'
+  )
+  // 若本地恢复为模式二（交互终端），确保 Agent 自动执行处于 off，避免人机并发冲突
+  if (terminalMode.value === 'interactive' && autoExecuteMode.value !== 'off') {
+    autoExecuteMode.value = 'off'
+  }
   // === 环境数据采集状态 ===
   const collectionState = ref<'idle' | 'collecting' | 'success' | 'error'>('idle')
   const collectionProgress = ref<Record<string, 'pending' | 'collecting' | 'done' | 'empty' | 'error'>>({})
@@ -2706,14 +2729,51 @@ export const useChatStore = defineStore('chat', () => {
   }
 
   /**
-   * 设置自动执行模式并持久化
+   * 设置自动执行模式并持久化（选择前 3 项时切回模式一）
    */
   function setAutoExecuteMode(mode: 'off' | 'safe-only' | 'aggressive') {
     autoExecuteMode.value = mode
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem(AUTO_EXEC_MODE_KEY, mode)
     }
+    if (terminalMode.value !== 'agent') {
+      terminalMode.value = 'agent'
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(TERMINAL_MODE_KEY, 'agent')
+      }
+    }
     devLog('AUTO-EXEC', `模式切换为 ${mode}`)
+  }
+
+  /**
+   * 设置终端界面模式并持久化。
+   * 切入模式二（interactive）时强制暂停 Agent 自动执行（置为 off），避免人机并发操作远端节点。
+   */
+  function setTerminalMode(mode: 'agent' | 'interactive') {
+    terminalMode.value = mode
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(TERMINAL_MODE_KEY, mode)
+    }
+    if (mode === 'interactive' && autoExecuteMode.value !== 'off') {
+      autoExecuteMode.value = 'off'
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(AUTO_EXEC_MODE_KEY, 'off')
+      }
+    }
+    devLog('TERMINAL-MODE', `终端模式切换为 ${mode}`)
+  }
+
+  /**
+   * 顶部模式下拉框统一入口：
+   * - off / safe-only / aggressive → 模式一（配合排障 Agent）
+   * - interactive → 模式二（实时交互终端，自动暂停 Agent 自动执行）
+   */
+  function setTerminalHeaderMode(mode: 'off' | 'safe-only' | 'aggressive' | 'interactive') {
+    if (mode === 'interactive') {
+      setTerminalMode('interactive')
+      return
+    }
+    setAutoExecuteMode(mode)
   }
 
   // 终端输出回填到助手输入框
@@ -3158,6 +3218,7 @@ export const useChatStore = defineStore('chat', () => {
 
         if (msg.type === 'ssh_connected') {
           devLog('SSH', '远程会话已建立，等待稳定确认')
+          lastSentPtySize = null
           clearSshAuthTimer()
           clearStabilityTimer()
           stabilityTimer = window.setTimeout(() => {
@@ -3169,7 +3230,11 @@ export const useChatStore = defineStore('chat', () => {
             clearStabilityTimer()
             markConnected()
           }
-          // 如果有消费者，触发输出事件
+          // 只要环境采集未独占通道，均以带递增序号的对象无损派发给终端（包含刚连上时的初始提示符）。
+          if (sshCommandConsumer.value !== 'collection') {
+            sshTerminalOutputChunk.value = { seq: ++sshOutputChunkSeq, data: msg.output }
+          }
+          // 保留历史字符串事件字段以兼容既有单测与外部监听
           if (sshCommandConsumer.value) {
             sshTerminalOutputEvent.value = msg.output
           }
@@ -3291,6 +3356,8 @@ export const useChatStore = defineStore('chat', () => {
     // 保留它会让下一次进入面板自动用旧密码去连一台他并不想连的机器。
     sshLastCredential.value = null
     sshOutputBuffer.value = ''
+    sshTerminalOutputChunk.value = null
+    lastSentPtySize = null
     sshCommandConsumer.value = null
     // 清理所有待处理的 exec_result 回调
     pendingExecCallbacks.forEach((callback) => {
@@ -3383,8 +3450,13 @@ export const useChatStore = defineStore('chat', () => {
         // 可执行文件后，已存在的 shell 仍会 exec 旧路径，于是报
         // "acli: No such file or directory"，只有新 shell 才会重查 PATH——
         // 用户看到的现象就是"必须重连终端"。这里补上缺失的生效动作：让活着的 shell 失效缓存。
-        // 环境采集用的是同一个输入通道，抢过来会把采集命令的输出错路由到终端
-        if (isTerminalVisible.value && sshCommandConsumer.value !== 'collection') {
+        // 环境采集用的是同一个输入通道，抢过来会把采集命令的输出错路由到终端；
+        // 模式二（实时交互终端）用户可能正在 vim/top 或敲半截命令，绝不自动插队注入 hash -r。
+        if (
+          isTerminalVisible.value &&
+          sshCommandConsumer.value !== 'collection' &&
+          terminalMode.value !== 'interactive'
+        ) {
           devLog('acli', '安装已替换 acli 可执行文件，正在对当前终端执行 hash -r 使其立即生效')
           sendSSHCommand('hash -r', 'terminal')
         } else {
@@ -3635,6 +3707,65 @@ export const useChatStore = defineStore('chat', () => {
     sshWebSocket.value.send(buildInputMessage(
       sshCurrentConfig.value?.caseId || '',
       `${command}\n`,
+      sshCurrentConfig.value?.host,
+    ))
+  }
+
+  /**
+   * 模式二：实时发送原始按键/控制序列到远端 PTY（不附加换行）。
+   * 不打印原始按键内容，防止用户交互输入密码时明文泄漏到浏览器控制台。
+   */
+  function sendSSHRawInput(data: string) {
+    if (!data) return
+    if (!sshWebSocket.value || sshConnectionState.value !== 'connected') {
+      console.warn('[SSH] 未连接，无法发送实时输入')
+      return
+    }
+    devLog('SSH', '发送实时交互输入', { bytes: data.length })
+    sshCommandConsumer.value = 'terminal'
+    sshWebSocket.value.send(buildInputMessage(
+      sshCurrentConfig.value?.caseId || '',
+      data,
+      sshCurrentConfig.value?.host,
+    ))
+  }
+
+  /**
+   * 模式二：向远端交互 shell 注入单行命令（不附加换行，等待用户按 Enter 确认）。
+   */
+  function sendSSHInjectCommand(command: string) {
+    if (!command) return
+    if (!sshWebSocket.value || sshConnectionState.value !== 'connected') {
+      console.warn('[SSH] 未连接，无法注入命令')
+      return
+    }
+    devLog('SSH', '向交互终端注入命令', { length: command.length })
+    sshCommandConsumer.value = 'terminal'
+    sshWebSocket.value.send(buildInjectCommandMessage(
+      sshCurrentConfig.value?.caseId || '',
+      command,
+      sshCurrentConfig.value?.host,
+    ))
+  }
+
+  /**
+   * 同步前端 xterm 窗口列数与行数到 terminal_bridge（SIGWINCH）。
+   * 相同尺寸自动去重，避免拖拽抽屉时产生高频冗余消息。
+   */
+  function sendSSHResize(cols: number, rows: number) {
+    if (!sshWebSocket.value || sshConnectionState.value !== 'connected') return
+    const safeCols = Math.round(cols)
+    const safeRows = Math.round(rows)
+    if (safeCols < 2 || safeCols > 1000 || safeRows < 2 || safeRows > 500) return
+    if (lastSentPtySize && lastSentPtySize.cols === safeCols && lastSentPtySize.rows === safeRows) {
+      return
+    }
+    lastSentPtySize = { cols: safeCols, rows: safeRows }
+    devLog('SSH', '同步 PTY 窗口尺寸', { cols: safeCols, rows: safeRows })
+    sshWebSocket.value.send(buildResizeMessage(
+      sshCurrentConfig.value?.caseId || '',
+      safeCols,
+      safeRows,
       sshCurrentConfig.value?.host,
     ))
   }
@@ -4898,9 +5029,12 @@ export const useChatStore = defineStore('chat', () => {
     openTerminalSidebar,
     closeTerminalSidebar,
     checkAndOpenTerminal,
-    // 命令自动执行
+    // 命令自动执行与终端交互模式
     autoExecuteMode,
     setAutoExecuteMode,
+    terminalMode,
+    setTerminalMode,
+    setTerminalHeaderMode,
     // Bridge 状态
     bridgeStatus,
     // 统一 SSH 连接弹框
@@ -4918,6 +5052,7 @@ export const useChatStore = defineStore('chat', () => {
     sshErrorMessage,
     sshOutputBuffer,
     sshTerminalOutputEvent,
+    sshTerminalOutputChunk,
     sshTerminalNotice,
     bridgeInstanceId,
     bridgeVersion,
@@ -4929,6 +5064,9 @@ export const useChatStore = defineStore('chat', () => {
     forwardBridgeLog,
     importBridgeLogsToCase,
     sendSSHCommand,
+    sendSSHRawInput,
+    sendSSHInjectCommand,
+    sendSSHResize,
     // 文件下载（右栏独立页签，与 SSH 终端共用面板）
     openSftpPanel,
     sftpRemoteDir,

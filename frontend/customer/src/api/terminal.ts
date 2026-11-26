@@ -480,17 +480,46 @@ export function buildInjectCommandMessage(caseId: string, command: string, nodeI
 }
 
 /**
- * 构建 ssh_input 消息（键盘输入，包含回车）
+ * 构建 ssh_input 消息（键盘输入，可为单键、控制序列或带回车的命令行）
  *
  * nodeIp 必带：会话键含 IP，缺省会退化到兜底匹配（历史缺陷：bridge 只查
  * caseID 导致输入被静默丢弃，界面表现为"打字毫无反应"）。
  */
-export function buildInputMessage(caseId: string, data: string, nodeIp?: string | null): string {
+export function buildInputMessage(
+  caseId: string,
+  data: string,
+  nodeIp?: string | null,
+  traceId?: string | null,
+): string {
   return JSON.stringify({
     type: 'ssh_input',
     case_id: caseId,
     data,
     node_ip: nodeIp || undefined,
+    trace_id: traceId || undefined,
+  })
+}
+
+/**
+ * 构建 ssh_resize 消息（同步前端 xterm 窗口列数与行数到远端 PTY）
+ *
+ * 旧版 bridge 不认识 ssh_resize 时会静默忽略，不影响会话连接；
+ * 新版 bridge 收到后调用 SSH WindowChange(rows, cols) 触发远端 SIGWINCH。
+ */
+export function buildResizeMessage(
+  caseId: string,
+  cols: number,
+  rows: number,
+  nodeIp?: string | null,
+  traceId?: string | null,
+): string {
+  return JSON.stringify({
+    type: 'ssh_resize',
+    case_id: caseId,
+    cols: Math.round(cols),
+    rows: Math.round(rows),
+    node_ip: nodeIp || undefined,
+    trace_id: traceId || undefined,
   })
 }
 
