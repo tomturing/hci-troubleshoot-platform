@@ -241,12 +241,6 @@ interface ModuleOption {
   sortOrder?: number
   /** 是否命中字典（决定是否显示"平台未维护说明"提醒） */
   documented?: boolean
-  /**
-   * 节点 help 是否真实列出该专项（probe node_modules）。
-   * false 时渲染非阻塞版本警示徽标但仍可勾选：help 漏列不等于不支持，
-   * 置灰会误伤"漏列但实际支持"的版本（Q2026111700614）。undefined 表示未知。
-   */
-  helpListed?: boolean
 }
 
 interface HostOption {
@@ -321,7 +315,7 @@ interface ProbeResult {
   hosts?: HostOption[]
   catalog_source?: 'acli_help' | 'platform_default'
   catalog_note?: string
-  /** 节点 help 真实列出的专项枚举（不补全）；与 modules 全集之差即版本警示依据 */
+  /** 节点 help 真实列出的专项枚举（不补全）；展示与提交的能力边界以此为准 */
   node_modules?: string[]
   /** 日志服务器探测失败原因（bridge 原话，只做排障佐证，不参与结论） */
   note?: string
@@ -727,13 +721,31 @@ const selectedManifestPreviews = computed(() => {
   const selected = form.modules as string[]
   return defaultManifests.value.filter((item) => selected.includes(item.module))
 })
-const moduleOptions = computed<ModuleOption[]>(() =>
-  mergeModuleOptions(probeModules.value, scenarioDict.value),
-)
-/** 节点 help 未列出的专项（版本警示依据）；仅 probe 明确标注 helpListed=false 时计入。 */
-const unlistedHelpModules = computed(() =>
-  moduleOptions.value.filter((item) => item.helpListed === false),
-)
+/**
+ * 节点真实支持的场景集合（probe node_modules）。
+ *
+ * 第一性原理：probe.modules 是平台白名单全集，回答「acli 可能接受哪些名字」；
+ * node_modules 才是「这台机器实际支持哪些专项」。只有后者权威时才能过滤，
+ * 缺省（旧 bridge / 未安装 / help 解析失败）一律返回 null，保持存量行为。
+ */
+const nodeSupportedModules = computed<Set<string> | null>(() => {
+  const data = probeResult.value
+  if (data?.catalog_source !== 'acli_help' || !data.node_modules?.length) return null
+  return new Set(data.node_modules)
+})
+/**
+ * 可展示、可提交的场景：能力事实权威时只保留节点支持的项。
+ *
+ * 展示即承诺"点开始收集能跑起来"；节点 help 没列出的项一律不出现，
+ * 不再用「可能不支持但仍可勾选」的警示把选择风险转嫁给用户。
+ */
+const moduleOptions = computed<ModuleOption[]>(() => {
+  const merged = mergeModuleOptions(probeModules.value, scenarioDict.value)
+  const supported = nodeSupportedModules.value
+  return supported ? merged.filter((item) => supported.has(item.value)) : merged
+})
+/** 历史回填时被能力门禁移除过场景：只提示一次，不对不支持项做任何展示。 */
+const removedUnsupportedSelection = ref(false)
 const hostOptions = ref<HostOption[]>([])
 const prepareState = ref<PrepareState>('idle')
 const prepareError = ref('')
@@ -1764,8 +1776,6 @@ function mergeModuleOptions(
       exclusive: hit.exclusive,
       sortOrder: hit.sort_order,
       documented: true,
-      // 字典只叠加文案，不得覆盖 probe 给出的版本警示标记。
-      helpListed: item.helpListed,
     })
   }
   documented.sort((a, b) => (a.sortOrder ?? 100) - (b.sortOrder ?? 100))
@@ -1814,25 +1824,34 @@ async function loadScenarioDict(): Promise<void> {
 /** 用探测结果覆盖目录与节点清单；场景目录以集群为准，内置目录只做兜底。 */
 function applyCatalog(data: ProbeResult) {
   const modules = data.modules?.length ? data.modules : [...BUILTIN_MODULES]
-  // 版本警示（非阻塞）：目录恒为白名单全集，节点 help 未列出的专项可能因
-  // 版本不匹配被拒（Q2026111700614：降级到 1.0.0 后 core 不在枚举内）。
-  // 只在集群确实给出枚举时标注；缺省/内置兜底一律不标，避免误伤。
-  if (data.catalog_source === 'acli_help' && data.node_modules?.length) {
-    const listed = new Set(data.node_modules)
-    probeModules.value = modules.map((item) => ({ ...item, helpListed: listed.has(item.value) }))
-  } else {
-    probeModules.value = modules
-  }
+  probeModules.value = modules
   hostOptions.value = data.hosts ?? []
-  // 目录收敛后清掉已不存在的场景，否则提交时会被 create 判为非法枚举
-  const valid = new Set(moduleOptions.value.map((item) => item.value))
-  form.modules = form.modules.filter((value) => valid.has(value))
+  // 能力事实落地后立刻收敛选择：历史回填的 core 等不支持项不能留在表单里。
+  // 目录收敛同时清掉已不存在的场景，否则提交时会被 create 判为非法枚举。
+  form.modules = filterSelectableModules(form.modules)
   // 收敛后为空会让用户误以为"没有可选项"，回落到目录首项。
   // 跳过互斥项：默认勾一个互斥项会让其余选项全被禁用（当前字典无互斥项，纯防御）。
   if (!form.modules.length && moduleOptions.value.length > 0) {
     const preferred = moduleOptions.value.find((item) => !item.exclusive) ?? moduleOptions.value[0]
     form.modules = [preferred.value]
   }
+}
+
+/**
+ * 把一组场景收敛到「当前节点可展示、可提交」的集合。
+ *
+ * 能力未知时原样返回：旧 bridge 不返回 node_modules，不能凭猜测删用户的选择。
+ * 只有 probe 明确给出 acli_help + node_modules 时才执行过滤。
+ */
+function filterSelectableModules(values: LogCollectModule[]): LogCollectModule[] {
+  // moduleOptions 已经同时套了「节点能力」与「平台目录」两道边界：
+  // 只按 nodeSupportedModules 过滤会漏掉目录里已删除的旧枚举。
+  const valid = new Set(moduleOptions.value.map((item) => item.value))
+  // 目录尚未就绪（探测/字典未回来）时不裁剪，避免把合法选择误删成空。
+  if (!valid.size) return values
+  const kept = values.filter((value) => valid.has(value))
+  if (kept.length !== values.length) removedUnsupportedSelection.value = true
+  return kept
 }
 
 // ── 场景互斥（字典 exclusive）────────────────────────────────────────────
@@ -2857,7 +2876,9 @@ function applyTaskToForm(task: LogCollectTask) {
   const ips = task.ips ?? []
   // 空数组与 all 同义：都表示"集群全部在线节点"
   form.ips = !ips.length || ips.includes('all') ? 'all' : ips.join(',')
-  if (task.modules?.length) form.modules = [...task.modules] as LogCollectModule[]
+  if (task.modules?.length) {
+    form.modules = filterSelectableModules([...task.modules] as LogCollectModule[])
+  }
   // 额外路径必须一起回填：重新收集时静默丢掉，用户会以为"这次范围和上次一样"，
   // 而实际上少收了他上次特意指定的目录。
   form.extraPaths = normalizeExtraPaths(task.extra_paths)
@@ -2897,6 +2918,8 @@ function startRecollect(last: LogCollectTask | null = resultTask.value) {
   resetTransfer()
   cleanupTip.value = ''
   errorMessage.value = ''
+  // 新一轮回填重新判定：上一次的"已移除"提示不带进新任务。
+  removedUnsupportedSelection.value = false
   if (last) applyTaskToForm(last)
   if (prepareState.value !== 'ready') void prepare({ silent: true })
 }
@@ -2935,7 +2958,7 @@ function applyRequestSnapshot(task: LogCollectTask): boolean {
     form.scenarioMode = 'default'
     form.customScenarioId = ''
     if (Array.isArray(request.modules) && request.modules.length) {
-      form.modules = request.modules.map(String) as LogCollectModule[]
+      form.modules = filterSelectableModules(request.modules.map(String) as LogCollectModule[])
     }
   }
   const mode = String(request.upload_mode ?? '')
@@ -3233,13 +3256,25 @@ async function handleStart() {
         trace_id: traceId,
       })
     } catch (createError: any) {
-      if (createError?.response?.status === 409) {
+      const status = Number(createError?.response?.status ?? 0)
+      if (status === 409) {
         // 冲突不是失败：不改任务状态，停在 idle 让用户点"查看任务状态"
         const problem = createError.response.data?.detail ?? {}
         chatStore.setLogCollectActiveTask(problem.active_task ?? null)
         stage.value = 'idle'
         errorMessage.value = problem.title || '该工单已有进行中的日志收集任务'
         ElMessage.warning(errorMessage.value)
+        return
+      }
+      if (status >= 400 && status < 500) {
+        // 平台明确拒绝（典型是 422：节点不支持所选场景）：
+        // 任务没有创建、通道也不必开；把平台给出的可执行文案原样交给用户。
+        const message = problemMessageFromError(createError)
+          || String(createError?.message || '').trim()
+          || '创建日志收集任务被平台拒绝'
+        stage.value = 'idle'
+        errorMessage.value = normalizeErrorMessage(message)
+        showCustomerFault(errorMessage.value)
         return
       }
       throw createError
@@ -3782,6 +3817,25 @@ function normalizeErrorMessage(text: string): string {
     .map((line) => line.trim())
     .filter((line) => line && !/^FATA\[\d+\]\s+execing command in container/.test(line))
   return (lines[0] || '').slice(0, 500)
+}
+
+/**
+ * create 被平台 4xx 拒绝时，优先展示 detail 里的可执行文案。
+ *
+ * axios 的 error.message 只有「Request failed with status code 422」，用户
+ * 既不知道哪个场景不支持，也不知道下一步做什么；平台已经用 RFC 7807
+ * 返回 title/detail/user_hint，这里必须把它取出来，而不是再兜一层泛化文案。
+ */
+function problemMessageFromError(error: any): string {
+  const detail = error?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (detail && typeof detail === 'object') {
+    const parts = [detail.title, detail.detail, detail.user_hint]
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter(Boolean)
+    if (parts.length) return parts.join('：')
+  }
+  return ''
 }
 
 // 平台侧异常的规范错误码：createApiClient 拦截器会把结构化 problem 挂到 error.problem。
@@ -5534,6 +5588,7 @@ watch(
     if (nodeIpTimer) clearTimeout(nodeIpTimer)
     nodeIpTimer = setTimeout(() => {
       probeResult.value = null
+      removedUnsupportedSelection.value = false
       prepareState.value = 'idle'
       // 换了节点 = 换了一个环境：上一台的复查计数没有意义
       stopFactRecheck()
@@ -6105,7 +6160,10 @@ onBeforeUnmount(() => {
               </el-radio-button>
             </el-radio-group>
             <template v-if="form.scenarioMode === 'default'">
-            <el-checkbox-group v-model="form.modules" class="lc-checkbox-group lc-module-group">
+            <el-checkbox-group
+              v-model="form.modules"
+              class="lc-checkbox-group lc-module-group"
+            >
               <el-checkbox
                 v-for="item in moduleOptions"
                 :key="item.value"
@@ -6117,18 +6175,12 @@ onBeforeUnmount(() => {
               >
                 <span class="lc-module-name">
                   {{ item.label }}
-                  <span
-                    v-if="item.helpListed === false"
-                    class="lc-module-warn"
-                    title="节点 help 未列出该专项，可能因版本不匹配被拒；仍可勾选"
-                  >节点可能不支持</span>
                 </span>
                 <span v-if="item.summary" class="lc-module-summary">{{ item.summary }}</span>
               </el-checkbox>
             </el-checkbox-group>
-            <div v-if="unlistedHelpModules.length" class="lc-hint lc-hint-warn">
-              节点 help 未列出专项 {{ unlistedHelpModules.map((item) => item.label).join('、') }}，
-              可能因版本不匹配被拒（仍可勾选，建议先确认节点 acli 版本）
+            <div v-if="removedUnsupportedSelection" class="lc-hint lc-hint-warn">
+              历史任务中的部分场景当前节点不支持，已自动移除；请从可用场景中重新选择。
             </div>
             <div v-if="hasModuleConflict" class="lc-hint lc-hint-warn">
               当前选择同时包含「不收集上述场景」与其他专项（沿历史任务回填），建议只保留其中一类
@@ -6365,7 +6417,7 @@ onBeforeUnmount(() => {
             >
               重新核验归档
             </el-button>
-            <el-button :type="canUploadFromNode ? 'default' : 'primary'" @click="startRecollect">
+            <el-button :type="canUploadFromNode ? 'default' : 'primary'" @click="startRecollect()">
               重新收集
             </el-button>
           </template>
@@ -6763,17 +6815,6 @@ onBeforeUnmount(() => {
 .lc-module-name {
   font-weight: 500;
   white-space: normal;
-}
-/* 版本警示徽标：只加色不改可选性——help 漏列不等于不支持，置灰会误伤 */
-.lc-module-warn {
-  margin-left: 4px;
-  padding: 0 4px;
-  font-size: 10px;
-  font-weight: 400;
-  color: var(--el-color-warning);
-  border: 1px solid var(--el-color-warning-light-5);
-  border-radius: 3px;
-  white-space: nowrap;
 }
 .lc-module-summary {
   font-size: 11px;

@@ -20,6 +20,11 @@ from sqlalchemy.exc import IntegrityError
 
 from ..config import settings
 from ..domain.log_collect_archive import judge_archive
+from ..domain.log_collect_capability import (
+    capability_rejection_message,
+    supported_modules_from_probe,
+    unsupported_modules,
+)
 from ..repositories.log_collect_repo import LogCollectTaskRepository
 from ..schemas.log_collect import (
     DeliverRequest,
@@ -361,6 +366,7 @@ async def create_task(
     # 既不能自己拼，也不展示为可编辑项。
     custom_scenario: tuple[UUID, int] | None = None
     config_plan: tuple[str, str, int] | None = None
+    config_kind: str | None = None
     # 「用户选了什么」必须与 modules 分开记录：自定义场景要求 acli `-m core`，
     # modules 会被覆写，再拿它展示就等于把实现细节当用户语义。
     scenario_snapshot: dict[str, Any] | None = None
@@ -415,6 +421,42 @@ async def create_task(
             custom_scenario = (scenario.scenario_id, scenario.revision)
             config_plan = (config_text, sha256, len(paths))
             config_kind = "config"
+
+    # 场景能力门禁：必须在建任务、算清单、开通道之前拦下。
+    # 第一性原理：节点 acli 的 help 枚举才是「这台机器支持什么」的事实；
+    # 平台白名单只说明「acli 可能接受这个名字」。两者不交叉的选项一旦下发，
+    # 只会在桥上变成 LC-SPC-003（备份 core.json 失败），把用户引去查磁盘/权限。
+    requested_modules: list[str] = []
+    if payload.custom_scenario_id is None:
+        requested_modules = list(payload.modules)
+    elif config_kind == "spc":
+        # 自定义 spc 场景固定占用 core 槽位，与默认场景的 core 同一物理前提。
+        requested_modules = ["core"]
+
+    supported = supported_modules_from_probe(payload.probe)
+    if supported is None:
+        # 直接调 API、或旧客户端没带 probe 时，用桥侧最近一次探测事实兜底。
+        supported = await _probe_capability_from_evidence(
+            service.repository.session,
+            payload.case_id,
+            payload.origin_node_ip,
+        )
+    unsupported = unsupported_modules(requested_modules, supported)
+    if unsupported:
+        probe = payload.probe or {}
+        acli_version = payload.acli_version or str(probe.get("acli_version") or "") or None
+        message = capability_rejection_message(unsupported, acli_version)
+        logger.warning(
+            "log_collect.capability_rejected case_id=%s origin=%s modules=%s supported=%s trace_id=%s",
+            payload.case_id,
+            payload.origin_node_ip,
+            ",".join(unsupported),
+            ",".join(sorted(supported or ())),
+            payload.trace_id,
+        )
+        # 复用既有规范码：LC-PLUGIN-016「节点上没有所选专项」。
+        # 422 表示这是选择问题，不是环境故障，也不是平台 5xx。
+        raise _problem("LC-PLUGIN-016", message)
 
     # 本次要下发的场景清单先算出来（只读、不落库），因为脚本引用必须先校验。
     # 顺序调整的理由：脚本被停用/删除时必须在**建任务之前**返回 409，
@@ -925,6 +967,60 @@ async def list_artifacts(
             for task in items
         ]
     }
+
+
+# 建任务的能力兜底：只认桥侧最近一次真实探测，不认客户端自报。
+# 30 分钟窗口是刻意限制的：probe 太旧时节点可能已升级/降级，用旧快照拦截
+# 会把「刚升级好」误判成「仍不支持」；前端正常路径本来就随 create 带 probe。
+_PROBE_CAPABILITY_SQL = text(
+    """
+    SELECT extra->>'catalog_source' AS catalog_source,
+           extra->'node_modules' AS node_modules,
+           extra->>'acli_version' AS acli_version
+    FROM bridge_execution_logs
+    WHERE case_id = :case_id
+      AND event = 'log_collect.probe'
+      AND node_ip = :node_ip
+      AND created_at >= now() - interval '30 minutes'
+    ORDER BY created_at DESC, seq DESC
+    LIMIT 1
+    """
+)
+
+
+async def _probe_capability_from_evidence(
+    session: Any,
+    case_id: str,
+    node_ip: str,
+) -> frozenset[str] | None:
+    """读桥侧最近一次探测的 node_modules；读不到就降级为「能力未知」。"""
+    try:
+        row = (
+            (
+                await session.execute(
+                    _PROBE_CAPABILITY_SQL,
+                    {"case_id": case_id, "node_ip": node_ip},
+                )
+            )
+            .mappings()
+            .first()
+        )
+    except Exception as exc:  # noqa: BLE001 - 能力查询失败不能挡住建任务
+        logger.warning(
+            "日志收集能力快照读取失败 case_id=%s node=%s err=%s",
+            case_id,
+            node_ip,
+            exc,
+        )
+        return None
+    if not row:
+        return None
+    try:
+        payload = dict(row)
+    except (TypeError, ValueError):
+        # 单测/异常驱动可能返回非映射对象；能力快照不可用就降级，不能 500。
+        return None
+    return supported_modules_from_probe(payload)
 
 
 @router.get("/probes")

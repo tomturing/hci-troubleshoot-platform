@@ -57,10 +57,11 @@ func TestLogCollectFailureLineFallback(t *testing.T) {
 // 断言从 logcontract.Title 取期望值，文案改版时测试自动跟随唯一出处。
 func TestSpcErrorTitle(t *testing.T) {
 	cases := map[string]string{
-		"host_auth_failed": logcontract.ErrSpcSSHAuthFailed,
-		"host_timeout":     logcontract.ErrSpcSSHTimeout,
-		"spc_dir_missing":  logcontract.ErrSpcDirMissing,
-		"spc_file_missing": logcontract.ErrSpcFileMissing,
+		"host_auth_failed":   logcontract.ErrSpcSSHAuthFailed,
+		"host_timeout":       logcontract.ErrSpcSSHTimeout,
+		"spc_dir_missing":    logcontract.ErrSpcDirMissing,
+		"spc_file_missing":   logcontract.ErrSpcFileMissing,
+		"spc_module_missing": logcontract.ErrPlugModuleMissing,
 	}
 	for errType, code := range cases {
 		want := logcontract.Title(code)
