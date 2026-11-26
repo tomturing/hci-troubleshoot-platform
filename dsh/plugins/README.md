@@ -23,7 +23,7 @@
 
 ```text
 dsh_cockpit-rules/
-└── hci-diagnosis-1.6.1-rc.1/
+└── hci-diagnosis-1.1.0/
     ├── manifest.json
     ├── workflows/
     └── knowledge/
