@@ -37,5 +37,21 @@ cat > "$PATCH_FILE" <<EOF
     model: "${MODEL}"
 EOF
 
+# Compose 的普通与离线实例都通过此开关追加 workflow；未设置时保持原有单 Agent 配置。
+if [ "${DSH_COMPOSE_WORKFLOW_ENABLED:-false}" = "true" ]; then
+    cat >> "$PATCH_FILE" <<'EOF'
+- id: workflow-ptc
+  name: '@deepseek-ai/dsh-workflow-ptc'
+  disabled: false
+  config:
+    provider: fork-inflight
+    maxConcurrentAgents: 3
+    maxTotalAgents: 20
+- id: tool-workflow
+  name: '@deepseek-ai/dsh-tool-workflow'
+  disabled: false
+EOF
+fi
+
 export DSH_RUNTIME_PATCH="$PATCH_FILE"
 exec /usr/local/bin/docker-entrypoint.sh

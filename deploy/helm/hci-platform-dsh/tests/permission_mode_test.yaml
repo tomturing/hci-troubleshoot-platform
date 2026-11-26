@@ -1,0 +1,21 @@
+suite: "DSH 新会话权限默认值测试"
+templates:
+  - deployment.yaml
+tests:
+  - it: "独立 Chart 默认保持 workspace-write"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DSH_PERMISSION_MODE
+            value: workspace-write
+
+  - it: "受管实例可由环境 values 覆盖为 danger-full-access"
+    set:
+      dsh.permissionMode: danger-full-access
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DSH_PERMISSION_MODE
+            value: danger-full-access

@@ -87,6 +87,9 @@ dsh:
   # DSH 当前版本包含 ARM64 不完整的 Node 原生 binding；实际环境由环境仓
   # 显式选择 amd64 节点，避免 Pod 被调度到 ARM64 后启动即退出。
   nodeSelector: {}
+  # 新会话权限预设。Chart 默认保持工作区写入；受管环境中的普通和离线 DSH
+  # 均由各自 values 显式覆盖为 danger-full-access。
+  permissionMode: workspace-write
   image:
     # ⚠️ 短名，必须与 CI 构建矩阵的服务名一致（无 hci- 前缀）。
     # 完整地址为 <global.imageRegistry><repository>:<tag>。
