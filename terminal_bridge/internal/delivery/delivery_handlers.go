@@ -77,6 +77,17 @@ func HandleDeliverySubmit(ws *websocket.Conn, msg models.InMessage, cui string) 
 		})
 		return
 	}
+	if err := remote.ValidateArchiveOwnership(sourcePath, msg.CaseID); err != nil {
+		evidence.Emit("WARN", "delivery.archive_path_case_mismatch", "归档包文件名与本工单不一致，拒绝交付", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+			"source_path": sourcePath, "case_id": msg.CaseID,
+		})
+		models.SendMsg(ws, models.OutMessage{
+			Type: "delivery_result", CaseID: msg.CaseID, LogAction: "submit",
+			Status: "error", ErrorType: "archive_case_mismatch", ErrorCode: logcontract.ErrTransferArchiveMissing,
+			Message: err.Error(), TraceID: traceID, CustomUI: cui,
+		})
+		return
+	}
 	platformURL, err := uplink.ValidateURL(msg.PlatformURL)
 	if err != nil {
 		models.SendMsg(ws, models.OutMessage{
