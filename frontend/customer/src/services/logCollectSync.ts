@@ -892,7 +892,10 @@ export interface ArchiveProbeOutcome {
  * - `LC-TRANSFER-001`（确认不存在）：说「已不在」，并指向重新采集；
  * - 其余错误：原样回显桥的 message。
  */
-export function interpretArchiveProbe(reply: ArchiveProbeReply | null | undefined): ArchiveProbeOutcome {
+export function interpretArchiveProbe(
+  reply: ArchiveProbeReply | null | undefined,
+  options?: { uploadMode?: string | null },
+): ArchiveProbeOutcome {
   const rawExists = reply?.log_data?.exists
   // 三态归一：只有严格的 true/false 才是结论，其余（undefined/null）一律是未知。
   const exists = rawExists === true ? true : rawExists === false ? false : null
@@ -916,11 +919,17 @@ export function interpretArchiveProbe(reply: ArchiveProbeReply | null | undefine
   }
 
   if (exists === false) {
+    // 区分交付路径（2026-11-25 Q2026112500790）：P2 中转任务不会因 P1 直传自删，
+    // 缺包常见于节点 zip 打包时满盘（exit 14）或超时未落盘，误报“P1 自动删除”会把排障引偏。
+    const message =
+      options?.uploadMode === 'bridge_relay'
+        ? '节点上未找到压缩包（P2 中转不会因直传自删，常见原因为节点打包时磁盘空间不足或打包超时未生成产物；请检查节点磁盘与过程日志后重新采集）'
+        : '压缩包已不在节点上（P1 发送成功后插件会自动删除），无法补交付；如需产物请重新采集'
     return {
       size: 0,
       exists: false,
       failure: {
-        message: '压缩包已不在节点上（P1 发送成功后插件会自动删除），无法补交付；如需产物请重新采集',
+        message,
         errorCode: errorCode || 'LC-TRANSFER-001',
       },
     }

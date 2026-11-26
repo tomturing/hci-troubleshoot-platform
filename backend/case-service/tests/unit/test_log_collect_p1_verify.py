@@ -15,8 +15,12 @@
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
 
-from app.routes.log_collect import _judge_p1_archive, _p1_verify_patch
+import pytest
+from app.routes import log_collect as lc_route
+from app.routes.log_collect import _judge_p1_archive, _p1_verify_patch, reconcile_p1_archives_once
 
 
 def _task(created_at: datetime | None = None, delivery_status: str = "none"):
@@ -130,3 +134,103 @@ class TestVerifyPatch:
         written = patch.model_dump(exclude_none=True)
         assert "delivery_status" not in written
         assert "delivery_finished_at" not in written
+
+
+class _FakeDB:
+    def __init__(self, rows: list[dict]):
+        self._rows = rows
+
+    async def get_session(self):
+        session = SimpleNamespace()
+
+        async def _execute(_stmt, _params=None):
+            return SimpleNamespace(mappings=lambda: SimpleNamespace(all=lambda: self._rows))
+
+        session.execute = _execute
+        yield session
+
+
+class TestBackgroundP1Reconcile:
+    """服务端异步 P1 归档复核（Q2026112501591 / Q2026111900904 回归守护）。"""
+
+    @pytest.mark.asyncio
+    async def test_promotes_delivered_when_5888_finishes_merging(self, monkeypatch):
+        """5888 滞后合并完成后，后台复核自动转正为 delivered（Q2026112501591）。"""
+        task_id = uuid4()
+        created = datetime.now(UTC) - timedelta(minutes=20)
+        row = {
+            "task_id": task_id,
+            "case_id": "Q2026112501591",
+            "archive_size": 5_656_413_749,
+            "delivery_status": "none",
+            "created_at": created,
+            "trace_id": "lc-Q2026112501591-test",
+            "detail": {"p1_archive_check": {"verified": False, "reason": "archive_missing"}},
+        }
+        monkeypatch.setattr(lc_route, "database_manager", _FakeDB([row]))
+        monkeypatch.setattr(
+            lc_route,
+            "get_p1_ticket_service",
+            lambda: SimpleNamespace(enabled=True, issue=lambda cid, fn: "t-valid"),
+        )
+        monkeypatch.setattr(lc_route.settings, "LOG_COLLECT_RELAY_URL", "http://127.0.0.1:5888")
+
+        async def _fake_archive_status(self, _http, _filename, *, ticket=""):
+            assert ticket == "t-valid"
+            return {
+                "found": True,
+                "size": 5_656_413_749,
+                "mtime": (created + timedelta(minutes=10)).timestamp(),
+                "stored_name": "Q2026112501591.zip",
+            }
+
+        monkeypatch.setattr(lc_route.SangforRelayClient, "archive_status", _fake_archive_status)
+        updated: list[tuple] = []
+
+        async def _fake_update(self, tid, patch, *, server_authoritative=False):
+            updated.append((tid, patch, server_authoritative))
+
+        monkeypatch.setattr(lc_route.LogCollectService, "update_task", _fake_update)
+
+        count = await reconcile_p1_archives_once()
+        assert count == 1
+        assert len(updated) == 1
+        tid, patch, auth = updated[0]
+        assert tid == task_id
+        assert auth is True
+        assert patch.delivery_status == "delivered"
+        assert patch.detail["p1_archive_check"]["source"] == "background_reconcile"
+
+    @pytest.mark.asyncio
+    async def test_negative_result_does_not_refresh_checked_at(self, monkeypatch):
+        """5888 仍无归档时绝不写库刷新 checked_at，避免真实丢包单（Q2026111900904）永不过期。"""
+        task_id = uuid4()
+        row = {
+            "task_id": task_id,
+            "case_id": "Q2026111900904",
+            "archive_size": None,
+            "delivery_status": "none",
+            "created_at": datetime.now(UTC) - timedelta(minutes=15),
+            "trace_id": "lc-Q2026111900904-test",
+            "detail": {
+                "p1_archive_check": {"verified": False, "reason": "archive_missing", "expected_size": 24467180672}
+            },
+        }
+        monkeypatch.setattr(lc_route, "database_manager", _FakeDB([row]))
+        monkeypatch.setattr(
+            lc_route,
+            "get_p1_ticket_service",
+            lambda: SimpleNamespace(enabled=True, issue=lambda cid, fn: "t-valid"),
+        )
+        monkeypatch.setattr(lc_route.settings, "LOG_COLLECT_RELAY_URL", "http://127.0.0.1:5888")
+        monkeypatch.setattr(
+            lc_route.SangforRelayClient,
+            "archive_status",
+            AsyncMock(return_value={"found": False, "status": "missing"}),
+        )
+        update_mock = AsyncMock()
+        monkeypatch.setattr(lc_route.LogCollectService, "update_task", update_mock)
+
+        count = await reconcile_p1_archives_once()
+        assert count == 0
+        update_mock.assert_not_awaited()

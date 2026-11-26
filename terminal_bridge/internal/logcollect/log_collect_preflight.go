@@ -20,6 +20,7 @@ import (
 	"strings"
 	"terminal_bridge/internal/shared/cluster"
 	"terminal_bridge/internal/shared/evidence"
+	"terminal_bridge/internal/shared/logcontract"
 	"terminal_bridge/internal/shared/reconcile"
 	"terminal_bridge/internal/shared/remote"
 	"terminal_bridge/internal/sshx"
@@ -73,9 +74,26 @@ func parsePluginProbe(output string) []string {
 	return missing
 }
 
+// preflightTargetHosts 确定本次 create 前置插件校验的目标节点集合。
+//
+// 第一性原理：用户明确点名采集特定节点（如 10.124.1.20,10.124.1.22）时，
+// 集群里其它未参采节点是否缺插件与本次采集成功与否毫无物理因果。
+// 旧实现忽略 requestedIPs 强查全集群，导致 Q2026112600533（14 节点集群仅选 2 台）
+// 被无关节点缺失拦截。仅在 all/空 时检查全集群；点名模式只查目标节点（发起节点另行必查）。
+func preflightTargetHosts(requestedIPs string, clusterHosts []string) ([]string, string) {
+	if selected := expectedHostsFromIPs(requestedIPs); len(selected) > 0 {
+		out := append([]string(nil), selected...)
+		sort.Strings(out)
+		return out, "selected"
+	}
+	out := append([]string(nil), clusterHosts...)
+	sort.Strings(out)
+	return out, "all"
+}
+
 // preflightLogCollectPlugin 逐台检查 log_collect 插件是否完整。
-// 返回 (缺失项 "ip:path", 是否真的枚举到了节点)。
-func preflightLogCollectPlugin(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig) ([]string, bool) {
+// 返回 (缺失项 "ip:path", 是否真的枚举到了目标节点)。
+func preflightLogCollectPlugin(ctx context.Context, s *sshx.SSHSession, cfg EvidenceConfig, requestedIPs string) ([]string, bool) {
 	command := buildPluginProbeCommand()
 	missing := make([]string, 0, 6)
 	// 发起节点必查：acli 命令本身在这里执行，插件坏了连 create 都会失败。
@@ -84,16 +102,21 @@ func preflightLogCollectPlugin(ctx context.Context, s *sshx.SSHSession, cfg Evid
 			missing = append(missing, "local:"+path)
 		}
 	}
-	hosts := cluster.NodeList(s, ctx)
-	if len(hosts) == 0 {
-		sort.Strings(missing)
-		return missing, false
+	selected := expectedHostsFromIPs(requestedIPs)
+	var clusterIPs []string
+	if len(selected) == 0 {
+		hosts := cluster.NodeList(s, ctx)
+		if len(hosts) == 0 {
+			sort.Strings(missing)
+			return missing, false
+		}
+		clusterIPs = make([]string, 0, len(hosts))
+		for _, host := range hosts {
+			clusterIPs = append(clusterIPs, host.IP)
+		}
 	}
+	targets, scope := preflightTargetHosts(requestedIPs, clusterIPs)
 	localIPs := cluster.LocalAddresses(s, ctx)
-	targets := make([]string, 0, len(hosts))
-	for _, host := range hosts {
-		targets = append(targets, host.IP)
-	}
 	type probeResult struct {
 		paths []string
 		err   error
@@ -126,10 +149,11 @@ func preflightLogCollectPlugin(ctx context.Context, s *sshx.SSHSession, cfg Evid
 		missing = append(missing, value.paths...)
 	}
 	sort.Strings(missing)
-	// 事件里显式区分「阻断判据」与「仅观测项」：事后回答「为什么这次没查进度文件」
-	// 不需要再翻代码，也能防止有人把运行时路径重新塞回阻断清单。
+	// 事件里显式区分「阻断判据」与「仅观测项」以及预检范围：事后可直接核对
+	// 为什么只检选定节点或全集群。
 	evidence.Emit("INFO", "log_collect.plugin_preflight", "发起采集前校验内置插件", cfg.TraceID, cfg.CaseID, cfg.NodeIP, cfg.CustomUI, map[string]any{
 		"hosts":                  len(targets),
+		"scope":                  scope,
 		"missing":                missing,
 		"unreachable":            unreachable,
 		"task_id":                cfg.TaskID,
@@ -229,4 +253,42 @@ func reportFailureSnapshot(ctx context.Context, s *sshx.SSHSession, cfg Evidence
 			"task_id": cfg.TaskID, "reason": reason, "error": postErr.Error(), "files": files, "disk": disk,
 		})
 	}
+}
+
+// detectLogCollectCreateOutputError 识别 acli create 输出中的确定性业务拒绝行。
+//
+// 为什么在 exitCode==0 与 exitCode!=0 两侧都要调它：
+//   - acli 在部分前置检查失败时（例如 2026-11-25 Q2026112500790：某节点 /sf/data/local
+//     可用空间 5.72GB 小于 6GB）会打印明确拒绝提示但以 exit 0 退出；
+//   - 在日期越界（Q2026112500714）或离线 IP（Q2026112301741）时以 exit 1 退出，
+//     若不解析就会落成泛化 LC-EXEC-003，掩盖具体处置动作。
+//
+// 严格忽略 acli 自身打印的结构化 JSON 运行日志行（如 cpuset.cpus / vtp-rpc-ssl.pem），
+// 防止正常任务被噪音误杀。
+func detectLogCollectCreateOutputError(output string) (string, string, bool) {
+	cleaned := stripAnsi(output)
+	for _, raw := range strings.Split(strings.ReplaceAll(cleaned, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		// acli 的结构化错误日志形如 `2026/11/25 ... {"@timestamp":...}`，不属于业务拒绝结论。
+		if strings.HasPrefix(line, "{") || strings.Contains(line, `"@timestamp"`) {
+			continue
+		}
+		lower := strings.ToLower(line)
+		switch {
+		case (strings.Contains(line, "可用空间") && (strings.Contains(line, "小于") || strings.Contains(line, "不足"))) ||
+			strings.Contains(lower, "no space left on device") ||
+			strings.Contains(lower, "insufficient disk space"):
+			return logcontract.ErrEnvDiskLow, line, true
+		case strings.Contains(line, "不在集群在线") || strings.Contains(lower, "not in online"):
+			return logcontract.ErrEnvNodeOffline, line, true
+		case strings.Contains(line, "指定日期必须在限制的范围"):
+			return logcontract.ErrPlugInvalidDate, line, true
+		case logCollectModuleMissing(line):
+			return logcontract.ErrPlugModuleMissing, line, true
+		}
+	}
+	return "", "", false
 }
