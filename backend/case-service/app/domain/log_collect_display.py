@@ -74,6 +74,7 @@ _ARCHIVE_MISMATCH_REASONS = frozenset({"size_mismatch"})
 # 顺序固定：同一份数据在任何入口都必须渲染出同一个顺序。
 _CONDITION_ORDER: tuple[str, ...] = (
     "artifact_verified",
+    "case_archive_verified",
     "artifact_suspect",
     "artifact_missing",
     "artifact_uninspected",
@@ -885,6 +886,7 @@ def _build_conditions(
     task: Any,
     now: datetime,
     verifying: bool = False,
+    case_archive_verified: bool = False,
 ) -> list[dict[str, str]]:
     present: set[str] = set()
 
@@ -901,6 +903,10 @@ def _build_conditions(
         elif phase == "settled":
             present.add("artifact_uninspected")
 
+    if case_archive_verified:
+        # 工单级事实，不改变本任务的 failed 结论：同工单更早任务已由权威证据
+        # 核验送达时，客户必须知道"包在"，但不能据此把本轮失败改写成成功。
+        present.add("case_archive_verified")
     if detail.get("integrity_mismatch") or detail.get("sha_mismatch"):
         present.add("integrity_mismatch")
     if verifying:
@@ -943,6 +949,7 @@ def derive(
     metrics: Mapping[str, Any] | None = None,
     probes: Iterable[Mapping[str, Any]] | None = None,
     now: datetime | None = None,
+    case_archive_verified: bool = False,
 ) -> dict[str, Any]:
     """返回响应四件套：``display / artifact / transfer / network``。
 
@@ -1035,6 +1042,7 @@ def derive(
                 task=task,
                 now=now,
                 verifying=verifying,
+                case_archive_verified=case_archive_verified,
             ),
             "progress_percent": _progress_percent(phase, task, transfer, delivered=delivered),
             "upload_mode_label": UPLOAD_MODE_LABELS.get(
