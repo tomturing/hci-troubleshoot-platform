@@ -9,12 +9,28 @@ sources:
   compose: deploy/docker/docker-compose.yml
 
 mappings:
+  - id: ordinary.permission_mode
+    compose_env: DSH_PERMISSION_MODE
+    compose_service: dsh
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.permissionMode]
+    rendered_env: [DSH_PERMISSION_MODE]
+    comparison: identity
+
   - id: offline.profile
     compose_env: DSH_OFFLINE_PROFILE
     compose_service: dsh-offline
     helm_chart: deploy/helm/hci-platform-dsh
     helm_values: [dsh.profile]
     rendered_env: [DSH_PROFILE]
+    comparison: identity
+
+  - id: offline.permission_mode
+    compose_env: DSH_OFFLINE_PERMISSION_MODE
+    compose_service: dsh-offline
+    helm_chart: deploy/helm/hci-platform-dsh
+    helm_values: [dsh.permissionMode]
+    rendered_env: [DSH_PERMISSION_MODE]
     comparison: identity
 
   - id: offline.public_url
