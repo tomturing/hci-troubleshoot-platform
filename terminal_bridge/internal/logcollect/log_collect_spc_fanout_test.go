@@ -364,6 +364,48 @@ func TestClassifySpcCommandError(t *testing.T) {
 	}
 }
 
+// TestSpcPrepareFailureReasonDistinguishesMissingModule 只把「原件 stat 不到」
+// 归成 spc_module_missing；权限/磁盘/备份目录问题仍归 backup_failed。
+// Q2026112600025：core.json 不存在被报成备份失败，界面让用户查磁盘与权限。
+func TestSpcPrepareFailureReasonDistinguishesMissingModule(t *testing.T) {
+	marker := "SPC_PREPARE_FAIL reason=backup_failed\n"
+	cases := []struct {
+		name string
+		diag string
+		want string
+	}{
+		{
+			"原件不存在",
+			"cp: cannot stat '/sf/x/spc/core.json': No such file or directory",
+			spcErrModuleMissing,
+		},
+		{
+			"备份目录不存在",
+			"cp: cannot create regular file '/sf/x/spc/core.json.bak': No such file or directory",
+			spcErrBackup,
+		},
+		{
+			"权限不足",
+			"cp: cannot stat '/sf/x/spc/core.json': Permission denied",
+			spcErrBackup,
+		},
+		{
+			"磁盘不足",
+			"cp: error writing '/sf/x/spc/core.json.bak': No space left on device",
+			spcErrBackup,
+		},
+	}
+	for _, tc := range cases {
+		if got := spcPrepareFailureReason(marker, tc.diag); got != tc.want {
+			t.Fatalf("%s：得到 %s，期望 %s", tc.name, got, tc.want)
+		}
+	}
+	// 已有更精确的标记（回读不一致）不得被 stderr 覆盖。
+	if got := spcPrepareFailureReason("SPC_PREPARE_FAIL reason=backup_mismatch\n", "cp: cannot stat x: No such file or directory"); got != "backup_mismatch" {
+		t.Fatalf("已有精确原因被覆盖：%s", got)
+	}
+}
+
 // TestSpcJoinDiagKeepsStderr stderr 与 stdout 必须合并进诊断文本，
 // 但目录解析只能用 stdout（"/bin/sh: ..." 会被误当成候选目录）。
 func TestSpcJoinDiagKeepsStderr(t *testing.T) {

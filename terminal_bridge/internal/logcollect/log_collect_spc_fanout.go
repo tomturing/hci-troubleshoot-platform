@@ -61,8 +61,11 @@ const (
 	spcErrUnreachable = "host_unreachable"
 	spcErrDirMissing  = "spc_dir_missing"
 	spcErrFileMissing = "spc_file_missing"
-	spcErrBackup      = "backup_failed"
-	spcErrWrite       = "write_failed"
+	// spcErrModuleMissing 是「节点上根本没有这个场景的原件」，与磁盘/权限导致的
+	// 备份失败必须分开：前者要用户换场景或升级 acli，后者才是环境问题。
+	spcErrModuleMissing = "spc_module_missing"
+	spcErrBackup        = "backup_failed"
+	spcErrWrite         = "write_failed"
 	// spcErrBusy 是主机键互斥的结论（B3）：另一条链路正在同一台上写/还原。
 	// 不是环境故障，稍后重试即可，映射到可重试的 LC-SPC-011。
 	spcErrBusy = "host_busy"
@@ -503,6 +506,24 @@ func buildSpcRestoreScript(target, backup string) string {
 		"%s || { printf 'SPC_RESTORE_FAIL reason=copy_failed\\n'; exit 0; }; "+
 		"cmp -s %s %s && printf 'SPC_RESTORE_OK\\n' || printf 'SPC_RESTORE_FAIL reason=verify_mismatch\\n'",
 		remote.ShellQuote(backup), buildSpcRestoreCommand(backup, target), remote.ShellQuote(backup), remote.ShellQuote(target))
+}
+
+// spcPrepareFailureReason 把 prepare 阶段失败区分为「节点缺这个场景」与一般备份失败。
+//
+// 对抗性审查：cp 的 stderr 有且只有 "cannot stat <target>: No such file or directory"
+// 能证明**原件**不存在；"cannot create regular file ... No such file or directory"
+// 是备份目录问题，"Permission denied" / "No space left" 是环境问题，都不能归到缺场景。
+// 归错会把用户引去查磁盘/权限（Q2026112600025：core.json 不存在被报成备份失败）。
+func spcPrepareFailureReason(markerOut, diag string) string {
+	reason := firstNonEmpty(spcMarkerField(markerOut, "reason"), spcErrBackup)
+	if reason != spcErrBackup {
+		return reason
+	}
+	lower := strings.ToLower(diag)
+	if strings.Contains(lower, "cannot stat") && strings.Contains(lower, "no such file or directory") {
+		return spcErrModuleMissing
+	}
+	return reason
 }
 
 // spcMarkerHas 判断输出里是否出现过指定标记行。
@@ -999,7 +1020,7 @@ func applySpcSlotToHost(b *session.Hub, ctx context.Context, s *sshx.SSHSession,
 		return state
 	}
 	if !spcMarkerHas(prepareOut, "SPC_PREPARE_OK") {
-		reason := firstNonEmpty(spcMarkerField(prepareOut, "reason"), spcErrBackup)
+		reason := spcPrepareFailureReason(prepareOut, SpcJoinDiag(prepareOut, prepareErrOut))
 		state.ErrorCode = reason
 		// 合并 stderr：宿主机缺命令、目录不可写等真实原因只在 stderr 里，
 		// 只取 stdout 会只剩一个 backup_failed，现场无法自证。
