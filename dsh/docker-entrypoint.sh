@@ -35,6 +35,39 @@ PROFILE_DIR="${DSH_HOME}/profiles/${DSH_PROFILE}"
 
 mkdir -p "$PROFILE_DIR"
 
+# 持久化 home 会保留上一次部署的 profile 依赖。镜像升级移除旧制品后，pnpm 解析
+# 已不存在的 file: 目标会在插件安装阶段直接失败并触发 CrashLoop，因此启动前
+# 清理失效依赖，并同步移除对应的 bundle 行。
+PROFILE_PACKAGE="${PROFILE_DIR}/package.json"
+if [ -f "$PROFILE_PACKAGE" ]; then
+    PROFILE_PACKAGE="$PROFILE_PACKAGE" node <<'NODE'
+const fs = require("fs");
+
+const file = process.env.PROFILE_PACKAGE;
+const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+const dependencies = manifest.dependencies || {};
+const bundles = manifest.dsh?.profile?.bundles;
+let changed = false;
+
+for (const [name, spec] of Object.entries(dependencies)) {
+  if (typeof spec !== "string" || !spec.startsWith("file:")) continue;
+  const target = spec.slice("file:".length);
+  if (fs.existsSync(target)) continue;
+  console.warn(`[dsh-entrypoint] 清理失效的 profile 依赖 ${name} -> ${spec}`);
+  delete dependencies[name];
+  if (Array.isArray(bundles)) {
+    const index = bundles.indexOf(name);
+    if (index >= 0) bundles.splice(index, 1);
+  }
+  changed = true;
+}
+
+if (changed) {
+  fs.writeFileSync(file, JSON.stringify(manifest, null, 2) + "\n");
+}
+NODE
+fi
+
 # 先安装 profile bundle，再写入用户 patch。`dsh plugin add` 会维护
 # package.json 的 dependencies 与 dsh.profile.bundles，避免只写 patch 却因
 # Node 无法解析插件包而在加载期失败。包名使用空格分隔，适配 scoped npm 包。
