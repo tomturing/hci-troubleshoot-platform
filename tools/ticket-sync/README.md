@@ -318,6 +318,7 @@ ready ──(保留期到期 / 磁盘水位淘汰)──► cleaned
 |---|---|---|
 | zip（`PK\x03\x04`） | `unzip -P` | 支持 ZipCrypto 密码 |
 | tar / tar.gz / tar.xz / tar.bz2（`ustar`@257、`1f8b`、`fd 37 7a 58 5a`、`BZh`） | GNU `tar` | 按魔数选 `-xf` / `-xzf` / `-xJf` / `-xjf` |
+| tar.zst / zst（`28 b5 2f fd`） | GNU `tar --use-compress-program=zstd` | HCI 节点每日滚动日志归档（如 `16.tar.zst`）；宿主必须装 `zstd`，缺失时保留原件并计入"无法解压" |
 | rar（`Rar!\x1a\x07`） | `unrar`，回退 `7z x` | 依赖 rarlab 二进制或 p7zip 的 RAR5 解码器 |
 | 7z（`7z\xbc\xaf\x27\x1c`） | `7z x` | — |
 
@@ -327,12 +328,13 @@ ready ──(保留期到期 / 磁盘水位淘汰)──► cleaned
 `archive-corrupt` 后进入永不成功的重试循环，12.2 GiB 卡死。现在扩展名与真实格式
 不一致会在日志里留一条 `归档扩展名与实际格式不一致` 告警，并按真实格式解压。
 
-三类"单点问题"不会升级为整包失败，但都会留下可追踪的告警：
+下列"单点问题"不会升级为整包失败，但都会留下可追踪的告警：
 
 | 情形 | 处理 | 可见字段 |
 |---|---|---|
 | 归档 < 64 字节（采集端写坏的占位包） | 删除并跳过 | 日志 `跳过占位=N` |
 | `.rar` 解不开（unrar 与 p7zip 都不支持该压缩方法） | 保留原件，继续其它归档 | 日志 `无法解压=N`、`job.message` |
+| `.tar.zst` / `.zst` 解不开（宿主未装 zstd，或压缩流内部不是 tar） | 保留原件，继续其它归档；日志含 `归档格式=zstd` 可确认已走新路径 | 日志 `无法解压=N`、`job.message` |
 | 自动任务：归档只含转储（vmcore / kdump / `.core` / `.dump` / `.dmp`），无日志清单 | 下载前识别（按魔数选列举器），直接跳过 | 错误码 `non-log-payload` |
 | 手动任务：同样的归档 | 不做内容判定，照常下载、解压、合并 | 无 `non-log-payload`，`job.message` 含"手动同步跳过内容判定"日志可查 |
 | 解压后产物里既无 `log_list.json`、`sp_*`，也没有任意层级的 `<节点目录>/sf/log/`（探测深度 ≤3、最多 200 个目录） | 自动任务仍发布并提示"可能仅含转储文件"；手动任务仍发布但不追加内容评价 | `job.message` |
@@ -582,9 +584,10 @@ bash tools/ticket-sync/scripts/unpack-log.sh -p '***' -d 8 -f Q2026102100147.zip
 ```
 
 密码优先级：`-p` > 环境变量 `TICKET_ARCHIVE_PASSWORD` > `~/.config/hci-ticket-sync/ticket-sync.env`。
-脚本与 `app/extractor.py` 同一套判定：按**魔数**识别格式（扩展名只兜底）、逐层展开嵌套包
-（内层解到同名兄弟目录）、解完补权限；内层归档解压成功后删除（`--keep-archives` 保留），
-**输入归档本身永不删除**。解压失败但已有产物时保留可读部分，退出码 `1`。
+脚本与 `app/extractor.py` 同一套判定：按**魔数**识别格式（含 `28 b5 2f fd` → tar.zst，扩展名只兜底）、
+逐层展开嵌套包（内层解到同名兄弟目录）、解完补权限；内层归档解压成功后删除（`--keep-archives` 保留），
+**输入归档本身永不删除**。宿主缺 `zstd` 时脚本启动即告警，遇到 tar.zst 保留原件；服务侧同样降级。
+解压失败但已有产物时保留可读部分，退出码 `1`。
 
 ### 3.6 测试
 
