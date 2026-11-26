@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -300,6 +301,130 @@ async def reconcile_relays_on_startup() -> None:
     await reconcile_relays_once()
 
 
+async def reconcile_p1_archives_once(
+    *,
+    lookback_hours: int = 2,
+    limit: int = 20,
+    timeout_seconds: float = 10.0,
+) -> int:
+    """服务端后台异步复核 P1 直传归档，避免 5888 分片合并滞后造成永久假失败。
+
+    现场根因（2026-11-25 Q2026112501591）：5.65 GB 直传 18:40:23 上传完 540 片后，
+    客户端仅在 4 秒后（18:40:27）查了一次 5888 得到 archive_missing；35 秒后
+    （18:41:02）5888 已完整归档，但用户关闭页面后无人复查，10 分钟窗口过期即永久标为失败。
+
+    两条硬边界：
+    1. 仅在核验通过（verified=True）时以 server_authoritative=True 写回 delivered；
+    2. 否定观测绝不刷新 p1_archive_check.checked_at，否则真实丢包任务（如 Q2026111900904）
+       的 10 分钟等待窗口会被反复续期，永远无法收敛到失败终态。
+    """
+    if database_manager is None:
+        return 0
+    tickets = get_p1_ticket_service()
+    if not tickets.enabled or not settings.LOG_COLLECT_RELAY_URL:
+        return 0
+
+    candidates: list[dict] = []
+    async for session in database_manager.get_session():
+        rows = await session.execute(
+            text(
+                """
+                SELECT task_id, case_id, archive_size, delivery_status,
+                       created_at, trace_id, detail
+                FROM log_collect_task
+                WHERE upload_mode = 'acli_direct'
+                  AND status = 'completed'
+                  AND delivery_status = 'none'
+                  AND created_at >= NOW() - (:lookback_hours * INTERVAL '1 hour')
+                  AND (detail -> 'p1_archive_check' ->> 'verified') IS DISTINCT FROM 'true'
+                  AND (
+                      detail -> 'p1_archive_check' IS NULL
+                      OR (detail -> 'p1_archive_check' ->> 'reason')
+                         IN ('archive_missing', 'stale_archive', 'archive_size_invalid')
+                  )
+                ORDER BY created_at DESC
+                LIMIT :limit
+                """
+            ),
+            {"lookback_hours": int(lookback_hours), "limit": int(limit)},
+        )
+        candidates = [dict(row) for row in rows.mappings().all()]
+        break
+
+    if not candidates:
+        return 0
+
+    client = SangforRelayClient(
+        settings.LOG_COLLECT_RELAY_URL,
+        token=settings.LOG_COLLECT_RELAY_TOKEN,
+    )
+    verified_count = 0
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=5.0)) as http:
+        for row in candidates:
+            task_id = row["task_id"]
+            case_id = str(row["case_id"])
+            trace_id = row.get("trace_id") or ""
+            raw_detail = row.get("detail")
+            detail = raw_detail if isinstance(raw_detail, dict) else {}
+            prev_check = detail.get("p1_archive_check") if isinstance(detail.get("p1_archive_check"), dict) else {}
+            expected_size = row.get("archive_size")
+            if expected_size is None and isinstance(prev_check.get("expected_size"), int):
+                expected_size = prev_check["expected_size"]
+
+            filename = archive_filename_for(case_id)
+            ticket = tickets.issue(case_id, filename)
+            try:
+                archive = await client.archive_status(http, filename, ticket=ticket)
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "P1 后台归档复核查询失败 task=%s case=%s trace_id=%s error=%s",
+                    task_id,
+                    case_id,
+                    trace_id,
+                    exc,
+                )
+                continue
+
+            task_stub = SimpleNamespace(
+                created_at=row["created_at"],
+                delivery_status=row["delivery_status"],
+            )
+            verified, reason, archived_size, _archived_at = _judge_p1_archive(
+                task_stub,
+                archive,
+                expected_size,
+            )
+            if not verified:
+                # 否定结论不刷 checked_at，保证真实无包任务按原窗口正常过期。
+                continue
+
+            checked_at = datetime.now(UTC)
+            check = {
+                "verified": True,
+                "reason": reason,
+                "filename": filename,
+                "stored_name": archive.get("stored_name"),
+                "expected_size": expected_size,
+                "archived_size": archived_size,
+                "checked_at": checked_at.isoformat(),
+                "source": "background_reconcile",
+            }
+            patch = _p1_verify_patch(task_stub, verified=True, check=check, checked_at=checked_at)
+            async for session in database_manager.get_session():
+                service = LogCollectService(LogCollectTaskRepository(session))
+                await service.update_task(task_id, patch, server_authoritative=True)
+                break
+            verified_count += 1
+            logger.info(
+                "P1 后台归档复核转正 task=%s case=%s archived=%s trace_id=%s",
+                task_id,
+                case_id,
+                archived_size,
+                trace_id,
+            )
+    return verified_count
+
+
 async def reconcile_relays_loop(*, interval: float = 60.0) -> None:
     """周期接管：只在启动跑一次是不够的。
 
@@ -312,6 +437,10 @@ async def reconcile_relays_loop(*, interval: float = 60.0) -> None:
     """
     while True:
         await reconcile_relays_once()
+        try:
+            await reconcile_p1_archives_once()
+        except Exception:  # noqa: BLE001 - P1 后台复核失败绝不能中断代传循环
+            logger.exception("P1 后台归档复核异常")
         await asyncio.sleep(interval)
 
 

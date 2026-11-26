@@ -265,7 +265,6 @@ async def put_network_probe(
                     COALESCE((SELECT jsonb_agg(to_jsonb(latest)) FROM latest), '[]'::jsonb)),
                 updated_at = CURRENT_TIMESTAMP
             WHERE task_id = :task_id
-              AND (detail ->> 'artifact_quality' IS DISTINCT FROM 'ok' OR :quality = 'ok')
             """
         ),
         {"task_id": str(task_id)},

@@ -207,7 +207,7 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		// 带着缺插件的节点发起采集，只会把「安装不完整」包装成下游的
 		// LC-SPC-003 / LC-EXEC-xxx，把排查引向权限与磁盘。这里先查清楚。
 		preflightCfg, _ := EvidenceFor(msg.ExecID)
-		if missing, checked := preflightLogCollectPlugin(ctx, s, preflightCfg); len(missing) > 0 {
+		if missing, checked := preflightLogCollectPlugin(ctx, s, preflightCfg, msg.IPs); len(missing) > 0 {
 			reportFailureSnapshot(ctx, s, preflightCfg, "plugin_incomplete")
 			rejectConfigWithCode("plugin_incomplete", logcontract.ErrInstallPluginIncomplete,
 				"节点内置插件不完整，继续采集必然失败："+pluginFailureDetail(missing),
@@ -355,11 +355,23 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 			status = "error"
 			code = logcontract.ExecErrorCode(err, exitCode)
 			failure = firstNonEmpty(failure, logCollectFailureLine(output))
-			// acli 明确回了「收集专项 X 不存在」：换成专属码，
-			// 让用户看到的是"专项/版本不匹配"而不是泛化的"命令返回非零"。
-			if logCollectModuleMissing(output) {
+			// 优先按节点明确业务拒绝文案映射专属码（磁盘不足/节点离线/日期越界/专项缺失），
+			// 避免把明确的可执行根因压成泛化 LC-EXEC-003。
+			if detCode, detLine, matched := detectLogCollectCreateOutputError(output); matched {
+				code = detCode
+				failure = firstNonEmpty(detLine, failure)
+			} else if logCollectModuleMissing(output) {
 				code = logcontract.ErrPlugModuleMissing
 			}
+		} else if detCode, detLine, matched := detectLogCollectCreateOutputError(output); matched {
+			// 第一性原理：acli create 存在「打印明确拒绝原因却返回 exit_code=0」的缺陷
+			// （2026-11-25 Q2026112500790：磁盘可用空间 5.72GB 小于 6GB 但退出码为 0）。
+			// 若放行到 confirmLogCollectCreate，会读到上一轮遗留的 cluster_progress.json
+			// 并误拉旧包报 LC-TRANSFER-011，彻底掩盖真因。必须在此立刻拦截并归因。
+			status = "error"
+			code = detCode
+			failure = detLine
+			reportFailureSnapshot(ctx, s, preflightCfg, "create_output_"+detCode)
 		} else {
 			// 第一性原理：退出码不是"任务已建立"的证据。必须正向确认一次。
 			ack := confirmLogCollectCreate(ctx, logCollectCreateAckInterval, func(ackCtx context.Context) (string, int, error) {
