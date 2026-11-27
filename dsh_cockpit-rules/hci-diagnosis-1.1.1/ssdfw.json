@@ -1,0 +1,156 @@
+[
+      {
+        "厂商": "Intel",
+        "问题固件": "XCV10132",
+        "正常固件": "XCV10151",
+        "ALERT": "YJ20240222003",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "Intel",
+        "问题固件": "XCV10140",
+        "正常固件": "XCV10151",
+        "ALERT": "YJ20240222003",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "Intel",
+        "问题固件": "9CV10450",
+        "正常固件": "9CV10490",
+        "ALERT": "",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "SAMSUNG",
+        "问题固件": "JXTE004Q",
+        "正常固件": "JXTE404Q",
+        "ALERT": "YJ20240529001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "SAMSUNG",
+        "问题固件": "JXTE104Q",
+        "正常固件": "JXTE404Q",
+        "ALERT": "YJ20240529001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "SAMSUNG",
+        "问题固件": "JXTE204Q",
+        "正常固件": "JXTE404Q",
+        "ALERT": "YJ20240529001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "SAMSUNG",
+        "问题固件": "JXTC104Q",
+        "正常固件": "JXTC604Q",
+        "ALERT": "YJ20240529001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "SAMSUNG",
+        "问题固件": "JXTC404Q",
+        "正常固件": "JXTC604Q",
+        "ALERT": "YJ20240529001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "VKGNW984",
+        "正常固件": "VKGNW9U0",
+        "ALERT": "YJ20240425002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "VKGNW460",
+        "正常固件": "VKGNW9U0",
+        "ALERT": "YJ20240425002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "V8GNW980",
+        "正常固件": "V8GNW9U0",
+        "ALERT": "YJ20240425002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "VXGNW980",
+        "正常固件": "VXGNW9U0",
+        "ALERT": "YJ20240425002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "LEGNT925",
+        "正常固件": "LEGNT9Y0",
+        "ALERT": "YJ20240425002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "LEBDT6B0",
+        "正常固件": "LEBDTB11",
+        "ALERT": "YJ20240703003",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "V1GNW9F5",
+        "正常固件": "V1GNWAP7",
+        "ALERT": "YJ20250408001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "V1GNWNFF",
+        "正常固件": "V1GNWAP7",
+        "ALERT": "YJ20250408001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "PCGNW680",
+        "正常固件": "PCGNW870",
+        "ALERT": "无预警",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "V2GNWRN9",
+        "正常固件": "V2GNWAPN",
+        "ALERT": "YJ20261010002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "西数",
+        "问题固件": "V2GNWAPH",
+        "正常固件": "V2GNWAPN",
+        "ALERT": "YJ20261010002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "INTEL",
+        "问题固件": "9CV10410",
+        "正常固件": "9CV10490",
+        "ALERT": "YJ20250411002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "INTEL",
+        "问题固件": "9CV10450",
+        "正常固件": "9CV10490",
+        "ALERT": "YJ20250411002",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      },
+      {
+        "厂商": "INTEL",
+        "问题固件": "7CV10120",
+        "正常固件": "7CV10141",
+        "ALERT": "YJ20250904001",
+        "URL": "https://support.sangfor.com.cn/productDocument/read?product_id=156&version_id=867&category_id=332699"
+      }
+]
