@@ -67,8 +67,12 @@ _GRADE_RANK = {"unknown": 0, "good": 1, "fair": 2, "poor": 3}
 # 归档核验的「结果未知」窗口：5888 收完包才发布规范归档名，一次查不到不是失败。
 # stale_archive 同属未知档：新包上传期间规范名仍挂旧包（Q2026111700614，4.95 GB
 # 直传被核验成"旧包体积不符"），窗口内是竞态、超窗才归因 5888 未发布（LC-5888-004）。
-# size_mismatch 保持确定性否定：包在任务窗口内发布却偏小，只可能是截断。
-_WAITING_ARCHIVE_REASONS = frozenset({"archive_missing", "archive_size_invalid", "stale_archive"})
+# archive_size_untrusted 同属未知档：偏小只能说明期望值可能来自上一批次残留包，
+# 不能证明本次包被截断（Q2026112700769），必须走待核对而不是红卡。
+# size_mismatch 保持确定性否定：只有 confirmed 体积才允许归入这一类。
+_WAITING_ARCHIVE_REASONS = frozenset(
+    {"archive_missing", "archive_size_invalid", "stale_archive", "archive_size_untrusted"}
+)
 _ARCHIVE_MISMATCH_REASONS = frozenset({"size_mismatch"})
 
 # 顺序固定：同一份数据在任何入口都必须渲染出同一个顺序。

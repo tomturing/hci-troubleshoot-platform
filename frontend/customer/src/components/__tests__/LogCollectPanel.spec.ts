@@ -3794,6 +3794,98 @@ it('交付 queued 且平台已收到分片时，显示真实片数与停滞提�
    *
    * 本用例锁住 ②：过程中量到的值必须穿过时间写进完成记录。
    */
+  it('同工单重收时，最后一次观测的体积覆盖早期残留旧包，不按旧值提交（Q2026112700769）', async () => {
+    mockStore.sshConnectionState = 'connected'
+    mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }
+    const live = taskFixture({
+      task_id: 'task-archive-residual',
+      status: 'collecting',
+      progress: 85,
+      finished_at: null,
+      archive_path: null,
+      upload_mode: 'acli_direct',
+      ips: ['172.28.25.1'],
+      detail: {},
+    })
+    vi.mocked(logCollectApi.listTasks).mockResolvedValue({ total: 1, items: [live] })
+    vi.mocked(logCollectApi.getTask).mockResolvedValue(live)
+    vi.mocked(logCollectApi.patchTask).mockReset()
+    vi.mocked(logCollectApi.patchTask).mockResolvedValue({
+      ...live,
+      status: 'completed',
+      progress: 100,
+      archive_size: 152850599,
+    })
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    await flushPromises()
+
+    const refresh = () => wrapper.findAll('button').find((item) => item.text() === '刷新进度')
+    const pushProgress = (logData: Record<string, unknown>) =>
+      fakeSocket.onmessage?.({
+        data: JSON.stringify({ type: 'log_collect_result', log_action: 'progress', status: 'ok', log_data: logData }),
+      })
+
+    // 1) 采集刚开始：固定路径上还是上一批次取消任务残留的旧包（4.17 GiB）
+    await refresh()!.trigger('click')
+    await flushPromises()
+    pushProgress({
+      status: '收集任务进行中！',
+      percent: 85,
+      done: 1,
+      total: 1,
+      node_state: 'running',
+      archive_path: '',
+      archive_size: 4478420847,
+      hosts: [],
+      raw: '状态：收集任务进行中！',
+    })
+    await flushPromises()
+
+    // 2) 新包生成：只剩 146 MiB，必须覆盖旧包体积
+    await refresh()!.trigger('click')
+    await flushPromises()
+    pushProgress({
+      status: '收集任务进行中！',
+      percent: 85,
+      done: 1,
+      total: 1,
+      node_state: 'running',
+      archive_path: '',
+      archive_size: 152850599,
+      upload_state: '发送中',
+      hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+      raw: '状态：收集任务进行中！',
+    })
+    await flushPromises()
+
+    // 3) 完成：P1 上传成功、插件已自删包，这次采样量不到大小
+    await refresh()!.trigger('click')
+    await flushPromises()
+    pushProgress({
+      status: '收集任务已完成！',
+      percent: 100,
+      done: 1,
+      total: 1,
+      node_state: 'completed',
+      archive_path: '/sf/data/local/acli/tmp/data/log_collect/Q2026112700769.zip',
+      upload_state: '发送成功',
+      hosts: [{ ip: '172.28.25.1', status: '收集完成', percent: 100 }],
+      raw: '状态：收集任务已完成！\n归档状态：发送成功',
+    })
+    await flushPromises()
+
+    const completed = vi
+      .mocked(logCollectApi.patchTask)
+      .mock.calls.filter(([, body]: any) => patchStatus(body) === 'completed')
+    expect(completed).toHaveLength(1)
+    // 关键：提交的是最后观测到的 146 MiB，而不是早期残留旧包的 4.17 GiB
+    expect((completed[0][1] as any).node_observed.archive_size).toBe(152850599)
+    wrapper.unmount()
+  })
+
   it('过程中量到过压缩包大小时，完成 PATCH 必须带上它（而不是完成瞬间的空值）', async () => {
     mockStore.sshConnectionState = 'connected'
     mockStore.sshCurrentConfig = { host: '172.28.25.1', port: 22, username: 'root' }

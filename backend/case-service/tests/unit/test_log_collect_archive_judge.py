@@ -66,3 +66,16 @@ def test_fresh_archive_smaller_than_record_is_truncation():
         90,
     )
     assert (ok, reason) == (False, "size_mismatch")
+
+
+def test_untrusted_expected_size_is_not_truncation():
+    """Q2026112700769：同工单换模块重收，固定路径上残留上一批次的旧包（4.17 GiB），
+    新包只有 146 MiB。期望值来自采集中的观测、无法证明属于本次任务时，
+    体积偏小只能待核对，不能判成截断红卡。"""
+    ok, reason, size, _ = judge_archive(
+        task_with_created(),
+        {"found": True, "size": 152_850_599, "mtime": (NOW - timedelta(minutes=1)).timestamp()},
+        4_478_420_847,
+        expected_size_trustworthy=False,
+    )
+    assert (ok, reason, size) == (False, "archive_size_untrusted", 152_850_599)

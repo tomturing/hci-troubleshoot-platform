@@ -645,9 +645,11 @@ export const logCollectApi = {
   async verifyP1Archive(
     taskId: string,
     archiveSize?: number | null,
+    archiveSizeBasis?: 'observed' | 'confirmed' | null,
   ): Promise<P1ArchiveVerifyResult> {
     const { data } = await client.post(`/log-collect/tasks/${taskId}/verify-archive`, {
       archive_size: archiveSize ?? null,
+      archive_size_basis: archiveSizeBasis ?? null,
     })
     return data
   },

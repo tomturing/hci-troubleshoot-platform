@@ -268,7 +268,7 @@ export interface DeliveryEvidenceTask {
  */
 export interface ArchiveCheckView {
   verified?: boolean
-  /** archive_missing / size_mismatch / stale_archive / archive_size_invalid / verified */
+  /** archive_missing / size_mismatch / stale_archive / archive_size_invalid / archive_size_untrusted / verified */
   reason?: string | null
   checked_at?: string | null
   expected_size?: number | null
@@ -310,6 +310,9 @@ export function describeArchiveCheck(check: ArchiveCheckView | null | undefined)
       return `${head}：日志服务器上暂未查到该工单的归档件`
     case 'size_mismatch':
       return `${head}：归档件体积 ${formatCheckSize(check.archived_size)}，小于平台记录的 ${formatCheckSize(check.expected_size)}`
+    case 'archive_size_untrusted':
+      // 期望值本身可能来自上一批次残留包，不能据此断言截断，只陈述两个观测。
+      return `${head}：归档件体积 ${formatCheckSize(check.archived_size)}，小于平台记录的 ${formatCheckSize(check.expected_size)}；记录值可能含同工单上一批次残留包，请人工核对`
     case 'stale_archive':
       return `${head}：日志服务器上只有采集之前就存在的同名包，不能算本次结果（新包可能仍在上传）`
     case 'archive_size_invalid':

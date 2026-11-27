@@ -20,6 +20,8 @@ def judge_archive(
     task: Any,
     archive: Mapping[str, Any],
     expected_size: int | None,
+    *,
+    expected_size_trustworthy: bool = True,
 ) -> tuple[bool, str, int | None, datetime | None]:
     """返回 (是否确认落地, 原因码, 实际大小, 归档时间)。
 
@@ -30,8 +32,12 @@ def judge_archive(
       所以"旧包 + 体积不够"首先说明的是"新包还没发布"，不是"本次包被截断"
       （2026-11-17 Q2026111700614：4.95 GB 新包上传中，核验读到 14:31 的 314 MB
       旧包，被旧顺序误判 size_mismatch，客户看到红卡时包正在落地）；
-    - ``size_mismatch``：包在任务窗口内发布但体积小于记录值（截断只可能变小），
+    - ``size_mismatch``：包在任务窗口内发布但体积小于**可信**记录值（截断只可能变小），
       确定性否定；
+    - ``archive_size_untrusted``：体积小于记录值，但记录值来自采集过程中的观测，
+      无法证明属于本次任务。同工单换模块重收时，固定路径上残留的上一批次包会被
+      stat 成本次产物（Q2026112700769：旧包 4.17 GiB 压住新包 146 MiB）；
+      这类结论只作待核对，不能按截断报红卡；
     - ``verified``：存在、体积够、时间对得上。
 
     体积不要求相等：expected_size 可能是插件自删前的峰值观测，强求相等会把完整包
@@ -59,6 +65,11 @@ def judge_archive(
             return False, "stale_archive", archived_size, archived_at
 
     if expected_size is not None and archived_size < expected_size:
+        # 只有「确认体积」才能证明落盘包被截断；采集过程中的观测可能来自同工单
+        # 上一批次残留在固定路径上的旧包，直接判截断会把完整包误报成红卡。
+        # 此时降级为待核对（archive_size_untrusted），既不红卡也不写 delivered。
+        if not expected_size_trustworthy:
+            return False, "archive_size_untrusted", archived_size, archived_at
         return False, "size_mismatch", archived_size, archived_at
 
     return True, "verified", archived_size, archived_at

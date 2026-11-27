@@ -1504,7 +1504,14 @@ async function reverifyArchive() {
   if (!task || reverifyingArchive.value) return
   reverifyingArchive.value = true
   try {
-    const verdict = await logCollectApi.verifyP1Archive(task.task_id, task.archive_size ?? null)
+    // 手动重验时任务上已落库的 archive_size 来源不可考（可能是采集早期对固定路径
+    // 的 stat，读到的是上一批次残留包），只能按 observed 提交：偏小只做待核对，
+    // 不按确定性截断报红卡（Q2026112700769）。
+    const verdict = await logCollectApi.verifyP1Archive(
+      task.task_id,
+      task.archive_size ?? null,
+      'observed',
+    )
     const latest = await logCollectApi.getTask(task.task_id)
     const index = historyTasks.value.findIndex((item) => item.task_id === latest.task_id)
     if (index >= 0) historyTasks.value.splice(index, 1, latest)
@@ -3986,14 +3993,20 @@ function applyNodeStage(snapshot: ProgressSnapshot) {
 }
 
 /**
- * 记录一次采样到的压缩包字节数（只保留峰值，见 observedArchiveSize 的说明）。
+ * 记录一次采样到的压缩包字节数（后到覆盖先到，不取峰值）。
+ *
+ * 取峰值会在「同工单换模块重收」时出错：取消的上一批次包仍留在固定路径上，
+ * 新任务刚开始 stat 到的是旧包（可能远大于新包），峰值一旦抬高就再也降不下来，
+ * 最后把旧包体积当成新任务的期望值（Q2026112700769：旧包 4.17 GiB 压住新包 146 MiB）。
+ * 新包总是最后生成，因此最后一次非零观测才属于本次产物；完成态量不到包时其值
+ * 为 0，会被下面的 size <= 0 跳过，不会把已知值清空。
  *
  * 所有拿到节点快照的入口都要走这里：打开面板对账、自动刷新、手动刷新、主流程轮询。
  * 漏掉任何一个入口，都会出现"某条路径下能看到大小、另一条路径下看不到"的随机感。
  */
 function rememberObservedArchiveSize(snapshot: ProgressSnapshot | null) {
   const size = Number(snapshot?.archive_size ?? 0)
-  if (!Number.isFinite(size) || size <= observedArchiveSize.value) return
+  if (!Number.isFinite(size) || size <= 0) return
   observedArchiveSize.value = size
 }
 
@@ -4126,10 +4139,13 @@ async function syncNodeState(
       (currentTask.value?.upload_mode === 'acli_direct' || Boolean(currentTask.value?.remote_url)) &&
       nodeState === 'completed' &&
       !platformDelivered
+    // 对账路径拿不到上传结束那一刻的快照，只能把体积按 observed 提交：
+    // 偏小只做待核对，避免同工单重收时残留旧包的体积把新包判成截断。
     const archiveVerified: ArchiveVerification = isP1Completed
       ? await verifyArchiveEvidence(
           currentTask.value!.task_id,
           observedArchiveSize.value || currentTask.value!.archive_size || null,
+          'observed',
         )
       : 'none'
     const waitMs = isP1Completed ? deliveryWaitElapsed(currentTask.value) : 0
@@ -4873,9 +4889,13 @@ async function pollUntilCollected(
  * 三态返回，绝不能把"接口不可用 / 抛错"当成"核验通过"——旧后端与前端是两个独立发布物，
  * 用 try/catch 而不是 `.catch()`，因为方法根本不存在时同步 TypeError 不会进 Promise 链。
  */
-async function verifyArchiveEvidence(taskId: string, size: number | null): Promise<ArchiveVerification> {
+async function verifyArchiveEvidence(
+  taskId: string,
+  size: number | null,
+  basis: 'observed' | 'confirmed',
+): Promise<ArchiveVerification> {
   try {
-    const verdict = await logCollectApi.verifyP1Archive(taskId, size)
+    const verdict = await logCollectApi.verifyP1Archive(taskId, size, basis)
     if (verdict?.verified === true) return 'delivered'
     if (verdict?.verified === false) return 'failed'
   } catch {
@@ -4894,7 +4914,11 @@ async function finishP1(task: LogCollectTask, snapshot: ProgressSnapshot | null)
     throw new Error(`日志服务器上传失败：${uploadState}，可改用 P2 中转`)
   }
   const archiveSize = snapshot?.archive_size || observedArchiveSize.value || task.archive_size || null
-  const evidence = await verifyArchiveEvidence(task.task_id, archiveSize)
+  // 上传成功时拿到的体积才是本次产物的确认值；其余情况只是采集过程中的观测，
+  // 可能是同工单上一批次残留在固定路径上的旧包（Q2026112700769），只做待核对。
+  const archiveSizeBasis =
+    uploadPhase === 'delivered' && archiveSize ? 'confirmed' : 'observed'
+  const evidence = await verifyArchiveEvidence(task.task_id, archiveSize, archiveSizeBasis)
   const nodeSuccess = uploadPhase === 'delivered'
   // 交付结论只有两个来源，且都必须经服务端落库：
   //   - 落盘侧核验通过（最强，与节点态无关）→ verify-archive 内部已写 delivered；
