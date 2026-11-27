@@ -24,8 +24,16 @@ const {
   mockRecordingFlag,
   FakeTerminal,
   xtermState,
+  fitAddonState,
 } = vi.hoisted(() => {
   const xtermState: { latest: any } = { latest: null }
+  const fitAddonState: {
+    proposeResult: { cols: number; rows: number } | undefined
+    fitCalls: number
+  } = {
+    proposeResult: { cols: 110, rows: 30 },
+    fitCalls: 0,
+  }
 
   class HoistedFakeTerminal {
     rows = 30
@@ -106,6 +114,7 @@ const {
     mockRecordingFlag: { value: true },
     FakeTerminal: HoistedFakeTerminal,
     xtermState,
+    fitAddonState,
   }
 })
 
@@ -136,7 +145,14 @@ vi.mock('xterm', () => ({
 
 vi.mock('xterm-addon-fit', () => ({
   FitAddon: class {
-    fit = vi.fn()
+    proposeDimensions = vi.fn(() => fitAddonState.proposeResult)
+    fit = vi.fn(() => {
+      fitAddonState.fitCalls++
+      if (xtermState.latest && fitAddonState.proposeResult) {
+        xtermState.latest.cols = fitAddonState.proposeResult.cols
+        xtermState.latest.rows = fitAddonState.proposeResult.rows
+      }
+    })
   },
 }))
 
@@ -215,6 +231,8 @@ async function flushAnimationFrames() {
 describe('TerminalPanel 模式二（实时交互终端）', () => {
   beforeEach(() => {
     xtermState.latest = null
+    fitAddonState.proposeResult = { cols: 110, rows: 30 }
+    fitAddonState.fitCalls = 0
     mockRecordingFlag.value = true
     mockRecordInput.mockClear()
     mockRecordOutput.mockClear()
@@ -420,6 +438,45 @@ describe('TerminalPanel 模式二（实时交互终端）', () => {
       'cd /sf/log\nls -la',
     )
 
+    wrapper.unmount()
+  })
+
+  it('防回归：面板折叠/展开动画初期容器极窄（cols=2）时拒绝 fit 与 ssh_resize，防止提示符拆成 2 列竖排', async () => {
+    mockStore.terminalMode = 'interactive'
+    // 模拟 PanelShell 展开过渡初期 FitAddon 算出的极窄 2 列尺寸
+    fitAddonState.proposeResult = { cols: 2, rows: 24 }
+
+    const wrapper = mountPanel()
+    await flushAnimationFrames()
+
+    expect(fitAddonState.fitCalls).toBe(0)
+    expect(mockStore.sendSSHResize).not.toHaveBeenCalled()
+    // 保持安全的初始默认列数（100x30），不压成 2 列
+    expect(xtermState.latest!.options.cols).toBe(100)
+    expect(xtermState.latest!.options.rows).toBe(30)
+
+    // 模拟展开动画完成、切回终端可见态且尺寸恢复正常（140x36）
+    fitAddonState.proposeResult = { cols: 140, rows: 36 }
+    mockStore.isRightPanelOpen = false
+    await nextTick()
+    mockStore.isRightPanelOpen = true
+    await flushAnimationFrames()
+
+    expect(fitAddonState.fitCalls).toBeGreaterThanOrEqual(1)
+    expect(mockStore.sendSSHResize).toHaveBeenCalledWith(140, 36)
+    wrapper.unmount()
+  })
+
+  it('防回归：处于文件下载页签（终端 v-show 隐藏）时不执行 fit 也不发 ssh_resize', async () => {
+    mockStore.terminalMode = 'interactive'
+    mockStore.rightPanelTab = 'sftp'
+    fitAddonState.proposeResult = { cols: 120, rows: 32 }
+
+    const wrapper = mountPanel()
+    await flushAnimationFrames()
+
+    expect(fitAddonState.fitCalls).toBe(0)
+    expect(mockStore.sendSSHResize).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

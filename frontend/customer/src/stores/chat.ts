@@ -3750,13 +3750,14 @@ export const useChatStore = defineStore('chat', () => {
 
   /**
    * 同步前端 xterm 窗口列数与行数到 terminal_bridge（SIGWINCH）。
-   * 相同尺寸自动去重，避免拖拽抽屉时产生高频冗余消息。
+   * 相同尺寸自动去重，并拦截面板折叠/过渡动画初期产生的极窄尺寸（cols<20 或 rows<4），
+   * 防止把远端 PTY 缩成 2 列宽导致提示符拆成 2 字符竖排。
    */
   function sendSSHResize(cols: number, rows: number) {
     if (!sshWebSocket.value || sshConnectionState.value !== 'connected') return
     const safeCols = Math.round(cols)
     const safeRows = Math.round(rows)
-    if (safeCols < 2 || safeCols > 1000 || safeRows < 2 || safeRows > 500) return
+    if (safeCols < 20 || safeCols > 1000 || safeRows < 4 || safeRows > 500) return
     if (lastSentPtySize && lastSentPtySize.cols === safeCols && lastSentPtySize.rows === safeRows) {
       return
     }
