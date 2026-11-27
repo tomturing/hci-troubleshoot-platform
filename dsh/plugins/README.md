@@ -48,11 +48,11 @@ dsh_cockpit-rules/
 
 | 实例 | 制品 | 用途 |
 |---|---:|---|
-| v1 / `DSH_PLUGIN_PACKAGES` | `deepseek-harness-wecom-0.1.36.tgz` | 普通 DSH 的企业微信通道及 Web 工单模板识别 |
+| v1 / `DSH_PLUGIN_PACKAGES` | `deepseek-harness-wecom-0.1.37.tgz` | 普通 DSH 的企业微信通道（完整 userid）及 Web 工单模板识别 |
 | v1 / `DSH_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 旧 DSH 的诊断输出 IP 脱敏插件 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `wecom-0.1.35.tgz` | 新 DSH 的企业微信通道 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.26.tgz` | 会话运营台账、规则包与 Web 首任务工单绑定 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.8.tgz` | WeKnora HCI 诊断 Preset（根 Agent + 并行子 Agent） |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `wecom-0.1.36.tgz` | 新 DSH 的企业微信通道（完整 userid） |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.27.tgz` | 会话运营台账、规则包与 Web 首任务工单绑定 |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.10.tgz` | WeKnora HCI 诊断 Preset（根 Agent + 并行子 Agent） |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 诊断输出 IP 脱敏插件 |
 
 这些 tgz 是构建上下文中的不可变本地制品；部署 values 必须使用精确文件名，禁止在
@@ -62,18 +62,24 @@ dsh_cockpit-rules/
 > 旧 DSH 实例（v1）的 IP 脱敏自 0.1.4 起与离线实例共用 `ip-redactor-0.1.4.tgz`，
 > 不再使用早期的 `dsh-ip-redactor-0.1.3.tgz`。
 
-> `hci-weknora-diagnosis-bundle-0.2.8.tgz` 是标准 npm pack 制品（`package/` 结构），
+> `hci-weknora-diagnosis-bundle-0.2.10.tgz` 是标准 npm pack 制品（`package/` 结构），
 > 可直接由 `DSH_PLUGIN_PACKAGES` 安装；其依赖 `@wxg-prc-cpg/dsh-weknora@0.1.0`
 > 已随 `bundleDependencies` 打进 tgz，安装时不再从 registry 解析。不要把上游发布的「离线整包」
 > （`hci-weknora-diagnosis-offline-*`，解包后是目录里再嵌 tgz）放进本目录：它没有
 > 包根 `package.json`，`dsh plugin add` 会装成无 manifest 的 `0.0.0` 合成包后失败。
 >
-> 0.2.8 在 Preset 内启用 `workflow-ptc`（`provider: fork`、3 并发 / 20 总数）与
+> 0.2.10 在 Preset 内启用 `workflow-ptc`（`provider: fork`、3 并发 / 20 总数）与
 > `tool-workflow`（`enableRunInBackground: false`）。自 0.2.6 起 Bundle 不再使用 Harness 的
 > `taskDrivenUse` 配置字段，而是在 `agent/created` 时用同名 `tool:workflow` 系统提示段覆盖
 > 通用用法，因此镜像固定的 `@deepseek-ai/dsh@0.2.1-rc.3` 即可满足（`agent/created` 与
-> `getSectionOrder('TOOL_WORKFLOW')` 均已存在）。Web 新会话的工单绑定依赖 `session-bi-0.1.26`，
-> 升级 Bundle 时必须同步升级 Session BI。
+> `getSectionOrder('TOOL_WORKFLOW')` 均已存在）。0.2.10 兼容知识库正文中一层或多层 Markdown
+> 下划线转义，并要求报告中任何独立出现的原始案例 ID 都渲染为原文链接。
+> Web 新会话的工单绑定依赖 `session-bi-0.1.27`，升级 Bundle 时必须同步升级 Session BI。
+
+> `wecom-0.1.36.tgz` 与 `deepseek-harness-wecom-0.1.37.tgz` 只改了企微入站消息头：
+> `userid` 不再截断为前 8 位（原先超过 8 位只显示前 8 位，前缀相同的不同用户会被混淆），
+> 其余 `dist` 与上一版一致。两者是**不同的包**（v2 名 `wecom`、v1 名 `deepseek-harness-wecom`），
+> 不能装进同一个 profile。
 
 只有尚未进入 `dsh_plugins` 正式构建流程的临时本地 bundle，才放在本目录的子目录，例如：
 
