@@ -1,0 +1,1255 @@
+[
+    {
+      "Error Condition": "No Sense",
+      "Sense key": 0,
+      "Sense code": 0,
+      "Sense qualifier": 0,
+      "description": "No error"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 0,
+      "Sense code": "5D",
+      "Sense qualifier": 0,
+      "description": "No sense – PFA threshold reached"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 1,
+      "Sense qualifier": 0,
+      "description": "Recovered Write error – no index"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 2,
+      "Sense qualifier": 0,
+      "description": "Recovered no seek completion"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 3,
+      "Sense qualifier": 0,
+      "description": "Recovered Write error – write fault"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 9,
+      "Sense qualifier": 0,
+      "description": "Track following error"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "0B",
+      "Sense qualifier": 1,
+      "description": "Temperature warning"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "0C",
+      "Sense qualifier": 1,
+      "description": "Recovered Write error with auto-realloc – reallocated"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "0C",
+      "Sense qualifier": 3,
+      "description": "Recovered Write error – recommend reassign"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 12,
+      "Sense qualifier": 1,
+      "description": "Recovered data without ECC using prev logical block ID"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 12,
+      "Sense qualifier": 2,
+      "description": "Recovered data with ECC using prev logical block ID"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 14,
+      "Sense qualifier": 1,
+      "description": "Recovered Record Not Found"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 16,
+      "Sense qualifier": 0,
+      "description": "Recovered Write error – Data Sync Mark Error"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 16,
+      "Sense qualifier": 1,
+      "description": "Recovered Write error – Data Sync Error – data rewritten"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 16,
+      "Sense qualifier": 2,
+      "description": "Recovered Write error – Data Sync Error – recommend rewrite"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 16,
+      "Sense qualifier": 3,
+      "description": "Recovered Write error – Data Sync Error – data auto-reallocated"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 16,
+      "Sense qualifier": 4,
+      "description": "Recovered Write error – Data Sync Error – recommend reassignment"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 0,
+      "description": "Recovered data with no error correction applied"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 1,
+      "description": "Recovered Read error – with retries"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 2,
+      "description": "Recovered data using positive offset"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 3,
+      "description": "Recovered data using negative offset"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 5,
+      "description": "Recovered data using previous logical block ID"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 6,
+      "description": "Recovered Read error – without ECC, auto reallocated"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 7,
+      "description": "Recovered Read error – without ECC, recommend reassign"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 8,
+      "description": "Recovered Read error – without ECC, recommend rewrite"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 17,
+      "Sense qualifier": 9,
+      "description": "Recovered Read error – without ECC, data rewritten"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 18,
+      "Sense qualifier": 0,
+      "description": "Recovered Read error – with ECC"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 18,
+      "Sense qualifier": 1,
+      "description": "Recovered data with ECC and retries"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 18,
+      "Sense qualifier": 2,
+      "description": "Recovered Read error – with ECC, auto reallocated"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 18,
+      "Sense qualifier": 5,
+      "description": "Recovered Read error – with ECC, recommend reassign"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 18,
+      "Sense qualifier": 6,
+      "description": "Recovered data using ECC and offsets"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 18,
+      "Sense qualifier": 7,
+      "description": "Recovered Read error – with ECC, data rewritten"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "1C",
+      "Sense qualifier": 0,
+      "description": "Defect List not found"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "1C",
+      "Sense qualifier": 1,
+      "description": "Primary defect list not found"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "1C",
+      "Sense qualifier": 2,
+      "description": "Grown defect list not found"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "1F",
+      "Sense qualifier": 0,
+      "description": "Partial defect list transferred"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": 44,
+      "Sense qualifier": 0,
+      "description": "Internal target failure"
+    },
+    {
+      "Error Condition": "Soft Error",
+      "Sense key": 1,
+      "Sense code": "5D",
+      "Sense qualifier": 0,
+      "description": "PFA threshold reached"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 4,
+      "Sense qualifier": 0,
+      "description": "Not Ready – Cause not reportable."
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 4,
+      "Sense qualifier": 1,
+      "description": "Not Ready – becoming ready"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 4,
+      "Sense qualifier": 2,
+      "description": "Not Ready – need initialise command (start unit)"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 4,
+      "Sense qualifier": 3,
+      "description": "Not Ready – manual intervention required"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 4,
+      "Sense qualifier": 4,
+      "description": "Not Ready – format in progress"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 4,
+      "Sense qualifier": 9,
+      "description": "Not Ready – self-test in progress"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 31,
+      "Sense qualifier": 0,
+      "description": "Not Ready – medium format corrupted"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 31,
+      "Sense qualifier": 1,
+      "description": "Not Ready – format command failed"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": 35,
+      "Sense qualifier": 2,
+      "description": "Not Ready – enclosure services unavailable"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": "3A",
+      "Sense qualifier": 0,
+      "description": "Not Ready – medium not present"
+    },
+    {
+      "Error Condition": "Not Ready",
+      "Sense key": 2,
+      "Sense code": "4C",
+      "Sense qualifier": 0,
+      "description": "Diagnostic Failure – config not loaded"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 2,
+      "Sense qualifier": 0,
+      "description": "Medium Error – No Seek Complete"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 3,
+      "Sense qualifier": 0,
+      "description": "Medium Error – write fault"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 10,
+      "Sense qualifier": 0,
+      "description": "Medium Error – ID CRC error"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 11,
+      "Sense qualifier": 0,
+      "description": "Medium Error – unrecovered read error"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 11,
+      "Sense qualifier": 1,
+      "description": "Medium Error – read retries exhausted"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 11,
+      "Sense qualifier": 2,
+      "description": "Medium Error – error too long to correct"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 11,
+      "Sense qualifier": 4,
+      "description": "Medium Error – unrecovered read error – auto re-alloc failed"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 11,
+      "Sense qualifier": "0B",
+      "description": "Medium Error – unrecovered read error – recommend reassign"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 14,
+      "Sense qualifier": 1,
+      "description": "Medium Error – record not found"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 16,
+      "Sense qualifier": 0,
+      "description": "Medium Error – Data Sync Mark error"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 16,
+      "Sense qualifier": 4,
+      "description": "Medium Error – Data Sync Error – recommend reassign"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 19,
+      "Sense qualifier": 0,
+      "description": "Medium Error – defect list error"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 19,
+      "Sense qualifier": 1,
+      "description": "Medium Error – defect list not available"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 19,
+      "Sense qualifier": 2,
+      "description": "Medium Error – defect list error in primary list"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 19,
+      "Sense qualifier": 3,
+      "description": "Medium Error – defect list error in grown list"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 19,
+      "Sense qualifier": "0E",
+      "description": "Medium Error – fewer than 50% defect list copies"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 31,
+      "Sense qualifier": 0,
+      "description": "Medium Error – medium format corrupted"
+    },
+    {
+      "Error Condition": "Medium Error",
+      "Sense key": 3,
+      "Sense code": 31,
+      "Sense qualifier": 1,
+      "description": "Medium Error – format command failed"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 1,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – no index or sector"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 2,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – no seek complete"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 3,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – write fault"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 9,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – track following error"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 11,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – unrecovered read error in reserved area"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 16,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – Data Sync Mark error in reserved area"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 19,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – defect list error"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 19,
+      "Sense qualifier": 2,
+      "description": "Hardware Error – defect list error in Primary List"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 19,
+      "Sense qualifier": 3,
+      "description": "Hardware Error – defect list error in Grown List"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 31,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – reassign failed"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 32,
+      "Sense qualifier": 0,
+      "description": "Hardware Error – no defect spare available"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 35,
+      "Sense qualifier": 1,
+      "description": "Hardware Error – unsupported enclosure function"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 35,
+      "Sense qualifier": 2,
+      "description": "Hardware Error – enclosure services unavailable"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 35,
+      "Sense qualifier": 3,
+      "description": "Hardware Error – enclosure services transfer failure"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 35,
+      "Sense qualifier": 4,
+      "description": "Hardware Error – enclosure services refused"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": 35,
+      "Sense qualifier": 5,
+      "description": "Hardware Error – enclosure services checksum error"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": "3E",
+      "Sense qualifier": 3,
+      "description": "Hardware Error – self-test failed"
+    },
+    {
+      "Error Condition": "Hardware Error",
+      "Sense key": 4,
+      "Sense code": "3E",
+      "Sense qualifier": 4,
+      "description": "Hardware Error – unable to update self-test"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": "1A",
+      "Sense qualifier": 0,
+      "description": "Illegal Request – parm list length error"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 20,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – invalid/unsupported command code"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 21,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – LBA out of range"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 24,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – invalid field in CDB (Command Descriptor Block)"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 25,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – invalid LUN"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 26,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – invalid fields in parm list"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 26,
+      "Sense qualifier": 1,
+      "description": "Illegal Request – parameter not supported"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 26,
+      "Sense qualifier": 2,
+      "description": "Illegal Request – invalid parm value"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 26,
+      "Sense qualifier": 3,
+      "description": "Illegal Request – invalid field parameter – threshold parameter"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 26,
+      "Sense qualifier": 4,
+      "description": "Illegal Request – invalid release of persistent reservation"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": "2C",
+      "Sense qualifier": 0,
+      "description": "Illegal Request – command sequence error"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 35,
+      "Sense qualifier": 1,
+      "description": "Illegal Request – unsupported enclosure function"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 49,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – invalid message"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 53,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – media load or eject failed"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 53,
+      "Sense qualifier": 1,
+      "description": "Illegal Request – unload tape failure"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 53,
+      "Sense qualifier": 2,
+      "description": "Illegal Request – medium removal prevented"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 55,
+      "Sense qualifier": 0,
+      "description": "Illegal Request – system resource failure"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 55,
+      "Sense qualifier": 1,
+      "description": "Illegal Request – system buffer full"
+    },
+    {
+      "Error Condition": "Illegal Request",
+      "Sense key": 5,
+      "Sense code": 55,
+      "Sense qualifier": 4,
+      "description": "Illegal Request – Insufficient Registration Resources"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 28,
+      "Sense qualifier": 0,
+      "description": "Unit Attention – not-ready to ready transition (format complete)"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 29,
+      "Sense qualifier": 0,
+      "description": "Unit Attention – POR or device reset occurred"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 29,
+      "Sense qualifier": 1,
+      "description": "Unit Attention – POR occurred"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 29,
+      "Sense qualifier": 2,
+      "description": "Unit Attention – SCSI bus reset occurred"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 29,
+      "Sense qualifier": 3,
+      "description": "Unit Attention – TARGET RESET occurred"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 29,
+      "Sense qualifier": 4,
+      "description": "Unit Attention – self-initiated-reset occurred"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 29,
+      "Sense qualifier": 5,
+      "description": "Unit Attention – transceiver mode change to SE"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": 29,
+      "Sense qualifier": 6,
+      "description": "Unit Attention – transceiver mode change to LVD"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "2A",
+      "Sense qualifier": 0,
+      "description": "Unit Attention – parameters changed"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "2A",
+      "Sense qualifier": 1,
+      "description": "Unit Attention – mode parameters changed"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "2A",
+      "Sense qualifier": 2,
+      "description": "Unit Attention – log select parms changed"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "2A",
+      "Sense qualifier": 3,
+      "description": "Unit Attention – Reservations pre-empted"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "2A",
+      "Sense qualifier": 4,
+      "description": "Unit Attention – Reservations released"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "2A",
+      "Sense qualifier": 5,
+      "description": "Unit Attention – Registrations pre-empted"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "2F",
+      "Sense qualifier": 0,
+      "description": "Unit Attention – commands cleared by another initiator"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "3F",
+      "Sense qualifier": 0,
+      "description": "Unit Attention – target operating conditions have changed"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "3F",
+      "Sense qualifier": 1,
+      "description": "Unit Attention – microcode changed"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "3F",
+      "Sense qualifier": 2,
+      "description": "Unit Attention – changed operating definition"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "3F",
+      "Sense qualifier": 3,
+      "description": "Unit Attention – inquiry parameters changed"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "3F",
+      "Sense qualifier": 5,
+      "description": "Unit Attention – device identifier changed"
+    },
+    {
+      "Error Condition": "Unit Attention",
+      "Sense key": 6,
+      "Sense code": "5D",
+      "Sense qualifier": 0,
+      "description": "Unit Attention – PFA threshold reached"
+    },
+    {
+      "Error Condition": "Write Protect",
+      "Sense key": 7,
+      "Sense code": 27,
+      "Sense qualifier": 0,
+      "description": "Write Protect – command not allowed"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 0,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – no additional sense code"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": "1B",
+      "Sense qualifier": 0,
+      "description": "Aborted Command – sync data transfer error (extra ACK)"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 25,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – unsupported LUN"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": "3F",
+      "Sense qualifier": "0F",
+      "description": "Aborted Command – echo buffer overwritten"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 43,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – message reject error"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 44,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – internal target failure"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 45,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – Selection/Reselection failure"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 47,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – SCSI parity error"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 48,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – initiator-detected error message received"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": 49,
+      "Sense qualifier": 0,
+      "description": "Aborted Command – inappropriate/illegal message"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": "4B",
+      "Sense qualifier": 0,
+      "description": "Aborted Command – data phase error"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": "4E",
+      "Sense qualifier": 0,
+      "description": "Aborted Command – overlapped commands attempted"
+    },
+    {
+      "Error Condition": "Aborted Command",
+      "Sense key": "B",
+      "Sense code": "4F",
+      "Sense qualifier": 0,
+      "description": "Aborted Command – due to loop initialisation"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "E",
+      "Sense code": "1D",
+      "Sense qualifier": 0,
+      "description": "Miscompare – during verify byte check operation"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 5,
+      "Sense qualifier": 0,
+      "description": "Illegal request"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 6,
+      "Sense qualifier": 0,
+      "description": "Unit attention"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 7,
+      "Sense qualifier": 0,
+      "description": "Data protect"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 8,
+      "Sense qualifier": 0,
+      "description": "LUN communication failure"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 8,
+      "Sense qualifier": 1,
+      "description": "LUN communication timeout"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 8,
+      "Sense qualifier": 2,
+      "description": "LUN communication parity error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 8,
+      "Sense qualifier": 3,
+      "description": "LUN communication CRC error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 9,
+      "Sense qualifier": 0,
+      "description": "vendor specific sense key"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 9,
+      "Sense qualifier": 1,
+      "description": "servo fault"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 9,
+      "Sense qualifier": 4,
+      "description": "head select fault"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "0A",
+      "Sense qualifier": 0,
+      "description": "error log overflow"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "0B",
+      "Sense qualifier": 0,
+      "description": "aborted command"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "0C",
+      "Sense qualifier": 0,
+      "description": "write error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "0C",
+      "Sense qualifier": 2,
+      "description": "write error – auto-realloc failed"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "0E",
+      "Sense qualifier": 0,
+      "description": "data miscompare"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 12,
+      "Sense qualifier": 0,
+      "description": "address mark not found for ID field"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 14,
+      "Sense qualifier": 0,
+      "description": "logical block not found"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 15,
+      "Sense qualifier": 0,
+      "description": "random positioning error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 15,
+      "Sense qualifier": 1,
+      "description": "mechanical positioning error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 15,
+      "Sense qualifier": 2,
+      "description": "positioning error detected by read of medium"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 27,
+      "Sense qualifier": 0,
+      "description": "write protected"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 29,
+      "Sense qualifier": 0,
+      "description": "POR or bus reset occurred"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 31,
+      "Sense qualifier": 1,
+      "description": "format failed"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 32,
+      "Sense qualifier": 1,
+      "description": "defect list update error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 32,
+      "Sense qualifier": 2,
+      "description": "no spares available"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 35,
+      "Sense qualifier": 1,
+      "description": "unspecified enclosure services failure"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 37,
+      "Sense qualifier": 0,
+      "description": "parameter rounded"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "3D",
+      "Sense qualifier": 0,
+      "description": "invalid bits in identify message"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "3E",
+      "Sense qualifier": 0,
+      "description": "LUN not self-configured yet"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 40,
+      "Sense qualifier": 1,
+      "description": "DRAM parity error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 40,
+      "Sense qualifier": 2,
+      "description": "DRAM parity error"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 42,
+      "Sense qualifier": 0,
+      "description": "power-on or self-test failure"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "4C",
+      "Sense qualifier": 0,
+      "description": "LUN failed self-configuration"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "5C",
+      "Sense qualifier": 0,
+      "description": "RPL status change"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "5C",
+      "Sense qualifier": 1,
+      "description": "spindles synchronised"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "5C",
+      "Sense qualifier": 2,
+      "description": "spindles not synchronised"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": 65,
+      "Sense qualifier": 0,
+      "description": "voltage fault"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "≥80",
+      "Sense qualifier": "x",
+      "description": "Vendor specific"
+    },
+    {
+      "Error Condition": "Other",
+      "Sense key": "x",
+      "Sense code": "x",
+      "Sense qualifier": "≥80",
+      "description": "Vendor specific"
+    }
+  ]

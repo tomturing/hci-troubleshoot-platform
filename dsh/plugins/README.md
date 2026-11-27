@@ -48,11 +48,11 @@ dsh_cockpit-rules/
 
 | 实例 | 制品 | 用途 |
 |---|---:|---|
-| v1 / `DSH_PLUGIN_PACKAGES` | `deepseek-harness-wecom-0.1.33.tgz` | 旧 DSH 的企业微信通道 |
+| v1 / `DSH_PLUGIN_PACKAGES` | `deepseek-harness-wecom-0.1.36.tgz` | 普通 DSH 的企业微信通道及 Web 工单模板识别 |
 | v1 / `DSH_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 旧 DSH 的诊断输出 IP 脱敏插件 |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `wecom-0.1.35.tgz` | 新 DSH 的企业微信通道 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.24.tgz` | 会话运营台账与规则包 |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.5.tgz` | WeKnora HCI 诊断 Preset（根 Agent + 并行子 Agent） |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.26.tgz` | 会话运营台账、规则包与 Web 首任务工单绑定 |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.8.tgz` | WeKnora HCI 诊断 Preset（根 Agent + 并行子 Agent） |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 诊断输出 IP 脱敏插件 |
 
 这些 tgz 是构建上下文中的不可变本地制品；部署 values 必须使用精确文件名，禁止在
@@ -62,20 +62,18 @@ dsh_cockpit-rules/
 > 旧 DSH 实例（v1）的 IP 脱敏自 0.1.4 起与离线实例共用 `ip-redactor-0.1.4.tgz`，
 > 不再使用早期的 `dsh-ip-redactor-0.1.3.tgz`。
 
-> `hci-weknora-diagnosis-bundle-0.2.5.tgz` 是标准 npm pack 制品（`package/` 结构），
+> `hci-weknora-diagnosis-bundle-0.2.8.tgz` 是标准 npm pack 制品（`package/` 结构），
 > 可直接由 `DSH_PLUGIN_PACKAGES` 安装；其依赖 `@wxg-prc-cpg/dsh-weknora@0.1.0`
 > 已随 `bundleDependencies` 打进 tgz，安装时不再从 registry 解析。不要把上游发布的「离线整包」
 > （`hci-weknora-diagnosis-offline-*`，解包后是目录里再嵌 tgz）放进本目录：它没有
 > 包根 `package.json`，`dsh plugin add` 会装成无 manifest 的 `0.0.0` 合成包后失败。
 >
-> 0.2.5 在 Preset 内启用 `workflow-ptc`（`provider: fork`、3 并发 / 20 总数）与
-> `tool-workflow`（`taskDrivenUse: true`、`enableRunInBackground: false`），要求 Harness
-> 运行时的 `dsh-tool-workflow` 支持 `taskDrivenUse`。镜像当前固定的
-> `@deepseek-ai/dsh@0.2.1-rc.3` 的该包配置 schema 只有
-> `toolName`/`maxResultChars`/`enableRunInBackground`，不识别 `taskDrivenUse`；
-> schemastery 对未知键静默保留，Pod 不会因此启动失败，但 `workflow` 工具的系统提示仍是
-> 「仅在用户显式要求 workflow 时使用」，0.2.5 的任务驱动多 Agent 行为不会生效。
-> 升级 DSH 版本（需包含该字段）或在镜像构建期定点补丁之前，不得把该能力视为已上线。
+> 0.2.8 在 Preset 内启用 `workflow-ptc`（`provider: fork`、3 并发 / 20 总数）与
+> `tool-workflow`（`enableRunInBackground: false`）。自 0.2.6 起 Bundle 不再使用 Harness 的
+> `taskDrivenUse` 配置字段，而是在 `agent/created` 时用同名 `tool:workflow` 系统提示段覆盖
+> 通用用法，因此镜像固定的 `@deepseek-ai/dsh@0.2.1-rc.3` 即可满足（`agent/created` 与
+> `getSectionOrder('TOOL_WORKFLOW')` 均已存在）。Web 新会话的工单绑定依赖 `session-bi-0.1.26`，
+> 升级 Bundle 时必须同步升级 Session BI。
 
 只有尚未进入 `dsh_plugins` 正式构建流程的临时本地 bundle，才放在本目录的子目录，例如：
 
