@@ -846,13 +846,20 @@ def _judge_p1_archive(
     task,
     archive: dict,
     expected_size: int | None,
+    *,
+    expected_size_trustworthy: bool = True,
 ) -> tuple[bool, str, int | None, datetime | None]:
     """P1 归档判据；与 P2 共用 domain 层，禁止两套口径漂移。
 
     判据细节与"为什么体积不要求相等"的理由见
     :func:`app.domain.log_collect_archive.judge_archive`。
     """
-    return judge_archive(task, archive, expected_size)
+    return judge_archive(
+        task,
+        archive,
+        expected_size,
+        expected_size_trustworthy=expected_size_trustworthy,
+    )
 
 
 def _p1_verify_patch(
@@ -1044,6 +1051,12 @@ async def verify_p1_archive(
 
     filename = archive_filename_for(task.case_id)
     expected_size = payload.archive_size if payload.archive_size is not None else task.archive_size
+    # 缺省按不可信处理：旧版前端不传 basis，而它写入的期望值可能来自采集早期
+    # 对固定路径的 stat——同工单换模块重收时，读到的是上一批次残留包
+    # （Q2026112700769：取消 vm_suspend 任务后重收 slowdisk，旧包 4.17 GiB 被
+    # 当成本次期望值，新包 146 MiB 被判 size_mismatch）。只有明确标记 confirmed
+    # 的体积才允许做确定性截断判定。
+    expected_size_trustworthy = payload.archive_size_basis == "confirmed"
 
     client = SangforRelayClient(
         settings.LOG_COLLECT_RELAY_URL,
@@ -1059,7 +1072,12 @@ async def verify_p1_archive(
         logger.warning("P1 归档查询失败 task=%s: %s", task_id, exc)
         raise _problem("LC-TRANSFER-007", f"查询日志服务器归档失败：{exc}") from exc
 
-    verified, reason, archived_size, archived_at = _judge_p1_archive(task, archive, expected_size)
+    verified, reason, archived_size, archived_at = _judge_p1_archive(
+        task,
+        archive,
+        expected_size,
+        expected_size_trustworthy=expected_size_trustworthy,
+    )
 
     checked_at = datetime.now(UTC)
     check = {

@@ -471,6 +471,15 @@ class P1ArchiveVerifyRequest(BaseModel):
             "给出时与 5888 归档件大小比对；缺失则只做存在性与时间窗校验。"
         ),
     )
+    archive_size_basis: Literal["observed", "confirmed"] | None = Field(
+        default=None,
+        description=(
+            "期望值的观测来源：confirmed=采集/上传完成时确认的体积（可用于截断判定）；"
+            "observed 或缺省=采集过程中的观测。同工单换模块重收时固定路径会残留"
+            "上一批次的包，其体积会被误当成本次期望值（Q2026112700769），"
+            "因此不可信来源只做待核对，不判 size_mismatch。"
+        ),
+    )
 
 
 class P1DeliveryAttestRequest(BaseModel):

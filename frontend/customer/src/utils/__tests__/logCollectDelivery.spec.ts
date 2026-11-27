@@ -499,6 +499,19 @@ describe('P1 归档核验快照', () => {
     expect(text).toContain('小于平台记录')
   })
 
+  it('期望值来源不可信时说明可能含上一批次残留包，不替客户下截断结论', () => {
+    const text = describeArchiveCheck({
+      verified: false,
+      reason: 'archive_size_untrusted',
+      checked_at: '2026-11-27T06:07:40Z',
+      expected_size: 4_478_420_847,
+      archived_size: 152_850_599,
+    })
+    expect(text).toContain('145.8 MB')
+    expect(text).toContain('可能含同工单上一批次残留包')
+    expect(text).toContain('请人工核对')
+  })
+
   it('查不到只说"暂未查到"，不替日志服务器下"没有"的结论', () => {
     const text = describeArchiveCheck({ verified: false, reason: 'archive_missing' })
     expect(text).toContain('暂未查到')

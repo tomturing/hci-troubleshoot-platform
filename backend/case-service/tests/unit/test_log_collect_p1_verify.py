@@ -80,6 +80,17 @@ class TestJudge:
         verified, reason, _, _ = _judge_p1_archive(_task(), {"found": True, "size": 0}, None)
         assert (verified, reason) == (False, "archive_size_invalid")
 
+    def test_untrusted_expected_size_is_not_truncation(self):
+        """Q2026112700769：期望值来自采集中观测（可能读到上一批次残留包）时，
+        体积偏小只做待核对，不报 size_mismatch 红卡。"""
+        verified, reason, size, _ = _judge_p1_archive(
+            _task(),
+            {"found": True, "size": 152_850_599, "mtime": datetime.now(UTC).timestamp()},
+            4_478_420_847,
+            expected_size_trustworthy=False,
+        )
+        assert (verified, reason, size) == (False, "archive_size_untrusted", 152_850_599)
+
 
 class TestVerifyPatch:
     """只有强证据成立才允许写交付终态。"""
