@@ -339,6 +339,9 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 			command += " -c " + remote.ShellQuote(configPath)
 		}
 		archiveStaleLogCollectArchive(ctx, s, msg.CaseID, traceID, cui)
+		// 旧包改名可能失败（权限/目录），删不掉就只能靠"基线"识别：先量一次盘上
+		// 已有文件的身份，之后探测到完全一致的文件就不再算本次产物。
+		rememberLogCollectArchiveBaseline(ctx, s, msg.ExecID, msg.CaseID, msg.NodeIP, traceID, cui)
 		output, exitCode, err := s.RunCommandPty(ctx, logCollectAcliInvoke(command), logCollectCreateTimeout)
 		status := "ok"
 		code := ""
@@ -548,6 +551,20 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 		// ProbeLogCollectArchive 返回三态指针：探测失败时保持 nil，前端据此显示
 		// 「无法确认」而不是把未知当成"已删除"。
 		progress.ArchiveExists = archiveProbeResult.Exists
+		// 固定路径上的包也可能是同工单上一批次残留下来的：它的字节数与 identity
+		// 从本次下发之前就没变过，不能当成本次采集的体积（Q2026112700769）。
+		if progress.ArchiveSize > 0 &&
+			logCollectArchiveIsResidual(ctx, s, msg.ExecID, probePath, progress.ArchiveSize) {
+			residualSize := progress.ArchiveSize
+			progress.ArchiveSize = 0
+			progress.ArchiveResidual = true
+			if markArchiveResidualNotified(msg.ExecID) {
+				evidence.Emit("WARN", "log_collect.archive_residual", "压缩包是同工单上一批次残留", traceID, msg.CaseID, msg.NodeIP, cui, map[string]any{
+					"task_id": msg.ExecID, "path": probePath, "size": residualSize,
+					"ticket_no": msg.TicketNo,
+				})
+			}
+		}
 		// 采集终态只补采一次证据：节点侧 zip 中央目录 + 采集进程日志。
 		// 异步 + 独立超时：证据链路的任何失败都不允许拖慢/改变进度回包。
 		// 逐台明细是 acli 进度原文里已解析好的事实，只落桥日志即可供管理端回读；
@@ -607,6 +624,9 @@ func HandleLogCollect(b *session.Hub, ws *websocket.Conn, msg models.InMessage, 
 			"hosts_count": len(progress.Hosts), "archive_size": progress.ArchiveSize,
 			"archive_exists": progress.ArchiveExists, "archive_probe_path": probePath,
 			"archive_probe_source": probeSource, "archive_probe_level": archiveProbeResult.Level,
+			// residual=盘上那份包在本次下发前就存在且此后未被写过（不是本次产物）：
+			// 体积已被清零，这个布尔是"为什么没有体积"的唯一证据。
+			"archive_residual": progress.ArchiveResidual,
 			// ticket_no 必须落事件：acli 是节点级单任务，同一节点可能同时挂着
 			// 别的工单的采集，事后只能靠它判断这份进度属于谁。
 			"ticket_no": msg.TicketNo, "task_id": msg.ExecID,

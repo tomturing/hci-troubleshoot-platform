@@ -71,6 +71,10 @@ type Progress struct {
 	// （Q2026102701193，2026-10-27）。用指针是为了区分"明确不存在(false)"与"没探测(缺省)"——
 	// 前端只在明确 true 时才允许"上传到平台"，缺省时一律不提供入口。
 	ArchiveExists *bool `json:"archive_exists,omitempty"`
+	// ArchiveResidual 表示盘上这个包在本次下发之前就存在、且采集期间从未被写过：
+	// 它是同工单上一批次残留在固定路径上的产物（取消后改模块重收最容易踩到），
+	// 因此 ArchiveSize 已被置 0，前端不得据此提供"上传到平台"。
+	ArchiveResidual bool `json:"archive_residual,omitempty"`
 }
 
 var (
