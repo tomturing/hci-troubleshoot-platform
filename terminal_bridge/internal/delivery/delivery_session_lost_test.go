@@ -2,10 +2,12 @@ package delivery
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"terminal_bridge/internal/shared/aclibin"
 	"terminal_bridge/internal/sshx"
 )
 
@@ -55,3 +57,30 @@ func (p ptySessionFunc) RunCommandPty(ctx context.Context, command string, timeo
 }
 
 func (ptySessionFunc) Alive() bool { return true }
+
+// TestWaitCollectUsesAcliInvokeAndFailsFastOnMissing 守护：
+// waitCollect 必须通过 aclibin.Invoke 调用 progress（覆盖非交互 PATH 缺 /sf/bin），
+// 且遇到 exit=127 或 __ACLI_ABSENT__ 时必须立即失败，不再在 waiting 静默空转至 SSH 超时
+// （Q2026112500592 / Q2026112601001）。
+func TestWaitCollectUsesAcliInvokeAndFailsFastOnMissing(t *testing.T) {
+	var seenCmd string
+	var calls int32
+	session := ptySessionFunc{run: func(_ context.Context, cmd string, _ time.Duration) (string, int, error) {
+		seenCmd = cmd
+		atomic.AddInt32(&calls, 1)
+		return aclibin.AbsentToken, 127, nil
+	}}
+	r := &deliveryRunner{}
+	job := &deliveryJob{JobID: "dj-acli-missing", TaskID: "task-missing", CaseID: "Q2026112601001", NodeIP: "192.168.0.195", Phase: phaseWaitingCollect}
+
+	err := r.waitCollect(context.Background(), session, job)
+	if err == nil {
+		t.Fatal("acli 缺失（exit=127）必须立即返回错误，禁止在 waiting 空转")
+	}
+	if !strings.Contains(seenCmd, "/sf/bin/acli") || !strings.Contains(seenCmd, "log_collect progress") {
+		t.Fatalf("waitCollect 必须经 aclibin.Invoke 解析 /sf/bin/acli，实际命令：%q", seenCmd)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("acli 缺失应在第一次探测即终止，实际调用 %d 次", got)
+	}
+}

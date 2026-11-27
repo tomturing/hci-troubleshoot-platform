@@ -107,6 +107,14 @@ bridge_ssh_connections_total %d
 # TYPE bridge_ssh_connection_errors_total counter
 bridge_ssh_connection_errors_total %d
 
+# HELP bridge_ssh_resize_total Total SSH PTY window resize requests
+# TYPE bridge_ssh_resize_total counter
+bridge_ssh_resize_total %d
+
+# HELP bridge_ssh_resize_errors_total Total SSH PTY window resize errors
+# TYPE bridge_ssh_resize_errors_total counter
+bridge_ssh_resize_errors_total %d
+
 # HELP bridge_vm_console_ops_total Total VM console fixed operations executed
 # TYPE bridge_vm_console_ops_total counter
 bridge_vm_console_ops_total %d
@@ -163,6 +171,8 @@ bridge_log_file_bytes %d
 		atomic.LoadUint64(&metrics.PromMetrics.ExecCommandErrors),
 		atomic.LoadUint64(&metrics.PromMetrics.SshConnectionsTotal),
 		atomic.LoadUint64(&metrics.PromMetrics.SshConnectionErrors),
+		atomic.LoadUint64(&metrics.PromMetrics.SshResizeTotal),
+		atomic.LoadUint64(&metrics.PromMetrics.SshResizeErrors),
 		atomic.LoadUint64(&metrics.PromMetrics.VmConsoleOpsTotal),
 		atomic.LoadUint64(&metrics.PromMetrics.VmConsoleOpErrors),
 		atomic.LoadUint64(&metrics.PromMetrics.SftpDownloadsTotal),

@@ -864,6 +864,14 @@ Bridge 接收后：创建独立 SSH Session，禁用 PTY，分别读取 `stdoutP
 
 旧的 marker 单通道协议仅作为向下兼容路径保留。双通道路径不得依赖旧变量 `output` 判断失败语义。
 
+**交互终端双模式与 PTY 尺寸同步（`ssh_resize`）**：
+
+Customer UI 的 SSH 终端面板（`TerminalPanel.vue`）通过顶部模式下拉菜单支持两种模式，共用同一条 SSH 会话与终端操作录制链路：
+- **模式一（Agent 协作模式）**：下拉项 `off`（关闭自动执行）/ `safe-only`（安全模式）/ `aggressive`（激进模式（有风险）），保留上方只读终端与底部命令输入框布局，配合排障 Agent 使用；
+- **模式二（实时交互终端）**：下拉项 `interactive`（交互终端（实时 Shell）），隐藏底部输入框，将 xterm 切换为全实时交互模式（支持 Tab 补全、方向键历史、Ctrl+C 中断、Ctrl+Shift+C/V 复制粘贴），同时在 `chatStore` 中自动将发往后端的 `auto_execute_mode` 收敛为 `off` 并暂停后台 `hash -r` 注入，避免人机并发冲突。
+- **窗口尺寸同步**：前端在 `fitTerminal` 后通过 WebSocket 发送 `ssh_resize`（`cols`、`rows`、`case_id`、`node_ip`、`trace_id`），`terminal_bridge` 校验边界后调用 `WindowChange(rows, cols)` 并记忆尺寸供 `RespawnShell` 延续；旧版 `terminal_bridge` 收到未知消息会静默忽略，向后兼容。
+- **完整历史回放与安全脱敏**：模式二通过带递增序号的 `sshTerminalOutputChunk` 无损接收并录制输出流，并在回车前通过 `interactiveInputRecorder.ts` 从 xterm 逻辑行提取最终命令（兼容 Tab 补全与方向键历史）写入 `/api/terminal/operations`；命中密码/口令提示行时自动跳过录制，处于 `vim`/`top`/`less` 备用缓冲区时不产生命令噪音。
+
 ### 8.3 Marker 协议（向下兼容）
 
 已有基础设施（`terminal.ts`）：
@@ -1182,6 +1190,7 @@ sequenceDiagram
 
 | 日期 | 版本 | 变更内容 | 关联事件文档 |
 |------|------|---------|------------|
+| 2026-11-27 | v3.9 | §8.2 补充 Customer UI SSH 终端双模式（模式一 Agent 协作 / 模式二实时交互终端）、`ssh_resize` PTY 窗口尺寸同步协议及安全脱敏历史录制契约 | — |
 | 2026-11-23 | v3.8 | §2.3 补会话自愈：门禁只解决「用户没连」，不解决「连过但会话中途没了」；`stores/chat.ts` 内存保留最近一次连接凭据，探测命中 `LC-ENV-006` 时静默重建会话再重试一次，桥侧同步用 `lastAuth` 后台重连 | [SSH 会话整体保活](../../../solution/events/2026-11-23-会话整体保活.md) |
 | 2026-11-02 | v3.7 | 新增 §2.3「工具面可用性的前置条件」：阐明缺 SSH 会话时后端仍接受消息、SOP 却永远等不到回包，并记录前端排障前置门禁（bridge 可握手 + `sshConnectionState==='connected'`，或用户选择「无 SSH 排障」） | [排障前置 Bridge 与 SSH 门禁设计](../../custom-ui/events/2026-11-02-排障前置Bridge与SSH门禁设计.md) |
 | 2026-10-26 | — | T3/T4 两处 `frontend/src/` 补全为 `frontend/customer/src/` | [文档瘦身 Wave 3 现行文档准确性治理](../../events/2026-10-26-文档瘦身Wave3现行文档准确性治理.md) |

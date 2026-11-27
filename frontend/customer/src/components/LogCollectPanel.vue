@@ -385,6 +385,13 @@ const acliLive = reactive({
   installOutput: '',
 })
 
+/** acli 正在后台下载/上传/校验/安装中：未落盘前禁止抢点「开始收集」（Q2026111900904）。 */
+const acliUpgrading = computed(() =>
+  ['checking', 'downloading', 'uploading', 'verifying', 'installing'].includes(
+    String(acliLive.status || '').toLowerCase(),
+  ),
+)
+
 /** acli 安装失败态：非空即渲染兜底卡片（含校验摘要与重试按钮）。 */
 const acliFailure = ref<null | {
   message: string
@@ -3319,6 +3326,7 @@ async function handleStart() {
     // 旧桥不认识 spc_files 会直接忽略并继续按节点原清单收集，这是最危险的
     // 「看起来成功了」：必须先探测能力，不支持就明确报错，绝不静默降级。
     let capabilities: any = null
+    let capabilitiesError: Error | null = null
     // 有证据票据就顺便做一次能力协商：旧桥不上报速率/网络/包内容/进程日志时，
     // 界面必须说「桥接端版本较旧」，而不是把缺失数据显示成 0 或绿色成功。
     if (issuedSpcFiles?.length || issuedScriptFiles?.length || task.evidence_ticket) {
@@ -3329,11 +3337,18 @@ async function handleStart() {
           { ticketNo: props.caseId, execId: task.task_id, traceId },
           8000,
         )
-      } catch {
+      } catch (err) {
+        // 区分「通信超时/通道异常」与「桥明确不支持」：
+        // 2026-11-25 Q2026112500790 同一台新版桥因 8s 超时被吞成 null，
+        // 界面误报“当前终端桥不支持按场景清单收集，请先升级桌面桥”。
         capabilities = null
+        capabilitiesError = err instanceof Error ? err : new Error(String(err || '能力探测失败'))
       }
       bridgeEvidenceCapable.value = capabilities?.status === 'ok'
         && capabilities.log_data?.log_collect_evidence === true
+    }
+    if ((issuedSpcFiles?.length || issuedScriptFiles?.length) && capabilitiesError) {
+      throw new Error(`终端桥能力探测通信异常（${capabilitiesError.message}），请确认桌面桥在线后重试`)
     }
     if (issuedSpcFiles?.length
       && (!capabilities || capabilities.status !== 'ok' || !capabilities.log_data?.multi_slot_spc)) {
@@ -4985,8 +5000,11 @@ async function probeArchiveOnNode(
   ws: WebSocket,
   archivePath: string,
 ): Promise<{ size: number; exists: boolean | null }> {
+  const uploadMode =
+    currentTask.value?.upload_mode ?? (pathMode.value === 'P1' ? 'acli_direct' : 'bridge_relay')
   const outcome = interpretArchiveProbe(
     await sendAndWait(ws, 'stat', { sourcePath: archivePath }, 30000),
+    { uploadMode },
   )
   if (outcome.failure) {
     // 探测失败绝不能翻译成「包已删除」：把桥的原话（含 stat:exit=127 这类诊断）抛出去，
@@ -5599,7 +5617,12 @@ watch(
 )
 
 function disableFutureDate(value: Date): boolean {
-  return value.getTime() > Date.now()
+  // 与节点 acli 30 天滚动窗口对齐（Q2026112500714）：仅允许选择近 30 天内（含今天）。
+  const now = new Date()
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+  const earliestAllowed = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29, 0, 0, 0, 0)
+  const ts = value.getTime()
+  return ts > endOfToday.getTime() || ts < earliestAllowed.getTime()
 }
 
 function formatDate(value: Date): string {
@@ -6248,7 +6271,7 @@ onBeforeUnmount(() => {
               :disabled-date="disableFutureDate"
             />
             <div class="lc-hint">
-              日志按天归档，将收集所选日期全天日志（单次最多 30 天，超出会在下发前拦下）
+              日志按天归档，仅支持近 30 天内日志（单次最多 30 天，超出会在下发前拦下）
             </div>
           </el-form-item>
           <el-form-item label="交付路径">
@@ -6431,7 +6454,7 @@ onBeforeUnmount(() => {
             <el-button
               v-if="!running"
               type="primary"
-              :disabled="canCollect && prepareState === 'probing'"
+              :disabled="canCollect && (prepareState === 'probing' || acliUpgrading)"
               :loading="sshConnectOpening"
               @click="handlePrimaryAction"
             >
@@ -6440,7 +6463,9 @@ onBeforeUnmount(() => {
                   ? '连接 SSH'
                   : prepareState === 'probing'
                     ? '正在读取环境…'
-                    : '开始收集'
+                    : acliUpgrading
+                      ? '正在安装/升级 acli…'
+                      : '开始收集'
               }}
             </el-button>
             <el-button v-else type="danger" plain @click="handleCancel">取消</el-button>

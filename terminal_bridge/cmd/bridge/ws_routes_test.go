@@ -30,6 +30,7 @@ func TestWSRouteTableCoversAllMessageTypes(t *testing.T) {
 		"ssh_exec_process",
 		"ssh_inject_command",
 		"ssh_input",
+		"ssh_resize",
 		"vm_console_op",
 	}
 	routes := app.WSRoutesSnapshot()

@@ -5,6 +5,7 @@ import {
   buildConnectMessage,
   buildInjectCommandMessage,
   buildInputMessage,
+  buildResizeMessage,
   buildLogCollectMessage,
   checkBridgeBeforeOpen,
   checkBridgeRunning,
@@ -284,6 +285,18 @@ describe('buildInputMessage / buildInjectCommandMessage', () => {
     expect(input.node_ip).toBeUndefined()
     const inject = JSON.parse(buildInjectCommandMessage('Q1', 'ls'))
     expect(inject.node_ip).toBeUndefined()
+  })
+
+  it('ssh_resize 携带窗口尺寸、node_ip 与可选 trace_id', () => {
+    const resize = JSON.parse(buildResizeMessage('Q202611270001', 120.4, 35.6, '172.28.24.129', 'trace-abc'))
+    expect(resize).toEqual({
+      type: 'ssh_resize',
+      case_id: 'Q202611270001',
+      cols: 120,
+      rows: 36,
+      node_ip: '172.28.24.129',
+      trace_id: 'trace-abc',
+    })
   })
 })
 

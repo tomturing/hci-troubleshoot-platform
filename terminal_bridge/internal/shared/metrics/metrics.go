@@ -15,6 +15,8 @@ type Counters struct {
 	ExecCommandErrors   uint64
 	SshConnectionsTotal uint64
 	SshConnectionErrors uint64
+	SshResizeTotal      uint64
+	SshResizeErrors     uint64
 	VmConsoleOpsTotal   uint64
 	VmConsoleOpErrors   uint64
 	SftpDownloadsTotal  uint64

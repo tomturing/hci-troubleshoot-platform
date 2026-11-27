@@ -184,3 +184,46 @@ func TestBuildSpcPrepareCommandKeepsCpStderr(t *testing.T) {
 		t.Fatalf("备份 cp 不能丢弃 stderr：%s", backupSegment)
 	}
 }
+
+// 点名采集模式只预检本次目标节点，不能被集群里无关节点缺插件一刀切阻断（Q2026112600533）。
+func TestPreflightTargetHostsRespectsSelectedIPs(t *testing.T) {
+	clusterAll := []string{"10.124.1.10", "10.124.1.12", "10.124.1.20", "10.124.1.22"}
+
+	selected, scope := preflightTargetHosts("10.124.1.22, 10.124.1.20", clusterAll)
+	if scope != "selected" || len(selected) != 2 || selected[0] != "10.124.1.20" || selected[1] != "10.124.1.22" {
+		t.Fatalf("点名模式应仅检目标节点，实际 scope=%q hosts=%v", scope, selected)
+	}
+
+	allTargets, allScope := preflightTargetHosts("all", clusterAll)
+	if allScope != "all" || len(allTargets) != len(clusterAll) {
+		t.Fatalf("all 模式应检查全集群，实际 scope=%q hosts=%v", allScope, allTargets)
+	}
+}
+
+// create 返回 exit 0 但输出明确业务拒绝（如 5.72GB < 6GB，Q2026112500790）必须立即拦截并归因，
+// 同时绝不能误杀正常任务里的 JSON 噪音行（cpuset.cpus / vtp-rpc-ssl.pem）。
+func TestDetectLogCollectCreateOutputError(t *testing.T) {
+	diskOut := "2026/11/25 13:34:12 {\"@timestamp\":\"2026-11-25T13:34:12+08\",\"level\":\"error\",\"content\":\"open /sys/fs/cgroup/cpu/cpuset.cpus: no such file\"}\n" +
+		"IP：192.168.21.11 /sf/data/local 所在分区可用空间为 5.72GB 小于6GB，请清理后重试！\n"
+	code, line, ok := detectLogCollectCreateOutputError(diskOut)
+	if !ok || code != "LC-ENV-004" || !strings.Contains(line, "5.72GB") {
+		t.Fatalf("磁盘不足应归因 LC-ENV-004，实际 ok=%v code=%q line=%q", ok, code, line)
+	}
+
+	offlineOut := "172.18.12.82,172.18.12.83 不在集群在线的ip列表中！\n"
+	code, _, ok = detectLogCollectCreateOutputError(offlineOut)
+	if !ok || code != "LC-ENV-008" {
+		t.Fatalf("离线 IP 应归因 LC-ENV-008，实际 ok=%v code=%q", ok, code)
+	}
+
+	dateOut := "指定日期必须在限制的范围(2026-10-27 - 2026-11-25)\n"
+	code, _, ok = detectLogCollectCreateOutputError(dateOut)
+	if !ok || code != "LC-PLUGIN-003" {
+		t.Fatalf("日期越界应归因 LC-PLUGIN-003，实际 ok=%v code=%q", ok, code)
+	}
+
+	normalOut := "2026/11/25 13:51:23 {\"@timestamp\":\"2026-11-25T13:51:23+08\",\"level\":\"error\",\"content\":\"open /sys/fs/cgroup/cpu/cpuset.cpus: no such file\"}\n日志收集任务下发成功！\n"
+	if code, line, ok := detectLogCollectCreateOutputError(normalOut); ok {
+		t.Fatalf("正常下发输出不得误判失败：code=%q line=%q", code, line)
+	}
+}

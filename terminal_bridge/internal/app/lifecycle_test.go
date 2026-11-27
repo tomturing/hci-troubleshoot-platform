@@ -107,6 +107,7 @@ func TestRoleOfMessageType(t *testing.T) {
 	cases := map[string]string{
 		"ssh_connect":  ConnRoleTerminal,
 		"ssh_input":    ConnRoleTerminal,
+		"ssh_resize":   ConnRoleTerminal,
 		"log_collect":  ConnRolePanel,
 		"acli_sync":    ConnRolePanel,
 		"resume":       "",
