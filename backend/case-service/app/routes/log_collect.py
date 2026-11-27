@@ -754,14 +754,21 @@ def resolve_scenario_display(task: Any) -> tuple[str, str | None, str | None]:
     return kind, snapshot.get("label"), slot
 
 
-def _attach_display(response: LogCollectTaskResponse, task) -> None:
+def _attach_display(
+    response: LogCollectTaskResponse,
+    task,
+    *,
+    case_archive_verified: bool = False,
+) -> None:
     """给任务响应附加派生展示四件套（只读字段）。
 
     为什么放在路由而不是序列化器：列表/详情/PATCH/取消都要同一份结论，
     但来源行形态不同（ORM 行 / 字典行）。统一走 ``build_display_payload``，
     保证任何入口算出来的 phase/conclusion 完全一致。
+
+    工单级归档事实只作为观察条件加入，绝不改写本任务的结论。
     """
-    payload = build_display_payload(task)
+    payload = build_display_payload(task, case_archive_verified=case_archive_verified)
     response.display = payload.display
     response.artifact = payload.artifact
     response.transfer = payload.transfer
@@ -774,11 +781,38 @@ def _attach_display(response: LogCollectTaskResponse, task) -> None:
     response.scenario_slot = slot
 
 
-def _to_response(task) -> LogCollectTaskResponse:
+def _to_response(task, *, case_archive_verified: bool = False) -> LogCollectTaskResponse:
     """任务行 → 响应（含派生展示字段）。"""
     response = LogCollectTaskResponse.model_validate(task)
-    _attach_display(response, task)
+    _attach_display(response, task, case_archive_verified=case_archive_verified)
     return response
+
+
+async def _case_archive_verified(case_id: str, session) -> bool:
+    """工单级只读事实：该工单是否已有权威归档核验通过的记录。
+
+    刻意比 `delivery_evidence_ok()` 更严格：历史 `relay_status=success` 没有链尾
+    确认时不能当"权威归档"，否则会把 Q2026112300730 那类中断代传误报成已送达。
+    这里只认 5888 链尾确认 / P1 归档回查 / 明确归档证据三种事实，且不带
+    `created_by` 过滤——同一工单可能被多个客户端复用。
+    """
+    result = await session.execute(
+        text(
+            """
+            SELECT 1
+            FROM log_collect_task
+            WHERE case_id = :case_id
+              AND (
+                detail #>> '{archive_confirmation,verified}' = 'true'
+                OR detail #>> '{p1_archive_check,verified}' = 'true'
+                OR detail ->> 'delivery_evidence' = 'archive_verified'
+              )
+            LIMIT 1
+            """
+        ),
+        {"case_id": case_id},
+    )
+    return result.first() is not None
 
 
 def _attach_p1_ticket(response: LogCollectTaskResponse, tickets: P1TicketService) -> None:
@@ -1241,7 +1275,11 @@ async def list_tasks(
     """按工单查询任务列表（倒序），只返回当前身份创建的任务。"""
     await verify_case_exists(case_id, service.repository.session)
     items, total = await service.list_tasks(case_id, created_by=client_id, limit=limit, offset=offset)
-    responses = [_to_response(item) for item in items]
+    archive_verified = await _case_archive_verified(case_id, service.repository.session)
+    responses = [
+        _to_response(item, case_archive_verified=archive_verified)
+        for item in items
+    ]
     await _attach_node_archive_path(responses, service.repository.session, case_id)
     return {"total": total, "items": responses}
 
@@ -1254,7 +1292,8 @@ async def get_task(
 ):
     """查询单个任务（仅任务创建者可见）。"""
     task = await _owned_task(task_id, client_id, service)
-    response = _to_response(task)
+    archive_verified = await _case_archive_verified(task.case_id, service.repository.session)
+    response = _to_response(task, case_archive_verified=archive_verified)
     await _attach_node_archive_path([response], service.repository.session, task.case_id)
     return response
 

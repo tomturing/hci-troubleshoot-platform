@@ -40,6 +40,7 @@ export const CONDITION_LABELS = {
   "artifact_uninspected": "包内容未探测",
   "artifact_verified": "产物已校验",
   "bridge_outdated": "桥接端版本较旧",
+  "case_archive_verified": "本工单已有权威归档",
   "collect_alert_observed": "采集时有部分日志未收全",
   "delivered_unverified": "已交付未核验",
   "handoff_pending": "采集完成但未交付",

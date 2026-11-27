@@ -293,6 +293,7 @@ async def put_process_log(
     task_id: UUID,
     payload: ProcessLogIn,
     x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    x_bridge_version: str = Header(default="", alias=BRIDGE_VERSION_HEADER),
     service: Any = Depends(get_log_collect_service),
 ) -> EvidenceAck:
     """一条节点采集进程日志（gzip 字节落库，正文由管理端单独读取）。"""
@@ -324,6 +325,7 @@ async def put_process_log(
             raise HTTPException(status_code=400, detail="进程日志内容不是合法 gzip") from exc
 
     task = await _require_task(service, task_id)
+    await _record_bridge_version(service, task_id, x_bridge_version)
     session = service.repository.session
     # 预算按轮独立：init 轮采到的安装日志不能被终态轮挤掉，
     # 否则失败时最关键的证据（acli 安装/初始化）反而丢失。
@@ -640,6 +642,7 @@ async def put_evidence_error(
     task_id: UUID,
     payload: EvidenceErrorIn,
     x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    x_bridge_version: str = Header(default="", alias=BRIDGE_VERSION_HEADER),
     service: Any = Depends(get_log_collect_service),
 ) -> EvidenceAck:
     """记录一次明确的证据上报失败（HTTP 码 / 异常）。
@@ -655,6 +658,7 @@ async def put_evidence_error(
     if not tickets.verify(str(task_id), x_evidence_ticket):
         raise _unauthorized()
     task = await _require_task(service, task_id)
+    await _record_bridge_version(service, task_id, x_bridge_version)
     session = service.repository.session
     await session.execute(
         text(
@@ -735,6 +739,7 @@ async def put_failure_snapshot(
     # 版本下会被当成 query 参数（422 loc=["query","payload"]），直接标注最稳。
     payload: FailureSnapshotIn = Body(...),
     x_evidence_ticket: str = Header(default="", alias="X-Evidence-Ticket"),
+    x_bridge_version: str = Header(default="", alias=BRIDGE_VERSION_HEADER),
     service: Any = Depends(get_log_collect_service),
 ) -> EvidenceAck:
     """失败现场快照：节点上关键路径与磁盘事实，写入 detail.failure_snapshot。
@@ -748,6 +753,7 @@ async def put_failure_snapshot(
     if not tickets.verify(str(task_id), x_evidence_ticket):
         raise _unauthorized()
     await _require_task(service, task_id)
+    await _record_bridge_version(service, task_id, x_bridge_version)
     session = service.repository.session
     snapshot = {
         "reason": payload.reason,

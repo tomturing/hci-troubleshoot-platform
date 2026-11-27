@@ -80,12 +80,23 @@ async def test_record_bridge_version_skips_invalid() -> None:
     assert service.repository.session.calls == []
 
 
-@pytest.mark.parametrize("handler", ["put_metric", "put_network_probe", "put_artifact_manifest"])
+@pytest.mark.parametrize(
+    "handler",
+    [
+        "put_metric",
+        "put_network_probe",
+        "put_artifact_manifest",
+        "put_process_log",
+        "put_evidence_error",
+        "put_failure_snapshot",
+    ],
+)
 def test_evidence_routes_declare_bridge_version_header(handler: str) -> None:
-    """三个高频端点都必须声明 X-Bridge-Version。
+    """全部证据端点都必须声明 X-Bridge-Version。
 
     覆盖关系：metrics 覆盖 P2 交付全程，network-probe 覆盖每个任务的第一枪，
-    artifact-manifest 覆盖没有 metrics 流的 P1 直传。
+    artifact-manifest 覆盖没有 metrics 流的 P1 直传；进程日志/证据失败/失败快照
+    是失败任务最后仍会触发的端点，缺一个就会让版本字段继续出现空洞。
     """
     func = getattr(route, handler)
     parameter = inspect.signature(func).parameters.get("x_bridge_version")

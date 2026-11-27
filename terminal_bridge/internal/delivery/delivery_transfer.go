@@ -125,6 +125,15 @@ func (r *deliveryRunner) waitCollect(ctx context.Context, session NodeSession, j
 						"job_id": job.JobID, "total": progress.Total,
 					})
 				} else {
+					// 先判包归属再判新旧：Q2026112500790 的 progress 曾返回另一个工单的 zip，
+					// 旧包判定只能说"这不是本轮产物"，说不出"这是别人的包"。
+					if err := remote.ValidateArchiveOwnership(sourcePath, job.CaseID); err != nil {
+						evidence.Emit("WARN", "delivery.archive_path_case_mismatch", "节点上报的压缩包不属于当前工单，拒绝交付", "", job.CaseID, job.NodeIP, "", map[string]any{
+							"job_id": job.JobID, "task_id": job.TaskID,
+							"source_path": sourcePath, "case_id": job.CaseID,
+						})
+						return newFatal(logcontract.ErrTransferArchiveMissing, "%v", err)
+					}
 					// 包归属判定：只用节点自己的时钟算年龄，避免节点时钟偏差被当成旧包。
 					// 现场 Q2026112400585 的节点慢约 6 分钟，旧实现直接拿 mtime 与
 					// bridge 墙钟比较，把本轮刚打好的包判成上一轮产物。

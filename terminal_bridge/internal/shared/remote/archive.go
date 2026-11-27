@@ -10,6 +10,7 @@ package remote
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,6 +69,24 @@ func NormalizeArchivePath(raw string) (string, error) {
 		return "", fmt.Errorf("source_path 必须是 %s 下的 .zip 文件", logCollectArchiveDir)
 	}
 	return path, nil
+}
+
+// ValidateArchiveOwnership 校验压缩包文件名是否属于当前工单。
+//
+// Q2026112500790 现场出现过 acli progress 返回另一个工单的 zip：包本身是真的、
+// mtime 也是旧的，旧包判定能拦住交付，但根因（上报错包）没有任何可观测信号。
+// 这里只比对 basename 与 <case_id>.zip；caseID 为空时不猜测、直接放行，
+// 避免把缺少工单号的兼容请求误伤成交付失败。
+func ValidateArchiveOwnership(path string, caseID string) error {
+	expected := strings.TrimSpace(caseID)
+	if expected == "" {
+		return nil
+	}
+	want := expected + ".zip"
+	if got := filepath.Base(path); got != want {
+		return fmt.Errorf("压缩包 %s 与本工单 %s 不一致", got, expected)
+	}
+	return nil
 }
 
 // ArchiveProbe 是「节点上这个压缩包此刻是什么状态」的唯一结论载体（三态）。
