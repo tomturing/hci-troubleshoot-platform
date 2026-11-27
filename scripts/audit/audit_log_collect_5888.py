@@ -29,7 +29,7 @@ import urllib.request
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -59,12 +59,12 @@ def verdict_of(item: dict[str, Any], archive: dict[str, Any] | None) -> str:
     archived_at = None
     mtime = archive.get("mtime")
     if isinstance(mtime, (int, float)):
-        archived_at = datetime.fromtimestamp(int(mtime), tz=datetime.UTC)
+        archived_at = datetime.fromtimestamp(int(mtime), tz=UTC)
     if created and archived_at:
         try:
             created_at = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
             if created_at.tzinfo is None:
-                created_at = created_at.replace(tzinfo=datetime.UTC)
+                created_at = created_at.replace(tzinfo=UTC)
             if archived_at < created_at - timedelta(seconds=LOOKBACK_SECONDS):
                 return "stale_archive"
         except ValueError:

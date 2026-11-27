@@ -29,6 +29,7 @@ PHASE_LABELS = {   'queued': '排队中',
     'settled': '已结束'}
 
 CONDITION_LABELS = {   'artifact_verified': '产物已校验',
+    'case_archive_verified': '本工单已有权威归档',
     'artifact_suspect': '产物可疑',
     'artifact_missing': '未取到有效日志',
     'artifact_uninspected': '包内容未探测',

@@ -169,8 +169,16 @@ def build_display_payload(
     metrics: Mapping[str, Any] | None = None,
     probes: Iterable[Mapping[str, Any]] | None = None,
     now: datetime | None = None,
+    case_archive_verified: bool = False,
 ) -> LogCollectDisplayPayload:
     """把 ORM 行/字典行转成响应模型（判定仍在 domain 层）。"""
     return LogCollectDisplayPayload.model_validate(
-        derive(task, manifest=manifest, metrics=metrics, probes=probes, now=now)
+        derive(
+            task,
+            manifest=manifest,
+            metrics=metrics,
+            probes=probes,
+            now=now,
+            case_archive_verified=case_archive_verified,
+        )
     )

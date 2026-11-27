@@ -159,6 +159,16 @@ class TestConclusion:
         )
         assert payload["display"]["conclusion"] == "failed"
 
+    def test_case_archive_fact_does_not_rewrite_failed_conclusion(self):
+        """工单级归档事实只作为观察条件，不能把本轮失败写成已交付。"""
+        payload = derive(
+            make_task(status="failed"),
+            now=NOW,
+            case_archive_verified=True,
+        )
+        assert payload["display"]["conclusion"] == "failed"
+        assert "case_archive_verified" in key_list(payload)
+
     def test_delivered_is_settled_even_if_node_never_finished(self):
         """节点卡在 uploading 但平台已收妥：不能永远算「传输中」。"""
         payload = derive(
