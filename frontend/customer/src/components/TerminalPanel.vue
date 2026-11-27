@@ -384,11 +384,20 @@ function handleInteractiveData(data: string) {
   }
 }
 
+const MIN_FIT_CONTAINER_WIDTH = 160
+const MIN_FIT_CONTAINER_HEIGHT = 60
+const MIN_USABLE_PTY_COLS = 20
+const MIN_USABLE_PTY_ROWS = 4
+const DEFAULT_TERMINAL_COLS = 100
+const DEFAULT_TERMINAL_ROWS = 30
+
 function initTerminal() {
   if (!terminalContainer.value || xterm) return
 
   const interactive = isInteractiveMode.value
   xterm = new Terminal({
+    cols: DEFAULT_TERMINAL_COLS,
+    rows: DEFAULT_TERMINAL_ROWS,
     convertEol: !interactive,
     disableStdin: !interactive,
     // 等宽字体栈：优先现代终端字体，缺失时逐级回退，避免不同机器行高漂移
@@ -496,7 +505,41 @@ function scheduleFit() {
   fitTimer = window.setTimeout(() => {
     fitTimer = null
     fitTerminal()
-  }, 60)
+  }, 80)
+}
+
+/**
+ * 判断终端容器当前是否处于可安全 fit 的可见、非极窄状态。
+ *
+ * 根因防护：PanelShell 折叠态（48px + v-show=false）或 300ms 展开动画最初几帧里，
+ * 容器净宽接近 0~50px；若此时直接调用 fitAddon.fit()，FitAddon 会把 xterm 压到硬下限
+ * cols=2 并触发 ssh_resize(2, rows)，把远端提示符切碎成 2 字符一行的竖排残留。
+ */
+function canSafelyFitContainer(container: HTMLElement): boolean {
+  // 右栏折叠或位于 SFTP 页签时（v-show 隐藏），绝不执行 fit
+  if (chatStore.isRightPanelOpen === false || (chatStore.rightPanelTab && chatStore.rightPanelTab !== 'terminal')) {
+    return false
+  }
+  if (typeof container.getBoundingClientRect === 'function') {
+    const rect = container.getBoundingClientRect()
+    // 有真实布局测量值时，低于最小可读像素门槛（如折叠条或展开动画初期）一律跳过
+    if ((rect.width > 0 || rect.height > 0) && (rect.width < MIN_FIT_CONTAINER_WIDTH || rect.height < MIN_FIT_CONTAINER_HEIGHT)) {
+      return false
+    }
+  }
+  if (fitAddon && typeof fitAddon.proposeDimensions === 'function') {
+    const dims = fitAddon.proposeDimensions()
+    if (
+      !dims ||
+      !Number.isFinite(dims.cols) ||
+      !Number.isFinite(dims.rows) ||
+      dims.cols < MIN_USABLE_PTY_COLS ||
+      dims.rows < MIN_USABLE_PTY_ROWS
+    ) {
+      return false
+    }
+  }
+  return true
 }
 
 /**
@@ -509,13 +552,14 @@ function scheduleFit() {
  */
 function fitTerminal() {
   if (!fitAddon || !xterm || !terminalContainer.value) return
+  if (!canSafelyFitContainer(terminalContainer.value)) return
   fitAddon.fit()
   const host = terminalContainer.value.querySelector('.xterm') as HTMLElement | null
   const screen = terminalContainer.value.querySelector('.xterm-screen') as HTMLElement | null
-  if (host && screen && xterm.rows > 2 && screen.offsetHeight > host.clientHeight) {
+  if (host && screen && xterm.rows > MIN_USABLE_PTY_ROWS && screen.offsetHeight > host.clientHeight) {
     xterm.resize(xterm.cols, xterm.rows - 1)
   }
-  if (isConnected.value && xterm.cols >= 2 && xterm.rows >= 2) {
+  if (isConnected.value && xterm.cols >= MIN_USABLE_PTY_COLS && xterm.rows >= MIN_USABLE_PTY_ROWS) {
     chatStore.sendSSHResize?.(xterm.cols, xterm.rows)
   }
 }
