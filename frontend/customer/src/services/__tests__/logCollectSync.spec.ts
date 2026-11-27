@@ -755,6 +755,38 @@ describe('交付证据有界等待', () => {
     expect(action.adoptMode).toBe('deliver')
   })
 
+  it('盘上只有上一批次残留包 → 不给补交付入口（Q2026112700769）', () => {
+    // 文件确实在（archiveExists=true），但它不是本次采集的产物：
+    // 给入口就等于把上一批次的数据当成本次结果交付出去。
+    const action = decideNodeSync({ ...completed, archiveExists: true, archiveResidual: true })
+    expect(action.action).toBe('wait_delivery')
+    expect(action.adoptMode).toBeUndefined()
+    expect(action.reason).toContain('上一批次')
+  })
+
+  it('残留包等待超时 → 结果未知，且不提示"上传到平台"', () => {
+    const action = decideNodeSync({
+      ...completed,
+      archiveExists: true,
+      archiveResidual: true,
+      deliveryWaitElapsedMs: DELIVERY_EVIDENCE_WAIT_MS,
+    })
+    expect(action.action).toBe('delivery_unknown')
+    expect(action.reason).not.toContain('上传到平台')
+  })
+
+  it('failed 终态 + 残留包 → 不接管交付（接管也交付不出本次日志）', () => {
+    const action = decideNodeSync({
+      platformStatus: 'failed',
+      nodeState: 'completed',
+      archiveExists: true,
+      archiveResidual: true,
+    })
+    expect(action.action).toBe('none')
+    expect(action.adoptMode).toBeUndefined()
+    expect(action.reason).toContain('残留压缩包')
+  })
+
   it('回归护栏：采集结论绝不被交付证据拦住（#1277 / Q2026101401683）', () => {
     // "要求完成态自证"曾把真实完成永久卡在 collecting；本次改动只约束交付结论。
     expect(

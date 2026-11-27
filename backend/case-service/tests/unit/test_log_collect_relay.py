@@ -1410,6 +1410,85 @@ async def test_run_retries_stale_archive_publish_race(storage, monkeypatch):
     assert finished["confirmation"]["attempts"] == 3  # 与 archive_missing 同样重试满 3 次
 
 
+async def test_run_uses_sent_bytes_as_trustworthy_expectation(storage, monkeypatch):
+    """链尾期望值优先用「本次代传实际发出的字节数」。
+
+    平台自己读盘、分片发出去，字节数是它数出来的；5888 落盘件比它小只可能是截断。
+    这与「archive_size 来自采集过程中的节点观测」是两类证据：后者可能量到同工单
+    上一批次的残留包（Q2026112700769），前者不会。
+    """
+    case_id = "Q2026112700004"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    task.archive_size = 8  # 观测值：单独使用时不可信
+    task.object_size = None
+    task.created_at = datetime.now(UTC) - timedelta(minutes=2)
+    captured: dict = {}
+
+    _patch_http_transport(
+        monkeypatch,
+        _run_handler(
+            {
+                "found": True,
+                "size": 4,
+                "mtime": datetime.now(UTC).timestamp(),
+                "stored_name": f"{case_id}.zip",
+            },
+            captured,
+        ),
+    )
+    service = LogCollectRelayService(
+        make_factory(_FakeResult(scalar=task)), storage, SangforRelayClient("http://relay")
+    )
+    finished: dict = {}
+    service._finish = AsyncMock(
+        side_effect=lambda task_id, status, error=None, error_code="LC-TRANSFER-003", archive_confirmation=None: (
+            finished.update(status=status, confirmation=archive_confirmation)
+        )
+    )
+
+    await service.run(task.task_id)
+
+    confirmation = finished["confirmation"]
+    assert confirmation["expected_size"] == 8
+    assert confirmation["sent_size"] == 8
+    assert confirmation["expected_size_trustworthy"] is True
+    # 实际发出去 8 字节、落盘只有 4：确定性截断，不再降级成"待核对"。
+    assert confirmation["verified"] is False
+    assert confirmation["reason"] == "size_mismatch"
+
+
+async def test_confirm_archive_keeps_observed_size_untrusted(storage, monkeypatch):
+    """没有 sent_size / object_size 时，archive_size 仍是不可信观测。
+
+    这条路径覆盖「续传前进程已退出、只有前端上报的观测值」：5888 落盘件更小
+    可能是残留包，不能判截断（红卡），只能写待核对。
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/archive_status"
+        return httpx.Response(
+            200,
+            json={"found": True, "size": 4, "mtime": datetime.now(UTC).timestamp()},
+        )
+
+    _patch_http_transport(monkeypatch, handler)
+    case_id = "Q2026112700005"
+    task, _ = _make_task(storage, case_id, b"01234567")
+    task.archive_size = 8
+    task.created_at = datetime.now(UTC) - timedelta(minutes=2)
+    service = LogCollectRelayService(
+        make_factory(_FakeResult()), storage, SangforRelayClient("http://relay")
+    )
+
+    async with make_client(handler) as http:
+        snapshot = await service._confirm_archive(task, http, f"{case_id}.zip")
+
+    assert snapshot["expected_size"] == 8
+    assert snapshot["expected_size_trustworthy"] is False
+    assert snapshot["verified"] is False
+    assert snapshot["reason"] == "archive_size_untrusted"
+
+
 async def test_finish_unconfirmed_marks_queued_and_merges_detail(monkeypatch):
     from app.services import log_collect_relay_service as module
 

@@ -342,6 +342,14 @@ interface ProgressSnapshot {
    * 缺省（旧版 bridge / 探测命令不可用）时必须当作"未确认"，不能当作"不存在"。
    */
   archive_exists?: boolean
+  /**
+   * 盘上这个包是否**不是本次采集的产物**（bridge 在 create 前量过文件身份）。
+   *
+   * 同一工单取消后换模块重收时，固定路径上的上一批次包会被 stat 到；bridge 已把
+   * `archive_size` 置 0 并给出本标记（Q2026112700769）。此时虽然 `archive_exists`
+   * 为 true，也不能提供「上传到平台」——那会把上一批次的数据当成本次结果交付。
+   */
+  archive_residual?: boolean
   upload_state: string
   /**
    * acli 自报的总耗时（`00:03:38.9` / `58:11`），bridge 已按 `总耗时`/`Total time` 归一。
@@ -1427,6 +1435,9 @@ const canUploadFromNode = computed(() => {
   const task = resultTask.value
   if (!task || resultDelivered.value) return false
   if (resultMode.value === 'acli_direct') return false
+  // 盘上只有上一批次的残留包时不提供补交付：上传它等于把上一批次的数据
+  // 当成本次结果交出去（Q2026112700769）。
+  if (progress.value?.archive_residual) return false
   return Boolean(task.archive_path) && (task.archive_size ?? 0) > 0
 })
 
@@ -4155,6 +4166,8 @@ async function syncNodeState(
       archivePath: snapshot.archive_path,
       // 包是否存在只认 stat 结论：路径是"曾生成"，文件可能已被插件删除
       archiveExists: snapshot.archive_exists,
+      // 存在但"是上一批次残留"时不能补交付：判定层据此禁用上传入口
+      archiveResidual: snapshot.archive_residual === true,
       nodeDelivered,
       progressTotal: snapshot.total,
       expectedHosts: expectedHostCount(),

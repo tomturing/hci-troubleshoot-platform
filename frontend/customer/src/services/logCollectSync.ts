@@ -124,6 +124,15 @@ export interface SyncInput {
    */
   archiveExists?: boolean
   /**
+   * 盘上那个包是否**不是本次采集的产物**（bridge 在 create 之前量过文件身份）。
+   *
+   * 固定路径 `/sf/.../log_collect/{工单号}.zip` 在同一工单重收时会同名覆盖，
+   * 上一批次（如取消的 vm_suspend）留下的包会一直被 stat 到（Q2026112700769）。
+   * 此时 `archiveExists` 仍为 true，但它只证明"有文件"，不证明"有本次的包"——
+   * 上传它会把上一批次的数据当成本次结果交付。
+   */
+  archiveResidual?: boolean
+  /**
    * 节点报告是否明确"已成功交付"（P1 的 `发送成功`）。
    *
    * 平台对 P1 直传是**零可观测**的：没有字节、没有分片、没有回执。唯一证据就是
@@ -512,14 +521,30 @@ function decideNodeSyncUnchecked(input: SyncInput): SyncAction {
 
     // 未交付：补交付的物理前提只有一条——**文件此刻真的在节点上**。
     // 注意判据是 archiveExists（stat 结论），不是 archivePath（报告里的字符串）。
+    // 并且"在"还不等于"能交付"：盘上可能只有上一批次的残留包（archiveResidual），
+    // 传它等于交付错数据，因此这两种情况必须分开。
+    const archiveUsable = input.archiveExists === true && input.archiveResidual !== true
     if (!input.platformDelivered) {
-      if (nodeState === 'completed' && input.archiveExists === true) {
+      if (nodeState === 'completed' && archiveUsable) {
         return {
           action: 'adopt',
           reason: '平台已完成采集但日志尚未交付（压缩包仍在节点）；可经平台中转直接上传，不会重新采集',
           ownership,
           adoptMode: 'deliver',
         }
+      }
+      if (nodeState === 'completed' && input.archiveResidual === true) {
+        // 不能用 waitForEvidence 的模板：它超时后的建议是"点上传到平台"，
+        // 而这里上传必然传错（盘上是上一批次的包）。
+        const residualReason =
+          '节点上只有同工单上一批次的残留压缩包（不是本次采集的产物），不能据此补交付'
+        return elapsed < DELIVERY_EVIDENCE_WAIT_MS
+          ? { action: 'wait_delivery', reason: `${residualReason}；正在确认日志服务器归档件`, ownership }
+          : {
+              action: 'delivery_unknown',
+              reason: `${residualReason}，平台也未查到本次归档件；结果未知，如需产物请重新采集`,
+              ownership,
+            }
       }
       if (nodeState === 'completed') {
         return waitForEvidence(
@@ -557,12 +582,19 @@ function decideNodeSyncUnchecked(input: SyncInput): SyncAction {
       // （工单 Q2026102701294：节点 100%、包 289 MiB 在盘，平台 failed）。
       // 正确做法不是"硬把终态改成完成"（那会说谎：平台根本没有产物），
       // 而是承认节点真相 → 走合法边回到采集中，随后立刻按 completed 收尾并交付。
-      if (input.archiveExists === true) {
+      if (input.archiveExists === true && input.archiveResidual !== true) {
         return {
           action: 'adopt',
           reason: '节点已采集完成且压缩包仍在，平台只是没交付；接管后继续交付，不会重新采集',
           ownership,
           adoptMode: 'deliver',
+        }
+      }
+      if (input.archiveResidual === true) {
+        return {
+          action: 'none',
+          reason: '节点已采集完成，但盘上只有上一批次的残留压缩包（不是本次产物），接管也交付不出本次日志；如需产物请重新采集',
+          ownership,
         }
       }
       // 无残留包：P1 直传成功时插件会自删，此时没有可交付的物证。

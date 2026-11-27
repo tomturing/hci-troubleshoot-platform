@@ -373,8 +373,25 @@ async def reconcile_p1_archives_once(
 
             filename = archive_filename_for(case_id)
             ticket = tickets.issue(case_id, filename)
+            task_stub = SimpleNamespace(
+                created_at=row["created_at"],
+                delivery_status=row["delivery_status"],
+            )
             try:
-                archive = await client.archive_status(http, filename, ticket=ticket)
+                # 与用户点「重新核验」共用同一套探测与判据：两处结论必须同源，
+                # 否则同一单会出现"后台说已交付、页面说未核验到"的双源矛盾。
+                check_source, archive, receipt_view = await _probe_p1_archive(
+                    client, http, filename, ticket
+                )
+                verified, reason, archived_size, _archived_at = _judge_p1_probe(
+                    task_stub,
+                    archive=archive,
+                    receipt_view=receipt_view,
+                    expected_size=expected_size,
+                    # 后台读的是库里的 archive_size，它是采集期的节点观测，
+                    # 不能当"确认体积"做截断判定（Q2026112700769）。
+                    expected_size_trustworthy=False,
+                )
             except httpx.HTTPError as exc:
                 logger.warning(
                     "P1 后台归档复核查询失败 task=%s case=%s trace_id=%s error=%s",
@@ -385,15 +402,6 @@ async def reconcile_p1_archives_once(
                 )
                 continue
 
-            task_stub = SimpleNamespace(
-                created_at=row["created_at"],
-                delivery_status=row["delivery_status"],
-            )
-            verified, reason, archived_size, _archived_at = _judge_p1_archive(
-                task_stub,
-                archive,
-                expected_size,
-            )
             if not verified:
                 # 否定结论不刷 checked_at，保证真实无包任务按原窗口正常过期。
                 continue
@@ -405,10 +413,14 @@ async def reconcile_p1_archives_once(
                 "filename": filename,
                 "stored_name": archive.get("stored_name"),
                 "expected_size": expected_size,
+                "expected_size_trustworthy": False,
                 "archived_size": archived_size,
                 "checked_at": checked_at.isoformat(),
                 "source": "background_reconcile",
+                "evidence_source": check_source,
             }
+            if receipt_view is not None:
+                check.update(receipt_view["meta"])
             patch = _p1_verify_patch(task_stub, verified=True, check=check, checked_at=checked_at)
             async for session in database_manager.get_session():
                 service = LogCollectService(LogCollectTaskRepository(session))
@@ -862,6 +874,136 @@ def _judge_p1_archive(
     )
 
 
+def _parse_receipt_time(raw: Any) -> datetime | None:
+    """解析 5888 回执里的时间（ISO，带或不带时区），解析不出就返回 None。"""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _p1_receipt_view(receipt: Any) -> dict | None:
+    """把 5888 ``/upload_progress`` 的上传会话回执翻译成判定输入。
+
+    第一性原理：平台对 P1 只有两类外部事实——
+      1. 归档目录里的一个文件（``/archive_status``：存在 / 体积 / mtime）；
+      2. 服务端上传会话的回执（``/upload_progress``：status / 收齐的分片 / 摘要）。
+    第 2 类能回答"服务端是否把这个包收齐并合片"，是**强证据**；第 1 类只能回答
+    "目录里有这么个文件"。后者在上传窗口内会读到上一批次的旧包（Q2026111700614），
+    所以有会话回执时必须优先用回执。
+
+    返回 ``None`` 表示回执不可用作强证据，调用方回退 ``/archive_status``：
+      - 没有 ``found``：什么都没查到；
+      - 没有 ``upload_id``：5888 在会话过期后会用归档件兜底（``file_size ==
+        uploaded_size`` 是同一份 stat 的自洽结果），不能当"收齐"的证据；
+      - ``start_time`` 解析不出：无法把会话对齐到本次任务。
+
+    返回 ``{"state": done|pending|invalid, "archive": ..., "meta": ...}``：
+      - ``done``：会话收齐且合片完成，``archive`` 交给 ``judge_archive`` 做体积与
+        代际判定（mtime 用会话 ``start_time``，比文件 mtime 更能代表"哪一次上传"）；
+      - ``pending``：还在传 / 合片中 / 服务端已判失败——归档件此刻不存在；
+      - ``invalid``：会话自称完成但数字自相矛盾（体积对不上、分片不齐）。
+
+    已知边界（不掩饰）：会话只按产物名索引，同一工单后续另一次成功交付也会让旧
+    任务的核验读到 done。``/archive_status`` 原本就有同样的边界，这里没有变差。
+    """
+    if not isinstance(receipt, dict) or not receipt.get("found"):
+        return None
+    upload_id = str(receipt.get("upload_id") or "").strip()
+    if not upload_id:
+        return None
+    started_at = _parse_receipt_time(receipt.get("start_time"))
+    if started_at is None:
+        return None
+
+    digest = receipt.get("digest") or {}
+    meta = {
+        "upload_id": upload_id,
+        "session_status": receipt.get("status"),
+        "received_chunks": receipt.get("received_chunks"),
+        "chunk_total": receipt.get("chunk_total"),
+        "file_size": receipt.get("file_size"),
+        "uploaded_size": receipt.get("uploaded_size"),
+        "started_at": started_at.isoformat(),
+        "target_path": receipt.get("target_path"),
+        "digest_sha256": digest.get("sha256") if isinstance(digest, dict) else None,
+    }
+    if str(receipt.get("status") or "") != "done":
+        return {"state": "pending", "archive": None, "meta": meta}
+
+    file_size = receipt.get("file_size")
+    uploaded_size = receipt.get("uploaded_size")
+    received, total = receipt.get("received_chunks"), receipt.get("chunk_total")
+    received_count = len(received) if isinstance(received, (list, tuple)) else received
+    chunk_short = (
+        isinstance(received_count, int) and isinstance(total, int) and total > 0 and received_count < total
+    )
+    if not isinstance(file_size, int) or file_size <= 0 or uploaded_size != file_size or chunk_short:
+        return {"state": "invalid", "archive": None, "meta": meta}
+
+    return {
+        "state": "done",
+        "archive": {
+            "found": True,
+            "size": file_size,
+            # 用会话起始时间做代际判定：它回答"这是哪一次上传"，而文件 mtime 只
+            # 回答"字节最后什么时候写过"（上传中规范名切包时会变）。
+            "mtime": started_at.timestamp(),
+            "target_path": receipt.get("target_path"),
+        },
+        "meta": meta,
+    }
+
+
+async def _probe_p1_archive(
+    client: Any,
+    http: httpx.AsyncClient,
+    filename: str,
+    ticket: str,
+) -> tuple[str, dict, dict | None]:
+    """取 P1 的外部事实：先回执（强证据），取不到再回退归档件。
+
+    返回 ``(来源, 归档事实, 回执视图)``。回执端点异常只降级、不抛错——它的作用
+    是让核验更准，不能因为 5888 还没升级就把一次核验打成失败。
+    """
+    try:
+        receipt_state, receipt = await client.upload_progress(http, filename)
+        if receipt_state == "ok":
+            view = _p1_receipt_view(receipt)
+            if view is not None:
+                return "upload_progress", view["archive"] or {}, view
+    except httpx.HTTPError as exc:
+        logger.warning("P1 上传回执查询失败 filename=%s: %s（回退归档件核验）", filename, exc)
+    archive = await client.archive_status(http, filename, ticket=ticket)
+    return "archive_status", archive, None
+
+
+def _judge_p1_probe(
+    task: Any,
+    *,
+    archive: dict,
+    receipt_view: dict | None,
+    expected_size: int | None,
+    expected_size_trustworthy: bool,
+) -> tuple[bool, str, int | None, datetime | None]:
+    """把一次探测翻译成结论；回执尚未完成时不必再看归档目录。"""
+    if receipt_view is not None and receipt_view["state"] != "done":
+        # pending（还在传/合片/服务端判失败）与 invalid（自称完成但数字矛盾）
+        # 都只说明"本次观测没有可交付的归档件"，不写终态。
+        reason = "archive_missing" if receipt_view["state"] == "pending" else "archive_size_invalid"
+        return False, reason, None, None
+    return _judge_p1_archive(
+        task,
+        archive,
+        expected_size,
+        expected_size_trustworthy=expected_size_trustworthy,
+    )
+
+
 def _p1_verify_patch(
     task,
     *,
@@ -889,7 +1031,11 @@ def _p1_verify_patch(
     detail: dict = {"p1_archive_check": check}
     if verified:
         detail["delivery_evidence"] = "archive_verified"
-        detail["delivery_evidence_note"] = "P1 直传：已由日志服务器按产物名回查归档件，体积不小于任务记录"
+        detail["delivery_evidence_note"] = (
+            "P1 直传：日志服务器回执显示上传会话已收齐并合片，体积不小于任务记录"
+            if check.get("source") == "upload_progress"
+            else "P1 直传：已由日志服务器按产物名回查归档件，体积不小于任务记录"
+        )
         return LogCollectTaskPatch(
             delivery_status="delivered",
             delivery_error=None,
@@ -1032,6 +1178,12 @@ async def verify_p1_archive(
     写入契约（2026-11-10 修正）：**只有核验通过才写 delivered，否定结论不写终态**。
     否定只落 ``detail.p1_archive_check`` 快照，交付状态保持原样。理由见下方实现注释：
     单次探测分不清"还没传完"与"传失败了"，而 failed 一旦写下就没有第二个写入者纠正。
+
+    证据来源顺序（2026-11-27 修正）：先查 5888 的上传会话回执 ``/upload_progress``
+    （按产物名，含 status / 收齐分片数 / 摘要 / 会话起始时间），它回答"服务端有没有
+    把这个包收齐并合片"；只有拿不到会话（旧版 5888、会话已过期、端点异常）时才回退
+    ``/archive_status``。原因是归档目录在上传窗口内仍挂着上一批次的旧包，只看文件
+    会把"正在上传"误判成"查到旧包/没落地"（Q2026111700614、Q2026112700769）。
     """
     try:
         task = await service.get_task(task_id)
@@ -1065,17 +1217,20 @@ async def verify_p1_archive(
     # 复核用的票据现签现用：不复用建任务时下发的那张，避免"前端拿到的票过期
     # 导致核验也一并失败"这种把两个环节耦合起来的故障模式。
     ticket = tickets.issue(task.case_id, filename)
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as http:
-            archive = await client.archive_status(http, filename, ticket=ticket)
-    except httpx.HTTPError as exc:
-        logger.warning("P1 归档查询失败 task=%s: %s", task_id, exc)
-        raise _problem("LC-TRANSFER-007", f"查询日志服务器归档失败：{exc}") from exc
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as http:
+        try:
+            check_source, archive, receipt_view = await _probe_p1_archive(
+                client, http, filename, ticket
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("P1 归档查询失败 task=%s: %s", task_id, exc)
+            raise _problem("LC-TRANSFER-007", f"查询日志服务器归档失败：{exc}") from exc
 
-    verified, reason, archived_size, archived_at = _judge_p1_archive(
+    verified, reason, archived_size, archived_at = _judge_p1_probe(
         task,
-        archive,
-        expected_size,
+        archive=archive,
+        receipt_view=receipt_view,
+        expected_size=expected_size,
         expected_size_trustworthy=expected_size_trustworthy,
     )
 
@@ -1086,9 +1241,15 @@ async def verify_p1_archive(
         "filename": filename,
         "stored_name": archive.get("stored_name"),
         "expected_size": expected_size,
+        "expected_size_trustworthy": expected_size_trustworthy,
         "archived_size": archived_size,
+        "source": check_source,
         "checked_at": checked_at.isoformat(),
     }
+    if receipt_view is not None:
+        # 回执细节必须留档：事后要能回答"当时看到的是哪个会话、收了多少片"，
+        # 而不是只有一句"未核验到归档件"。
+        check.update(receipt_view["meta"])
     patch = _p1_verify_patch(task, verified=verified, check=check, checked_at=checked_at)
 
     # 交付终态只能由这个内部入口写：这是"经过独立事实核验"的权威调用，
@@ -1096,10 +1257,11 @@ async def verify_p1_archive(
     await service.update_task(task_id, patch, server_authoritative=True)
 
     logger.info(
-        "P1 归档核验 task=%s verified=%s reason=%s expected=%s archived=%s",
+        "P1 归档核验 task=%s verified=%s reason=%s source=%s expected=%s archived=%s",
         task_id,
         verified,
         reason,
+        check_source,
         expected_size,
         archived_size,
     )

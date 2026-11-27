@@ -20,7 +20,14 @@ from uuid import uuid4
 
 import pytest
 from app.routes import log_collect as lc_route
-from app.routes.log_collect import _judge_p1_archive, _p1_verify_patch, reconcile_p1_archives_once
+from app.routes.log_collect import (
+    _judge_p1_archive,
+    _judge_p1_probe,
+    _p1_receipt_view,
+    _p1_verify_patch,
+    _probe_p1_archive,
+    reconcile_p1_archives_once,
+)
 
 
 def _task(created_at: datetime | None = None, delivery_status: str = "none"):
@@ -147,6 +154,239 @@ class TestVerifyPatch:
         assert "delivery_finished_at" not in written
 
 
+class TestReceiptView:
+    """5888 上传会话回执 → 判定输入（2026-11-27 起核验优先用它）。"""
+
+    @staticmethod
+    def _receipt(**overrides):
+        created = datetime.now(UTC) - timedelta(minutes=20)
+        payload = {
+            "found": True,
+            "upload_id": "u-1",
+            "status": "done",
+            "file_size": 120,
+            "uploaded_size": 120,
+            "received_chunks": [0, 1, 2],
+            "chunk_total": 3,
+            "start_time": (created + timedelta(minutes=8)).isoformat(),
+            "target_path": "/sf/log/Q1/Q1.zip",
+            "digest": {"sha256": "a" * 64},
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_done_session_becomes_archive_fact(self):
+        receipt = self._receipt()
+        view = _p1_receipt_view(receipt)
+        assert view is not None
+        assert view["state"] == "done"
+        assert view["archive"]["size"] == 120
+        assert view["meta"]["upload_id"] == "u-1"
+        # 代际用会话起始时间，不用文件 mtime：后者在上传切包时会变。
+        assert view["archive"]["mtime"] == datetime.fromisoformat(receipt["start_time"]).timestamp()
+
+    def test_archive_fallback_without_upload_id_is_not_a_receipt(self):
+        """会话过期后 5888 用归档件兜底：file_size==uploaded_size 是自洽结果，不是收齐证明。"""
+        assert _p1_receipt_view(self._receipt(upload_id=None)) is None
+        assert _p1_receipt_view({"found": False}) is None
+
+    def test_uploading_session_is_pending(self):
+        assert _p1_receipt_view(self._receipt(status="uploading"))["state"] == "pending"
+        assert _p1_receipt_view(self._receipt(status="failed"))["state"] == "pending"
+
+    def test_done_but_chunks_incomplete_is_invalid(self):
+        view = _p1_receipt_view(self._receipt(received_chunks=[0, 1]))
+        assert view["state"] == "invalid"
+
+    def test_done_but_size_inconsistent_is_invalid(self):
+        assert _p1_receipt_view(self._receipt(uploaded_size=119))["state"] == "invalid"
+
+    def test_missing_start_time_is_unusable(self):
+        assert _p1_receipt_view(self._receipt(start_time=None)) is None
+
+
+class TestProbeAndJudge:
+    """探测顺序：回执优先，取不到才回退归档件。"""
+
+    @staticmethod
+    def _client(handler):
+        import httpx
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://relay")
+
+    @pytest.mark.asyncio
+    async def test_done_receipt_verifies_without_reading_archive_dir(self):
+        import httpx
+
+        calls: list[str] = []
+        created = datetime.now(UTC) - timedelta(minutes=20)
+        receipt = {
+            "found": True,
+            "upload_id": "u-9",
+            "status": "done",
+            "file_size": 120,
+            "uploaded_size": 120,
+            "received_chunks": 3,
+            "chunk_total": 3,
+            "start_time": (created + timedelta(minutes=5)).isoformat(),
+        }
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path == "/upload_progress":
+                return httpx.Response(200, json=receipt)
+            return httpx.Response(500)
+
+        task = _task(created)
+        async with self._client(handler) as http:
+            source, archive, view = await _probe_p1_archive(
+                lc_route.SangforRelayClient("http://relay"), http, "Q1.zip", "t-1"
+            )
+
+        assert source == "upload_progress"
+        assert view["state"] == "done"
+        verified, reason, size, _ = _judge_p1_probe(
+            task,
+            archive=archive,
+            receipt_view=view,
+            expected_size=120,
+            expected_size_trustworthy=True,
+        )
+        assert (verified, reason, size) == (True, "verified", 120)
+        assert "/archive_status" not in calls
+
+    @pytest.mark.asyncio
+    async def test_uploading_session_never_falls_back_to_stale_archive(self):
+        """上传中绝不看归档目录：那里挂着的可能是上一批次的旧包。"""
+        import httpx
+
+        calls: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request.url.path)
+            if request.url.path == "/upload_progress":
+                return httpx.Response(
+                    200,
+                    json={
+                        "found": True,
+                        "upload_id": "u-2",
+                        "status": "uploading",
+                        "file_size": 120,
+                        "uploaded_size": 40,
+                        "start_time": datetime.now(UTC).isoformat(),
+                    },
+                )
+            return httpx.Response(200, json={"found": True, "size": 4_478_420_847})
+
+        task = _task()
+        async with self._client(handler) as http:
+            source, archive, view = await _probe_p1_archive(
+                lc_route.SangforRelayClient("http://relay"), http, "Q1.zip", "t-1"
+            )
+
+        assert source == "upload_progress"
+        assert archive == {}
+        verified, reason, _, _ = _judge_p1_probe(
+            task, archive=archive, receipt_view=view,
+            expected_size=120, expected_size_trustworthy=True,
+        )
+        assert (verified, reason) == (False, "archive_missing")
+        assert "/archive_status" not in calls
+
+    @pytest.mark.asyncio
+    async def test_unsupported_endpoint_falls_back_to_archive_status(self):
+        import httpx
+
+        called: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            called.append(request.url.path)
+            if request.url.path == "/upload_progress":
+                return httpx.Response(404, json={"error": "not found"})
+            return httpx.Response(
+                200, json={"found": True, "size": 120, "mtime": datetime.now(UTC).timestamp()}
+            )
+
+        task = _task()
+        async with self._client(handler) as http:
+            source, archive, view = await _probe_p1_archive(
+                lc_route.SangforRelayClient("http://relay"), http, "Q1.zip", "t-1"
+            )
+
+        assert source == "archive_status"
+        assert view is None
+        assert called == ["/upload_progress", "/archive_status"]
+        verified, reason, size, _ = _judge_p1_probe(
+            task,
+            archive=archive,
+            receipt_view=view,
+            expected_size=120,
+            expected_size_trustworthy=True,
+        )
+        assert (verified, reason, size) == (True, "verified", 120)
+
+    @pytest.mark.asyncio
+    async def test_receipt_older_than_task_is_stale(self):
+        """回执属于上一批次（会话在任务创建前就开始）：不能算本次结果。"""
+        import httpx
+
+        created = datetime.now(UTC) - timedelta(minutes=10)
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "found": True,
+                    "upload_id": "u-3",
+                    "status": "done",
+                    "file_size": 120,
+                    "uploaded_size": 120,
+                    "received_chunks": 3,
+                    "chunk_total": 3,
+                    "start_time": (created - timedelta(hours=3)).isoformat(),
+                },
+            )
+
+        task = _task(created)
+        async with self._client(handler) as http:
+            source, archive, view = await _probe_p1_archive(
+                lc_route.SangforRelayClient("http://relay"), http, "Q1.zip", "t-1"
+            )
+        verified, reason, _, _ = _judge_p1_probe(
+            task, archive=archive, receipt_view=view,
+            expected_size=120, expected_size_trustworthy=True,
+        )
+        assert (verified, reason) == (False, "stale_archive")
+
+    @pytest.mark.asyncio
+    async def test_receipt_smaller_than_confirmed_size_is_truncation(self):
+        import httpx
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "found": True,
+                    "upload_id": "u-4",
+                    "status": "done",
+                    "file_size": 80,
+                    "uploaded_size": 80,
+                    "start_time": datetime.now(UTC).isoformat(),
+                },
+            )
+
+        task = _task()
+        async with self._client(handler) as http:
+            source, archive, view = await _probe_p1_archive(
+                lc_route.SangforRelayClient("http://relay"), http, "Q1.zip", "t-1"
+            )
+        verified, reason, size, _ = _judge_p1_probe(
+            task, archive=archive, receipt_view=view,
+            expected_size=120, expected_size_trustworthy=True,
+        )
+        assert (verified, reason, size) == (False, "size_mismatch", 80)
+
+
 class _FakeDB:
     def __init__(self, rows: list[dict]):
         self._rows = rows
@@ -196,6 +436,12 @@ class TestBackgroundP1Reconcile:
             }
 
         monkeypatch.setattr(lc_route.SangforRelayClient, "archive_status", _fake_archive_status)
+        # 旧版 5888 没有回执端点：后台复核必须回退归档件而不是把核验打成失败。
+        monkeypatch.setattr(
+            lc_route.SangforRelayClient,
+            "upload_progress",
+            AsyncMock(return_value=("unsupported", None)),
+        )
         updated: list[tuple] = []
 
         async def _fake_update(self, tid, patch, *, server_authoritative=False):
@@ -211,6 +457,60 @@ class TestBackgroundP1Reconcile:
         assert auth is True
         assert patch.delivery_status == "delivered"
         assert patch.detail["p1_archive_check"]["source"] == "background_reconcile"
+
+    @pytest.mark.asyncio
+    async def test_receipt_detail_does_not_override_reconcile_source(self, monkeypatch):
+        """回执细节可以并入快照，但 source 必须仍标识"后台复核"这条写入路径。"""
+        task_id = uuid4()
+        created = datetime.now(UTC) - timedelta(minutes=20)
+        row = {
+            "task_id": task_id,
+            "case_id": "Q2026112501592",
+            "archive_size": 120,
+            "delivery_status": "none",
+            "created_at": created,
+            "trace_id": "lc-Q2026112501592-test",
+            "detail": {"p1_archive_check": {"verified": False, "reason": "archive_missing"}},
+        }
+        monkeypatch.setattr(lc_route, "database_manager", _FakeDB([row]))
+        monkeypatch.setattr(
+            lc_route,
+            "get_p1_ticket_service",
+            lambda: SimpleNamespace(enabled=True, issue=lambda cid, fn: "t-valid"),
+        )
+        monkeypatch.setattr(lc_route.settings, "LOG_COLLECT_RELAY_URL", "http://127.0.0.1:5888")
+        monkeypatch.setattr(
+            lc_route.SangforRelayClient,
+            "upload_progress",
+            AsyncMock(
+                return_value=(
+                    "ok",
+                    {
+                        "found": True,
+                        "upload_id": "u-bg",
+                        "status": "done",
+                        "file_size": 120,
+                        "uploaded_size": 120,
+                        "received_chunks": 1,
+                        "chunk_total": 1,
+                        "start_time": (created + timedelta(minutes=5)).isoformat(),
+                    },
+                )
+            ),
+        )
+        updated: list[tuple] = []
+
+        async def _fake_update(self, tid, patch, *, server_authoritative=False):
+            updated.append((tid, patch, server_authoritative))
+
+        monkeypatch.setattr(lc_route.LogCollectService, "update_task", _fake_update)
+
+        count = await reconcile_p1_archives_once()
+        assert count == 1
+        check = updated[0][1].detail["p1_archive_check"]
+        assert check["source"] == "background_reconcile"
+        assert check["evidence_source"] == "upload_progress"
+        assert check["upload_id"] == "u-bg"
 
     @pytest.mark.asyncio
     async def test_negative_result_does_not_refresh_checked_at(self, monkeypatch):
@@ -238,6 +538,11 @@ class TestBackgroundP1Reconcile:
             lc_route.SangforRelayClient,
             "archive_status",
             AsyncMock(return_value={"found": False, "status": "missing"}),
+        )
+        monkeypatch.setattr(
+            lc_route.SangforRelayClient,
+            "upload_progress",
+            AsyncMock(return_value=("unsupported", None)),
         )
         update_mock = AsyncMock()
         monkeypatch.setattr(lc_route.LogCollectService, "update_task", update_mock)

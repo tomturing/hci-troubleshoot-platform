@@ -619,7 +619,9 @@ class LogCollectRelayService:
 
             await self._await_archive(client, upload_id, expected_digest)
             # 链尾判据必须是 5888 的落盘事实，不能只信 relay success / 会话 done。
-            confirmation = await self._confirm_archive(task, client, archive_name)
+            # sent_size 必须传"本次真正推上去的字节数"：它是链路上唯一由平台自己
+            # 数出来、不依赖节点观测 / 前端上报的体积，落盘件比它小就是截断。
+            confirmation = await self._confirm_archive(task, client, archive_name, sent_size=size)
             await self._finish(task_id, "success", archive_confirmation=confirmation)
 
     @staticmethod
@@ -711,6 +713,8 @@ class LogCollectRelayService:
         task: LogCollectTask,
         client: httpx.AsyncClient,
         archive_name: str,
+        *,
+        sent_size: int | None = None,
     ) -> dict[str, Any]:
         """用 5888 的权威 /archive_status 做链尾确认，返回可落库的快照。
 
@@ -721,13 +725,29 @@ class LogCollectRelayService:
           才切换规范名，窗口内读到的是上一轮旧包）；size_mismatch 是确定性否定
           （任务窗口内发布却偏小=截断），重试不会改变结论；
         - 探测异常只记快照，不抛错打断 relay 终态，由快照的 verified=false 如实呈现。
+
+        期望体积的可信度（2026-11-27 修正）：
+          - ``sent_size``：本次代传实际发出的字节数，由平台逐片读取平台副本累加得出，
+            **可信**，落盘件更小即截断；
+          - ``object_size``：平台合并时自己算出的副本体积，**可信**（同一条链路），
+            续传/已收齐（本次没发字节）时用它；
+          - ``archive_size``：采集过程中的节点观测，**不可信**——同工单换模块重收时，
+            固定路径上残留的上一批次包会被 stat 成本次产物（Q2026112700769）。
+            仅有它时只判待核对（``archive_size_untrusted``），不判截断。
         """
-        expected_size = getattr(task, "object_size", None) or getattr(task, "archive_size", None)
+        sent = int(sent_size) if isinstance(sent_size, int) and sent_size > 0 else None
+        recorded = getattr(task, "object_size", None)
+        recorded = int(recorded) if isinstance(recorded, int) and recorded > 0 else None
+        expected_size = sent or recorded or getattr(task, "archive_size", None)
+        expected_size_trustworthy = sent is not None or recorded is not None
         snapshot: dict[str, Any] = {
             "verified": False,
             "reason": "probe_error",
             "filename": archive_name,
             "expected_size": expected_size,
+            "expected_size_trustworthy": expected_size_trustworthy,
+            "sent_size": sent,
+            "object_size": recorded,
             "checked_at": datetime.now(UTC).isoformat(),
             "source": "archive_status",
             "attempts": 0,
@@ -745,7 +765,12 @@ class LogCollectRelayService:
                 # 外层 relay 重试或用户补交付会重新核验。
                 break
 
-            verified, reason, archived_size, archived_at = judge_archive(task, archive, expected_size)
+            verified, reason, archived_size, archived_at = judge_archive(
+                task,
+                archive,
+                expected_size,
+                expected_size_trustworthy=expected_size_trustworthy,
+            )
             snapshot.update(
                 {
                     "verified": verified,
