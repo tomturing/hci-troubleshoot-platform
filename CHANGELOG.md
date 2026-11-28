@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.39.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.38.0...v2.39.0) (2026-11-28)
+
+
+### ✨ 新功能
+
+* **dsh:** 新会话默认完全权限并启用同轮次继承 workflow ([#1680](https://github.com/tomturing/hci-troubleshoot-platform/issues/1680)) ([4fac01a](https://github.com/tomturing/hci-troubleshoot-platform/commit/4fac01a4f82b7c54a4820cc3190c8bdfa8e9552d))
+* **terminal:** 新增实时交互终端模式二并支持 PTY 窗口自适应与完整回放录制 ([#1682](https://github.com/tomturing/hci-troubleshoot-platform/issues/1682)) ([82d1389](https://github.com/tomturing/hci-troubleshoot-platform/commit/82d1389c63f109de440a0f32b7a519c663a4ef9f))
+* **ticket-sync:** 手动同步放开内容判定，自动巡检保持不变 ([#1671](https://github.com/tomturing/hci-troubleshoot-platform/issues/1671)) ([09f1e7d](https://github.com/tomturing/hci-troubleshoot-platform/commit/09f1e7d20f4c43c7144c38e569dc3b6b467bf057))
+* **ticket-sync:** 支持解压节点每日 tar.zst 归档 ([#1678](https://github.com/tomturing/hci-troubleshoot-platform/issues/1678)) ([44eda50](https://github.com/tomturing/hci-troubleshoot-platform/commit/44eda50e2aa717ae7a9df3d2378318588050343d))
+
+
+### 🐛 Bug 修复
+
+* **acli:** 插件单文件上限由 1MiB 上调至 5MiB ([#1663](https://github.com/tomturing/hci-troubleshoot-platform/issues/1663)) ([d7e15fa](https://github.com/tomturing/hci-troubleshoot-platform/commit/d7e15fa96725bede1cc68026d7d7f6ccb330121a))
+* **delivery:** 补齐等待阶段契约并修复交付会话跨节点误投 ([#1667](https://github.com/tomturing/hci-troubleshoot-platform/issues/1667)) ([0a1f20b](https://github.com/tomturing/hci-troubleshoot-platform/commit/0a1f20b4a63de3ed89dfd3b8ed0fcdecbd2fb34c))
+* **dsh:** 0.2.3 制品换成可直装的标准 bundle ([#1668](https://github.com/tomturing/hci-troubleshoot-platform/issues/1668)) ([0e37f55](https://github.com/tomturing/hci-troubleshoot-platform/commit/0e37f555b1aaceff462d7b0283cb6d99ccd036be))
+* **dsh:** 启动前清理失效 profile 依赖，修复镜像升级 CrashLoop ([#1674](https://github.com/tomturing/hci-troubleshoot-platform/issues/1674)) ([c8d95df](https://github.com/tomturing/hci-troubleshoot-platform/commit/c8d95df540b33e21e0629b730671c4decf8da0cd))
+* **dsh:** 已满足 profile 时跳过插件安装，避免启动探针超时 ([#1675](https://github.com/tomturing/hci-troubleshoot-platform/issues/1675)) ([c8fee79](https://github.com/tomturing/hci-troubleshoot-platform/commit/c8fee794b1bc6712746216dbb304b9c22f7adc6b))
+* **log-collect:** 不支持场景不展示并在建任务前阻断 ([#1676](https://github.com/tomturing/hci-troubleshoot-platform/issues/1676)) ([ff2a225](https://github.com/tomturing/hci-troubleshoot-platform/commit/ff2a22510f24a470e03f1db48dfbf4eda14b9dfe))
+* **log-collect:** 修复日志收集交付空转、预检越界、network-probe 500 与 P1 归档假失败 ([#1681](https://github.com/tomturing/hci-troubleshoot-platform/issues/1681)) ([b34210b](https://github.com/tomturing/hci-troubleshoot-platform/commit/b34210b03aaf8ee06c245aeef519f37eb3b8e705))
+* **log-collect:** 同节点探测恢复后自动清除 acli 失败态 [env:staging:aihci][agent:codebuddy] ([d49e9d2](https://github.com/tomturing/hci-troubleshoot-platform/commit/d49e9d2f0d2e9ee96958efbcc105638de017df4a))
+* **log-collect:** 核验证据链加固——上传回执、发送字节数、残留包基线 ([#1688](https://github.com/tomturing/hci-troubleshoot-platform/issues/1688)) ([f2f3663](https://github.com/tomturing/hci-troubleshoot-platform/commit/f2f36630a1ce5f0624b703cb4e266080e698778d))
+* **terminal:** 拦截侧栏折叠或展开初期极窄容器误触发 2 列 fit 与 resize ([#1683](https://github.com/tomturing/hci-troubleshoot-platform/issues/1683)) ([5257164](https://github.com/tomturing/hci-troubleshoot-platform/commit/52571648543d5573a9efed380cd9248a17282604))
+* **ui:** 修正 retrying 阶段被渲染成上传中 ([#1670](https://github.com/tomturing/hci-troubleshoot-platform/issues/1670)) ([d157415](https://github.com/tomturing/hci-troubleshoot-platform/commit/d15741590738cb25d84ceb21823f6869d8584706))
+* 日志收集修复残留收口 ([#1679](https://github.com/tomturing/hci-troubleshoot-platform/issues/1679)) ([55266b5](https://github.com/tomturing/hci-troubleshoot-platform/commit/55266b5a5e97beb6e0ed8449c4b46e278069291f))
+* 日志收集归档体积误报——期望值绑定观测来源 ([#1686](https://github.com/tomturing/hci-troubleshoot-platform/issues/1686)) ([64b4ec3](https://github.com/tomturing/hci-troubleshoot-platform/commit/64b4ec3c8ddd8e9e5173991e78b7583805ad5adb))
+
 ## [2.38.0](https://github.com/tomturing/hci-troubleshoot-platform/compare/v2.37.0...v2.38.0) (2026-11-25)
 
 
