@@ -1,0 +1,15 @@
+[project]
+name = "hci-log-server"
+version = "1.0.0"
+description = "5888 日志接收、归档校验与完整工单上传状态查询服务"
+requires-python = ">=3.12"
+dependencies = [
+    "flask==3.1.1",
+    "gunicorn==23.0.0",
+    "gevent==25.5.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0,<9.0",
+]

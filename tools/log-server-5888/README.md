@@ -1,4 +1,16 @@
-# 5888 `/upload_progress` 端点部署与回滚 SOP
+# 5888 日志服务器部署与回滚 SOP
+
+> **权威源码位置（2026-11-28 起）**：5888 日志服务器源码已正式纳管至本仓库 [`backend/log-server/`](../../backend/log-server/)，不再通过零散 patch 维护。
+> 同步发布到 `192.168.0.2:/acli` 请优先使用 [`sync_deploy.sh`](./sync_deploy.sh)（内置本地单元测试、远端 `preflight_restart.py` 硬门禁、时间戳备份与 `py_compile` 自动回滚）：
+>
+> ```bash
+> # 门禁与 SHA256 预览（不改远端）
+> bash tools/log-server-5888/sync_deploy.sh --dry-run
+> # 正式同步到 192.168.0.2:/acli
+> bash tools/log-server-5888/sync_deploy.sh
+> ```
+>
+> 下文保留历史 `/upload_progress` 补丁阶段的操作记录与踩坑经验，供运维排障参考。
 
 ## 一、为什么需要它
 

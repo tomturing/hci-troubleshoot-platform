@@ -74,6 +74,7 @@ dev = [
     "faker>=21.0.0,<30.0",
     "ruff>=0.11.0",
     "fakeredis>=2.21.0",
+    "flask>=3.1.1,<4.0",
     "python-docx>=1.2.0",
 ]
 
@@ -86,6 +87,7 @@ testpaths = [
     "backend/conversation-service/tests",
     "backend/diagnosis-service/tests",
     "backend/kb-service/tests",
+    "backend/log-server/tests/unit",
     "backend/scheduler-service/tests",
     "backend/shared/tests",
     "backend/auth-service/app/tests",

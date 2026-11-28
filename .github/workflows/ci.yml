@@ -1532,6 +1532,10 @@ jobs:
           uv run pytest backend/kb-service/tests/test_jieba_hci.py \
             -n0 -x -q --no-cov \
             -m "not integration and not slow"
+          uv run pytest backend/log-server/tests/unit/ \
+            -n0 -x -q \
+            --cov=backend --cov-append \
+            -m "not integration and not slow"
           uv run pytest backend/diagnosis-service/tests/unit/ \
             -n0 -x -q \
             --cov=backend --cov-append \
