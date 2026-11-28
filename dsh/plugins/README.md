@@ -51,7 +51,7 @@ dsh_cockpit-rules/
 | v1 / `DSH_PLUGIN_PACKAGES` | `deepseek-harness-wecom-0.1.37.tgz` | 普通 DSH 的企业微信通道（完整 userid）及 Web 工单模板识别 |
 | v1 / `DSH_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 旧 DSH 的诊断输出 IP 脱敏插件 |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `wecom-0.1.36.tgz` | 新 DSH 的企业微信通道（完整 userid） |
-| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.28.tgz` | 会话运营台账、规则包与 Web 首任务工单绑定 |
+| v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `session-bi-0.1.29.tgz` | 会话运营台账、规则包与 Web 首任务工单绑定 |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `hci-weknora-diagnosis-bundle-0.2.11.tgz` | WeKnora HCI 诊断 Preset（根 Agent + 并行子 Agent） |
 | v2 / `DSH_OFFLINE_PLUGIN_PACKAGES` | `ip-redactor-0.1.4.tgz` | 诊断输出 IP 脱敏插件 |
 
@@ -76,7 +76,7 @@ dsh_cockpit-rules/
 > 下划线转义，并要求报告中任何独立出现的原始案例 ID 都渲染为原文链接；0.2.11 起 quick agent
 > 返回的案例候选必须先经 `hci_kb_read_document` 回读才能进入报告，未知案例 ID、未链接案例号
 > 或与正文 URL 对不上的链接会被门禁拒绝。
-> Web 新会话的工单绑定依赖 `session-bi-0.1.28`，升级 Bundle 时必须同步升级 Session BI。
+> Web 新会话的工单绑定依赖 `session-bi-0.1.29`，升级 Bundle 时必须同步升级 Session BI。
 
 > `wecom-0.1.36.tgz` 与 `deepseek-harness-wecom-0.1.37.tgz` 只改了企微入站消息头：
 > `userid` 不再截断为前 8 位（原先超过 8 位只显示前 8 位，前缀相同的不同用户会被混淆），
