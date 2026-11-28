@@ -50,10 +50,14 @@ SERVICE_TEST_SCOPES = {
     "case-service": "backend/case-service/tests/unit",
     "conversation-service": "backend/conversation-service/tests/unit",
     "kb-service": "backend/kb-service/tests",
+    "log-server": "backend/log-server/tests/unit",
     "diagnosis-service": "backend/diagnosis-service/tests/unit",
     "scheduler-service": "backend/scheduler-service/tests/unit",
     "auth-service": "backend/auth-service/app/tests",
 }
+
+# 扁平目录布局的后端服务（源码直接位于 backend/<service>/ 下，无 app/ 子目录）
+FLAT_LAYOUT_SERVICES = frozenset({"log-server"})
 
 GLOBAL_DEPENDENCY_PREFIXES = (
     "backend/shared/",
@@ -130,10 +134,16 @@ def _is_unit_test(path: str) -> bool:
 def _service_test_target(repo_root: Path, changed_path: str) -> str | None:
     """按服务返回与完整回归一致的范围，不依赖源码与测试文件的命名关系。"""
     parts = Path(changed_path).parts
-    if len(parts) < 4 or parts[0] != "backend" or parts[2] != "app":
+    if len(parts) < 3 or parts[0] != "backend":
+        return None
+    service = parts[1]
+    if service in FLAT_LAYOUT_SERVICES:
+        if parts[2] == "tests":
+            return None
+    elif len(parts) < 4 or parts[2] != "app":
         return None
 
-    scope = SERVICE_TEST_SCOPES.get(parts[1])
+    scope = SERVICE_TEST_SCOPES.get(service)
     if scope is None:
         # 未登记的服务无法确认其完整范围，交由调用方回退完整回归。
         return None

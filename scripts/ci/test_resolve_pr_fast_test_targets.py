@@ -68,6 +68,13 @@ def test_kb_service_maps_to_whole_tests_dir(repo_root: Path) -> None:
     assert plan.targets == ("backend/kb-service/tests",)
 
 
+def test_log_server_flat_layout_maps_to_unit_tests(repo_root: Path) -> None:
+    """log-server 采用扁平目录布局（无 app/ 子目录），源码改动应映射到 tests/unit。"""
+    plan = resolve_test_plan(["backend/log-server/app.py"], repo_root)
+    assert plan.mode == "targeted"
+    assert plan.targets == ("backend/log-server/tests/unit",)
+
+
 def test_root_unit_test_targets_the_file_itself(repo_root: Path) -> None:
     plan = resolve_test_plan(["tests/unit/test_foo.py"], repo_root)
     assert plan.targets == ("tests/unit/test_foo.py",)

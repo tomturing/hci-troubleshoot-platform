@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>acli日志文件上传系统</title>
+    <link app-cache="ignore" rel="shortcut icon" href="static/favicon.ico"/>
+    <script src="static/js/axios.min.js"></script>
+    <meta name="upload-token" content="{{ upload_token }}">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .upload-container {
+            border: 2px dashed #3498db;
+            padding: 25px;
+            text-align: center;
+            margin-top: 20px;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .progress-container {
+            margin-top: 30px;
+            display: none;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .progress-bar {
+            height: 25px;
+            background-color: #ecf0f1;
+            border-radius: 12px;
+            overflow: hidden;
+            margin-bottom: 15px;
+        }
+        .progress {
+            height: 100%;
+            background: linear-gradient(to right, #3498db, #2ecc71);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        .file-input {
+            margin: 20px 0;
+        }
+        .button-group {
+            margin-top: 15px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 0 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        #uploadButton {
+            background-color: #3498db;
+            color: white;
+        }
+        #uploadButton:hover {
+            background-color: #2980b9;
+        }
+        #pauseButton {
+            background-color: #f39c12;
+            color: white;
+        }
+        #pauseButton:hover {
+            background-color: #d35400;
+        }
+        #resumeButton {
+            background-color: #2ecc71;
+            color: white;
+        }
+        #resumeButton:hover {
+            background-color: #27ae60;
+        }
+        button:disabled {
+            background-color: #bdc3c7;
+            cursor: not-allowed;
+        }
+        .status-message {
+            margin-top: 15px;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .error {
+            background-color: #ffecec;
+            color: #e74c3c;
+            border: 1px solid #e74c3c;
+        }
+        .success {
+            background-color: #e8f8f0;
+            color: #27ae60;
+            border: 1px solid #27ae60;
+        }
+        .info-panel {
+            margin-top: 15px;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .info-label {
+            font-weight: bold;
+            color: #7f8c8d;
+        }
+        .info-value {
+            color: #2c3e50;
+        }
+        .speed-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .speed-high {
+            background-color: #e74c3c;
+        }
+        .speed-medium {
+            background-color: #f39c12;
+        }
+        .speed-low {
+            background-color: #2ecc71;
+        }
+    </style>
+</head>
+<body>
+    <h1>acli日志文件上传系统</h1>
+    
+    <div class="upload-container">
+	<p>请上传使用<strong>acli log collection</strong>收集的日志</p>
+        <p>文件名必须符合 [ICare单号].zip 格式  | 支持断点续传</p>
+        
+        <div class="file-input">
+            <input type="file" id="fileInput" accept=".zip" class="file-input">
+        </div>
+        
+        <div class="button-group">
+            <button id="uploadButton" onclick="startUpload()">开始上传</button>
+            <button id="pauseButton" onclick="pauseUpload()" disabled>暂停上传</button>
+            <button id="resumeButton" onclick="resumeUpload()" disabled>继续上传</button>
+        </div>
+    </div>
+    
+    <div class="progress-container" id="progressContainer">
+        <h3>上传进度</h3>
+        <div class="progress-bar">
+            <div class="progress" id="progressBar"></div>
+        </div>
+        
+        <div class="info-panel">
+            <div class="info-row">
+                <span class="info-label">文件名:</span>
+                <span class="info-value" id="fileName">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">文件大小:</span>
+                <span class="info-value" id="fileSize">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">已上传:</span>
+                <span class="info-value" id="uploadedSize">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">上传速度:</span>
+                <span class="info-value">
+                    <span id="speedIndicator" class="speed-indicator speed-low"></span>
+                    <span id="uploadSpeed">0 KB/s</span>
+                </span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">剩余时间:</span>
+                <span class="info-value" id="timeRemaining">-</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">当前状态:</span>
+                <span class="info-value" id="uploadStatus">等待上传</span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="status-message error" id="errorMessage" style="display: none;"></div>
+    <div class="status-message success" id="successMessage" style="display: none;"></div>
+    
+    <script>
+        // ==================== 上传状态 ====================
+        // 断点续传（2026-11-09）：进度的唯一权威是"服务端已确认的分片"。
+        // 因此网络中断、浏览器崩溃、页面刷新之后，只要重新选择同一个文件，
+        // 就能从断点接着传，而不是从第 0 片重来。
+        let uploadId = null;
+        let file = null;
+        let fileSize = 0;
+        let chunkSize = 10 * 1024 * 1024;
+        let chunkCount = 0;
+        let isPaused = false;
+        let isFinishing = false;
+        let isStarting = false;           // 「开始/继续」正在走网络，防重复点击
+
+        let pendingChunks = [];           // 待上传分片索引
+        let completedChunks = new Set();  // 服务端已确认的分片
+        let inFlight = {};                // 分片索引 -> 实时已传字节
+        let retryMap = {};                // 分片索引 -> 连续失败次数
+        let retryTimers = {};             // 分片索引 -> 退避定时器
+        let activeSources = [];           // 在飞请求的 CancelToken
+
+        const CONCURRENCY = 3;            // 并发分片数
+        const MAX_CHUNK_RETRY = 8;        // 单片连续失败上限（指数退避）
+        const RETRY_BASE_MS = 800;
+        const RETRY_MAX_MS = 30000;
+        const AUTO_RESUME_LIMIT = 5;      // 全局中断后自动重试轮次
+        const AUTO_RESUME_DELAY = 30000;  // 自动重试间隔
+        let autoResumeRound = 0;
+        let autoResumeTimer = null;
+
+        // 速度统计
+        let lastLoaded = 0;
+        let lastTime = 0;
+        let currentSpeed = 0;
+        let speedHistory = [];
+        const SPEED_HISTORY_SIZE = 5;
+
+        // 鉴权 token：服务端注入到 meta，配置 ACLI_UPLOAD_TOKEN 时自动携带
+        const UPLOAD_TOKEN = document.querySelector('meta[name="upload-token"]')?.content || '';
+        if (UPLOAD_TOKEN) {
+            axios.defaults.headers.common['Authorization'] = 'Bearer ' + UPLOAD_TOKEN;
+        }
+
+        // ==================== DOM ====================
+        const fileInput = document.getElementById('fileInput');
+        const uploadButton = document.getElementById('uploadButton');
+        const pauseButton = document.getElementById('pauseButton');
+        const resumeButton = document.getElementById('resumeButton');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+        const errorMessage = document.getElementById('errorMessage');
+        const successMessage = document.getElementById('successMessage');
+
+        const fileNameElement = document.getElementById('fileName');
+        const fileSizeElement = document.getElementById('fileSize');
+        const uploadedSizeElement = document.getElementById('uploadedSize');
+        const uploadSpeedElement = document.getElementById('uploadSpeed');
+        const timeRemainingElement = document.getElementById('timeRemaining');
+        const uploadStatusElement = document.getElementById('uploadStatus');
+        const speedIndicator = document.getElementById('speedIndicator');
+
+        // ==================== 展示辅助 ====================
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatSpeed(bytesPerSecond) {
+            if (bytesPerSecond < 1024) {
+                return bytesPerSecond.toFixed(0) + ' B/s';
+            } else if (bytesPerSecond < 1024 * 1024) {
+                return (bytesPerSecond / 1024).toFixed(1) + ' KB/s';
+            } else {
+                return (bytesPerSecond / (1024 * 1024)).toFixed(1) + ' MB/s';
+            }
+        }
+
+        function formatTime(seconds) {
+            if (seconds < 60) {
+                return seconds.toFixed(0) + '秒';
+            } else if (seconds < 3600) {
+                const mins = Math.floor(seconds / 60);
+                const secs = Math.floor(seconds % 60);
+                return mins + '分' + secs + '秒';
+            } else {
+                const hours = Math.floor(seconds / 3600);
+                const mins = Math.floor((seconds % 3600) / 60);
+                return hours + '小时' + mins + '分';
+            }
+        }
+
+        function calculateSpeed(loaded, total, now) {
+            if (lastTime === 0) {
+                lastTime = now;
+                lastLoaded = loaded;
+                return 0;
+            }
+            const timeDiff = (now - lastTime) / 1000;
+            if (timeDiff === 0) return currentSpeed;
+
+            const loadedDiff = loaded - lastLoaded;
+            const instantSpeed = loadedDiff / timeDiff;
+            speedHistory.push(instantSpeed);
+            if (speedHistory.length > SPEED_HISTORY_SIZE) {
+                speedHistory.shift();
+            }
+            const avgSpeed = speedHistory.reduce((a, b) => a + b, 0) / speedHistory.length;
+            lastTime = now;
+            lastLoaded = loaded;
+            return avgSpeed;
+        }
+
+        function updateSpeedIndicator(speed) {
+            const speedKB = speed / 1024;
+            if (speedKB > 1024) {
+                speedIndicator.className = 'speed-indicator speed-high';
+            } else if (speedKB > 256) {
+                speedIndicator.className = 'speed-indicator speed-medium';
+            } else {
+                speedIndicator.className = 'speed-indicator speed-low';
+            }
+        }
+
+        function updateProgress(uploaded, total, now) {
+            const progress = Math.round((uploaded / total) * 100);
+            progressBar.style.width = progress + '%';
+
+            fileNameElement.textContent = file ? file.name : '-';
+            fileSizeElement.textContent = formatFileSize(total);
+            uploadedSizeElement.textContent = formatFileSize(uploaded);
+
+            currentSpeed = calculateSpeed(uploaded, total, now);
+            uploadSpeedElement.textContent = formatSpeed(currentSpeed);
+            updateSpeedIndicator(currentSpeed);
+
+            if (currentSpeed > 0) {
+                const remainingBytes = Math.max(0, total - uploaded);
+                timeRemainingElement.textContent = formatTime(remainingBytes / currentSpeed);
+            }
+        }
+
+        function updateUploadStatus(status) {
+            uploadStatusElement.textContent = status;
+        }
+
+        function showErrorMessage(message) {
+            errorMessage.textContent = message;
+            errorMessage.style.display = 'block';
+            successMessage.style.display = 'none';
+        }
+
+        function showSuccessMessage(message) {
+            successMessage.textContent = message;
+            successMessage.style.display = 'block';
+            errorMessage.style.display = 'none';
+        }
+
+        function clearMessages() {
+            errorMessage.style.display = 'none';
+            successMessage.style.display = 'none';
+        }
+
+        function showProgressContainer() {
+            progressContainer.style.display = 'block';
+        }
+
+        // ==================== 进度与队列 ====================
+        function chunkActualSize(idx) {
+            return Math.min(chunkSize, fileSize - idx * chunkSize);
+        }
+
+        // 已完成分片字节 + 进行中各片实时进度；断点续传后预填的分片也计入
+        function updateAggregateProgress(now) {
+            let uploaded = 0;
+            completedChunks.forEach(i => { uploaded += chunkActualSize(i); });
+            for (const k in inFlight) {
+                uploaded += inFlight[k];
+            }
+            if (uploaded > fileSize) uploaded = fileSize;
+            updateProgress(uploaded, fileSize, now);
+        }
+
+        function rebuildPending() {
+            pendingChunks = [];
+            for (let i = 0; i < chunkCount; i++) {
+                if (!completedChunks.has(i)) pendingChunks.push(i);
+            }
+        }
+
+        function clearRetryTimers() {
+            Object.keys(retryTimers).forEach(k => clearTimeout(retryTimers[k]));
+            retryTimers = {};
+        }
+
+        function clearAutoResume() {
+            if (autoResumeTimer) {
+                clearTimeout(autoResumeTimer);
+                autoResumeTimer = null;
+            }
+        }
+
+        function cancelInFlight(reason) {
+            activeSources.forEach(s => {
+                try { s.cancel(reason); } catch (e) { /* 已结束 */ }
+            });
+            activeSources = [];
+            inFlight = {};
+        }
+
+        function resetProgressStats() {
+            lastLoaded = 0;
+            lastTime = 0;
+            currentSpeed = 0;
+            speedHistory = [];
+            uploadSpeedElement.textContent = '0 KB/s';
+            timeRemainingElement.textContent = '-';
+        }
+
+        // ==================== 上传主流程 ====================
+        // 统一入口：
+        //   isResume    —— 是否"继续"，只影响提示文案
+        //   skipPrecheck—— 自动重试时跳过归档判重（避免弹 confirm 打断无人值守的重试）
+        async function prepareAndUpload(isResume, skipPrecheck) {
+            if (isStarting || isFinishing) return;
+            isStarting = true;
+            clearAutoResume();
+
+            try {
+                clearMessages();
+                showProgressContainer();
+                updateUploadStatus(isResume ? '正在核对已上传分片...' : '准备上传...');
+
+                fileSize = file.size;
+                chunkCount = Math.ceil(fileSize / chunkSize);
+
+                let pre = null;
+                if (!skipPrecheck) {
+                    try {
+                        pre = await precheckArchive(file);
+                    } catch (e) {
+                        // 预检是省流量的优化，不是前置条件，失败照常上传
+                        console.warn('预检请求失败，按原流程上传', e);
+                    }
+                }
+
+                let force = false;
+                if (pre && pre.found) {
+                    if (skipPrecheck) {
+                        // 自动重试时不弹窗：按体积判定不算证据，继续传即可
+                    } else if (!window.confirm(describeExisting(pre))) {
+                        showSuccessMessage('已存在相同归档（' + pre.stored_name + '），本次跳过上传');
+                        updateUploadStatus('已跳过');
+                        uploadButton.disabled = false;
+                        resumeButton.disabled = true;
+                        return;
+                    } else {
+                        force = true;
+                    }
+                }
+
+                const formData = new FormData();
+                formData.append('filename', file.name);
+                formData.append('file_size', String(fileSize));
+                // 标识手工经 5888 Web 页面上传，便于 HTP 对账自动补录手动归档任务
+                formData.append('upload_source', 'web_manual');
+                // mtime 是"同名同大小但重新收集"的判据，服务端据此决定是否复用会话
+                formData.append('client_mtime', String(file.lastModified || 0));
+                if (pre && pre.sha256) {
+                    formData.append('sha256', pre.sha256);
+                }
+                if (force) {
+                    formData.append('force', '1');
+                }
+
+                updateUploadStatus('初始化上传...');
+                let resp;
+                try {
+                    resp = await axios.post('/init_upload', formData, {
+                        headers: { 'Content-Type': 'multipart/form-data' }
+                    });
+                } catch (error) {
+                    if (error.response && error.response.status === 409) {
+                        const detail = error.response.data || {};
+                        showSuccessMessage('该工单已存在归档（'
+                            + (detail.stored_name || '已存在') + '），本次无需重传');
+                        updateUploadStatus('已跳过');
+                        uploadButton.disabled = false;
+                        resumeButton.disabled = true;
+                        return;
+                    }
+                    throw error;
+                }
+
+                // 后台已经合片完成、只是上次的响应没回来
+                if (resp.data && resp.data.already_done) {
+                    uploadId = resp.data.upload_id || null;
+                    completedChunks = new Set();
+                    rebuildPending();
+                    updateAggregateProgress(Date.now());
+                    completeUpload('服务端已完成归档（' + (resp.data.stored_name || '已存在') + '）');
+                    return;
+                }
+
+                applyServerState(resp.data);
+
+                const received = completedChunks.size;
+                if (resp.data.resumed && received > 0) {
+                    const doneBytes = Array.from(completedChunks)
+                        .reduce((sum, i) => sum + chunkActualSize(i), 0);
+                    showSuccessMessage('检测到未完成的上传，已从断点继续：'
+                        + received + ' 片 / ' + formatFileSize(doneBytes) + ' 已存在');
+                    updateUploadStatus('已续传 ' + received + ' 片，剩余 ' + pendingChunks.length + ' 片');
+                }
+
+                uploadButton.disabled = true;
+                pauseButton.disabled = false;
+                resumeButton.disabled = true;
+
+                if (pendingChunks.length === 0) {
+                    // 所有分片都已在服务端：直接确认一次终态
+                    finishIfComplete();
+                    return;
+                }
+                pumpChunks();
+            } catch (error) {
+                handleUploadError(error, isResume ? '继续上传失败' : '初始化上传失败');
+            } finally {
+                isStarting = false;
+            }
+        }
+
+        // 用服务端返回的会话状态重建本地队列（续传的核心）
+        function applyServerState(data) {
+            uploadId = data.upload_id;
+            chunkSize = data.chunk_size || chunkSize;
+            fileSize = data.file_size || fileSize;
+            chunkCount = data.chunk_total || Math.ceil(fileSize / chunkSize);
+
+            const received = Array.isArray(data.received_chunks) ? data.received_chunks : [];
+            completedChunks = new Set(received.map(Number));
+
+            clearRetryTimers();
+            retryMap = {};
+            inFlight = {};
+            activeSources = [];
+            isPaused = false;
+            isFinishing = false;
+            autoResumeRound = 0;
+            rebuildPending();
+            resetProgressStats();
+            updateAggregateProgress(Date.now());
+        }
+
+        function pumpChunks() {
+            // 注意：这里不能判断 isStarting。prepareAndUpload 在 try 块末尾调用
+            // pumpChunks 时 isStarting 仍为 true，一旦提前返回就一片都发不出去
+            // （页面会永远停在"初始化上传..."）。
+            if (isPaused || isFinishing) return;
+            while (activeSources.length < CONCURRENCY && pendingChunks.length > 0) {
+                sendChunk(pendingChunks.shift());
+            }
+        }
+
+        function sendChunk(idx) {
+            const start = idx * chunkSize;
+            const end = Math.min(fileSize, start + chunkSize);
+            const chunk = file.slice(start, end);
+
+            const formData = new FormData();
+            formData.append('upload_id', uploadId);
+            formData.append('chunk_index', idx.toString());
+            formData.append('chunk_total', chunkCount.toString());
+            formData.append('chunk', chunk);
+
+            const source = axios.CancelToken.source();
+            activeSources.push(source);
+            inFlight[idx] = 0;
+
+            axios.post('/upload_chunk', formData, {
+                cancelToken: source.token,
+                headers: { 'Content-Type': 'multipart/form-data' },
+                onUploadProgress: progressEvent => {
+                    inFlight[idx] = progressEvent.loaded;
+                    updateAggregateProgress(Date.now());
+                }
+            }).then(response => {
+                activeSources = activeSources.filter(s => s !== source);
+                delete inFlight[idx];
+                delete retryMap[idx];
+                completedChunks.add(idx);
+                autoResumeRound = 0;   // 有一片成功，说明链路恢复，自动重试计数归零
+
+                if (response.data && response.data.status === 'complete') {
+                    isFinishing = true;
+                    completeUpload();
+                    return;
+                }
+                updateAggregateProgress(Date.now());
+                pumpChunks();
+            }).catch(error => {
+                activeSources = activeSources.filter(s => s !== source);
+                delete inFlight[idx];
+
+                if (axios.isCancel(error)) {
+                    // 暂停/进入恢复态时取消：片回到待发队列，恢复时重发
+                    if (!completedChunks.has(idx)) pendingChunks.push(idx);
+                    return;
+                }
+                onChunkFailed(idx, error);
+            });
+        }
+
+        function isFatalServerError(error) {
+            const status = error.response && error.response.status;
+            if (!status) return false;
+            // 400 参数错、403 鉴权、404 会话不存在、413 分片超限、409 会话终态：
+            // 重试同一请求不会变好，必须让上层把状态说清楚。
+            return [400, 403, 404, 413, 409].indexOf(status) >= 0;
+        }
+
+        function onChunkFailed(idx, error) {
+            if (isFatalServerError(error)) {
+                const detail = (error.response.data && error.response.data.error) || '';
+                handleUploadError(error, '服务端拒绝了分片请求' + (detail ? '：' + detail : ''));
+                return;
+            }
+
+            retryMap[idx] = (retryMap[idx] || 0) + 1;
+            if (retryMap[idx] > MAX_CHUNK_RETRY) {
+                enterRecoverablePause('网络持续中断，已保留上传进度');
+                return;
+            }
+
+            // 指数退避 + 抖动：避免一次几秒的抖动把重试次数瞬间打满
+            const backoff = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * Math.pow(2, retryMap[idx] - 1));
+            const delay = Math.round(backoff + Math.random() * 300);
+            updateUploadStatus('网络波动，分片 ' + idx + ' 第 ' + retryMap[idx]
+                + ' 次重试（' + Math.round(delay / 1000) + ' 秒后）');
+
+            retryTimers[idx] = setTimeout(() => {
+                delete retryTimers[idx];
+                if (isPaused || isFinishing) return;
+                if (!completedChunks.has(idx)) pendingChunks.push(idx);
+                pumpChunks();
+            }, delay);
+        }
+
+        // 全局进入"可恢复暂停"：保留全部进度，启用「继续上传」并自动重试若干轮
+        function enterRecoverablePause(reason) {
+            if (isFinishing) return;
+            isPaused = true;
+            clearRetryTimers();
+            cancelInFlight('recoverable pause');
+            retryMap = {};
+            rebuildPending();          // 以服务端已确认分片为基准重建队列，天然去重
+            updateAggregateProgress(Date.now());
+
+            updateUploadStatus(reason + '，剩余 ' + pendingChunks.length + ' 片');
+            showErrorMessage(reason + '：进度已保留，环境恢复后可点「继续上传」（'
+                + AUTO_RESUME_LIMIT + ' 轮内也会自动重试）。');
+
+            uploadButton.disabled = true;
+            pauseButton.disabled = true;
+            resumeButton.disabled = false;
+            scheduleAutoResume();
+        }
+
+        function scheduleAutoResume() {
+            clearAutoResume();
+            if (autoResumeRound >= AUTO_RESUME_LIMIT) {
+                updateUploadStatus('已停止自动重试，请检查网络后点「继续上传」');
+                return;
+            }
+            autoResumeRound++;
+            const seconds = Math.round(AUTO_RESUME_DELAY / 1000);
+            uploadStatusElement.textContent = '等待网络恢复：' + seconds + ' 秒后自动重试（第 '
+                + autoResumeRound + '/' + AUTO_RESUME_LIMIT + ' 轮）';
+            autoResumeTimer = setTimeout(() => {
+                autoResumeTimer = null;
+                if (!isPaused || isFinishing) return;
+                prepareAndUpload(true, true);   // 静默续传：不弹判重确认
+            }, AUTO_RESUME_DELAY);
+        }
+
+        function finishIfComplete() {
+            // 服务端已收满（续传时可能发生）：拉一次状态确认终态
+            if (!uploadId) { completeUpload(); return; }
+            axios.get('/upload_status/' + uploadId).then(resp => {
+                if (resp.data && resp.data.status === 'done') {
+                    completeUpload('归档已完成（' + (resp.data.target_path || '') + '）');
+                } else {
+                    completeUpload();
+                }
+            }).catch(() => completeUpload());
+        }
+
+        function completeUpload(extraMessage) {
+            clearAutoResume();
+            clearRetryTimers();
+            isFinishing = true;
+            isPaused = false;
+            updateUploadStatus('上传完成');
+            showSuccessMessage(extraMessage || '文件上传成功，后台处理中');
+            uploadButton.disabled = false;
+            pauseButton.disabled = true;
+            resumeButton.disabled = true;
+
+            // 保留 file 以便观察与重新上传；清掉会话标识避免误续
+            uploadId = null;
+        }
+
+        // ==================== 暂停 / 继续 ====================
+        function pauseUpload() {
+            if (isFinishing) return;
+            isPaused = true;
+            clearAutoResume();
+            clearRetryTimers();
+            cancelInFlight('Upload paused by user');
+            rebuildPending();
+            updateAggregateProgress(Date.now());
+
+            pauseButton.disabled = true;
+            resumeButton.disabled = false;
+            updateUploadStatus('已暂停（' + pendingChunks.length + ' 片待传）');
+        }
+
+        // 手动「继续上传」：重新与服务端对账后只补缺失分片
+        function resumeUpload() {
+            if (isFinishing) return;
+            if (!file) {
+                showErrorMessage('请先选择要上传的文件（重新选择同一个文件即可从断点继续）');
+                return;
+            }
+            clearAutoResume();
+            isPaused = false;
+            prepareAndUpload(true, false);
+        }
+
+        // ==================== 预检 ====================
+        const PRECHECK_HASH_LIMIT = 512 * 1024 * 1024;
+
+        async function computeSha256(f) {
+            const buffer = await f.arrayBuffer();
+            const digest = await crypto.subtle.digest('SHA-256', buffer);
+            return Array.from(new Uint8Array(digest))
+                .map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function precheckArchive(f) {
+            const data = new FormData();
+            data.append('filename', f.name);
+            data.append('file_size', String(f.size));
+            data.append('client_mtime', String(f.lastModified || 0));
+            let sha256 = '';
+            if (window.crypto && crypto.subtle && f.size <= PRECHECK_HASH_LIMIT) {
+                updateUploadStatus('校验文件内容（本地计算 sha256）...');
+                try {
+                    sha256 = await computeSha256(f);
+                    data.append('sha256', sha256);
+                } catch (e) {
+                    console.warn('本地摘要计算失败，退回按体积预检', e);
+                    sha256 = '';
+                }
+            }
+            const response = await axios.post('/precheck', data, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+            return Object.assign({ sha256: sha256 }, response.data || {});
+        }
+
+        function describeExisting(pre) {
+            const when = pre.mtime ? new Date(pre.mtime * 1000).toLocaleString() : '时间未知';
+            const why = pre.match === 'sha256'
+                ? '内容完全相同（sha256 一致）'
+                : '体积相同，很可能是同一份（文件过大未做内容校验）';
+            return '该工单已存在归档：' + pre.stored_name + '\n'
+                + '大小：' + formatFileSize(pre.size) + '，落盘时间：' + when + '\n'
+                + why + '。\n\n'
+                + '点「确定」＝ 仍然重新上传；点「取消」＝ 跳过本次上传。';
+        }
+
+        // 选择文件后轻量探测：有没有可续传的会话（不传 sha256，避免大文件卡顿）
+        function probeResume(f) {
+            const data = new FormData();
+            data.append('filename', f.name);
+            data.append('file_size', String(f.size));
+            data.append('client_mtime', String(f.lastModified || 0));
+            axios.post('/precheck', data, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            }).then(resp => {
+                const resume = resp.data && resp.data.resume;
+                if (resume && resume.received_chunks && resume.received_chunks.length > 0) {
+                    const doneBytes = resume.received_bytes || 0;
+                    const total = resume.chunk_total || 1;
+                    showSuccessMessage('检测到未完成的上传：' + resume.received_chunks.length
+                        + '/' + total + ' 片（' + formatFileSize(doneBytes) + '）已存在，'
+                        + '点「开始上传」或「继续上传」即可从断点继续');
+                    updateUploadStatus('可续传');
+                    resumeButton.disabled = false;
+                }
+            }).catch(() => { /* 探测失败不影响正常上传 */ });
+        }
+
+        // ==================== 上传入口 ====================
+        function startUpload() {
+            file = fileInput.files[0];
+
+            if (!file) {
+                showErrorMessage('请选择要上传的文件');
+                return;
+            }
+            if (!file.name.match(/^Q\d{13}\.zip$/)) {
+                showErrorMessage('文件名必须符合 Qxxxxxxxxxxxxx.zip 格式 (13位数字)');
+                return;
+            }
+
+            clearMessages();
+            showProgressContainer();
+            clearAutoResume();
+            clearRetryTimers();
+
+            // 重置本地状态；真正的进度由服务端 init_upload 回传
+            uploadId = null;
+            completedChunks = new Set();
+            pendingChunks = [];
+            inFlight = {};
+            retryMap = {};
+            activeSources = [];
+            isPaused = false;
+            isFinishing = false;
+            autoResumeRound = 0;
+            resetProgressStats();
+            progressBar.style.width = '0%';
+
+            uploadButton.disabled = true;
+            pauseButton.disabled = true;
+            resumeButton.disabled = true;
+            updateUploadStatus('准备上传...');
+
+            prepareAndUpload(false, false);
+        }
+
+        // ==================== 错误处理 ====================
+        function handleUploadError(error, defaultMessage) {
+            let errorMsg = defaultMessage || '上传失败';
+            if (error.response && error.response.data && error.response.data.error) {
+                errorMsg = error.response.data.error;
+            } else if (error.message) {
+                errorMsg = error.message;
+            }
+
+            clearAutoResume();
+            clearRetryTimers();
+            cancelInFlight('failed');
+            isPaused = true;
+            rebuildPending();
+            updateAggregateProgress(Date.now());
+
+            showErrorMessage(errorMsg + '（已完成 ' + completedChunks.size + '/' + chunkCount
+                + ' 片，进度已保留，可点「继续上传」重试）');
+            updateUploadStatus('上传失败');
+
+            uploadButton.disabled = false;
+            pauseButton.disabled = true;
+            // 只要还选着文件就允许继续：会话过期时服务端会新建会话，最多是从头传，
+            // 不会把用户卡死在"按钮不可点"的状态里。
+            resumeButton.disabled = !file;
+        }
+
+        // ==================== 事件 ====================
+        fileInput.addEventListener('change', function() {
+            clearMessages();
+            clearAutoResume();
+            clearRetryTimers();
+            cancelInFlight('file changed');
+
+            uploadId = null;
+            file = null;
+            completedChunks = new Set();
+            pendingChunks = [];
+            retryMap = {};
+            isPaused = false;
+            isFinishing = false;
+            autoResumeRound = 0;
+            resetProgressStats();
+
+            uploadButton.disabled = false;
+            pauseButton.disabled = true;
+            resumeButton.disabled = true;
+            progressBar.style.width = '0%';
+            updateUploadStatus('等待上传');
+            uploadedSizeElement.textContent = '-';
+            fileNameElement.textContent = '-';
+            fileSizeElement.textContent = '-';
+
+            const picked = fileInput.files[0];
+            if (picked && picked.name.match(/^Q\d{13}\.zip$/)) {
+                file = picked;
+                probeResume(picked);
+            }
+        });
+
+        // 上传中离开页面会中断传输；提示用户（服务端会保留已收分片，回来可续传）
+        window.addEventListener('beforeunload', function(e) {
+            if (!isFinishing && completedChunks.size > 0 && pendingChunks.length > 0) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+    </script>
+</body>
+</html>
