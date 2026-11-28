@@ -560,7 +560,7 @@ services:
       DSH_LLM_MODEL: ${DSH_OFFLINE_LLM_MODEL:-qwen3.8-flash}
       DSH_PERMISSION_MODE: ${DSH_OFFLINE_PERMISSION_MODE:-danger-full-access}
       DSH_COMPOSE_WORKFLOW_ENABLED: "true"
-      DSH_PLUGIN_PACKAGES: ${DSH_OFFLINE_PLUGIN_PACKAGES:-/opt/dsh-plugins/wecom-0.1.36.tgz /opt/dsh-plugins/session-bi-0.1.27.tgz /opt/dsh-plugins/hci-weknora-diagnosis-bundle-0.2.10.tgz /opt/dsh-plugins/ip-redactor-0.1.4.tgz}
+      DSH_PLUGIN_PACKAGES: ${DSH_OFFLINE_PLUGIN_PACKAGES:-/opt/dsh-plugins/wecom-0.1.36.tgz /opt/dsh-plugins/session-bi-0.1.28.tgz /opt/dsh-plugins/hci-weknora-diagnosis-bundle-0.2.11.tgz /opt/dsh-plugins/ip-redactor-0.1.4.tgz}
       # 插件读取的容器内变量；值分别来自新实例独立的 DSH_OFFLINE_* 配置。
       WECOM_BOT_ID: ${DSH_OFFLINE_WECOM_BOT_ID:-}
       WECOM_BOT_SECRET: ${DSH_OFFLINE_WECOM_BOT_SECRET:-}
